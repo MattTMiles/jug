@@ -1,0 +1,141 @@
+================================================================================
+                     PINT vs TEMPO2: COMPLETE ANALYSIS
+================================================================================
+
+TOA #0 DETAILED BREAKDOWN:
+
+TEMPO2 COMPUTATION:
+  Input: Topocentric MJD = 58526.213889149
+  
+  Components:
+    Roemer delay = -374.600 seconds
+    Shapiro delay = +0.000 seconds
+    "Other" component = +89.740 seconds (NOT documented in columns!)
+    
+  Formula: BAT = Topo + Roemer + Shapiro + Other
+           BAT = Topo + (-374.600) + (0.000) + (+89.740)
+           BAT = Topo - 284.860 seconds
+           
+  Output: BAT = 58526.210592 (284.86 seconds BEHIND topo)
+
+PINT COMPUTATION:
+  Input: Topocentric MJD = 58526.213889149 (SAME as Tempo2)
+  
+  Method: Unknown (not exposed in PINT's output)
+  
+  Output: TDB = 58526.214690 (69.19 seconds AHEAD of topo)
+
+THE GAP:
+  Tempo2 BAT is 284.86 seconds BEHIND topo
+  PINT TDB is 69.19 seconds AHEAD of topo
+  
+  Total difference: 69.19 - (-284.86) = 354.05 seconds
+
+================================================================================
+                         THE CRITICAL DISCOVERY
+================================================================================
+
+Tempo2's "Roemer" column (-374.6 seconds) is NOT standard Roemer delay!
+
+Standard Roemer delay should be:
+  - Magnitude: ~0.5 seconds (light travel time for 150 million km)
+  - Sign: POSITIVE (delay in going FROM observer TO barycenter)
+
+But Tempo2 shows:
+  - Magnitude: 374.6 seconds (750 times larger!)
+  - Sign: NEGATIVE
+  - Varies with orbital position (from -375 to -222 seconds)
+
+This is NOT Roemer delay in the usual sense.
+It appears to be some accumulated or derived quantity.
+
+================================================================================
+                           WHAT JUG WAS DOING
+================================================================================
+
+The notebook tried to:
+  1. Use Tempo2's BAT directly
+  2. Subtract "binary delay" from it
+  3. Subtract "DM delay" from it
+  4. Get "infinite-frequency time"
+
+But this is WRONG because:
+  - Tempo2's BAT already includes some delay interpretation
+  - The -374.6 "Roemer" is not actually Roemer delay
+  - There's a hidden +89.7 second component not documented
+  - The entire framework assumes Tempo2's column labels are standard
+
+PINT does something COMPLETELY DIFFERENT:
+  - Computes from scratch using JPL ephemerides
+  - Gets + 69.2 seconds total delay
+  - Gives a completely different result (354 seconds off)
+
+================================================================================
+                              THE REAL ISSUE
+================================================================================
+
+Neither JUG's current approach nor simply "using PINT" will work because:
+
+1. PINT and Tempo2 compute delays using FUNDAMENTALLY DIFFERENT METHODS
+   
+2. We don't have the FORMULAS or UNDERSTANDING of what either is doing
+   
+3. The column labels in Tempo2 output are MISLEADING
+   - What's labeled "Roemer" is not standard Roemer delay
+   - There's a hidden component not documented
+
+4. PINT doesn't expose its intermediate calculations
+   - We only see the final TDB output
+   - We don't know the component breakdown
+   - We don't know the methodology
+
+================================================================================
+                          WHAT NEEDS TO HAPPEN
+================================================================================
+
+BEFORE implementing JUG's own system:
+
+1. GET PINT SOURCE CODE UNDERSTANDING
+   - How does PINT compute delays?
+   - What's the exact formula?
+   - How is TDB derived from topocentric time?
+   - What are the intermediate steps?
+
+2. UNDERSTAND TEMPO2's COLUMNS
+   - What does that -374.6 really mean?
+   - What's the +89.7 component?
+   - Is this documented anywhere?
+   - Is Tempo2 using a different sign convention?
+
+3. UNDERSTAND THE SIGN CONVENTION
+   - Tempo2: negative delays (goes backward in time)
+   - PINT: positive delays (goes forward in time)
+   - Are these opposite conventions or different physics?
+
+4. VALIDATE AGAINST REALITY
+   - Which one matches actual pulsar observations?
+   - Which is the "correct" time system?
+   - Can we compute residuals with each and compare?
+
+5. IMPLEMENT JUG'S PIPELINE
+   - Once we understand BOTH systems
+   - Choose which one to match
+   - Implement the calculations step-by-step
+   - Validate each component
+
+================================================================================
+                           SUMMARY
+================================================================================
+
+The 354-second discrepancy is NOT a simple bug or rounding error.
+It represents a fundamental difference in HOW barycentric times are computed.
+
+Solving this requires:
+  ✓ Understanding PINT's algorithm
+  ✓ Understanding Tempo2's algorithm  
+  ✓ Choosing which to match
+  ✓ Then implementing in JUG
+
+We cannot proceed with implementation until we understand the underlying physics.
+
+================================================================================

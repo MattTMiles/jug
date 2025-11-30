@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(jq:*)",
+      "Bash(python3:*)",
+      "Bash(find:*)",
+      "Bash(jupyter nbconvert:*)",
+      "Bash(tempo2:*)",
+      "mcp__ide__executeCode",
+      "Bash(tee:*)",
+      "Bash(mv:*)",
+      "Bash(while read f)",
+      "Bash(do mv $f playground/old/)",
+      "Bash(done)",
+      "Bash(tree:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

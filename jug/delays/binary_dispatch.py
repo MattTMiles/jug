@@ -103,17 +103,17 @@ def dispatch_binary_delay(model_name, t_topo_tdb, params):
     elif model in ('DD', 'DDH', 'DDGR', 'DDK'):
         return dd_binary_delay(
             t_topo_tdb,
-            pb=params['PB'],
-            a1=params['A1'],
+            pb_days=params['PB'],
+            a1_lt_sec=params['A1'],
             ecc=params['ECC'],
-            om=params['OM'],
-            t0=params['T0'],
-            gamma=params.get('GAMMA', 0.0),
+            omega_deg=params['OM'],
+            t0_mjd=params['T0'],
+            gamma_sec=params.get('GAMMA', 0.0),
             pbdot=params.get('PBDOT', 0.0),
             xdot=params.get('XDOT', 0.0),
-            omdot=params.get('OMDOT', 0.0),
+            omdot_deg_yr=params.get('OMDOT', 0.0),
             edot=params.get('EDOT', 0.0),
-            m2=params.get('M2', 0.0),
+            m2_msun=params.get('M2', 0.0),
             sini=params.get('SINI', 0.0)
         )
     

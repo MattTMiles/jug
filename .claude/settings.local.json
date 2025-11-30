@@ -13,7 +13,11 @@
       "Bash(while read f)",
       "Bash(do mv $f playground/old/)",
       "Bash(done)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(python compare_dd_formulas.py:*)",
+      "Bash(python debug_pint_binary_time.py:*)",
+      "Bash(python debug_time_dependent_error.py:*)",
+      "Bash(python test_dd_fix.py:*)"
     ],
     "deny": [],
     "ask": []

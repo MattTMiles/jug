@@ -1,95 +1,83 @@
-#!/usr/bin/env python3
-"""Debug the 15 ns time-correlated difference between JUG and PINT."""
-
 import numpy as np
 import matplotlib.pyplot as plt
-import jax
-jax.config.update("jax_enable_x64", True)
-
-# JUG imports
+from pint.models import get_model
+from pint.toa import get_TOAs
+from pint.residuals import Residuals
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.io.par_reader import parse_par_file
-from jug.io.tim_reader import parse_tim_file_mjds
 
-# PINT imports
-import pint.models
-import pint.toa
-import pint.residuals
-import astropy.units as u
+# Load data
+par_file = "/home/mattm/projects/MPTA/partim/production/fifth_pass/tdb/J1909-3744_tdb.par"
+tim_file = "/home/mattm/projects/MPTA/partim/production/fifth_pass/tdb/J1909-3744.tim"
 
-# File paths
-PAR_FILE = "/home/mattm/projects/MPTA/partim/production/fifth_pass/tdb/J1909-3744_tdb.par"
-TIM_FILE = "/home/mattm/projects/MPTA/partim/production/fifth_pass/tdb/J1909-3744.tim"
+print("Loading JUG residuals...")
+jug_results = compute_residuals_simple(par_file, tim_file)
+jug_res = jug_results['residuals_us']
+mjds = jug_results['tdb_mjd']
 
-print("="*60)
-print("Component-Level Comparison: JUG vs PINT")
-print("="*60)
+print("\nLoading PINT residuals...")
+pint_model = get_model(par_file)
+pint_toas = get_TOAs(tim_file, planets=True, ephem='DE440')
+pint_resids = Residuals(pint_toas, pint_model)
+pint_res = pint_resids.time_resids.to_value('us')
 
-# Compute JUG residuals
-print("\nComputing JUG residuals...")
-jug_result = compute_residuals_simple(PAR_FILE, TIM_FILE, clock_dir="data/clock")
-jug_res_us = jug_result['residuals_us']
+# Difference
+diff = jug_res - pint_res
 
-# Compute PINT residuals
-print("\nComputing PINT residuals...")
-pint_model = pint.models.get_model(PAR_FILE)
-pint_toas = pint.toa.get_TOAs(TIM_FILE, model=pint_model)
-pint_res = pint.residuals.Residuals(pint_toas, pint_model, use_weighted_mean=False)
-pint_res_us = pint_res.time_resids.to(u.us).value
+print(f"\n=== Difference Analysis ===")
+print(f"Mean: {np.mean(diff*1e3):.3f} ns")
+print(f"Std: {np.std(diff*1e3):.3f} ns")
+print(f"Max abs: {np.max(np.abs(diff*1e3)):.3f} ns")
+print(f"Min: {np.min(diff*1e3):.3f} ns")
+print(f"Max: {np.max(diff*1e3):.3f} ns")
 
-# Compare
-diff_us = jug_res_us - pint_res_us
-diff_ns = diff_us * 1000
+# Plot the trend
+fig, axes = plt.subplots(3, 1, figsize=(12, 10))
 
-print(f"\n{'='*60}")
-print("RESIDUAL COMPARISON")
-print(f"{'='*60}")
-print(f"Difference (JUG - PINT):")
-print(f"  Mean:  {np.mean(diff_ns):8.3f} ns")
-print(f"  Std:   {np.std(diff_ns):8.3f} ns")
-print(f"  Min:   {np.min(diff_ns):8.3f} ns")
-print(f"  Max:   {np.max(diff_ns):8.3f} ns")
-print(f"  Range: {np.max(diff_ns) - np.min(diff_ns):8.3f} ns")
+# Residuals
+axes[0].plot(mjds, jug_res, 'o', alpha=0.5, ms=2, label='JUG')
+axes[0].plot(mjds, pint_res, 'x', alpha=0.5, ms=2, label='PINT')
+axes[0].set_ylabel('Residual (μs)')
+axes[0].legend()
+axes[0].grid(True, alpha=0.3)
+axes[0].set_title('JUG vs PINT Residuals')
 
-# Parse TOAs to get MJDs
-toas = parse_tim_file_mjds(TIM_FILE)
-mjds = np.array([t.mjd_int + t.mjd_frac for t in toas])
+# Difference vs time
+axes[1].plot(mjds, diff*1e3, 'o', ms=2)
+axes[1].axhline(0, color='red', linestyle='--', alpha=0.5)
+axes[1].set_ylabel('JUG - PINT (ns)')
+axes[1].set_xlabel('MJD (TDB)')
+axes[1].grid(True, alpha=0.3)
+axes[1].set_title(f'Difference (mean={np.mean(diff*1e3):.2f} ns, std={np.std(diff*1e3):.2f} ns)')
 
-# Check time correlation
-correlation = np.corrcoef(mjds, diff_ns)[0,1]
-print(f"\nTime correlation: {correlation:.6f}")
+# Check if it's related to binary phase
+pb_days = float(pint_model.PB.value)
+tasc_mjd = float(pint_model.TASC.value)
 
-if abs(correlation) > 0.5:
-    print("⚠️  SIGNIFICANT time correlation detected!")
-    print("   This suggests a systematic error in one of the delay components.")
-else:
-    print("✓  No significant time correlation.")
+# Compute binary phase
+binary_phase = np.mod((mjds - tasc_mjd) / pb_days, 1.0)
 
-# Plot the difference
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
-
-# Top: Difference vs time
-ax1.plot(mjds, diff_ns, 'o', ms=3, alpha=0.6, color='red')
-ax1.axhline(0, color='k', ls='--', alpha=0.3)
-ax1.set_xlabel('MJD', fontsize=12)
-ax1.set_ylabel('Residual Difference (JUG - PINT) [ns]', fontsize=12)
-ax1.set_title(f'J1909-3744: Residual Difference (corr={correlation:.4f})', fontsize=14, fontweight='bold')
-ax1.grid(True, alpha=0.3)
-
-# Bottom: Both residuals overlaid
-ax2.plot(mjds, jug_res_us, 'o', ms=2, alpha=0.5, label='JUG', color='blue')
-ax2.plot(mjds, pint_res_us, 'x', ms=2, alpha=0.5, label='PINT', color='orange')
-ax2.axhline(0, color='k', ls='--', alpha=0.3)
-ax2.set_xlabel('MJD', fontsize=12)
-ax2.set_ylabel('Residual [μs]', fontsize=12)
-ax2.set_title('Residuals Comparison', fontsize=12)
-ax2.legend(loc='best')
-ax2.grid(True, alpha=0.3)
+axes[2].scatter(binary_phase, diff*1e3, c=mjds, s=2, cmap='viridis')
+axes[2].set_xlabel('Binary Phase')
+axes[2].set_ylabel('JUG - PINT (ns)')
+axes[2].grid(True, alpha=0.3)
+axes[2].axhline(0, color='red', linestyle='--', alpha=0.5)
+cbar = plt.colorbar(axes[2].collections[0], ax=axes[2])
+cbar.set_label('MJD (TDB)')
+axes[2].set_title('Difference vs Binary Phase')
 
 plt.tight_layout()
-plt.savefig('jug_pint_component_debug.png', dpi=150, bbox_inches='tight')
-print(f"\n✓ Plot saved: jug_pint_component_debug.png")
+plt.savefig('debug_time_trend.png', dpi=150, bbox_inches='tight')
+print("\nSaved debug_time_trend.png")
 
-print(f"\n{'='*60}")
-print("Analysis complete.")
-print(f"{'='*60}")
+# Check correlations
+print(f"\n=== Correlation Tests ===")
+print(f"Corr(diff, MJD): {np.corrcoef(diff, mjds)[0,1]:.4f}")
+print(f"Corr(diff, binary_phase): {np.corrcoef(diff, binary_phase)[0,1]:.4f}")
+
+# Look for any time-dependent pattern
+from scipy import stats
+slope, intercept, r_value, p_value, std_err = stats.linregress(mjds, diff*1e3)
+print(f"\n=== Linear Fit (Difference vs Time) ===")
+print(f"Slope: {slope:.6f} ns/day")
+print(f"R²: {r_value**2:.6f}")
+print(f"Total drift over {(mjds.max() - mjds.min()):.0f} days: {slope * (mjds.max() - mjds.min()):.2f} ns")

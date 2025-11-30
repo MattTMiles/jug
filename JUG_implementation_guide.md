@@ -548,156 +548,184 @@ print(f'RMS difference: {np.std(diff)*1e6:.3f} ns')
 
 ## Milestone 2: Gradient-Based Fitting (v0.2.0)
 
-**Goal**: Implement JAX/NumPyro optimization for timing model fitting.
+**Goal**: Implement Gauss-Newton least squares fitting with analytical Jacobian for timing model parameters.
 
-### Step 2.1: Port Optimizer from Reference
+**Status**: 85% complete (as of Session 7, 2025-11-30)
 
-**Task**: Adapt the AdamW optimizer from `/home/mattm/soft/pulsar-map-noise-estimates`.
+**Key Decision**: After benchmarking multiple optimizers (scipy, JAX autodiff, Adam/Optax), we chose **Gauss-Newton with analytical derivatives** over NumPyro/SVI:
+- 10-100x faster than gradient descent methods
+- Analytical Jacobian more accurate than autodiff for this problem
+- Standard least-squares formulation (weighted chi-squared)
+- Levenberg-Marquardt damping for robustness
 
-**Option A: You Do It**
+### Step 2.1: Research and Benchmark Optimizers ✅ COMPLETED
 
-1. Study `pulsar-map-noise-estimates/src/pulsar_map_noise_estimates/map_noise_estimate.py`
-2. Copy `setup_svi()` and `run_svi_early_stopping()` functions
-3. Adapt to JUG's residual computation
-4. Create `jug/fitting/optimizer.py`
+**Task**: Compare optimization methods for pulsar timing.
 
-**Option B: Claude Does It**
+**What We Did**:
+1. Benchmarked scipy.optimize methods (Levenberg-Marquardt, trust-region, BFGS)
+2. Tested JAX autodiff + scipy optimizers
+3. Tested Adam/Optax (gradient descent) - 10,000x slower!
+4. Created comprehensive comparison documents
 
-*Instruction for Claude*:
-"Port the SVI optimization code from `/home/mattm/soft/pulsar-map-noise-estimates/src/pulsar_map_noise_estimates/map_noise_estimate.py` to `jug/fitting/optimizer.py`. Adapt it to work with JUG's `compute_residuals()` function. Keep the AdamW optimizer, cosine decay schedule, and early stopping logic intact. Add docstrings specific to pulsar timing use case."
+**Deliverables**:
+- `OPTIMIZER_COMPARISON.md` - Detailed benchmark results
+- `JAX_ACCELERATION_ANALYSIS.md` - Performance analysis
+- Decision: Gauss-Newton with analytical Jacobian
 
-**Time**: 2-3 hours (you) | 30 minutes (Claude)
-
----
-
-### Step 2.2: Implement Parameter Masking
-
-**Task**: Add ability to freeze/unfreeze parameters (incremental fitting).
-
-**Option A: You Do It**
-
-Create `jug/fitting/parameter_mask.py`:
-```python
-"""Parameter masking for incremental fitting."""
-import jax.numpy as jnp
-import optax
-
-def create_fit_mask(params_dict, fit_flags_dict):
-    """Create boolean mask for parameters to fit.
-
-    Parameters
-    ----------
-    params_dict : dict
-        Dictionary of parameter names to values
-    fit_flags_dict : dict
-        Dictionary of parameter names to fit flags (1=fit, 0=freeze)
-
-    Returns
-    -------
-    dict
-        PyTree-structured mask for optax.masked()
-    """
-    mask = {}
-    for key in params_dict:
-        mask[key] = fit_flags_dict.get(key, 0) == 1
-    return mask
-
-def masked_optimizer(base_optimizer, mask):
-    """Wrap optimizer to only update unfrozen parameters.
-
-    Parameters
-    ----------
-    base_optimizer : optax.GradientTransformation
-        Base optimizer (e.g., adamw)
-    mask : dict
-        Boolean mask (True = update, False = freeze)
-
-    Returns
-    -------
-    optax.GradientTransformation
-        Masked optimizer
-    """
-    return optax.masked(base_optimizer, mask)
-```
-
-**Option B: Claude Does It**
-
-*Instruction for Claude*:
-"Implement parameter masking for incremental fitting in `jug/fitting/parameter_mask.py`. Read fit flags from parsed `.par` file (the '1' suffix). Create a function that converts fit flags to an `optax.masked()` compatible mask. Integrate with the optimizer from step 2.1."
-
-**Time**: 1 hour (you) | 20 minutes (Claude)
+**Time**: 1.5 hours (Session 4)
 
 ---
 
-### Step 2.3: Write Fitting CLI Script
+### Step 2.2: Implement Analytical Design Matrix ✅ COMPLETED
 
-**Task**: Create `jug-fit` CLI tool.
+**Task**: Compute analytical derivatives (Jacobian) for timing model parameters.
 
-**Option A: You Do It**
-
-Create `jug/scripts/fit.py`:
+**What We Did**:
+Create `jug/fitting/design_matrix.py` (260 lines):
 ```python
-"""CLI script to fit pulsar timing model."""
-import argparse
-from jug.io.par_reader import parse_par_file
-from jug.io.tim_reader import parse_tim_file
-from jug.fitting.optimizer import run_fit
-from jug.io.par_writer import write_par_file
+"""Analytical design matrix for pulsar timing."""
+import numpy as np
 
-def main():
-    parser = argparse.ArgumentParser(description="Fit pulsar timing model")
-    parser.add_argument("par_file", help=".par file with initial parameters")
-    parser.add_argument("tim_file", help=".tim file with TOAs")
-    parser.add_argument("--output", "-o", help="Output .par file", default="fitted.par")
-    parser.add_argument("--max-iter", type=int, default=5000, help="Max iterations")
-
-    args = parser.parse_args()
-
-    # Load data
-    model = parse_par_file(args.par_file)
-    toas = parse_tim_file(args.tim_file)
-
-    # Fit
-    fitted_params, uncertainties = run_fit(model, toas, max_iter=args.max_iter)
-
-    # Save
-    write_par_file(args.output, fitted_params, uncertainties)
-    print(f"Fitted parameters saved to {args.output}")
-
-if __name__ == "__main__":
-    main()
-```
-
-**Option B: Claude Does It**
-
-*Instruction for Claude*:
-"Create a CLI script `jug/scripts/fit.py` that loads `.par` and `.tim` files, runs the optimizer from step 2.1, and writes a fitted `.par` file with updated parameters and uncertainties. Add flags for `--max-iter`, `--learning-rate`, `--convergence-tol`. Register as `jug-fit` entry point."
-
-**Time**: 45 minutes (you) | 15 minutes (Claude)
-
----
-
-### Step 2.4: Implement Fisher Matrix Uncertainties
-
-**Task**: Compute parameter uncertainties using Fisher information matrix.
-
-**Option A: You Do It**
-
-Create `jug/fitting/fisher.py`:
-```python
-"""Fisher matrix uncertainty estimation."""
-import jax
-import jax.numpy as jnp
-
-def compute_fisher_uncertainties(loss_fn, params):
-    """Compute parameter uncertainties via Fisher information matrix.
-
+def compute_design_matrix(residuals_fn, params, param_names, toas, freqs):
+    """Compute analytical Jacobian (design matrix).
+    
     Parameters
     ----------
-    loss_fn : callable
-        Loss function (takes params, returns scalar)
+    residuals_fn : callable
+        Function to compute residuals
     params : dict
-        Parameter values at which to compute Hessian
+        Parameter values
+    param_names : list
+        Parameters to fit
+    toas : np.ndarray
+        Times of arrival
+    freqs : np.ndarray
+        Observing frequencies
+        
+    Returns
+    -------
+    M : np.ndarray
+        Design matrix, shape (n_toas, n_params)
+    """
+    # Analytical derivatives for each parameter
+    # ∂residual/∂F0, ∂residual/∂F1, etc.
+    ...
+```
+
+**Implemented Derivatives**:
+- ✅ F0, F1, F2, F3 (spin frequency and derivatives)
+- ✅ DM, DM1, DM2 (dispersion measure)
+- ⏳ Binary parameters (PB, A1, TASC, EPS1, EPS2) - deferred to M2.7
+- ⏳ Astrometry (RAJ, DECJ, PMRA, PMDEC, PX) - deferred to M2.8
+
+**Time**: 1.5 hours (Session 4)
+
+---
+
+### Step 2.3: Implement Gauss-Newton Solver ✅ COMPLETED
+
+**Task**: Implement Gauss-Newton least squares with Levenberg-Marquardt damping.
+
+**What We Did**:
+Create `jug/fitting/gauss_newton.py` (240 lines):
+```python
+"""Gauss-Newton least squares solver."""
+import numpy as np
+
+def gauss_newton_fit(residuals_fn, params, param_names, toas, freqs, errors,
+                     max_iter=20, lambda_init=1e-3, convergence_threshold=1e-6):
+    """Fit timing model using Gauss-Newton with Levenberg-Marquardt.
+    
+    Algorithm:
+    1. Compute residuals: r = residuals_fn(params)
+    2. Compute design matrix: M = ∂r/∂p (analytical)
+    3. Solve: (M^T W M + λI) Δp = M^T W r
+    4. Update: p_new = p_old - Δp
+    5. If chi2 decreases: accept, reduce λ
+       If chi2 increases: reject, increase λ
+    6. Check convergence: |Δchi2| < threshold and |Δp| < threshold
+    
+    Returns
+    -------
+    fitted_params : dict
+        Best-fit parameter values
+    uncertainties : dict
+        1-sigma uncertainties from covariance matrix
+    info : dict
+        Fitting statistics (chi2, iterations, convergence)
+    """
+    ...
+```
+
+**Features**:
+- Levenberg-Marquardt damping for stability
+- Trust-region-style step acceptance/rejection
+- Convergence checking (chi2 change + parameter change)
+- Covariance matrix → parameter uncertainties
+- Progress reporting
+
+**Time**: 1 hour (Session 4)
+
+---
+
+### Step 2.4: JAX Acceleration ⏳ IN PROGRESS (NEXT TASK)
+
+**Task**: Port design matrix and Gauss-Newton to JAX for 10-60x speedup.
+
+**Plan**:
+1. Create `jug/fitting/design_matrix_jax.py`
+   - Use `jax.jacfwd()` or `jax.jacrev()` for automatic differentiation
+   - Or keep analytical derivatives, wrap in JAX
+   
+2. Create `jug/fitting/gauss_newton_jax.py`
+   - JIT-compile matrix operations: `M^T W M`, `M^T W r`
+   - Use `jax.scipy.linalg.solve` for linear system
+   
+3. Add hybrid backend selection:
+   - NumPy for <500 TOAs (setup overhead too high)
+   - JAX for ≥500 TOAs (amortizes compilation cost)
+
+**Expected Speedup**: 10-60x for large datasets
+
+**Assigned to**: Claude (next task)
+**Estimated time**: 1-2 hours
+
+---
+
+### Step 2.5: Integration with Real Residuals ⏳ TO DO
+
+**Task**: Refactor `simple_calculator.py` for fitting use.
+
+**Plan**:
+1. Separate setup (load data, compute ephemeris) from residual computation
+2. Setup runs once, residual computation called many times during fitting
+3. Test on J1909-3744 (clean ELL1 binary pulsar)
+4. Compare fitted parameters with PINT
+
+**Example**:
+```python
+# Setup (once)
+setup_data = prepare_for_fitting(par_file, tim_file)
+
+# Residual function (called many times)
+def residuals_fn(params):
+    return compute_residuals_simple(params, setup_data)
+
+# Fit
+fitted_params, uncertainties = gauss_newton_fit(
+    residuals_fn, initial_params, ...
+)
+```
+
+**Assigned to**: Claude
+**Estimated time**: 1 hour
+
+---
+
+### Step 2.6: Fitting CLI Script ⏳ TO DO
+
+**Task**: Create `jug-fit` command-line tool.
 
     Returns
     -------
@@ -756,18 +784,39 @@ python compare_fits.py fitted_jug.par fitted_pint.par
 
 ---
 
-### Milestone 2 Summary
+### Milestone 2 Summary (Updated 2025-11-30)
 
-**Deliverables**:
-- [x] `jug/fitting/optimizer.py` with AdamW + early stopping
-- [x] `jug/fitting/parameter_mask.py` for incremental fitting
-- [x] `jug/fitting/fisher.py` for uncertainty estimation
-- [x] CLI script `jug-fit`
-- [x] Validation: Parameters match Tempo2/PINT within 1-sigma
+**Progress**: 85% complete (Sessions 4-7)
+
+**Deliverables Completed** ✅:
+- [x] Optimizer research and benchmarking → Chose **Gauss-Newton** over NumPyro/SVI
+- [x] `jug/fitting/design_matrix.py` with analytical derivatives (F0-F3, DM, DM1, DM2)
+- [x] `jug/fitting/gauss_newton.py` with Levenberg-Marquardt damping
+- [x] Synthetic data validation - successfully recovers parameters
+- [x] Multi-pulsar testing framework (`test_binary_models.py`)
+- [x] Binary model expansion (DD, DDH, BT, T2 implemented and validated)
+- [x] Performance audit (`PERFORMANCE_OPTIMIZATION_AUDIT.md`)
+- [x] Fixed BT vectorization (10-100x speedup)
+
+**Remaining Work** ⏳:
+- [ ] JAX acceleration (design_matrix_jax.py, gauss_newton_jax.py) - **NEXT**
+- [ ] Integration with real residuals computation
+- [ ] CLI script `jug-fit`
+- [ ] Binary parameter derivatives (deferred)
+- [ ] Astrometry derivatives (deferred)
+
+**Key Decision**: Gauss-Newton with analytical Jacobian is 10-100x faster than gradient descent methods (Adam, SGD) for this least-squares problem structure.
 
 **Time Estimate**:
-- You alone: 2-3 weeks
-- Claude assists: 1-2 weeks
+- Completed so far: ~8 hours (Sessions 4-7)
+- Remaining: 2-3 hours
+- **Total for M2**: ~10-11 hours
+
+**Documentation Created**:
+- `OPTIMIZER_COMPARISON.md` - Why Gauss-Newton over SVI
+- `JAX_ACCELERATION_ANALYSIS.md` - Performance benchmarks
+- `BINARY_MODEL_INTEGRATION_STATUS.md` - Binary model validation
+- `PERFORMANCE_OPTIMIZATION_AUDIT.md` - Code optimization status
 
 ---
 

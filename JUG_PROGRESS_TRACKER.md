@@ -478,6 +478,29 @@ Implement Gauss-Newton least squares fitting with analytical Jacobian for timing
 3. **LM damping**: Robustness without sacrificing speed
 4. **JAX for large datasets**: Crossover at ~500 TOAs where JAX becomes faster
 5. **Covariance from (M^T M)^-1**: Standard uncertainty computation
+
+### Current Fitting Status (2025-11-30, Session 8)
+
+**Issue Identified**: JAX fitting infrastructure not functional yet
+- ✅ Design matrix code exists (`jug/fitting/design_matrix_jax.py`)
+- ✅ Gauss-Newton solver exists (`jug/fitting/gauss_newton_jax.py`)
+- ❌ Integration with residual calculator not working
+- ❌ Test on J1909-3744 failed (fit rejected all steps, did not converge)
+
+**Root Cause**: Residual function mismatch
+- Current approach uses file I/O for each evaluation (too slow: 2-3 sec per call)
+- Design matrix needs pure JAX function (no file I/O, JIT-compiled)
+- Need to refactor `simple_calculator.py` to separate setup from evaluation
+
+**See**: `M2_JAX_FITTING_STATUS.md` for detailed analysis and solution path
+
+**Next Steps**:
+1. Refactor residual computation into pure JAX function
+2. Pre-compute TDB times and position-dependent delays (one-time)
+3. Create fast JAX residual function that only updates spin/DM terms
+4. Re-test fitting on J1909-3744
+
+**Estimated Time**: 2-3 hours to complete fitting integration
 6. **Multi-binary model support**: ELL1, BT/DD, T2 for broad compatibility with Tempo2/PINT
 7. **Test suite diversity**: Binary MSP (J1909-3744), non-binary MSP (J0437-4715), massive NS (J1614-2230)
 8. **Multi-telescope validation**: Use MPTA DR5 data to ensure clock corrections and observatory handling work universally

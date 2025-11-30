@@ -57,11 +57,11 @@ def solve_kepler(mean_anomaly, eccentricity, tol=1e-12, max_iter=20):
 
 @jax.jit
 def bt_binary_delay(
-    t_topo_tdb, pb, a1, ecc, om, t0, gamma, pbdot, 
+    t_topo_tdb, pb, a1, ecc, om, t0, gamma, pbdot,
     m2, sini, omdot=0.0, xdot=0.0
 ):
     """Compute BT/DD binary delay at given topocentric time.
-    
+
     Parameters
     ----------
     t_topo_tdb : float
@@ -85,76 +85,140 @@ def bt_binary_delay(
     sini : float
         Sine of inclination angle - for Shapiro delay
     omdot : float
-        Periastron advance (degrees/year) - DD only
+        Periastron advance (degrees/year) - DD model only
     xdot : float
-        Rate of change of projected semi-major axis (light-sec/sec) - DD only
-        
+        Rate of change of projected semi-major axis (light-sec/sec) - DD model only
+
     Returns
     -------
     float
-        Total binary delay (seconds): Roemer + Einstein + Shapiro
-        
+        Total binary delay (seconds)
+
     Notes
     -----
-    This implements the full BT/DD model with:
-    1. Roemer delay: Light travel time in elliptical orbit
-    2. Einstein delay: Time dilation from orbital motion
-    3. Shapiro delay: Gravitational light bending by companion
-    
-    The DD model extends BT with OMDOT (periastron advance) and better
-    Shapiro delay treatment. Both use the same Kepler solver.
+    This implements the DD (Damour-Deruelle) binary model following PINT's
+    implementation in pint/models/stand_alone_psr_binaries/DD_model.py
+
+    References:
+    - Damour & Deruelle (1985), Ann. Inst. H. Poincaré 43, 107
+    - Damour & Deruelle (1986), paper with equations [25]-[52]
+
+    The DD model includes:
+    1. Inverse delay: Roemer + Einstein with coordinate time correction
+    2. Shapiro delay: Gravitational light bending by companion
+    3. Aberration delay: A0, B0 terms (assumed zero if not provided)
+
+    For BT model (OMDOT=0, XDOT=0), this reduces to standard Keplerian + 1PN.
     """
     # Time since periastron
     dt_days = t_topo_tdb - t0
-    
+    dt_sec = dt_days * SECS_PER_DAY
+
     # Apply OMDOT correction (DD model)
-    om_rad = jnp.deg2rad(om + omdot * dt_days / 365.25)
-    
+    # omega(t) = OM + OMDOT * (t - T0) / 1 year
+    om_current = om + omdot * dt_days / 365.25
+    om_rad = jnp.deg2rad(om_current)
+
     # Mean motion with PBDOT correction
     pb_eff = pb * (1.0 + pbdot * dt_days / pb)
-    n = 2.0 * jnp.pi / (pb_eff * SECS_PER_DAY)
-    
+
     # Mean anomaly
-    mean_anomaly = n * dt_days * SECS_PER_DAY
-    
-    # Solve Kepler's equation for eccentric anomaly
-    ecc_anomaly = solve_kepler(mean_anomaly, ecc)
-    
-    # True anomaly (from eccentric anomaly)
-    # tan(nu/2) = sqrt((1+e)/(1-e)) * tan(E/2)
-    true_anomaly = 2.0 * jnp.arctan2(
-        jnp.sqrt(1.0 + ecc) * jnp.sin(ecc_anomaly / 2.0),
-        jnp.sqrt(1.0 - ecc) * jnp.cos(ecc_anomaly / 2.0)
-    )
-    
+    n = 2.0 * jnp.pi / (pb_eff * SECS_PER_DAY)
+    mean_anomaly = n * dt_sec
+
+    # Solve Kepler's equation for eccentric anomaly E
+    E = solve_kepler(mean_anomaly, ecc)
+
+    # Trigonometric functions of E and omega
+    sinE = jnp.sin(E)
+    cosE = jnp.cos(E)
+    sinOm = jnp.sin(om_rad)
+    cosOm = jnp.cos(om_rad)
+
     # Apply XDOT correction to semi-major axis
-    a1_eff = jnp.where(xdot != 0.0, a1 + xdot * dt_days * SECS_PER_DAY, a1)
-    
-    # === ROEMER DELAY ===
-    # Projected position along line of sight
-    # x = a1 * [cos(E) - e]  (perpendicular to line of sight)
-    # z = a1 * sqrt(1-e^2) * sin(E)  (along line of sight for edge-on orbit)
-    # Projected delay = a1 * [sin(omega + nu) + e*sin(omega)]
-    sin_omega_nu = jnp.sin(om_rad + true_anomaly)
-    roemer_delay = a1_eff * (sin_omega_nu + ecc * jnp.sin(om_rad))
-    
-    # === EINSTEIN DELAY ===
-    # Time dilation in eccentric orbit: gamma * sin(E)
-    einstein_delay = jnp.where(gamma != 0.0, gamma * jnp.sin(ecc_anomaly), 0.0)
-    
-    # === SHAPIRO DELAY ===
-    # Light bending by companion: -2*r*log(1 - s*sin(omega+nu))
-    # r = RANGE = T_sun * M2 (companion mass in time units)
-    # s = SINI = sin(inclination)
-    T_SUN = 4.925490947e-6  # Solar mass in seconds
-    r_shap = T_SUN * m2
-    shapiro_delay = jnp.where(
+    a1_eff = a1 + xdot * dt_sec
+
+    # =========================================================================
+    # INVERSE DELAY (Roemer + Einstein with coordinate time correction)
+    # Following PINT's DD_model.py: delayInverse()
+    # Reference: Damour & Deruelle (1986) equations [43], [46-52]
+    # =========================================================================
+
+    # Alpha and Beta parameters (D&D eqs [46], [47])
+    # Note: er = ecc*(1 + DR), eTheta = ecc*(1 + DTH)
+    # For now, assume DR=0, DTH=0 (standard DD model)
+    er = ecc
+    eTheta = ecc
+
+    alpha = a1_eff * sinOm  # eq [46]
+    beta = a1_eff * jnp.sqrt(1.0 - eTheta**2) * cosOm  # eq [47]
+
+    # Roemer delay: delayR = alpha*(cos(E) - er) + beta*sin(E)
+    # (D&D eq [48] with delayE separated out)
+    delayR = alpha * (cosE - er) + beta * sinE
+
+    # Einstein delay: delayE = GAMMA * sin(E)  (D&D eq [25])
+    delayE = gamma * sinE
+
+    # Dre = Roemer + Einstein (D&D eq [48])
+    Dre = delayR + delayE
+
+    # First derivative: Drep = d(Dre)/dE  (D&D eq [49])
+    Drep = -alpha * sinE + (beta + gamma) * cosE
+
+    # Second derivative: Drepp = d^2(Dre)/dE^2  (D&D eq [50])
+    Drepp = -alpha * cosE - (beta + gamma) * sinE
+
+    # nhat = dE/dt  (D&D eq [51])
+    nhat = (2.0 * jnp.pi / (pb_eff * SECS_PER_DAY)) / (1.0 - ecc * cosE)
+
+    # Inverse delay transformation (D&D eq [52])
+    # This accounts for the fact that delays affect orbital position
+    # delayInverse = Dre(t - Dre(t - Dre(t))) approximated via Taylor expansion
+    correction_factor = (
+        1.0
+        - nhat * Drep
+        + (nhat * Drep)**2
+        + 0.5 * nhat**2 * Dre * Drepp
+        - 0.5 * ecc * sinE / (1.0 - ecc * cosE) * nhat**2 * Dre * Drep
+    )
+
+    delayInverse = Dre * correction_factor
+
+    # =========================================================================
+    # SHAPIRO DELAY
+    # Following PINT's DD_model.py: delayS()
+    # Reference: Damour & Deruelle (1986) equation [26]
+    # =========================================================================
+
+    T_SUN = 4.925490947e-6  # Solar mass in seconds (G*Msun/c^3)
+
+    # DD Shapiro delay uses full orbital geometry, not just sin(omega+nu)
+    # delayS = -2*r*log(1 - e*cos(E) - SINI*[sin(omega)*(cos(E)-e) +
+    #                                         sqrt(1-e^2)*cos(omega)*sin(E)])
+    shapiro_arg = (
+        1.0
+        - ecc * cosE
+        - sini * (sinOm * (cosE - ecc) + jnp.sqrt(1.0 - ecc**2) * cosOm * sinE)
+    )
+
+    delayS = jnp.where(
         (m2 > 0.0) & (sini > 0.0),
-        -2.0 * r_shap * jnp.log(1.0 - sini * sin_omega_nu),
+        -2.0 * T_SUN * m2 * jnp.log(shapiro_arg),
         0.0
     )
-    
-    return roemer_delay + einstein_delay + shapiro_delay
+
+    # =========================================================================
+    # ABERRATION DELAY
+    # Following PINT's DD_model.py: delayA()
+    # Reference: Damour & Deruelle (1986) equation [27]
+    # =========================================================================
+    # For now, assume A0=0, B0=0 (not provided in typical par files)
+    # delayA = A0*(sin(omega+nu) + e*sin(omega)) + B0*(cos(omega+nu) + e*cos(omega))
+    delayA = 0.0
+
+    # Total DD delay
+    return delayInverse + delayS + delayA
 
 
 @jax.jit  

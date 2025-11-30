@@ -166,3 +166,190 @@ def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray) -> np.
     frac = np.where(mjd1 != mjd0, (mjd_array - mjd0) / (mjd1 - mjd0), 0.0)
 
     return off0 + frac * (off1 - off0)
+
+
+def validate_clock_file_coverage(clock_data: dict, mjd_start: float, mjd_end: float, 
+                                   file_name: str = "clock file", warn_days: float = 30.0) -> dict:
+    """Validate that a clock file covers the required MJD range.
+    
+    Checks for:
+    - Coverage gaps (MJDs outside clock file range)
+    - Suspicious constant regions (potential extrapolation)
+    - Outdated files (end date too far in the past)
+    
+    Parameters
+    ----------
+    clock_data : dict
+        Clock data with 'mjd' and 'offset' arrays
+    mjd_start : float
+        Start MJD of data requiring coverage
+    mjd_end : float
+        End MJD of data requiring coverage
+    file_name : str, optional
+        Name of clock file for warning messages
+    warn_days : float, optional
+        Warn if file ends more than this many days before mjd_end (default: 30)
+    
+    Returns
+    -------
+    dict
+        Validation results with keys:
+        - 'valid': bool, True if coverage is adequate
+        - 'warnings': list of warning strings
+        - 'errors': list of error strings
+        - 'coverage_start': MJD where clock file starts
+        - 'coverage_end': MJD where clock file ends
+        - 'data_start': MJD where data starts
+        - 'data_end': MJD where data ends
+    
+    Examples
+    --------
+    >>> clock_data = parse_clock_file("tai2tt_bipm2024.clk")
+    >>> result = validate_clock_file_coverage(clock_data, 60000.0, 60837.0)
+    >>> if not result['valid']:
+    ...     for warning in result['warnings']:
+    ...         print(f"WARNING: {warning}")
+    """
+    mjds = clock_data['mjd']
+    offsets = clock_data['offset']
+    
+    warnings = []
+    errors = []
+    valid = True
+    
+    if len(mjds) == 0:
+        errors.append(f"{file_name}: Clock file is empty")
+        return {
+            'valid': False,
+            'warnings': warnings,
+            'errors': errors,
+            'coverage_start': None,
+            'coverage_end': None,
+            'data_start': mjd_start,
+            'data_end': mjd_end
+        }
+    
+    coverage_start = mjds[0]
+    coverage_end = mjds[-1]
+    
+    # Check if data is outside clock file range
+    if mjd_start < coverage_start:
+        errors.append(
+            f"{file_name}: Data starts at MJD {mjd_start:.1f} but clock file "
+            f"only covers from MJD {coverage_start:.1f} "
+            f"({coverage_start - mjd_start:.1f} days before coverage)"
+        )
+        valid = False
+    
+    if mjd_end > coverage_end:
+        days_past = mjd_end - coverage_end
+        if days_past > warn_days:
+            warnings.append(
+                f"{file_name}: Data extends to MJD {mjd_end:.1f} but clock file "
+                f"ends at MJD {coverage_end:.1f} "
+                f"({days_past:.1f} days of extrapolation). "
+                f"Consider updating clock file."
+            )
+        else:
+            warnings.append(
+                f"{file_name}: Minor extrapolation ({days_past:.1f} days past clock file end)"
+            )
+    
+    # Check for suspicious constant regions near the end
+    # (indicates possible extrapolation in the clock file itself)
+    if len(mjds) > 10:
+        # Find where real data ends by looking for large gaps or constant regions
+        # Check spacing between entries
+        mjd_diffs = np.diff(mjds)
+        
+        # Look for abnormally large gaps (> 100 days suggests jump to extrapolation)
+        large_gaps = np.where(mjd_diffs > 100)[0]
+        if len(large_gaps) > 0:
+            # Found a large gap - data before this is real
+            real_data_end_idx = large_gaps[0]
+            real_data_end = mjds[real_data_end_idx]
+            
+            if mjd_end > real_data_end:
+                warnings.append(
+                    f"{file_name}: Real data ends at MJD {real_data_end:.1f}, "
+                    f"but your data extends to MJD {mjd_end:.1f} "
+                    f"({mjd_end - real_data_end:.1f} days using extrapolated values). "
+                    f"Clock file has large gap suggesting constant extrapolation. "
+                    f"UPDATE CLOCK FILE from IPTA repository!"
+                )
+        
+        # Also check last 10 entries for constant values
+        last_offsets = offsets[-10:]
+        if np.std(last_offsets) < 1e-12:  # Effectively constant
+            # Check if there's variation before the constant region
+            if len(mjds) > 20:
+                prev_offsets = offsets[-20:-10]
+                if np.std(prev_offsets) > 1e-12:  # Previous region was varying
+                    warnings.append(
+                        f"{file_name}: Last 10 entries are constant at "
+                        f"{last_offsets[-1]:.12f} s (possible extrapolation within file)"
+                    )
+    
+    return {
+        'valid': valid,
+        'warnings': warnings,
+        'errors': errors,
+        'coverage_start': coverage_start,
+        'coverage_end': coverage_end,
+        'data_start': mjd_start,
+        'data_end': mjd_end
+    }
+
+
+def check_clock_files(mjd_start: float, mjd_end: float, 
+                      mk_clock: dict, gps_clock: dict, bipm_clock: dict,
+                      verbose: bool = True) -> bool:
+    """Check all clock files for adequate coverage.
+    
+    Parameters
+    ----------
+    mjd_start : float
+        Start MJD of data
+    mjd_end : float
+        End MJD of data
+    mk_clock : dict
+        MeerKAT/observatory clock data
+    gps_clock : dict
+        GPS clock data
+    bipm_clock : dict
+        BIPM clock data
+    verbose : bool, optional
+        Print warnings and errors (default: True)
+    
+    Returns
+    -------
+    bool
+        True if all clock files have adequate coverage, False otherwise
+    
+    Examples
+    --------
+    >>> mk = parse_clock_file("mk2utc.clk")
+    >>> gps = parse_clock_file("gps2utc.clk")
+    >>> bipm = parse_clock_file("tai2tt_bipm2024.clk")
+    >>> ok = check_clock_files(58000.0, 60837.0, mk, gps, bipm)
+    """
+    all_valid = True
+    
+    # Check each clock file
+    for name, clock_data in [
+        ("Observatory clock (mk2utc.clk)", mk_clock),
+        ("GPS clock (gps2utc.clk)", gps_clock),
+        ("BIPM clock (tai2tt_bipm*.clk)", bipm_clock)
+    ]:
+        result = validate_clock_file_coverage(clock_data, mjd_start, mjd_end, name)
+        
+        if not result['valid']:
+            all_valid = False
+        
+        if verbose:
+            for error in result['errors']:
+                print(f"❌ ERROR: {error}")
+            for warning in result['warnings']:
+                print(f"⚠️  WARNING: {warning}")
+    
+    return all_valid

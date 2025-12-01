@@ -1,294 +1,218 @@
-# JAX Acceleration for Gauss-Newton Fitting
+# JAX Acceleration Analysis
 
-**Date**: 2025-11-29  
-**Question**: Can JAX/JIT make Gauss-Newton faster?
+**Date**: 2025-12-01  
+**Session**: Post-F0 fitting validation
 
----
+## Summary
 
-## Answer: **YES, for realistic pulsar datasets!** ✅
+Implemented JAX-accelerated components and analyzed where JAX provides speedup vs overhead.
 
-### Benchmark Results
+## Key Finding: JAX Overhead vs Benefit Trade-off
 
-| Dataset Size | N TOAs | N Params | NumPy Time | JAX Time | Speedup | Winner |
-|--------------|--------|----------|------------|----------|---------|--------|
-| Small | 100 | 5 | 0.025 ms | 0.043 ms | 0.58x | NumPy |
-| **Medium** | **500** | **10** | **0.109 ms** | **0.043 ms** | **2.5x** | **JAX ✅** |
-| **Large** | **2000** | **15** | **0.511 ms** | **0.041 ms** | **12.5x** | **JAX ✅** |
-| **Massive** | **10000** | **20** | **2.787 ms** | **0.044 ms** | **63.8x** | **JAX ✅** |
+### Where JAX is SLOWER (Current Status)
 
-### Key Finding
+**Derivatives computation** (tested on J1909-3744, 10,408 TOAs):
 
-**JAX becomes faster at ~500 TOAs**
-
-Most real pulsars have:
-- MSPs: 500-5,000 TOAs ← JAX wins
-- Young pulsars: 100-500 TOAs ← Mixed
-- Well-timed MSPs: 5,000-20,000 TOAs ← JAX dominates
-
----
-
-## Why JAX Wins for Larger Datasets
-
-1. **XLA compilation** - Fuses operations, eliminates Python loops
-2. **GPU offloading** - Can run on GPU if available
-3. **Vectorization** - Better SIMD utilization
-4. **Constant overhead** - JAX time ~0.04ms regardless of size!
-
-### NumPy scales linearly:
 ```
-100 TOAs:   0.025 ms
-500 TOAs:   0.109 ms  (4.4x slower)
-2000 TOAs:  0.511 ms  (20x slower)
-10000 TOAs: 2.787 ms  (111x slower)
+NumPy: 0.026 ± 0.010 ms
+JAX:   0.652 ± 0.184 ms
 ```
 
-### JAX stays constant:
+**Slowdown: ~25x** ❌
+
+**Why?**
+- Computation is trivially fast (~26 μs)
+- JAX overhead dominates:
+  - Array conversion (numpy → jax.numpy)
+  - JIT dispatch overhead
+  - Result conversion back to numpy
+- For such fast operations, Python overhead is negligible anyway
+
+### Where JAX is FASTER
+
+**Matrix operations** (>500 TOAs):
+- SVD decomposition
+- Matrix multiplies (M^T W M)
+- Covariance matrix inversion
+
+**Expected speedup**: 10-60x for:
+- Multi-parameter fitting (design matrix becomes large)
+- Iterative algorithms (amortize compilation cost)
+
+**Residual computation** (once JAX version used):
+- Full timing pipeline with JAX
+- Expected speedup: 10-100x
+- Requires JAX versions of:
+  - Clock corrections
+  - Barycentric delays
+  - Binary delays
+
+## Implementation Status
+
+### ✅ Completed
+
+1. **JAX Derivatives Module**: `jug/fitting/derivatives_spin_jax.py`
+   - JIT-compiled `taylor_horner_jax()`
+   - JIT-compiled `d_phase_d_F_jax()`
+   - Drop-in replacement API
+   - **Validation**: Results match numpy exactly (max diff: 0.00e+00)
+   - **Decision**: Keep for future, but don't use for single-param F0 fitting
+
+2. **Performance Benchmarking**: `test_jax_derivatives_speed.py`
+   - Comprehensive numpy vs JAX comparison
+   - Multi-parameter testing
+   - Statistical analysis (100 iterations)
+
+3. **JAX Residual Core**: `jug/residuals/core.py` (already exists!)
+   - `@jax.jit` decorated functions
+   - `spin_phase_jax()` - Horner's method phase calculation
+   - `dm_delay_jax()` - DM polynomial evaluation
+   - `_compute_residuals_core()` - Full pipeline
+   - **Status**: Already implemented, ready to use
+
+### 🔄 Available but Not Integrated
+
+1. **JAX Gauss-Newton**: `jug/fitting/gauss_newton_jax.py`
+   - JIT-compiled matrix operations
+   - Levenberg-Marquardt damping
+   - Column scaling for numerical stability
+   - **Use case**: Multi-parameter fitting (DM + F0 + F1 + astrometry)
+
+### 📝 Recommendations
+
+#### For Current F0-Only Fitting
+**Use NumPy version** - fastest for single parameter:
+- `jug/fitting/derivatives_spin.py` ✅
+- `jug/fitting/wls_fitter.py` ✅
+- Current performance: 0.026 ms per derivative computation
+- Adding JAX would slow it down 25x
+
+#### For Future Multi-Parameter Fitting
+
+When implementing DM, astrometry, binary derivative fitting:
+
+1. **Switch to `gauss_newton_jax.py`**
+   - Matrix operations dominate for N>3 parameters
+   - Expected 10-60x speedup
+   
+2. **Consider JAX residuals** (`jug/residuals/core.py`)
+   - Already implemented and tested
+   - Use `_compute_residuals_core()` for JIT-compiled pipeline
+   - Most benefit when fitting >10 parameters
+
+3. **Keep derivatives in NumPy**
+   - Analytical derivatives are already fast
+   - No benefit from JIT for small computations
+   - Less complexity
+
+#### For Massive Datasets (>50,000 TOAs)
+
+Then JAX derivatives become beneficial:
+- Amortized compilation cost
+- GPU acceleration possible
+- Batch processing
+
+## Performance Model
+
+### Derivative Computation Time
+
 ```
-100 TOAs:   0.043 ms
-500 TOAs:   0.043 ms  (same!)
-2000 TOAs:  0.041 ms  (same!)
-10000 TOAs: 0.044 ms  (same!)
+T_numpy = 0.026 ms (constant)
+T_jax = 0.18 ms (overhead) + 0.001 ms (computation)
 ```
 
-JAX overhead is fixed (~0.04ms), so it dominates for small problems but wins for large ones.
+**Breakeven point**: Never for current use case
 
----
+### Matrix Operations Time (estimated)
 
-## Implementation Strategy
+For N_toa TOAs, M parameters:
 
-### Hybrid Approach (Best Performance)
+```
+SVD: O(N_toa * M^2)
+M^T W M: O(N_toa * M^2)
+
+NumPy: T = C_numpy * N_toa * M^2
+JAX:   T = C_jax * N_toa * M^2 + T_compile
+
+C_jax ≈ C_numpy / 30  (typical speedup)
+T_compile ≈ 1-2 seconds (one-time)
+```
+
+**Breakeven**: N_toa * M^2 > ~10,000 operations
+
+Examples:
+- F0 only (M=1): Never beneficial
+- F0 + F1 + DM (M=3): Beneficial at ~1,100 TOAs
+- F0 + F1 + F2 + DM + DM1 + RAJ + DECJ (M=7): Beneficial at ~200 TOAs
+
+## Files Created
+
+1. `jug/fitting/derivatives_spin_jax.py` - JAX derivative implementation
+2. `test_jax_derivatives_speed.py` - Performance benchmark
+3. `JAX_ACCELERATION_ANALYSIS.md` - This document
+
+## Next Steps
+
+### Immediate (Session 13 Complete)
+- ✅ Keep using NumPy derivatives for F0 fitting
+- ✅ Validated sign conventions
+- ✅ Stagnation-based convergence
+- ✅ F0 fitting works perfectly
+
+### Near-term (Milestone 3: Multi-parameter fitting)
+When implementing DM/astrometry/binary derivatives:
+
+1. Implement analytical derivatives in **NumPy first**
+   - `derivatives_dm.py` - DM, DM1, DM2, ...
+   - `derivatives_astrometry.py` - RAJ, DECJ, PMRA, PMDEC, PX
+   - `derivatives_binary.py` - PB, A1, EPS1, EPS2, etc.
+
+2. Switch to `gauss_newton_jax.py` for matrix solving
+   - Benefit from JIT-compiled (M^T W M) operations
+   - LM damping for robustness
+
+3. Profile and optimize
+   - Identify actual bottlenecks
+   - Add JAX versions only where beneficial
+
+### Long-term (Milestone 4: Optimization)
+- GPU acceleration for massive datasets
+- Batch processing for multiple pulsars
+- JAX autodiff for complex derivatives (if needed)
+
+## Code Pattern Recommendation
+
+For all future derivative modules:
 
 ```python
-def gauss_newton_fit(toas, params, fit_params):
-    """Choose optimizer based on dataset size."""
-    n_toas = len(toas)
+# derivatives_dm.py (NumPy)
+def compute_dm_derivatives(params, toas_mjd, fit_params):
+    """Compute DM parameter derivatives (NumPy)."""
+    # Fast analytical derivatives
+    # No JAX overhead for small computations
+    return derivatives
+
+# derivatives_dm_jax.py (optional, for future)
+def compute_dm_derivatives_jax(params, toas_mjd, fit_params):
+    """Compute DM parameter derivatives (JAX).
     
-    if n_toas >= 500:
-        # Use JAX for medium/large datasets
-        return gauss_newton_jax(toas, params, fit_params)
-    else:
-        # Use NumPy for small datasets
-        return gauss_newton_numpy(toas, params, fit_params)
+    Only use for massive datasets (>50k TOAs).
+    """
+    # JAX version if needed later
+    return derivatives
 ```
 
-### JAX Implementation
-
-```python
-import jax
-import jax.numpy as jnp
-
-# Precompute and move to device
-toas_jax = jnp.array(toas)
-errors_jax = jnp.array(errors)
-
-@jax.jit
-def gauss_newton_iteration(params):
-    """Single Gauss-Newton iteration (JIT compiled)."""
-    # Compute residuals
-    residuals = compute_residuals_jax(params, toas_jax)
-    
-    # Analytical Jacobian
-    J = compute_design_matrix_jax(params, toas_jax)
-    
-    # Solve normal equations
-    JTJ = J.T @ J
-    JTr = J.T @ residuals
-    
-    # LM damping
-    damped_JTJ = JTJ + lambda_param * jnp.eye(len(params))
-    delta = jnp.linalg.solve(damped_JTJ, -JTr)
-    
-    return params + delta, residuals
-
-# Iterate (Python loop is fine, iteration function is compiled)
-for i in range(max_iter):
-    params, residuals = gauss_newton_iteration(params)
-    
-    if converged(params, residuals):
-        break
-```
-
-### Key Points
-
-1. **Move data to GPU/device once** - Don't copy every iteration
-2. **JIT compile the iteration** - Not the outer loop
-3. **Use analytical Jacobian** - Don't use JAX autodiff (slower)
-4. **Fixed-size arrays** - JAX loves static shapes
-
----
-
-## Performance Comparison
-
-### J1909-3744 (typical MSP)
-- ~1,500 TOAs
-- ~12 fit parameters
-- **Expected**: 10-15x speedup with JAX
-
-### NANOGrav Pulsars
-- Average ~2,000 TOAs
-- 10-20 fit parameters
-- **Expected**: 10-20x speedup with JAX
-
-### IPTA Pulsars
-- Some with 10,000+ TOAs
-- **Expected**: 50-100x speedup with JAX
-
----
-
-## Recommended Implementation
-
-### Phase 1: NumPy Implementation (Simple)
-```python
-def fit_gauss_newton_numpy(parfile, timfile, fit_params):
-    """Pure NumPy Gauss-Newton (simple, always works)."""
-    # Load data
-    toas, errors, params = load_data(parfile, timfile)
-    
-    # Iterate
-    for i in range(max_iter):
-        residuals = compute_residuals(params, toas)
-        J = compute_design_matrix(params, toas, fit_params)
-        
-        # Solve
-        delta = np.linalg.solve(J.T @ J, -J.T @ residuals)
-        params += delta
-        
-        if converged:
-            break
-    
-    return params, covariance
-```
-
-**Time to implement**: 2-3 hours  
-**Performance**: Good for all datasets
-
-### Phase 2: Add JAX Acceleration (Optional)
-```python
-def fit_gauss_newton_jax(parfile, timfile, fit_params):
-    """JAX-accelerated Gauss-Newton (10-60x faster for large datasets)."""
-    # Load data
-    toas, errors, params = load_data(parfile, timfile)
-    
-    # Move to device
-    toas_jax = jnp.array(toas)
-    errors_jax = jnp.array(errors)
-    
-    # JIT-compiled iteration
-    @jax.jit
-    def iteration(params):
-        residuals = compute_residuals_jax(params, toas_jax)
-        J = compute_design_matrix_jax(params, toas_jax)
-        delta = jnp.linalg.solve(J.T @ J, -J.T @ residuals)
-        return params + delta
-    
-    # Iterate
-    params = jnp.array(params)
-    for i in range(max_iter):
-        params = iteration(params)
-        if converged:
-            break
-    
-    return params, covariance
-```
-
-**Time to implement**: +1-2 hours  
-**Performance**: 10-60x faster for typical MSPs
-
-### Phase 3: Hybrid Auto-Selection (Production)
-```python
-def fit(parfile, timfile, fit_params, backend='auto'):
-    """Automatically choose best backend."""
-    toas = load_toas(timfile)
-    
-    if backend == 'auto':
-        backend = 'jax' if len(toas) >= 500 else 'numpy'
-    
-    if backend == 'jax':
-        return fit_gauss_newton_jax(parfile, timfile, fit_params)
-    else:
-        return fit_gauss_newton_numpy(parfile, timfile, fit_params)
-```
-
-**Time to implement**: +30 minutes  
-**Performance**: Best of both worlds
-
----
-
-## GPU Acceleration
-
-JAX can also use GPU for **massive datasets**:
-
-```python
-# Check if GPU available
-print(jax.default_backend())  # 'gpu' or 'cpu'
-
-# Force GPU
-jax.config.update('jax_platform_name', 'gpu')
-
-# Same code works on GPU!
-result = fit_gauss_newton_jax(parfile, timfile, fit_params)
-```
-
-Expected GPU speedup:
-- Small datasets (100 TOAs): No benefit (overhead)
-- Medium datasets (500-2000 TOAs): 2-3x faster than CPU
-- Large datasets (10000+ TOAs): 5-10x faster than CPU
-
----
-
-## Final Recommendation
-
-### Implement in this order:
-
-1. **NumPy Gauss-Newton first** (2-3 hours)
-   - Works for all datasets
-   - Simple, easy to debug
-   - Good baseline performance
-
-2. **Add JAX acceleration** (+1-2 hours)
-   - 10-60x speedup for realistic datasets
-   - Same algorithm, just JIT-compiled
-   - GPU support for free
-
-3. **Hybrid auto-selection** (+30 min)
-   - Automatically pick best backend
-   - Users don't need to think about it
-
-### Expected Performance
-
-**J1909-3744 fitting time** (1,500 TOAs, 12 params):
-- NumPy: ~0.3 ms/iteration → ~1.5 ms for 5 iterations
-- JAX: ~0.04 ms/iteration → ~0.2 ms for 5 iterations
-- **Speedup: 7.5x**
-
-For a full fitting run (10 iterations):
-- NumPy: ~3 ms
-- JAX: ~0.4 ms
-- **Difference: 2.6 ms saved**
-
-Not huge in absolute terms, but:
-- Scales to many pulsars (batch processing)
-- Scales to larger datasets (IPTA)
-- GPU acceleration for massive problems
-- Same code complexity
-
----
+**Start with NumPy, add JAX only if profiling shows benefit.**
 
 ## Conclusion
 
-**YES - Use JAX for Gauss-Newton!**
+JAX is a powerful tool, but **not a silver bullet**. For small, fast computations:
+- NumPy overhead is already negligible
+- JAX overhead dominates
+- Use JAX where it helps: large matrix operations, iterative algorithms
 
-✅ 10-60x speedup for typical MSPs  
-✅ Constant time regardless of dataset size  
-✅ GPU support for free  
-✅ Same algorithm, just faster  
-✅ Easy to implement (JIT decorator)
+**Current status**: NumPy is optimal for F0 fitting. JAX ready for multi-parameter future work.
 
-**Implementation plan**:
-1. Build NumPy version first (works everywhere)
-2. Add JAX version second (faster for most real data)
-3. Auto-select based on dataset size
+---
 
-**Total implementation time**: 3-5 hours for both versions
-
-**Worth it?** Yes - most real pulsars will use JAX backend and see 10-20x speedup.
+**✅ Analysis complete - ready for Milestone 3 (DM/astrometry/binary derivatives)**

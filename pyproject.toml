@@ -58,7 +58,7 @@ all = [
 
 [project.scripts]
 jug-compute-residuals = "jug.scripts.compute_residuals:main"
-jug-fit = "jug.scripts.fit:main"
+jug-fit = "jug.scripts.fit_parameters:main"
 jug-gui = "jug.scripts.gui:main"
 
 [project.urls]

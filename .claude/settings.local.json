@@ -17,7 +17,11 @@
       "Bash(python compare_dd_formulas.py:*)",
       "Bash(python debug_pint_binary_time.py:*)",
       "Bash(python debug_time_dependent_error.py:*)",
-      "Bash(python test_dd_fix.py:*)"
+      "Bash(python test_dd_fix.py:*)",
+      "Bash(python test_lm_jug.py:*)",
+      "Bash(python test_lm_proper.py:*)",
+      "Bash(python test_lm_vs_pint.py:*)",
+      "Bash(python diagnose_pint_jug_difference.py:*)"
     ],
     "deny": [],
     "ask": []

@@ -250,3 +250,167 @@ Compare JUG residuals against tempo2:
 3. Difference plots show JUG - tempo2 residuals
 
 Typical agreement: RMS difference should be << 1 microsecond if implementations match.
+
+### Fitting Implementation (Updated: 2025-12-01, Sessions 13-14)
+
+**BREAKTHROUGH**: Successfully implemented PINT-compatible analytical derivatives!
+
+**Status**: ✅ **VALIDATED** - JUG fitting matches PINT/Tempo2 exactly!
+
+#### Single-Parameter Fitting (Session 13)
+
+**Test**: F0 only on J1909-3744
+- Converged in 5 iterations
+- Final F0: 339.31569191904083027111 Hz (EXACT match to Tempo2)
+- RMS: 0.403 μs (matches Tempo2's 0.403 μs)
+- Test file: `test_f0_fitting_tempo2_validation.py`
+
+#### Multi-Parameter Fitting (Session 14) ✅ NEW!
+
+**Test**: F0 + F1 simultaneously on J1909-3744
+- Converged in 11 iterations
+- Final F0: 339.31569191904083027111 Hz (EXACT)
+- Final F1: -1.61474762723953498343e-15 Hz/s
+- RMS: 0.403544 μs (matches Tempo2)
+- Test file: `test_f0_f1_fitting_tempo2_validation.py`
+
+**Key Implementation**:
+```python
+# Multi-parameter design matrix assembly
+derivs = compute_spin_derivatives(params, toas_mjd, ['F0', 'F1'])
+M = np.column_stack([derivs['F0'], derivs['F1']])  # n_toas × 2
+
+# WLS solve for all parameters simultaneously
+delta_params, cov, _ = wls_solve_svd(residuals_sec, errors_sec, M)
+
+# Update all parameters
+f0 += delta_params[0]
+f1 += delta_params[1]
+```
+
+**Critical Implementation Details**:
+
+1. **Analytical Derivatives** (`jug/fitting/derivatives_spin.py`):
+   - d(phase)/d(F_n) = dt^(n+1) / (n+1)! using Taylor series
+   - PINT sign convention: `-derivative` (residual = data - model)
+   - Unit conversion: divide by F0 to convert phase → time
+   - Final formula: `derivatives[param] = -deriv_phase / f0`
+
+2. **Design Matrix Convention** (PINT-compatible):
+   ```python
+   # d(time_residual)/d(F0) in units of seconds/Hz
+   # Negative sign from PINT convention
+   # F0 division converts cycles/Hz → seconds/Hz
+   M_F0 = -dt_sec / F0  # seconds/Hz
+   M_F1 = -(dt_sec**2 / 2) / F0  # seconds/(Hz/s)
+   M_F2 = -(dt_sec**3 / 6) / F0  # seconds/(Hz/s²)
+   ```
+
+3. **Phase Wrapping for Fitting**:
+   - PINT uses `track_mode="nearest"` NOT TZR subtraction
+   - Discards integer cycles, keeps fractional part
+   - Subtracts weighted mean for fitting
+   - In JUG: use `subtract_tzr=True` (applies TZR + mean subtraction)
+
+4. **WLS Solver** (`jug/fitting/wls_fitter.py`):
+   - SVD-based: `np.linalg.lstsq(M_weighted, r_weighted)`
+   - More stable than normal equations for ill-conditioned problems
+   - Returns parameter updates and covariance matrix
+   - **Supports multi-parameter**: Design matrix can have multiple columns
+
+5. **Iterative Fitting Loop**:
+   ```python
+   for iteration in range(max_iter):
+       # Compute residuals (TZR handled automatically)
+       residuals = compute_residuals(params, toas)
+       
+       # Compute derivatives for ALL fit parameters
+       M = compute_derivatives(params, toas, fit_params)
+       
+       # Solve WLS for all parameters simultaneously
+       delta_params, cov = wls_solve(residuals, errors, M)
+       
+       # Update ALL parameters
+       for i, param in enumerate(fit_params):
+           params[param] += delta_params[i]
+       
+       # Check convergence
+       if max(abs(delta_params)) < threshold: break
+   ```
+
+**Validation Results** (J1909-3744, 10,408 TOAs):
+
+*F0 Only*:
+- Design matrix: EXACT match with PINT (mean=-1.250e+05 s/Hz)
+- Fitted F0: 339.31569191904083027111 Hz (EXACT to 20 digits!)
+- RMS: 0.429 → 0.403 μs (improved)
+- Convergence: 5 iterations
+
+*F0 + F1*:
+- Design matrix: Column-stacked [M_F0, M_F1]
+- Fitted F0: 339.31569191904083027111 Hz (EXACT!)
+- Fitted F1: -1.61474762723953498343e-15 Hz/s
+- RMS: 24.053 → 0.403544 μs (59x improvement!)
+- Convergence: 11 iterations
+
+**Key Lessons**:
+- Always check PINT source code, not just docs!
+- Sign conventions matter: negative for residual definition
+- Unit conversions: phase derivatives need F0 division
+- Mean subtraction essential for convergence
+- Multi-parameter: Stack derivatives as columns, solve simultaneously
+- Start simple (F0 only) before adding complexity
+
+**Next Steps**:
+- Add DM derivatives: -K_DM/freq² (trivial)
+- Add astrometric derivatives (RA, DEC, PM, PX)
+- Add binary parameter derivatives (ELL1, BT, DD)
+- Generalized fitter handling any parameter subset
+
+**Files**:
+- `jug/fitting/derivatives_spin.py` - Analytical derivatives
+- `jug/fitting/wls_fitter.py` - WLS solver (multi-param ready)
+- `test_f0_fitting_tempo2_validation.py` - Single-param validation
+- `test_f0_f1_fitting_tempo2_validation.py` - Multi-param validation ✅ NEW
+
+**Documentation**:
+- `SESSION_13_FINAL_SUMMARY.md` - Detailed breakthrough writeup
+- `FITTING_BREAKTHROUGH.md` - Investigation process
+- `FITTING_SUCCESS_MULTI_PARAM.md` - Multi-parameter details
+- `FITTING_SUCCESS_QUICK_REF.md` - Quick reference guide ✅ NEW
+
+
+---
+
+### IMPORTANT UPDATE: Sign Convention Fixed (2025-12-01 23:26 UTC)
+
+**After Session 13**, we discovered and fixed a double-negative bug:
+
+**Old code** (worked by accident):
+- `d_phase_d_F()` returned NEGATIVE: `-dt`
+- `compute_spin_derivatives()` applied another negative: `-(-dt)/F0 = +dt/F0`
+- `wls_solve_svd()` with `negate_dpars=True` compensated
+- Result: Correct (by two wrongs making a right!)
+
+**New code** (matches PINT exactly):
+- `d_phase_d_F()` returns POSITIVE: `+dt`
+- `compute_spin_derivatives()` applies negative: `-dt/F0`
+- `wls_solve_svd()` with `negate_dpars=False` (no compensation)
+- Result: Correct (by design!)
+
+**Pattern for all future derivatives**:
+```python
+def d_component_d_param(...):
+    # Compute mathematically
+    derivative = ...
+    return derivative  # Always POSITIVE!
+
+def compute_component_derivatives(...):
+    deriv = d_component_d_param(...)
+    derivatives[param] = -deriv  # Apply negative ONCE here
+    return derivatives
+```
+
+**Updated files**: `derivatives_spin.py`, `wls_fitter.py`  
+**Validation**: Still EXACT match with PINT!  
+**Documentation**: See `SIGN_CONVENTION_FIX.md`

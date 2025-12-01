@@ -36,7 +36,9 @@ def compute_residuals_simple(
     par_file: Path | str,
     tim_file: Path | str,
     clock_dir: Path | str = "data/clock",
-    observatory: str = "meerkat"
+    observatory: str = "meerkat",
+    subtract_tzr: bool = True,
+    verbose: bool = True
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -53,6 +55,12 @@ def compute_residuals_simple(
         Directory containing clock files (default: "data/clock")
     observatory : str, optional
         Observatory name (default: "meerkat")
+    subtract_tzr : bool, optional
+        Whether to subtract TZR phase from residuals (default: True)
+        Set to False for fitting to preserve parameter signals
+    verbose : bool, optional
+        Whether to print progress messages (default: True)
+        Set to False for production/batch processing
 
     Returns
     -------
@@ -74,24 +82,25 @@ def compute_residuals_simple(
     >>> print(f"RMS: {result['rms_us']:.3f} μs")
     >>> print(f"N_TOAs: {result['n_toas']}")
     """
-    print("=" * 60)
-    print("JUG Simple Residual Calculator")
-    print("=" * 60)
+    if verbose:
+        if verbose: print("=" * 60)
+        if verbose: print("JUG Simple Residual Calculator")
+        if verbose: print("=" * 60)
 
     # Parse files
-    print(f"\n1. Loading files...")
+    if verbose: print(f"\n1. Loading files...")
     params = parse_par_file(par_file)
     toas = parse_tim_file_mjds(tim_file)
-    print(f"   Loaded {len(toas)} TOAs from {Path(tim_file).name}")
-    print(f"   Loaded timing model from {Path(par_file).name}")
+    if verbose: print(f"   Loaded {len(toas)} TOAs from {Path(tim_file).name}")
+    if verbose: print(f"   Loaded timing model from {Path(par_file).name}")
 
     # Load clock files
-    print(f"\n2. Loading clock corrections...")
+    if verbose: print(f"\n2. Loading clock corrections...")
     clock_dir = Path(clock_dir)
     mk_clock = parse_clock_file(clock_dir / "mk2utc.clk")
     gps_clock = parse_clock_file(clock_dir / "gps2utc.clk")
     bipm_clock = parse_clock_file(clock_dir / "tai2tt_bipm2024.clk")
-    print(f"   Loaded 3 clock files (using BIPM2024)")
+    if verbose: print(f"   Loaded 3 clock files (using BIPM2024)")
     
     # Validate clock file coverage
     from jug.io.clock import check_clock_files
@@ -99,10 +108,10 @@ def compute_residuals_simple(
     mjd_start = np.min(mjd_utc)
     mjd_end = np.max(mjd_utc)
     
-    print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
+    if verbose: print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
     clock_ok = check_clock_files(mjd_start, mjd_end, mk_clock, gps_clock, bipm_clock, verbose=True)
     if not clock_ok:
-        print(f"   ⚠️  Clock file validation found issues (see above)")
+        if verbose: print(f"   ⚠️  Clock file validation found issues (see above)")
 
     # Observatory location
     obs_itrf_km = OBSERVATORIES.get(observatory.lower())
@@ -116,7 +125,7 @@ def compute_residuals_simple(
     )
 
     # Compute TDB
-    print(f"\n3. Computing TDB (standalone, no PINT)...")
+    if verbose: print(f"\n3. Computing TDB (standalone, no PINT)...")
     mjd_ints = [toa.mjd_int for toa in toas]
     mjd_fracs = [toa.mjd_frac for toa in toas]
 
@@ -125,10 +134,10 @@ def compute_residuals_simple(
         mk_clock, gps_clock, bipm_clock,
         location
     )
-    print(f"   Computed TDB for {len(tdb_mjd)} TOAs")
+    if verbose: print(f"   Computed TDB for {len(tdb_mjd)} TOAs")
 
     # Astrometry
-    print(f"\n4. Computing astrometric delays...")
+    if verbose: print(f"\n4. Computing astrometric delays...")
     ra_rad = parse_ra(params['RAJ'])
     dec_rad = parse_dec(params['DECJ'])
     pmra_rad_day = params.get('PMRA', 0.0) * (np.pi / 180 / 3600000) / 365.25
@@ -152,7 +161,7 @@ def compute_residuals_simple(
     planet_shapiro_enabled = str(params.get('PLANET_SHAPIRO', 'N')).upper() in ('Y', 'YES', 'TRUE', '1')
     planet_shapiro_sec = np.zeros(len(tdb_mjd))
     if planet_shapiro_enabled:
-        print(f"   Computing planetary Shapiro delays...")
+        if verbose: print(f"   Computing planetary Shapiro delays...")
         with solar_system_ephemeris.set('de440'):
             for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
                 planet_pos = get_body_barycentric_posvel(planet, times)[0].xyz.to(u.km).value.T
@@ -166,7 +175,7 @@ def compute_residuals_simple(
     freq_bary_mhz = compute_barycentric_freq(freq_mhz, ssb_obs_vel_km_s, L_hat)
 
     # Prepare JAX arrays
-    print(f"\n5. Running JAX delay kernel...")
+    if verbose: print(f"\n5. Running JAX delay kernel...")
     tdb_jax = jnp.array(tdb_mjd, dtype=jnp.float64)
     freq_bary_jax = jnp.array(freq_bary_mhz, dtype=jnp.float64)
     obs_sun_jax = jnp.array(obs_sun_pos_km, dtype=jnp.float64)
@@ -202,11 +211,11 @@ def compute_residuals_simple(
     has_binary = 'PB' in params
     binary_model = params.get('BINARY', 'NONE').upper() if has_binary else 'NONE'
     
-    print(f"\n5. Detecting binary model...")
+    if verbose: print(f"\n5. Detecting binary model...")
     if has_binary:
-        print(f"   Binary model: {binary_model}")
+        if verbose: print(f"   Binary model: {binary_model}")
     else:
-        print(f"   No binary companion")
+        if verbose: print(f"   No binary companion")
     
     # Check if we're using ELL1 (inline) or need to dispatch to BT/DD/T2
     use_ell1_inline = binary_model in ('ELL1', 'ELL1H', 'NONE') and has_binary
@@ -217,7 +226,7 @@ def compute_residuals_simple(
         # These models use ECC/OM/T0 instead of TASC/EPS1/EPS2
         from jug.delays.binary_dispatch import dispatch_binary_delay
         
-        print(f"   Using dispatched binary model: {binary_model}")
+        if verbose: print(f"   Using dispatched binary model: {binary_model}")
         
         # Build parameter dict for dispatcher
         binary_params = {
@@ -257,7 +266,7 @@ def compute_residuals_simple(
         # Compute binary delays using dispatcher
         # Binary delays need topocentric time = TDB - (Roemer+Shapiro+DM+SW+FD)
         # We need to iterate: use TDB as first guess, compute other delays, then recompute binary
-        print(f"   Computing {len(tdb_mjd)} binary delays (iterative)...")
+        if verbose: print(f"   Computing {len(tdb_mjd)} binary delays (iterative)...")
         
         # Call dispatcher with array (will handle vectorization internally or via loop)
         from jug.delays.binary_dd import dd_binary_delay_vectorized
@@ -287,7 +296,7 @@ def compute_residuals_simple(
                 stig=binary_params['STIG']
             ))
             # DEBUG: Log binary delay statistics after iteration 1
-            print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
+            if verbose: print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
         elif binary_model == 'T2':
             # Use vectorized T2 function directly
             binary_delay_sec = np.array(t2_binary_delay_vectorized(
@@ -308,7 +317,7 @@ def compute_residuals_simple(
                 kom=binary_params.get('KOM', 0.0)
             ))
             # DEBUG: Log binary delay statistics after T2 iteration 1
-            print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
+            if verbose: print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
         elif binary_model in ('BT', 'BTX'):
             # Use vectorized BT function
             from jug.delays.binary_bt import bt_binary_delay_vectorized
@@ -327,7 +336,7 @@ def compute_residuals_simple(
                 xdot=binary_params['XDOT']
             ))
             # DEBUG: Log binary delay statistics after BT iteration 1
-            print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
+            if verbose: print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
         else:
             raise ValueError(f"Unsupported binary model: {binary_model}")
         
@@ -346,7 +355,7 @@ def compute_residuals_simple(
         
     elif use_ell1_inline or has_binary:
         # ELL1/ELL1H: use inline computation (current code path)
-        print(f"   Using inline ELL1 computation")
+        if verbose: print(f"   Using inline ELL1 computation")
         
         has_binary_jax = jnp.array(has_binary)
         binary_delay_external = None  # No external binary delay
@@ -393,7 +402,7 @@ def compute_residuals_simple(
         pbdot_jax = xdot_jax = gamma_jax = r_shap_jax = s_shap_jax = jnp.array(0.0)
 
     # Compute total delay (DM + SW + FD + inline binary if ELL1)
-    print(f"\n6. Running JAX delay kernel...")
+    if verbose: print(f"\n6. Running JAX delay kernel...")
     total_delay_jax = compute_total_delay_jax(
         tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         dm_coeffs_jax, dm_factorials_jax, dm_epoch_jax,
@@ -405,7 +414,7 @@ def compute_residuals_simple(
     
     # Add external binary delay if we used dispatcher
     if binary_delay_external is not None:
-        print(f"   Refining binary delays (iteration 2)...")
+        if verbose: print(f"   Refining binary delays (iteration 2)...")
         # Iteration 2: Now we have Roemer+Shapiro+DM+SW+FD, compute topocentric time
         # t_topo = TDB - (other_delays) / SECS_PER_DAY
         other_delays_sec = np.asarray(total_delay_jax, dtype=np.float64)
@@ -453,21 +462,21 @@ def compute_residuals_simple(
             ))
         # BT doesn't need iteration 2 (we'll skip for now)
         
-        print(f"   Binary delay change: {np.mean(np.abs(binary_delay_sec - binary_delay_approx1))*1e6:.3f} μs")
+        if verbose: print(f"   Binary delay change: {np.mean(np.abs(binary_delay_sec - binary_delay_approx1))*1e6:.3f} μs")
         
         # DEBUG: Log binary delay statistics after iteration 2
-        print(f"   DEBUG Iter2: Binary delays refined - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
+        if verbose: print(f"   DEBUG Iter2: Binary delays refined - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
         
         total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble) + binary_delay_sec
         
         # DEBUG: Log total delay after adding binary
-        print(f"   DEBUG: Total delay after adding binary - range [{np.min(total_delay_sec):.3f}, {np.max(total_delay_sec):.3f}] s, mean={np.mean(total_delay_sec):.3f} s")
-        print(f"   DEBUG: total_delay_jax before adding binary - range [{np.min(total_delay_jax):.3f}, {np.max(total_delay_jax):.3f}] s")
+        if verbose: print(f"   DEBUG: Total delay after adding binary - range [{np.min(total_delay_sec):.3f}, {np.max(total_delay_sec):.3f}] s, mean={np.mean(total_delay_sec):.3f} s")
+        if verbose: print(f"   DEBUG: total_delay_jax before adding binary - range [{np.min(total_delay_jax):.3f}, {np.max(total_delay_jax):.3f}] s")
     else:
         total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble)
 
     # Compute residuals
-    print(f"\n7. Computing phase residuals...")
+    if verbose: print(f"\n7. Computing phase residuals...")
     delay_sec = total_delay_sec
 
     # Spin parameters (high precision)
@@ -492,7 +501,7 @@ def compute_residuals_simple(
     # TZR phase offset (if specified)
     tzr_phase = np.longdouble(0.0)
     if 'TZRMJD' in params:
-        print(f"\n   Computing TZR phase at TZRMJD...")
+        if verbose: print(f"\n   Computing TZR phase at TZRMJD...")
         TZRMJD_UTC = get_longdouble(params, 'TZRMJD')
         
         # Convert TZRMJD from UTC to TDB
@@ -593,33 +602,50 @@ def compute_residuals_simple(
         else:
             tzr_binary_delay = 0.0
         
-        print(f"   TZR delay breakdown:")
-        print(f"     Roemer+Shapiro: {tzr_roemer_shapiro:.9f} s")
-        print(f"     DM:             {tzr_dm_delay:.9f} s")
-        print(f"     Solar wind:     {tzr_sw_delay:.9f} s")
-        print(f"     FD:             {tzr_fd_delay:.9f} s")
-        print(f"     Binary:         {tzr_binary_delay:.9f} s")
-        print(f"     TOTAL:          {float(tzr_delay):.9f} s")
+        if verbose: print(f"   TZR delay breakdown:")
+        if verbose: print(f"     Roemer+Shapiro: {tzr_roemer_shapiro:.9f} s")
+        if verbose: print(f"     DM:             {tzr_dm_delay:.9f} s")
+        if verbose: print(f"     Solar wind:     {tzr_sw_delay:.9f} s")
+        if verbose: print(f"     FD:             {tzr_fd_delay:.9f} s")
+        if verbose: print(f"     Binary:         {tzr_binary_delay:.9f} s")
+        if verbose: print(f"     TOTAL:          {float(tzr_delay):.9f} s")
         
         # Compute phase at TZR
         tzr_dt_sec = TZRMJD_TDB * np.longdouble(SECS_PER_DAY) - PEPOCH_sec - tzr_delay
         tzr_phase = F0 * tzr_dt_sec + F1_half * tzr_dt_sec**2 + F2_sixth * tzr_dt_sec**3
         
-        print(f"   TZRMJD: {TZRMJD_UTC:.6f} UTC -> {TZRMJD_TDB:.6f} TDB")
-        print(f"   TZR delay: {float(tzr_delay):.9f} s")
-        print(f"   TZR phase: {float(tzr_phase):.6f} cycles")
+        if verbose: print(f"   TZRMJD: {TZRMJD_UTC:.6f} UTC -> {TZRMJD_TDB:.6f} TDB")
+        if verbose: print(f"   TZR delay: {float(tzr_delay):.9f} s")
+        if verbose: print(f"   TZR phase: {float(tzr_phase):.6f} cycles")
 
-    # Wrap phase to [-0.5, 0.5] cycles
-    frac_phase = np.mod(phase - tzr_phase + 0.5, 1.0) - 0.5
+    # Wrap phase to [-0.5, 0.5] cycles (PINT's "nearest" pulse approach)
+    # This is done by keeping only the fractional part
+    if subtract_tzr:
+        # Legacy mode: subtract TZR then wrap
+        frac_phase = np.mod(phase - tzr_phase + 0.5, 1.0) - 0.5
+    else:
+        # PINT-style: wrap to nearest integer pulse (discard integer part)
+        # This is what PINT does by default in track_mode="nearest"
+        phase_wrapped = phase - np.round(phase)  # Fractional part only
+        frac_phase = phase_wrapped
 
     # Convert to microseconds
     residuals_us = np.asarray(frac_phase / F0 * 1e6, dtype=np.float64)
 
-    # Subtract weighted mean (matching PINT behavior)
-    errors_us = np.array([toa.error_us for toa in toas])
-    weights = 1.0 / (errors_us ** 2)
-    weighted_mean = np.sum(residuals_us * weights) / np.sum(weights)
-    residuals_us = residuals_us - weighted_mean
+    # Subtract weighted mean (PINT's default behavior)
+    # NOTE: For fitting, we should NOT subtract mean here!
+    # The fitter needs the raw wrapped residuals to see parameter errors
+    if subtract_tzr:
+        # Legacy/display mode: subtract mean for nice plots
+        errors_us = np.array([toa.error_us for toa in toas])
+        weights = 1.0 / (errors_us ** 2)
+        weighted_mean = np.sum(residuals_us * weights) / np.sum(weights)
+        residuals_us = residuals_us - weighted_mean
+    else:
+        # Fitting mode: keep raw wrapped residuals
+        # The fitter will handle mean subtraction if needed
+        errors_us = np.array([toa.error_us for toa in toas])
+        weights = 1.0 / (errors_us ** 2)
 
     # Compute weighted RMS (chi-squared reduced)
     weighted_rms = np.sqrt(np.sum(weights * residuals_us**2) / np.sum(weights))
@@ -628,15 +654,15 @@ def compute_residuals_simple(
     unweighted_rms = np.std(residuals_us)
 
     # Results
-    print(f"\n" + "=" * 60)
-    print(f"Results:")
-    print(f"  Weighted RMS: {weighted_rms:.3f} μs")
-    print(f"  Unweighted RMS: {unweighted_rms:.3f} μs")
-    print(f"  Mean: {np.mean(residuals_us):.3f} μs")
-    print(f"  Min: {np.min(residuals_us):.3f} μs")
-    print(f"  Max: {np.max(residuals_us):.3f} μs")
-    print(f"  N_TOAs: {len(residuals_us)}")
-    print("=" * 60)
+    if verbose: print(f"\n" + "=" * 60)
+    if verbose: print(f"Results:")
+    if verbose: print(f"  Weighted RMS: {weighted_rms:.3f} μs")
+    if verbose: print(f"  Unweighted RMS: {unweighted_rms:.3f} μs")
+    if verbose: print(f"  Mean: {np.mean(residuals_us):.3f} μs")
+    if verbose: print(f"  Min: {np.min(residuals_us):.3f} μs")
+    if verbose: print(f"  Max: {np.max(residuals_us):.3f} μs")
+    if verbose: print(f"  N_TOAs: {len(residuals_us)}")
+    if verbose: print("=" * 60)
 
     return {
         'residuals_us': residuals_us,
@@ -646,5 +672,11 @@ def compute_residuals_simple(
         'mean_us': float(np.mean(residuals_us)),
         'n_toas': len(residuals_us),
         'tdb_mjd': np.array(tdb_mjd, dtype=np.float64),
-        'errors_us': errors_us
+        'errors_us': errors_us,
+        # Add computed delays for JAX fitting
+        'total_delay_sec': np.array(total_delay_sec, dtype=np.float64),
+        'freq_bary_mhz': np.array(freq_bary_mhz, dtype=np.float64),
+        'tzr_phase': float(tzr_phase),
+        # Add emission time (computed with longdouble, converted to float64)
+        'dt_sec': np.array(dt_sec, dtype=np.float64)
     }

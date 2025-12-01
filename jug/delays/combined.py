@@ -6,6 +6,10 @@ This is the key optimization that makes JUG 100x faster than PINT.
 """
 
 import jax
+
+# CRITICAL: Enable float64 for JAX before any operations
+jax.config.update('jax_enable_x64', True)
+
 import jax.numpy as jnp
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY, T_SUN_SEC
 

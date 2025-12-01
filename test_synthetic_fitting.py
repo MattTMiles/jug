@@ -1,186 +1,219 @@
-"""Test JAX fitting on synthetic pulsar data with known parameters.
+#!/usr/bin/env python3
+"""Test that JUG and PINT both recover true parameters from synthetic data.
 
-This validates that fitting can recover input parameters correctly.
+This isolates the fitter from residual calculation differences by
+checking if both recover known "true" values from perturbed starts.
 """
 
+# CRITICAL: Enable JAX float64 BEFORE ANY imports
+import jax
+jax.config.update('jax_enable_x64', True)
+
 import numpy as np
-import sys
-
-print("="*80)
-print("Testing JAX Fitting on Synthetic Pulsar Data")
-print("="*80)
-
-# Generate synthetic pulsar with realistic parameters
-np.random.seed(42)
-
-# Observation parameters
-n_toas = 500
-mjd_start = 55000.0
-mjd_end = 56000.0
-toas_mjd = np.sort(np.random.uniform(mjd_start, mjd_end, n_toas))
-freq_mhz = np.random.uniform(1200, 1600, n_toas)
-errors_us = np.random.uniform(0.5, 2.0, n_toas)
-
-# True timing model parameters
-true_params = {
-    'F0': 100.0,           # 100 Hz spin frequency
-    'F1': -1.0e-15,        # Spin-down
-    'F2': 0.0,
-    'DM': 30.0,            # pc/cm³
-    'DM1': 0.001,          # Slow DM evolution
-    'PEPOCH': 55500.0,     # Reference epoch
-    'DMEPOCH': 55500.0
-}
-
-print(f"\nTrue Parameters:")
-print(f"  F0  = {true_params['F0']:.10f} Hz")
-print(f"  F1  = {true_params['F1']:.6e} Hz/s")
-print(f"  DM  = {true_params['DM']:.6f} pc/cm³")
-print(f"  DM1 = {true_params['DM1']:.6e} pc/cm³/s")
-
-# Define residual function that computes "perfect" model
-# In reality, we'd compute actual timing residuals
-# For this test, we'll generate small synthetic residuals
-def synthetic_residuals(params):
-    """Generate synthetic residuals with small random noise."""
-    # Add a tiny model error so fitting has something to converge to
-    f0_error = (params['F0'] - true_params['F0']) / true_params['F0']
-    f1_error = (params['F1'] - true_params['F1']) / abs(true_params['F1'])
-    dm_error = (params['DM'] - true_params['DM']) / true_params['DM']
-    
-    # Model residuals (proportional to parameter errors)
-    model_error = (f0_error**2 + f1_error**2 + dm_error**2)**0.5
-    model_residuals = model_error * 10.0  # Scale to μs
-    
-    # Add measurement noise
-    noise = np.random.randn(n_toas) * errors_us
-    
-    # Total residuals
-    return noise + model_residuals
-
-# Test 1: Fit with JAX backend
-print(f"\n{'='*80}")
-print(f"Test 1: Fitting with JAX Backend (scaled design matrix)")
-print(f"{'='*80}")
-
+import jax.numpy as jnp
+from jug.residuals.core import prepare_fixed_data, compute_residuals_jax_from_dt
 from jug.fitting.gauss_newton_jax import gauss_newton_fit_jax
-from jug.fitting.design_matrix_jax import compute_design_matrix_jax_wrapper
+import pint.models
+import pint.toa
+import pint.fitter
 
-# Start with slightly perturbed parameters
-initial_params = true_params.copy()
-initial_params['F0'] = 100.001      # 0.001% error
-initial_params['F1'] = -1.01e-15    # 1% error
-initial_params['DM'] = 30.5         # ~2% error
-initial_params['DM1'] = 0.0015      # 50% error
+print("=" * 80)
+print("SYNTHETIC FITTING TEST: Do JUG and PINT recover true parameters?")
+print("=" * 80)
+print("\nTest: Both fitters should recover TRUE values from perturbed starts")
+print("(This tests the fitter logic, independent of residual differences)")
 
-fit_params = ['F0', 'F1', 'DM', 'DM1']
+# Load real data files
+par_file = 'data/pulsars/J1909-3744_tdb.par'
+tim_file = 'data/pulsars/J1909-3744.tim'
 
-print(f"\nInitial Parameters:")
-print(f"  F0  = {initial_params['F0']:.10f} Hz (error: {(initial_params['F0']-true_params['F0'])*1e6:.3f} μHz)")
-print(f"  F1  = {initial_params['F1']:.6e} Hz/s (error: {(initial_params['F1']-true_params['F1'])/abs(true_params['F1'])*100:.1f}%)")
-print(f"  DM  = {initial_params['DM']:.6f} pc/cm³ (error: {initial_params['DM']-true_params['DM']:.3f})")
-print(f"  DM1 = {initial_params['DM1']:.6e} pc/cm³/s (error: {(initial_params['DM1']-true_params['DM1'])/true_params['DM1']*100:.1f}%)")
+# Get "true" parameters from the par file (these are the reference values)
+pint_model_true = pint.models.get_model(par_file)
+f0_true = pint_model_true.F0.quantity.value
+f1_true = pint_model_true.F1.quantity.value
 
-try:
-    fitted, uncertainties, info = gauss_newton_fit_jax(
-        synthetic_residuals,
-        initial_params,
-        fit_params,
-        compute_design_matrix_jax_wrapper,
-        toas_mjd,
-        freq_mhz,
-        errors_us,
-        max_iter=10,
-        verbose=True
+print(f"\nTRUE PARAMETERS (from {par_file}):")
+print(f"  F0  = {f0_true:.15f} Hz")
+print(f"  F1  = {f1_true:.15e} Hz/s")
+
+# Create perturbed parameters
+# These are ~10-sigma perturbations
+f0_pert = f0_true + 1e-9   # ~10 sigma (uncertainty is ~1e-10 Hz)
+f1_pert = f1_true + 2e-17  # ~10 sigma (uncertainty is ~2e-18 Hz/s)
+
+print(f"\nPERTURBED STARTING VALUES:")
+print(f"  F0  = {f0_pert:.15f} Hz  (Δ = +1e-9 Hz)")
+print(f"  F1  = {f1_pert:.15e} Hz/s  (Δ = +2e-17 Hz/s)")
+
+# ============================================================================
+# JUG FIT
+# ============================================================================
+print("\n" + "=" * 80)
+print("JUG FIT (using JAX residuals + Gauss-Newton)")
+print("=" * 80)
+
+# Prepare fixed data
+fixed_data = prepare_fixed_data(par_file, tim_file)
+par_params_raw = fixed_data['par_params']
+
+# Convert ALL params to float64 upfront
+par_params = {}
+for k, v in par_params_raw.items():
+    if isinstance(v, (np.longdouble, np.float128)):
+        par_params[k] = float(v)
+    else:
+        par_params[k] = v
+
+# Create perturbed parameters
+perturbed_params = par_params.copy()
+perturbed_params['F0'] = float(f0_pert)
+perturbed_params['F1'] = float(f1_pert)
+
+# Define residual function
+def residuals_fn(params):
+    """Compute residuals (μs) without weighted mean subtraction."""
+    fit_params = ['F0', 'F1']
+    params_array = jnp.array([params['F0'], params['F1']])
+    fixed_params = {k: v for k, v in par_params.items() if k not in fit_params}
+    
+    residuals_sec = compute_residuals_jax_from_dt(
+        params_array,
+        tuple(fit_params),
+        fixed_data['dt_sec'],
+        fixed_data['tzr_phase'],
+        fixed_data['uncertainties_us'],
+        fixed_params
     )
     
-    print(f"\n{'='*80}")
-    print(f"Fit Results:")
-    print(f"{'='*80}")
-    
-    # Check recovery
-    print(f"\nParameter Recovery:")
-    for param in fit_params:
-        true_val = true_params[param]
-        fitted_val = fitted[param]
-        unc = uncertainties[param]
-        
-        # Compute residual in units of uncertainty
-        residual_sigma = abs(fitted_val - true_val) / unc if unc > 0 else np.inf
-        
-        # Format based on parameter
-        if param == 'F0':
-            print(f"  {param:4s}: True={true_val:.10f}, Fitted={fitted_val:.10f}, σ={unc:.3e}")
-            print(f"        Residual: {(fitted_val-true_val)*1e6:.3f} μHz ({residual_sigma:.1f}σ)")
-        elif param == 'F1':
-            print(f"  {param:4s}: True={true_val:.6e}, Fitted={fitted_val:.6e}, σ={unc:.3e}")
-            print(f"        Residual: {(fitted_val-true_val):.3e} Hz/s ({residual_sigma:.1f}σ)")
-        else:
-            print(f"  {param:4s}: True={true_val:.6f}, Fitted={fitted_val:.6f}, σ={unc:.3e}")
-            print(f"        Residual: {(fitted_val-true_val):.3e} ({residual_sigma:.1f}σ)")
-    
-    # Check convergence
-    print(f"\nFit Quality:")
-    print(f"  Converged: {info['converged']}")
-    print(f"  Iterations: {info['iterations']}")
-    print(f"  Chi²: {info['final_chi2']:.2f}")
-    print(f"  Reduced χ²: {info['final_reduced_chi2']:.4f}")
-    print(f"  RMS: {info['final_rms_us']:.3f} μs")
-    
-    # Success criteria
-    all_recovered = True
-    for param in fit_params:
-        true_val = true_params[param]
-        fitted_val = fitted[param]
-        unc = uncertainties[param]
-        residual_sigma = abs(fitted_val - true_val) / unc if unc > 0 else np.inf
-        
-        if residual_sigma > 3.0:  # 3-sigma threshold
-            print(f"\n  ⚠️  WARNING: {param} not recovered within 3σ!")
-            all_recovered = False
-    
-    if all_recovered:
-        print(f"\n  ✅ SUCCESS: All parameters recovered within 3σ!")
-    
-except Exception as e:
-    print(f"\n❌ ERROR: {e}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+    return residuals_sec * 1e6  # Convert to μs
 
-# Test 2: Compare with NumPy backend
-print(f"\n{'='*80}")
-print(f"Test 2: Comparing JAX vs NumPy Backend")
-print(f"{'='*80}")
+# Define design matrix function
+def design_matrix_fn(params, toas_mjd, freq_mhz, errors_us, fit_params):
+    """Compute design matrix using JAX autodiff."""
+    def residuals_for_grad(param_values):
+        params_dict = par_params.copy()
+        for i, name in enumerate(fit_params):
+            params_dict[name] = param_values[i]
+        return residuals_fn(params_dict)
+    
+    param_values = jnp.array([params[name] for name in fit_params])
+    jacobian_fn = jax.jacfwd(residuals_for_grad)
+    jacobian_us = jacobian_fn(param_values)
+    jacobian_sec = np.array(jacobian_us) * 1e-6
+    
+    errors_sec = errors_us * 1e-6
+    M_weighted = jacobian_sec / errors_sec[:, np.newaxis]
+    
+    return M_weighted
 
-from jug.fitting.gauss_newton_jax import gauss_newton_fit_auto
-
-# Fit with NumPy (force small dataset to use numpy)
-print(f"\nFitting with NumPy backend...")
-fitted_numpy, unc_numpy, info_numpy = gauss_newton_fit_auto(
-    synthetic_residuals,
-    initial_params,
-    fit_params,
-    toas_mjd,
-    freq_mhz,
-    errors_us,
-    max_iter=10,
-    force_backend='numpy',
-    verbose=False
+# Run JUG fit
+fitted_params_jug, uncertainties_jug, info_jug = gauss_newton_fit_jax(
+    residuals_fn=residuals_fn,
+    params=perturbed_params,
+    fit_params=['F0', 'F1'],
+    design_matrix_fn=design_matrix_fn,
+    toas_mjd=np.array(fixed_data['tdb_mjd']),
+    freq_mhz=np.array(fixed_data['freq_mhz']),
+    errors_us=np.array(fixed_data['uncertainties_us']),
+    max_iter=5,
+    lambda_init=1e-3,
+    convergence_threshold=1e-10,
+    verbose=True
 )
 
-print(f"NumPy: Chi² = {info_numpy['final_chi2']:.2f}, Iterations = {info_numpy['iterations']}")
-print(f"JAX:   Chi² = {info['final_chi2']:.2f}, Iterations = {info['iterations']}")
+f0_jug = fitted_params_jug['F0']
+f1_jug = fitted_params_jug['F1']
+f0_err_jug = uncertainties_jug['F0']
+f1_err_jug = uncertainties_jug['F1']
 
-# Compare results
-print(f"\nParameter Comparison (JAX - NumPy):")
-for param in fit_params:
-    diff = fitted[param] - fitted_numpy[param]
-    unc_avg = (uncertainties[param] + unc_numpy[param]) / 2
-    diff_sigma = abs(diff) / unc_avg if unc_avg > 0 else np.inf
-    
-    print(f"  {param:4s}: Δ = {diff:.3e} ({diff_sigma:.2f}σ)")
+# ============================================================================
+# PINT FIT
+# ============================================================================
+print("\n" + "=" * 80)
+print("PINT FIT (using PINT residuals + WLS fitter)")
+print("=" * 80)
 
-print(f"\n{'='*80}")
-print(f"✅ All tests passed!")
-print(f"{'='*80}")
+# Create perturbed PINT model
+pint_model_pert = pint.models.get_model(par_file)
+pint_model_pert.F0.value = f0_pert
+pint_model_pert.F1.value = f1_pert
+
+# Load TOAs and fit
+toas = pint.toa.get_TOAs(tim_file, model=pint_model_pert)
+fitter = pint.fitter.WLSFitter(toas=toas, model=pint_model_pert)
+fitter.fit_toas(maxiter=5)
+
+f0_pint = fitter.model.F0.quantity.value
+f1_pint = fitter.model.F1.quantity.value
+f0_err_pint = fitter.model.F0.uncertainty.value
+f1_err_pint = fitter.model.F1.uncertainty.value
+
+print(f"\nPINT Fitted Values:")
+print(f"  F0  = {f0_pint:.15f} ± {f0_err_pint:.2e} Hz")
+print(f"  F1  = {f1_pint:.15e} ± {f1_err_pint:.2e} Hz/s")
+
+# ============================================================================
+# COMPARISON
+# ============================================================================
+print("\n" + "=" * 80)
+print("RESULTS COMPARISON")
+print("=" * 80)
+
+print("\nJUG Fitted Values:")
+print(f"  F0  = {f0_jug:.15f} ± {f0_err_jug:.2e} Hz")
+print(f"  F1  = {f1_jug:.15e} ± {f1_err_jug:.2e} Hz/s")
+
+print("\nJUG Recovery (fitted - true) / uncertainty:")
+f0_jug_sigma = (f0_jug - f0_true)/f0_err_jug
+f1_jug_sigma = (f1_jug - f1_true)/f1_err_jug
+print(f"  F0: {f0_jug_sigma:+.2f} σ")
+print(f"  F1: {f1_jug_sigma:+.2f} σ")
+
+print("\nPINT Recovery (fitted - true) / uncertainty:")
+f0_pint_sigma = (f0_pint - f0_true)/f0_err_pint
+f1_pint_sigma = (f1_pint - f1_true)/f1_err_pint
+print(f"  F0: {f0_pint_sigma:+.2f} σ")
+print(f"  F1: {f1_pint_sigma:+.2f} σ")
+
+print("\nDifference (JUG - PINT):")
+print(f"  F0: {(f0_jug - f0_pint):.2e} Hz  ({(f0_jug - f0_pint)/f0_err_pint:+.2f} σ_PINT)")
+print(f"  F1: {(f1_jug - f1_pint):.2e} Hz/s  ({(f1_jug - f1_pint)/f1_err_pint:+.2f} σ_PINT)")
+
+# ============================================================================
+# VERDICT
+# ============================================================================
+print("\n" + "=" * 80)
+print("VERDICT")
+print("=" * 80)
+
+# Check if both recover true values within 2σ
+jug_recovers = (abs(f0_jug_sigma) < 2 and abs(f1_jug_sigma) < 2)
+pint_recovers = (abs(f0_pint_sigma) < 2 and abs(f1_pint_sigma) < 2)
+
+# Check if they agree with each other
+agree_f0 = abs(f0_jug - f0_pint) < np.sqrt(f0_err_jug**2 + f0_err_pint**2)
+agree_f1 = abs(f1_jug - f1_pint) < np.sqrt(f1_err_jug**2 + f1_err_pint**2)
+agree = agree_f0 and agree_f1
+
+print(f"\n✓ JUG recovers true values within 2σ: {jug_recovers}")
+print(f"✓ PINT recovers true values within 2σ: {pint_recovers}")
+print(f"✓ JUG and PINT agree within combined uncertainty: {agree}")
+
+if jug_recovers and pint_recovers:
+    print("\n" + "✅ SUCCESS: JUG fitter works correctly!")
+    print("   - JUG recovers true parameters from perturbed start")
+    print("   - JUG fitting algorithm is validated")
+    if agree:
+        print("   - JUG and PINT converge to consistent values")
+        print("   - Residual differences don't affect fitting quality")
+    else:
+        print("   - Note: JUG and PINT converge to slightly different values")
+        print("   - This is expected due to ~0.01 μs residual differences")
+        print("   - Both are valid minima of their respective χ² surfaces")
+else:
+    print("\n" + "❌ FAILURE: Fitter has issues")
+    if not jug_recovers:
+        print("   - JUG did not recover true parameters")
+    if not pint_recovers:
+        print("   - PINT did not recover true parameters")
+

@@ -35,7 +35,7 @@ from jug.utils.constants import (
 def compute_residuals_simple(
     par_file: Path | str,
     tim_file: Path | str,
-    clock_dir: Path | str = "data/clock",
+    clock_dir: Path | str | None = None,
     observatory: str = "meerkat",
     subtract_tzr: bool = True,
     verbose: bool = True
@@ -51,8 +51,9 @@ def compute_residuals_simple(
         Path to .par file with timing model parameters
     tim_file : Path or str
         Path to .tim file with TOAs
-    clock_dir : Path or str, optional
-        Directory containing clock files (default: "data/clock")
+    clock_dir : Path or str or None, optional
+        Directory containing clock files. If None (default), uses the
+        data/clock directory in the JUG package installation
     observatory : str, optional
         Observatory name (default: "meerkat")
     subtract_tzr : bool, optional
@@ -86,6 +87,13 @@ def compute_residuals_simple(
         if verbose: print("=" * 60)
         if verbose: print("JUG Simple Residual Calculator")
         if verbose: print("=" * 60)
+
+    # Set default clock directory relative to package installation
+    if clock_dir is None:
+        # Get the directory where this module is located
+        module_dir = Path(__file__).parent
+        # Navigate to the JUG root directory and then to data/clock
+        clock_dir = module_dir.parent.parent / "data" / "clock"
 
     # Parse files
     if verbose: print(f"\n1. Loading files...")

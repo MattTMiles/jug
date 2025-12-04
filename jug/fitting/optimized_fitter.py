@@ -275,7 +275,7 @@ def fit_parameters_optimized(
     fit_params: List[str],
     max_iter: int = 25,
     convergence_threshold: float = 1e-14,
-    clock_dir: str = "data/clock",
+    clock_dir: str | None = None,
     verbose: bool = True,
     device: Optional[str] = None
 ) -> Dict:
@@ -299,8 +299,9 @@ def fit_parameters_optimized(
         Maximum iterations
     convergence_threshold : float
         Convergence threshold on parameter changes
-    clock_dir : str
-        Path to clock correction files
+    clock_dir : str or None
+        Path to clock correction files. If None (default), uses the
+        data/clock directory in the JUG package installation
     verbose : bool
         Print progress
     device : str, optional
@@ -340,13 +341,20 @@ def fit_parameters_optimized(
     >>> print(f"F0 = {result['final_params']['F0']:.15f} Hz")
     >>> print(f"Time: {result['total_time']:.2f}s")
     """
+    # Set default clock directory relative to package installation
+    if clock_dir is None:
+        # Get the directory where this module is located
+        module_dir = Path(__file__).parent
+        # Navigate to the JUG root directory and then to data/clock
+        clock_dir = str(module_dir.parent.parent / "data" / "clock")
+
     if verbose:
         print("="*80)
         print("JUG OPTIMIZED FITTER (Level 2: 6.55x speedup)")
         print("="*80)
-    
+
     total_start = time.time()
-    
+
     # Use fully general fitter that can handle any parameter combination
     # (spin, DM, astrometry, binary - all mixed together)
     return _fit_parameters_general(

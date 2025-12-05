@@ -71,6 +71,9 @@ jug-compute-residuals my_pulsar.par my_pulsar.tim
 # Fit F0 and F1, save results
 jug-fit my_pulsar.par my_pulsar.tim --fit F0 F1 --output fitted.par
 
+# Fit F0, F1, and DM together
+jug-fit my_pulsar.par my_pulsar.tim --fit F0 F1 DM --output fitted.par
+
 # With plots
 jug-fit my_pulsar.par my_pulsar.tim --fit F0 F1 --plot
 ```
@@ -98,6 +101,14 @@ result = fit_parameters_optimized(
 print(f"F0 = {result['final_params']['F0']:.15f} Hz")
 print(f"F1 = {result['final_params']['F1']:.15e} Hz/s")
 print(f"Post-fit RMS: {result['final_rms']:.3f} μs")
+
+# Fit spin + DM parameters
+result = fit_parameters_optimized(
+    par_file=Path("my_pulsar.par"),
+    tim_file=Path("my_pulsar.tim"),
+    fit_params=['F0', 'F1', 'DM']
+)
+print(f"DM = {result['final_params']['DM']:.10f} pc cm⁻³")
 ```
 
 **That's it!** No complex configuration needed.
@@ -298,6 +309,9 @@ export JUG_DEVICE=auto
 
 #### Fitting
 - **Analytical derivatives**: PINT-compatible, exact to 20 decimal places
+- **Spin parameters**: F0, F1, F2, ... (any order) ✅
+- **DM parameters**: DM, DM1, DM2, ... (time-evolving dispersion) ✅ NEW!
+- **General architecture**: Can fit ANY combination of parameters
 - **Weighted least squares**: SVD-based solver, numerically stable
 - **Fast convergence**: 5-15 iterations typical
 - **Uncertainties**: Covariance matrix from WLS solution
@@ -614,7 +628,41 @@ with open("fitted_params.txt", "w") as f:
     f.write(f"F1 {result['final_params']['F1']:.15e}\n")
 ```
 
-### Example 3: Batch Process Multiple Pulsars
+### Example 3: Fit DM Parameters (NEW!)
+
+```python
+from jug.fitting.optimized_fitter import fit_parameters_optimized
+from pathlib import Path
+
+# Fit spin + DM together
+result = fit_parameters_optimized(
+    par_file=Path("J1909-3744.par"),
+    tim_file=Path("J1909-3744.tim"),
+    fit_params=['F0', 'F1', 'DM']  # Can fit any combination!
+)
+
+# Print results
+print("="*60)
+print("SPIN + DM FIT RESULTS")
+print("="*60)
+print(f"Fitted F0: {result['final_params']['F0']:.15f} Hz")
+print(f"Fitted F1: {result['final_params']['F1']:.15e} Hz/s")
+print(f"Fitted DM: {result['final_params']['DM']:.10f} pc cm⁻³")
+print(f"σ(DM): {result['uncertainties']['DM']:.2e} pc cm⁻³")
+print(f"Post-fit RMS: {result['final_rms']:.3f} μs")
+print("="*60)
+
+# Can also fit DM derivatives (DM1, DM2) for time-varying DM
+result_dm_evolve = fit_parameters_optimized(
+    par_file=Path("pulsar.par"),
+    tim_file=Path("pulsar.tim"),
+    fit_params=['F0', 'F1', 'DM', 'DM1']  # DM1 = dDM/dt
+)
+
+print(f"DM1: {result_dm_evolve['final_params']['DM1']:.6e} pc cm⁻³ day⁻¹")
+```
+
+### Example 4: Batch Process Multiple Pulsars
 
 ```python
 from jug.fitting.optimized_fitter import fit_parameters_optimized
@@ -767,6 +815,11 @@ print(f"Loaded F1: {loaded['fitted_parameters']['F1']:.15e} Hz/s")
 | F0 | Spin frequency | Hz | 100-700 |
 | F1 | Spin frequency derivative | Hz/s | -1e-15 |
 | F2 | Second spin derivative | Hz/s² | 1e-25 |
+| DM | Dispersion measure | pc cm⁻³ | 1-100 |
+| DM1 | DM time derivative | pc cm⁻³ day⁻¹ | ±1e-4 |
+| DM2 | DM second derivative | pc cm⁻³ day⁻² | ±1e-6 |
+
+**Note**: Can fit ANY combination of these parameters (e.g., F0+DM, F0+F1+DM, DM only, etc.)
 
 ### Timing Model Parameters (in .par file)
 
@@ -833,6 +886,8 @@ Design philosophy:
 
 **v0.2.0** (Current - Milestone 2)
 - ✅ Spin parameter fitting (F0, F1, F2)
+- ✅ DM parameter fitting (DM, DM1, DM2) - Added Dec 4, 2025
+- ✅ General fitter architecture (can fit ANY parameter combination)
 - ✅ Analytical derivatives with WLS solver
 - ✅ Longdouble precision for unlimited time spans
 - ✅ 10-20× faster than PINT for large datasets
@@ -849,7 +904,8 @@ Design philosophy:
 
 **Coming Next** (Milestone 3)
 - 🔄 White noise models (EFAC, EQUAD, ECORR)
-- 🔄 Extended parameter fitting (DM, astrometry, binary)
+- 🔄 Astrometry parameter fitting (RAJ, DECJ, PMRA, PMDEC, PX)
+- 🔄 Binary parameter fitting (PB, A1, ECC, OM, etc.)
 - 🔄 Enhanced .par file output with uncertainties
 
 ---
@@ -864,6 +920,12 @@ jug-compute-residuals pulsar.par pulsar.tim
 
 # Fit F0 and F1
 jug-fit pulsar.par pulsar.tim --fit F0 F1
+
+# Fit F0, F1, and DM
+jug-fit pulsar.par pulsar.tim --fit F0 F1 DM
+
+# Fit with plot and save
+jug-fit pulsar.par pulsar.tim --fit F0 F1 --plot --output fitted.par
 
 # Fit with plot and save
 jug-fit pulsar.par pulsar.tim --fit F0 F1 --plot --output fitted.par

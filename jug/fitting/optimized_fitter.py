@@ -37,7 +37,7 @@ Implementation
 Status
 ------
 ✅ Spin parameters (F0, F1, F2): IMPLEMENTED & VALIDATED
-⏳ DM parameters: TODO (trivial extension)
+✅ DM parameters (DM, DM1, DM2): IMPLEMENTED (2025-12-04)
 ⏳ Astrometry: TODO
 ⏳ Binary: TODO
 """
@@ -51,11 +51,66 @@ from typing import Dict, List, Optional
 import time
 import io
 import contextlib
+import math
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.utils.device import get_device
+from jug.fitting.derivatives_dm import compute_dm_derivatives
+from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
+from jug.fitting.wls_fitter import wls_solve_svd
+
+
+def compute_dm_delay_fast(tdb_mjd: np.ndarray, freq_mhz: np.ndarray,
+                          dm_params: Dict[str, float], dm_epoch: float) -> np.ndarray:
+    """Fast computation of DM delay without file I/O.
+
+    Parameters
+    ----------
+    tdb_mjd : np.ndarray
+        TDB times in MJD
+    freq_mhz : np.ndarray
+        Barycentric frequencies in MHz
+    dm_params : dict
+        DM parameters {'DM': value, 'DM1': value, ...}
+    dm_epoch : float
+        DMEPOCH in MJD
+
+    Returns
+    -------
+    dm_delay_sec : np.ndarray
+        DM delay in seconds
+    """
+    # Build DM polynomial coefficients
+    dm_coeffs = []
+    dm_factorials = []
+    for i in range(10):  # Support up to DM9
+        param = f'DM{i}' if i > 0 else 'DM'
+        if param in dm_params and dm_params[param] is not None:
+            dm_coeffs.append(dm_params[param])
+            dm_factorials.append(math.factorial(i))
+        elif param == 'DM':
+            dm_coeffs.append(0.0)
+            dm_factorials.append(1.0)
+        else:
+            break
+
+    dm_coeffs = np.array(dm_coeffs)
+    dm_factorials = np.array(dm_factorials)
+
+    # Compute DM polynomial: DM(t) = sum(DM_i * (t-DMEPOCH)^i / i!)
+    # Note: PINT uses years, so convert MJD difference to years
+    dt_years = (tdb_mjd - dm_epoch) / 365.25
+
+    dm_eff = np.zeros_like(tdb_mjd)
+    for i, (coeff, factorial) in enumerate(zip(dm_coeffs, dm_factorials)):
+        dm_eff += coeff * (dt_years ** i) / factorial
+
+    # Compute DM delay: τ_DM = K_DM × DM(t) / freq²
+    dm_delay_sec = K_DM_SEC * dm_eff / (freq_mhz ** 2)
+
+    return dm_delay_sec
 
 
 @jax.jit
@@ -398,10 +453,11 @@ def _fit_parameters_general(
     toas_data = parse_tim_file_mjds(tim_file)
     
     # Extract TOA data
+    toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
+    freq_mhz = np.array([toa.freq_mhz for toa in toas_data])
     errors_us = np.array([toa.error_us for toa in toas_data])
     errors_sec = errors_us * 1e-6
     weights = 1.0 / errors_sec**2
-    freq_mhz = np.array([toa.freq_mhz for toa in toas_data])
     
     # Extract starting parameter values
     param_values_start = []
@@ -410,7 +466,7 @@ def _fit_parameters_general(
             raise ValueError(f"Parameter {param} not found in .par file")
         param_values_start.append(params[param])
     
-    # Check which derivative functions we have available
+    # Check which parameter types are requested (for verbose output)
     spin_params = [p for p in fit_params if p.startswith('F')]
     dm_params = [p for p in fit_params if p.startswith('DM')]
     astrometry_params = [p for p in fit_params if p in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']]
@@ -418,8 +474,6 @@ def _fit_parameters_general(
     
     # Check what's not yet implemented
     not_implemented = []
-    if dm_params:
-        not_implemented.append(f"DM: {dm_params}")
     if astrometry_params:
         not_implemented.append(f"Astrometry: {astrometry_params}")
     if binary_params:
@@ -429,34 +483,321 @@ def _fit_parameters_general(
         raise NotImplementedError(
             f"The following parameter types are not yet implemented:\n" +
             "\n".join(f"  - {item}" for item in not_implemented) +
-            f"\n\nCurrently supported: Spin parameters (F0, F1, F2, ...)" +
-            f"\nComing in Milestone 3: DM, Astrometry, Binary"
+            f"\n\nCurrently supported: Spin (F0, F1, F2, ...) and DM (DM, DM1, DM2, ...)" +
+            f"\nComing in Milestone 3: Astrometry, Binary"
         )
     
-    # For now, if we only have spin parameters, use the optimized spin fitter
-    if len(spin_params) == len(fit_params):
+    if verbose:
+        param_summary = []
+        if spin_params:
+            param_summary.append(f"{len(spin_params)} spin")
+        if dm_params:
+            param_summary.append(f"{len(dm_params)} DM")
+        if astrometry_params:
+            param_summary.append(f"{len(astrometry_params)} astrometry")
+        if binary_params:
+            param_summary.append(f"{len(binary_params)} binary")
+        print(f"\nFitting {' + '.join(param_summary)} parameters")
+        for param, val in zip(fit_params, param_values_start):
+            if param.startswith('F') and abs(val) < 1e-10 and val != 0:
+                print(f"  {param} = {val:.20e}")
+            elif param.startswith('DM'):
+                print(f"  {param} = {val:.10f} pc cm⁻³")
+            else:
+                print(f"  {param} = {val}")
+        print(f"  TOAs: {len(toas_data)}")
+    
+    # GENERAL FITTER: Cache expensive delays once, then iterate
+    if verbose:
+        print(f"\nCaching expensive delays...")
+    cache_start = time.time()
+    
+    result = compute_residuals_simple(
+        par_file,
+        tim_file,
+        clock_dir=clock_dir,
+        subtract_tzr=False,
+        verbose=False
+    )
+
+    dt_sec_cached = result['dt_sec']
+    tdb_mjd = result['tdb_mjd']
+    freq_mhz = result['freq_bary_mhz']  # Cache for fast DM recomputation
+
+    # If fitting DM params, also cache initial DM delay for fast updates
+    initial_dm_delay = None
+    if dm_params:
+        dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+        initial_dm_params = {p: params[p] for p in dm_params if p in params}
+        initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, initial_dm_params, dm_epoch)
+
+    cache_time = time.time() - cache_start
+    if verbose:
+        print(f"  Cached dt_sec for {len(dt_sec_cached)} TOAs in {cache_time:.3f}s")
+    
+    # Convert to numpy arrays
+    dt_sec_np = np.array(dt_sec_cached)
+
+    # Initialize iteration
+    param_values_curr = param_values_start.copy()
+    iteration = 0
+    converged = False
+
+    # Track RMS history for convergence detection
+    rms_history = []
+    patience_counter = 0
+    patience_threshold = 3  # Stop if RMS stable for this many iterations
+    rms_stability_threshold = 1e-5  # Relative RMS change threshold (μs-level changes)
+
+    if verbose:
+        print(f"\n{'Iter':<6} {'RMS (μs)':<12} {'ΔParam':<15} {'Status':<20}")
+        print("-" * 65)
+    
+    # GENERAL ITERATION LOOP
+    # Works for ANY combination of parameters!
+    for iteration in range(max_iter):
+        # Update params dict with current values
+        for i, param in enumerate(fit_params):
+            params[param] = param_values_curr[i]
+        
+        # If fitting DM parameters, update dt_sec with new DM delay
+        # Otherwise, can use cached dt_sec directly
+        if dm_params:
+            # OPTIMIZED: Fast DM delay update without file I/O
+            # Compute new DM delay with updated parameters
+            dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+            current_dm_params = {p: params[p] for p in dm_params}
+            new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
+
+            # Update dt_sec: remove old DM delay, add new one
+            # dt_sec is in SECONDS (time from PEPOCH to emission)
+            # When DM delay increases, emission time is earlier, so dt_sec decreases
+            # Therefore: dt_sec_new = dt_sec_cached - (new_dm_delay - initial_dm_delay)
+            dt_delay_change_sec = new_dm_delay - initial_dm_delay
+            dt_sec_np = dt_sec_cached - dt_delay_change_sec  # Both in seconds
+
+            # Compute phase residuals from updated dt_sec
+            f0 = params['F0']
+            f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
+            f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
+
+            phase = np.zeros_like(dt_sec_np)
+            factorial = 1.0
+            for n, f_val in enumerate(f_values):
+                factorial *= (n + 1) if n > 0 else 1.0
+                phase += f_val * (dt_sec_np ** (n + 1)) / factorial
+
+            phase_wrapped = phase - np.round(phase)
+            residuals = phase_wrapped / f0
+
+            # Subtract weighted mean
+            weighted_mean = np.sum(residuals * weights) / np.sum(weights)
+            residuals = residuals - weighted_mean
+
+            # Compute RMS
+            rms_us = np.sqrt(np.sum(residuals**2 * weights) / np.sum(weights)) * 1e6
+        else:
+            # Spin-only fitting: fast computation from cached dt_sec
+            f0 = params['F0']
+            f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
+            f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
+            
+            # Compute phase
+            phase = np.zeros_like(dt_sec_np)
+            factorial = 1.0
+            for n, f_val in enumerate(f_values):
+                factorial *= (n + 1) if n > 0 else 1.0
+                phase += f_val * (dt_sec_np ** (n + 1)) / factorial
+            
+            # Wrap phase
+            phase_wrapped = phase - np.round(phase)
+            
+            # Convert to time residuals
+            residuals = phase_wrapped / f0
+            
+            # Subtract weighted mean
+            weighted_mean = np.sum(residuals * weights) / np.sum(weights)
+            residuals = residuals - weighted_mean
+            
+            # Compute RMS
+            rms_us = np.sqrt(np.sum(residuals**2 * weights) / np.sum(weights)) * 1e6
+        
+        # Build design matrix column-by-column
+        # This is the KEY: Each parameter type calls its own derivative function!
+        M_columns = []
+        
+        for param in fit_params:
+            if param.startswith('F'):
+                # Spin parameter derivative
+                from jug.fitting.derivatives_spin import compute_spin_derivatives
+                deriv = compute_spin_derivatives(params, toas_mjd, [param])
+                M_columns.append(deriv[param])
+                
+            elif param.startswith('DM'):
+                # DM parameter derivative
+                deriv = compute_dm_derivatives(params, toas_mjd, freq_mhz, [param])
+                M_columns.append(deriv[param])
+                
+            elif param in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']:
+                # Astrometry parameter derivative (not yet implemented)
+                raise NotImplementedError(f"Astrometry parameter {param} not yet implemented")
+                
+            elif param in ['PB', 'A1', 'ECC', 'OM', 'T0', 'PBDOT', 'OMDOT', 'XDOT', 'EDOT', 'GAMMA', 'M2', 'SINI']:
+                # Binary parameter derivative (not yet implemented)
+                raise NotImplementedError(f"Binary parameter {param} not yet implemented")
+                
+            else:
+                raise ValueError(f"Unknown parameter type: {param}")
+        
+        # Assemble design matrix
+        M = np.column_stack(M_columns)
+        
+        # Subtract weighted mean from each column
+        for i in range(M.shape[1]):
+            col_mean = np.sum(M[:, i] * weights) / np.sum(weights)
+            M[:, i] = M[:, i] - col_mean
+        
+        # Solve WLS using SVD (handles rank deficiency)
+        delta_params, cov, _ = wls_solve_svd(
+            residuals=residuals,
+            sigma=errors_sec,
+            M=M,
+            threshold=1e-14,
+            negate_dpars=False  # Design matrix already in correct convention
+        )
+        delta_params = np.array(delta_params)  # Convert to numpy
+        cov = np.array(cov)
+        
+        # Update parameters
+        param_values_curr = [param_values_curr[i] + delta_params[i] for i in range(len(fit_params))]
+
+        # Track RMS for convergence detection
+        rms_history.append(rms_us)
+
+        # Check convergence based on RMS stability
+        rms_converged = False
+        if len(rms_history) >= 2:
+            rms_change = abs(rms_history[-1] - rms_history[-2])
+            rms_rel_change = rms_change / (rms_history[-2] + 1e-20)  # Avoid division by zero
+
+            if rms_rel_change < rms_stability_threshold:
+                patience_counter += 1
+            else:
+                patience_counter = 0  # Reset if RMS changed
+
+            if patience_counter >= patience_threshold:
+                rms_converged = True
+
+        # Also check parameter-based convergence as backup
+        max_delta_rel = 0.0
+        for i, param in enumerate(fit_params):
+            if param_values_curr[i] != 0:
+                rel_change = abs(delta_params[i] / param_values_curr[i])
+                max_delta_rel = max(max_delta_rel, rel_change)
+
+        param_converged = max_delta_rel < convergence_threshold
+
+        # Converged if either RMS is stable OR parameters are stable
+        converged = rms_converged or param_converged
+
         if verbose:
-            print(f"\nNote: All parameters are spin parameters, using optimized spin fitter")
-        return _fit_spin_params_general(
-            par_file, tim_file, fit_params, max_iter, convergence_threshold,
-            clock_dir, verbose, device
-        )
+            status = ""
+            if rms_converged:
+                status = "✓ RMS stable"
+            elif param_converged:
+                status = "✓ Params converged"
+            print(f"{iteration+1:<6} {rms_us:>11.6f}  {max_delta_rel:>13.6e}  {status:<20}")
+
+        if converged:
+            break
     
-    # TODO: When we add DM/astrometry/binary derivatives, the general loop goes here:
-    # 1. Cache dt_sec (expensive delays)
-    # 2. For each iteration:
-    #    a. Compute residuals (using current param values)
-    #    b. Build design matrix column-by-column:
-    #       - For each param in fit_params:
-    #           if param in spin_params: M[:, i] = compute_spin_derivative(param, ...)
-    #           elif param in dm_params: M[:, i] = compute_dm_derivative(param, ...)
-    #           elif param in astrometry: M[:, i] = compute_astrometry_derivative(param, ...)
-    #           elif param in binary: M[:, i] = compute_binary_derivative(param, ...)
-    #    c. Solve WLS: delta_params = (M^T W M)^-1 M^T W residuals
-    #    d. Update params: params += delta_params
-    # 3. Check convergence, repeat
+    total_time = time.time() - total_start
     
-    raise NotImplementedError("Mixed parameter fitting architecture in place, awaiting derivative implementations")
+    # Compute final residuals for output
+    for i, param in enumerate(fit_params):
+        params[param] = param_values_curr[i]
+    
+    f0 = params['F0']
+    f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
+    f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
+    
+    phase = np.zeros_like(dt_sec_np)
+    factorial = 1.0
+    for n, f_val in enumerate(f_values):
+        factorial *= (n + 1) if n > 0 else 1.0
+        phase += f_val * (dt_sec_np ** (n + 1)) / factorial
+    
+    phase_wrapped = phase - np.round(phase)
+    residuals_final = phase_wrapped / f0
+    weighted_mean_res = np.sum(residuals_final * weights) / np.sum(weights)
+    residuals_final = residuals_final - weighted_mean_res
+    residuals_final_us = residuals_final * 1e6
+    
+    # Compute prefit residuals
+    for i, param in enumerate(fit_params):
+        params[param] = param_values_start[i]
+    
+    f0 = params['F0']
+    f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
+    f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
+    
+    phase = np.zeros_like(dt_sec_np)
+    factorial = 1.0
+    for n, f_val in enumerate(f_values):
+        factorial *= (n + 1) if n > 0 else 1.0
+        phase += f_val * (dt_sec_np ** (n + 1)) / factorial
+    
+    phase_wrapped = phase - np.round(phase)
+    residuals_prefit = phase_wrapped / f0
+    weighted_mean_pre = np.sum(residuals_prefit * weights) / np.sum(weights)
+    residuals_prefit = residuals_prefit - weighted_mean_pre
+    residuals_prefit_us = residuals_prefit * 1e6
+    
+    # Restore final parameter values
+    for i, param in enumerate(fit_params):
+        params[param] = param_values_curr[i]
+    
+    # Compute uncertainties
+    uncertainties = {param: np.sqrt(cov[i, i]) for i, param in enumerate(fit_params)}
+    
+    # Print results
+    if verbose:
+        print(f"\n{'='*80}")
+        print("RESULTS")
+        print(f"{'='*80}")
+        print(f"Converged: {converged}")
+        print(f"Iterations: {iteration + 1}")
+        print(f"Final RMS: {rms_us:.6f} μs")
+        print(f"\nFitted parameters:")
+        for param in fit_params:
+            val = params[param]
+            err = uncertainties[param]
+            if param.startswith('F') and abs(val) < 1e-10:
+                print(f"  {param} = {val:.20e} ± {err:.6e}")
+            elif param.startswith('DM'):
+                print(f"  {param} = {val:.10f} ± {err:.6e} pc cm⁻³")
+            else:
+                print(f"  {param} = {val:.15f} ± {err:.6e}")
+        print(f"\nTotal time: {total_time:.3f}s")
+        print(f"Cache time: {cache_time:.3f}s")
+        print(f"{'='*80}")
+    
+    return {
+        'final_params': {param: params[param] for param in fit_params},
+        'uncertainties': uncertainties,
+        'final_rms': rms_us,
+        'prefit_rms': np.sqrt(np.sum(residuals_prefit**2 * weights) / np.sum(weights)) * 1e6,
+        'converged': converged,
+        'iterations': iteration + 1,
+        'total_time': total_time,
+        'residuals_us': residuals_final_us,
+        'residuals_prefit_us': residuals_prefit_us,
+        'errors_us': errors_us,
+        'tdb_mjd': tdb_mjd,
+        'cache_time': cache_time,
+        'jit_time': 0.0,
+        'covariance': cov
+    }
 
 
 def _fit_spin_params_general(

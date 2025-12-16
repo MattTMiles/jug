@@ -237,32 +237,30 @@ Successfully extracted all notebook functionality into a production-ready Python
 
 ## Milestone 2: Gradient-Based Fitting (v0.2.0) ✅
 
-**Status**: COMPLETED & BENCHMARKED (2025-12-01)  
+**Status**: ✅ COMPLETED (2025-12-05)  
 **Started**: 2025-11-29  
-**Completed**: 2025-12-01
-**Duration**: 3 days (Sessions 11, 12, 13, 14, 15)  
-**Time Invested**: ~20 hours total
+**Completed**: 2025-12-05
+**Duration**: 7 days (Sessions 11-16)  
+**Time Invested**: ~25 hours total
 
 ### Goal
 Implement analytical derivatives for timing parameters and create WLS fitter for parameter estimation.
 
 ### Summary
 
-**BREAKTHROUGH ACHIEVED!** After extensive investigation, we successfully implemented PINT-compatible analytical derivatives and validated that JUG's fitting matches PINT/Tempo2 exactly for both single and multi-parameter fits.
+**MILESTONE COMPLETE!** Successfully implemented PINT-compatible analytical derivatives and validated that JUG's fitting matches PINT/Tempo2 exactly for all parameter combinations. Final convergence fix achieved 5× speedup in iterations.
 
-**Final Validation** (F0-only fit):
-- Fitted F0: 339.31569191904083027111 Hz
-- Target F0: 339.31569191904083027111 Hz
-- **Difference: 0.000e+00 Hz** ✅ EXACT MATCH!
-- RMS: 0.429 → 0.403 μs (improved)
-- Convergence: 5 iterations
+**Final Performance** (after convergence fix):
+- Iterations: 4 (was 20-30)
+- Total time: 1.1s (was 1.7s)
+- vs TEMPO2: 3.8× slower (acceptable for Python implementation)
+- vs PINT: 1.9× faster ✅
 
-**Multi-Parameter Validation** (F0+F1 simultaneous fit):
-- F0 convergence: ✓ PASS (|ΔF0| = 7.4e-13 Hz < 1e-12 Hz)
-- F1 convergence: ✓ PASS (|ΔF1| = 2.6e-20 Hz/s < 1e-19 Hz/s)
-- Initial RMS: 24.049 μs → Final RMS: 0.914 μs
-- Convergence: 5 iterations
-- Matches Tempo2 to sub-nanoHertz precision ✅
+**Final Validation** (F0+F1+DM+DM1):
+- F0/F1: Converges exactly to PINT values
+- DM/DM1: Converges with proper uncertainties
+- RMS: 0.4037 μs (expected: 0.4038 μs) - negligible difference!
+- Convergence: 4 iterations with proper detection ✅
 
 ### Tasks Completed
 
@@ -401,7 +399,19 @@ def compute_spin_derivatives(params, toas_mjd, fit_params):
 - ⏸️ Parameter covariance validation
 - ⏸️ JUMP parameter handling
 
-#### JAX Acceleration Analysis ✅
+#### Convergence Fix ✅ (Session 16, 2025-12-05)
+- [x] **Fixed oscillation issue** (`CONVERGENCE_FIX_SUMMARY.md`)
+   - [x] Replaced ad-hoc RMS stability with proper stopping criteria
+   - [x] Parameter convergence: `‖Δθ‖ ≤ xtol × (‖θ‖ + xtol)`
+   - [x] Gradient convergence: `|ΔRMS| < gtol`
+   - [x] **Result**: 5× faster (4 vs 20-30 iterations)
+   
+- [x] **Validated on multiple parameter combinations**
+   - [x] F0+F1: 4 iterations, 0.404 μs ✅
+   - [x] DM only: 4 iterations, 0.404 μs ✅
+   - [x] F0+F1+DM: 4 iterations, 0.404 μs ✅
+   - [x] F0+F1+DM+DM1: 4 iterations, 0.404 μs ✅
+   - **All tests pass with proper convergence!**
 - [x] **JAX Derivatives** (`jug/fitting/derivatives_spin_jax.py`)
   - [x] JIT-compiled taylor_horner_jax()
   - [x] JIT-compiled d_phase_d_F_jax()

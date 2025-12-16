@@ -543,11 +543,11 @@ def _fit_parameters_general(
     iteration = 0
     converged = False
 
-    # Track RMS history for convergence detection
+    # Convergence criteria (based on JAXopt/literature recommendations)
+    xtol = 1e-12  # Parameter tolerance (relative)
+    gtol = 1e-3   # Gradient tolerance (absolute RMS change in μs) - relaxed for μs-level precision
+    min_iterations = 3  # Always do at least this many iterations
     rms_history = []
-    patience_counter = 0
-    patience_threshold = 3  # Stop if RMS stable for this many iterations
-    rms_stability_threshold = 1e-5  # Relative RMS change threshold (μs-level changes)
 
     if verbose:
         print(f"\n{'Iter':<6} {'RMS (μs)':<12} {'ΔParam':<15} {'Status':<20}")
@@ -671,42 +671,33 @@ def _fit_parameters_general(
         # Update parameters
         param_values_curr = [param_values_curr[i] + delta_params[i] for i in range(len(fit_params))]
 
-        # Track RMS for convergence detection
+        # Track RMS for history
         rms_history.append(rms_us)
 
-        # Check convergence based on RMS stability
+        # Check convergence using proper criteria
+        # Criterion 1: Parameter change is tiny (relative to parameter magnitude)
+        param_norm = np.linalg.norm(param_values_curr)
+        delta_norm = np.linalg.norm(delta_params)
+        param_converged = delta_norm <= xtol * (param_norm + xtol)
+        
+        # Criterion 2: RMS not improving (absolute change in μs)
         rms_converged = False
         if len(rms_history) >= 2:
             rms_change = abs(rms_history[-1] - rms_history[-2])
-            rms_rel_change = rms_change / (rms_history[-2] + 1e-20)  # Avoid division by zero
-
-            if rms_rel_change < rms_stability_threshold:
-                patience_counter += 1
-            else:
-                patience_counter = 0  # Reset if RMS changed
-
-            if patience_counter >= patience_threshold:
-                rms_converged = True
-
-        # Also check parameter-based convergence as backup
-        max_delta_rel = 0.0
-        for i, param in enumerate(fit_params):
-            if param_values_curr[i] != 0:
-                rel_change = abs(delta_params[i] / param_values_curr[i])
-                max_delta_rel = max(max_delta_rel, rel_change)
-
-        param_converged = max_delta_rel < convergence_threshold
-
-        # Converged if either RMS is stable OR parameters are stable
-        converged = rms_converged or param_converged
+            rms_converged = rms_change < gtol
+        
+        # Converged if EITHER criterion met AND we've done minimum iterations
+        converged = iteration >= min_iterations and (param_converged or rms_converged)
 
         if verbose:
             status = ""
-            if rms_converged:
-                status = "✓ RMS stable"
-            elif param_converged:
-                status = "✓ Params converged"
-            print(f"{iteration+1:<6} {rms_us:>11.6f}  {max_delta_rel:>13.6e}  {status:<20}")
+            if converged:
+                if param_converged:
+                    status = "✓ Params converged"
+                elif rms_converged:
+                    status = "✓ RMS stable"
+            max_delta = np.max(np.abs(delta_params))
+            print(f"{iteration+1:<6} {rms_us:>11.6f}  {max_delta:>13.6e}  {status:<20}")
 
         if converged:
             break

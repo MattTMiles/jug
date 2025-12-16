@@ -63,9 +63,9 @@ temp_*.out
 !docs/*.pdf
 
 # Data files (large)
-*.bsp
-*.clk
-eopc04_*
+# *.bsp
+# *.clk
+# eopc04_*
 
 # Keep data directory structure but ignore contents
 # data/ephemeris/*

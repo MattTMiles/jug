@@ -68,9 +68,9 @@ temp_*.out
 eopc04_*
 
 # Keep data directory structure but ignore contents
-data/ephemeris/*
-!data/ephemeris/.gitkeep
-data/clock/*
-!data/clock/.gitkeep
-data/earth/*
-!data/earth/.gitkeep
+# data/ephemeris/*
+# !data/ephemeris/.gitkeep
+# data/clock/*
+# !data/clock/.gitkeep
+# data/earth/*
+# !data/earth/.gitkeep

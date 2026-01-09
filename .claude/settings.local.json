@@ -21,7 +21,14 @@
       "Bash(python test_lm_jug.py:*)",
       "Bash(python test_lm_proper.py:*)",
       "Bash(python test_lm_vs_pint.py:*)",
-      "Bash(python diagnose_pint_jug_difference.py:*)"
+      "Bash(python diagnose_pint_jug_difference.py:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(ml conda)",
+      "Bash(mamba activate:*)",
+      "Bash(python:*)",
+      "Bash(/bin/bash -c \"source ~/.bashrc && ml conda && mamba activate discotech && python test_piecewise_comparison_fresh.py\")",
+      "Bash(/bin/bash -l -c \"ml conda; mamba activate discotech; python test_piecewise_comparison_fresh.py\")"
     ],
     "deny": [],
     "ask": []

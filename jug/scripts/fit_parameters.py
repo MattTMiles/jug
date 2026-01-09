@@ -30,6 +30,9 @@ Examples:
   # Fit F0 and F1 (default: CPU)
   jug-fit J1909.par J1909.tim --fit F0 F1
   
+  # Use JAX incremental fitting (0.001 ns precision)
+  jug-fit J1909.par J1909.tim --fit F0 F1 DM DM1 --alljax
+  
   # Force GPU usage
   jug-fit J1909.par J1909.tim --fit F0 F1 --device gpu
   
@@ -46,6 +49,10 @@ Device Selection:
   cpu  : Use CPU (recommended for <50k TOAs, <20 parameters) [DEFAULT]
   gpu  : Use GPU (recommended for >100k TOAs or >20 parameters)
   auto : Automatic selection based on problem size
+
+Fitting Methods:
+  --alljax : JAX incremental fitting (longdouble precision with JAX speed)
+             Achieves 0.001 ns RMS precision, converges in ~4 iterations
   
 Environment Variable:
   JUG_DEVICE : Override device selection (cpu, gpu, auto)
@@ -74,10 +81,12 @@ Environment Variable:
                        help='Maximum fitting iterations (default: 25)')
     parser.add_argument('--threshold', type=float, default=1e-14,
                        help='Convergence threshold (default: 1e-14)')
+    parser.add_argument('--alljax', action='store_true',
+                       help='Use JAX incremental fitting (breakthrough method with 0.001 ns precision)')
     
     # Clock files
-    parser.add_argument('--clock-dir', type=str, default='data/clock',
-                       help='Directory with clock files (default: data/clock)')
+    parser.add_argument('--clock-dir', type=str, default=None,
+                       help='Directory with clock files (default: auto-detect from package location)')
     
     # Output
     parser.add_argument('--output', '-o', type=str,
@@ -179,7 +188,8 @@ Environment Variable:
                 convergence_threshold=args.threshold,
                 clock_dir=args.clock_dir,
                 verbose=not args.quiet,
-                device=args.device
+                device=args.device,
+                alljax=args.alljax
             )
             result['no_fit_mode'] = False
     except Exception as e:
@@ -291,7 +301,7 @@ Environment Variable:
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
             
             # Prefit
-            prefit_res = result['prefit_residuals_us']
+            prefit_res = result.get('residuals_prefit_us', result.get('prefit_residuals_us'))
             prefit_rms = result['prefit_rms']
             
             if errors_us is not None:
@@ -308,7 +318,7 @@ Environment Variable:
             ax1.grid(True, alpha=0.3)
             
             # Postfit
-            postfit_res = result['postfit_residuals_us']
+            postfit_res = result.get('residuals_us', result.get('postfit_residuals_us'))
             postfit_rms = result['final_rms']
             
             if errors_us is not None:

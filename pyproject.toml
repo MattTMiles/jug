@@ -36,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = [
-    "PyQt6>=6.5.0",
+    "PySide6>=6.6.0",
     "pyqtgraph>=0.13.0",
     "matplotlib>=3.7.0",
 ]
@@ -59,7 +59,7 @@ all = [
 [project.scripts]
 jug-compute-residuals = "jug.scripts.compute_residuals:main"
 jug-fit = "jug.scripts.fit_parameters:main"
-jug-gui = "jug.scripts.gui:main"
+jug-gui = "jug.gui.main:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/jug"

@@ -990,79 +990,211 @@ def iterative_fit(par_file, tim_file, fit_params, max_iter=20):
 
 ## Milestone 5: Desktop GUI (v0.5.0)
 
-**Goal**: Build PyQt6 GUI with residual plot, parameter panel, and fit control.
+**Goal**: Build tempo2 plk-style interactive GUI for pulsar timing analysis.
 
-### Recommendation: Start with Claude, Iterate Together
+**Status**: 🏗️ IN PROGRESS (Started 2026-01-09)
 
-**GUI development is iterative**. Claude can quickly build a functional skeleton, then you refine the UX.
+**Design Research**: See `docs/GUI_ARCHITECTURE_RESEARCH.md` for comprehensive framework comparison.
 
-### Step 5.1: GUI Skeleton
+### Technology Stack (DECIDED)
 
-*Instruction for Claude*:
-"Create a PyQt6 GUI in `jug/gui/main_window.py`. Layout: (1) Top-left: Residual plot (pyqtgraph scatter plot), (2) Top-right: Parameter table (QTableWidget), (3) Bottom-left: Placeholder for noise diagnostics, (4) Bottom-right: Fit control buttons. Add file menu: Open .par, Open .tim, Save .par. Make it runnable via `jug-gui` CLI script."
+**Framework**: **PySide6 6.6+** (Official Qt 6 Python binding)
+- License: LGPL (permissive, no restrictions)
+- Industry standard for scientific Python applications
+- Used by: Spyder, Orange, Ginga, Glue, and major astronomy tools
 
-**Claude builds**: Basic window, layout, widgets, file dialogs.
-**You refine**: Colors, fonts, spacing, responsiveness.
+**Plotting**: **pyqtgraph 0.13+** (Fast scientific visualization)
+- 100-1000x faster than Matplotlib for interactive plots
+- Can handle millions of points (10k TOAs is easy)
+- Built specifically for Qt + scientific data
+- Real-time updates, zoom, pan, crosshairs included
 
-**Time**: Claude 2-3 hours (initial build) + You 2-3 hours (refinement) = ~1 day
+**Architecture**: **Simple Layered + Reactive (Signals/Slots)**
+- GUI layer separate from JUG core (no circular dependencies)
+- Qt signals/slots for automatic UI updates
+- QThreadPool for non-blocking long operations (fitting)
+- Centralized application state management
 
----
+**Directory Structure**:
+```
+jug/gui/
+  ├── __init__.py
+  ├── main.py              (CLI entry point: jug-gui)
+  ├── main_window.py       (Main GUI window)
+  ├── widgets/
+  │   ├── residual_plot.py    (pyqtgraph plot widget)
+  │   ├── fit_controls.py     (control panel)
+  │   └── parameter_dialog.py (separate parameter editor)
+  ├── models/
+  │   └── app_state.py        (application state)
+  └── workers/
+      └── fit_worker.py       (QRunnable for threading)
+```
 
-### Step 5.2: Real-Time Parameter Updates
+### Updated GUI Layout (tempo2 plk-style)
 
-*Instruction for Claude*:
-"Add real-time residual updates to the GUI. When user edits a parameter value in the table, recompute residuals using `jug.residuals.compute()` and update the plot. Use Qt signals/slots to connect parameter changes to plot updates. Debounce updates (wait 300ms after last edit before recomputing)."
+**Main Window**:
+- Large residual plot (primary focus, most of screen)
+- Control panel (right side): Fit button, Reset, convergence stats
+- Menu bar: File, View, Edit, Tools
+- Status bar: Current file names, TOA count, RMS
 
-**You test**: Does it feel responsive? Is 300ms lag acceptable, or should it be instant?
+**Parameter Table**: 
+- Separate dialog window (NOT always visible)
+- Opens via: View → Parameters or Edit → Parameters
+- Shows parameter values, uncertainties, fit checkboxes
+- Real-time residual updates with debouncing (300ms)
+- Can stay open while working, but not forced
 
-**Time**: Claude 2 hours + You 1 hour testing = ~3 hours
-
----
-
-### Step 5.3: Interactive Flagging
-
-*Instruction for Claude*:
-"Add click-to-flag functionality. When user clicks a TOA point in the residual plot, toggle its flag status (flagged = grayed out or red X). Store flags in a list. Add buttons: 'Flag Selected', 'Unflag Selected', 'Unflag All'. When saving .tim file, write `FLAG -toa` for flagged TOAs."
-
-**You test**: Does click detection work reliably? Are visual indicators clear?
-
-**Time**: Claude 2 hours + You 1 hour = ~3 hours
-
----
-
-### Step 5.4: Fit Integration
-
-*Instruction for Claude*:
-"Add 'Fit Selected' button. When clicked, read parameter fit flags from table, call `jug.fitting.optimizer.run_fit()`, update parameter values and uncertainties in table, recompute residuals. Show progress bar during fit (update every batch). Add 'Reset to Initial' and 'Undo Last Fit' buttons."
-
-**You test**: Does fit converge? Are uncertainties displayed correctly?
-
-**Time**: Claude 3 hours + You 2 hours = ~5 hours
-
----
-
-### Step 5.5: Noise Diagnostics Panel
-
-*Instruction for Claude*:
-"Add noise diagnostic plots in bottom-left panel: (1) Power spectrum (periodogram of residuals vs. fitted noise model), (2) ACF plot, (3) Residual histogram with Gaussian overlay. Use pyqtgraph for fast rendering. Add tabs to switch between plots."
-
-**You refine**: Plot aesthetics, axis labels, legend positioning.
-
-**Time**: Claude 3 hours + You 2 hours = ~5 hours
+**Rationale**: Focus on visualization (like tempo2 plk), not overwhelming with parameters
 
 ---
 
-### GUI Iteration Strategy
+### Implementation Phases
 
-1. **Claude builds feature skeleton** (functional but not polished)
-2. **You test and provide feedback** ("button is too small", "plot needs grid lines")
-3. **Claude refines** based on feedback
-4. **Repeat** until UX feels good
+#### Phase 1: Minimal Viable GUI (MVP) ⏳ NEXT
+**Goal**: Load data, view residuals
+**Time**: ~4-6 hours
 
-**Estimated Total Time for Milestone 5**:
-- Claude active coding: ~15-20 hours
-- Your testing/refinement: ~10-15 hours
-- **Total**: 3-4 weeks (part-time, iterative)
+Tasks:
+1. Create main window skeleton with menu bar
+2. Add pyqtgraph residual plot widget
+3. Implement file dialogs (Open .par, Open .tim)
+4. Display prefit residuals
+5. Test with J1909-3744 data
+
+*Instruction for Claude*:
+"Create PySide6 main window in `jug/gui/main_window.py`. Large pyqtgraph plot for residuals (MJD vs μs with error bars). Menu bar with File → Open .par, Open .tim. Small control panel on right with placeholder buttons. Load J1909-3744 test data and display prefit residuals. Make runnable via `jug-gui` CLI entry point in `jug/gui/main.py`."
+
+**Deliverable**: Can visualize timing residuals
+**Validation**: Load J1909-3744 data, see 10,408 TOAs plotted
+
+---
+
+#### Phase 2: Fit Integration ⏸️ TODO
+**Goal**: Run fits from GUI
+**Time**: ~4-6 hours
+
+Tasks:
+1. Add fit control panel (Fit button, convergence stats display)
+2. Create FitWorker (QRunnable) for threaded fitting
+3. Connect "Fit" button to fit_parameters_optimized()
+4. Update plot with postfit residuals
+5. Display convergence statistics (iterations, RMS, chi²)
+6. Add progress indicator during fitting
+
+*Instruction for Claude*:
+"Add fit functionality. Create FitWorker (QRunnable) that calls fit_parameters_optimized() in background thread. Add 'Fit' button that starts worker, shows progress, then updates plot with postfit residuals. Add QLabel displays for RMS, iterations. Use signals/slots to communicate between worker and main thread. Test with F0/F1 fit."
+
+**Deliverable**: Can run fits and see results
+**Validation**: Fit J1909-3744, see RMS improve from 18 μs → 0.4 μs
+
+---
+
+#### Phase 3: Parameter Editing ⏸️ TODO
+**Goal**: Interactive parameter adjustment
+**Time**: ~4-6 hours
+
+Tasks:
+1. Create parameter editor QDialog (separate window)
+2. Populate QTableWidget with parameters from .par file
+3. Add fit checkboxes for each parameter
+4. Connect parameter edits to residual recomputation
+5. Implement debouncing (QTimer, 300ms delay)
+6. Add Save .par functionality
+
+*Instruction for Claude*:
+"Create ParameterDialog (QDialog) with QTableWidget showing parameter name, value, uncertainty, and fit checkbox. When value edited, emit signal after 300ms delay (debouncing with QTimer). Main window receives signal, recomputes residuals with compute_residuals_simple(), updates plot. Add File → Save .par to write updated parameters."
+
+**Deliverable**: Full interactive workflow
+**Validation**: Edit F0, watch residuals update in real-time
+
+---
+
+#### Phase 4: Polish & Features ⏸️ TODO
+**Goal**: Professional, publication-ready
+**Time**: ~8-12 hours
+
+Tasks:
+1. Improve styling (colors, fonts, consistent theme)
+2. Add keyboard shortcuts (Ctrl+O, Ctrl+F, etc.)
+3. Add plot export (Save as PNG, PDF, SVG)
+4. Error handling and validation
+5. Progress indicators with cancel button
+6. Status bar with info (file names, TOA count, RMS)
+7. Settings dialog (alljax toggle, max iterations, etc.)
+8. About dialog with version info
+
+**Deliverable**: Production-ready GUI
+**Validation**: Professional appearance, smooth UX, no crashes
+
+---
+
+### Development Guidelines
+
+**Separation of Concerns**:
+```python
+# GOOD: GUI calls core, not vice versa
+from jug.fitting.optimized_fitter import fit_parameters_optimized
+result = fit_parameters_optimized(...)  # Core has no GUI deps
+
+# BAD: Core depends on GUI
+from jug.gui.main_window import update_plot  # Never do this!
+```
+
+**Threading for Responsiveness**:
+```python
+class FitWorker(QRunnable):
+    def run(self):
+        result = fit_parameters_optimized(...)
+        self.signals.result.emit(result)  # Send to main thread
+
+# Start in thread pool
+pool.start(FitWorker())
+```
+
+**Debouncing for Parameter Edits**:
+```python
+self.update_timer = QTimer()
+self.update_timer.setSingleShot(True)
+self.update_timer.timeout.connect(self.update_residuals)
+
+def on_parameter_changed(self):
+    self.update_timer.start(300)  # Wait 300ms before updating
+```
+
+**Common Pitfalls to Avoid** (see `docs/GUI_ARCHITECTURE_RESEARCH.md` Part 7):
+1. GUI blocking during fit → Use QThreadPool
+2. Memory leaks with plots → Update data, don't recreate widgets
+3. Thread-safety → Copy NumPy arrays before emitting signals
+4. Slow parameter updates → Use debouncing with QTimer
+
+---
+
+### Dependencies
+
+Update `pyproject.toml`:
+```toml
+[project.optional-dependencies]
+gui = [
+    "PySide6>=6.6.0",
+    "pyqtgraph>=0.13.0",
+]
+```
+
+Install with: `pip install -e .[gui]`
+
+---
+
+### Estimated Total Time for Milestone 5
+
+**MVP to Production**: 20-30 hours
+- Phase 1 (MVP): 4-6 hours
+- Phase 2 (Fit): 4-6 hours
+- Phase 3 (Parameters): 4-6 hours
+- Phase 4 (Polish): 8-12 hours
+
+**Timeline**: 3-4 weeks (part-time, iterative development)
 
 ---
 

@@ -33,8 +33,12 @@ pip install -e .
 ### Installation with Optional Features
 
 ```bash
-# With GUI support (coming in Milestone 5)
-pip install -e ".[gui]"
+# With GUI support (recommended: use conda)
+mamba env create -f environment.yml
+conda activate jug
+
+# Or without GUI (pip only)
+pip install -e .
 
 # With development tools
 pip install -e ".[dev]"
@@ -42,6 +46,8 @@ pip install -e ".[dev]"
 # Everything
 pip install -e ".[all]"
 ```
+
+**Important for GUI:** Use conda/mamba installation (via `environment.yml`) for proper Qt library integration. See `INSTALL.md` for details.
 
 ### Verify Installation
 
@@ -260,12 +266,43 @@ jug-compute-residuals J1909-3744.par J1909-3744.tim --observatory parkes
 - `--plot` - Generate residual plot (saves as `<pulsar>_residuals.png`)
 - `--output-dir OUTPUT_DIR` - Directory for output plot (default: current)
 
-### 3. `jug-gui` - Desktop GUI (Coming in Milestone 5)
+### 3. `jug-gui` - Desktop GUI ✅ NEW!
 
 ```bash
-# Launch GUI (not yet implemented)
-jug-gui J1909-3744.par J1909-3744.tim
+# Launch empty GUI
+jug-gui
+
+# Launch with files pre-loaded
+jug-gui pulsar.par pulsar.tim
+
+# Launch with GPU acceleration (for large datasets)
+jug-gui --gpu pulsar.par pulsar.tim
+
+# Show help
+jug-gui --help
 ```
+
+**Arguments:**
+- `par_file` (optional): Path to .par file
+- `tim_file` (optional): Path to .tim file
+- `--gpu` (optional): Use GPU acceleration (default: CPU)
+
+**Examples:**
+```bash
+# Open GUI and load files via menu
+jug-gui
+
+# Load J1909-3744 data directly
+jug-gui data/pulsars/J1909-3744_tdb.par data/pulsars/J1909-3744.tim
+
+# Same, but with GPU mode
+jug-gui --gpu data/pulsars/J1909-3744_tdb.par data/pulsars/J1909-3744.tim
+```
+
+**Note:**
+- Requires conda installation (see INSTALL.md)
+- CPU is faster for typical datasets (<100k TOAs)
+- GPU beneficial for large datasets (>100k TOAs) or PTAs
 
 ### Environment Variables
 

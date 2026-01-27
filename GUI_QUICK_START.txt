@@ -1,0 +1,88 @@
+================================================================================
+                    JUG GUI - Quick Start Guide
+================================================================================
+
+LAUNCH:
+-------
+$ jug-gui                                    # Empty GUI
+$ jug-gui pulsar.par pulsar.tim             # Load files directly
+$ jug-gui --gpu pulsar.par pulsar.tim       # Load with GPU mode
+$ jug-gui --help                            # Show help
+
+Example with J1909-3744:
+$ jug-gui data/pulsars/J1909-3744_tdb.par data/pulsars/J1909-3744.tim
+
+
+WORKFLOW:
+---------
+1. File → Open .par...     (select your .par file)
+2. File → Open .tim...     (select your .tim file)
+   → Prefit residuals automatically plotted
+
+3. Select parameters to fit:
+   ☑ F0, F1 (default)
+   ☐ F2, DM, DM1, DM2 (optional)
+
+4. Click "Run Fit" button
+   → Wait 2-4 seconds
+   → Fit results dialog appears
+
+5. View statistics in right panel:
+   - RMS (microseconds)
+   - Iterations
+   - TOAs
+   - χ²/dof
+
+6. Click "Reset to Prefit" to restore original residuals
+
+
+KEYBOARD SHORTCUTS:
+-------------------
+Ctrl+P  - Open .par file
+Ctrl+T  - Open .tim file
+Ctrl+F  - Run fit
+Ctrl+R  - Reset to prefit
+Ctrl+0  - Zoom to fit plot
+Ctrl+Q  - Quit
+
+
+TEST DATA:
+----------
+data/pulsars/J1909-3744_tdb.par
+data/pulsars/J1909-3744.tim
+
+
+EXPECTED RESULTS (F0+F1 fit):
+------------------------------
+F0 = 339.315691919040830 Hz
+F1 = -1.614750e-15 Hz/s
+RMS = 0.403684 μs
+Iterations = 4
+Time = ~2 seconds
+
+
+TROUBLESHOOTING:
+----------------
+- GUI won't launch?
+  → Use conda installation (see INSTALL.md)
+  → Run: mamba env create -f environment.yml
+
+- Fit fails?
+  → Check .par and .tim files are valid
+  → Try selecting different parameters
+
+- GUI freezes?
+  → Should NOT happen! Fitting runs in background thread
+  → If it does, report as bug
+
+
+DOCUMENTATION:
+--------------
+- Full guide: docs/QUICK_REFERENCE.md
+- Installation: INSTALL.md
+- Phase 2 details: docs/GUI_PHASE2_COMPLETE.md
+
+
+================================================================================
+                          Happy Timing! 🚀
+================================================================================

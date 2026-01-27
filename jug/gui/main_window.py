@@ -4,21 +4,22 @@ JUG Main Window - tempo2 plk-style interactive timing GUI.
 from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QLabel, QPushButton, QStatusBar
+    QFileDialog, QLabel, QPushButton, QStatusBar,
+    QCheckBox, QGroupBox, QMessageBox, QProgressDialog
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThreadPool
 import pyqtgraph as pg
 import numpy as np
 
 
 class MainWindow(QMainWindow):
     """Main window for JUG timing analysis GUI."""
-    
-    def __init__(self):
+
+    def __init__(self, fit_params=None):
         super().__init__()
         self.setWindowTitle("JUG Timing Analysis")
         self.setGeometry(100, 100, 1200, 800)
-        
+
         # Data storage
         self.par_file = None
         self.tim_file = None
@@ -26,7 +27,26 @@ class MainWindow(QMainWindow):
         self.mjd = None
         self.errors_us = None
         self.rms_us = None
+
+        # Fit state
+        self.prefit_residuals_us = None
+        self.postfit_residuals_us = None
+        self.fit_results = None
+        self.is_fitted = False
+
+        # Command-line fit parameters
+        self.cmdline_fit_params = fit_params or []
+
+        # Available parameters (will be populated from par file)
+        self.available_params = []
         
+        # Initial parameter values from .par file
+        self.initial_params = {}
+
+        # Thread pool for background tasks
+        self.thread_pool = QThreadPool()
+        self.thread_pool.setMaxThreadCount(1)  # One fit at a time
+
         # Setup UI
         self._setup_ui()
         self._create_menu_bar()
@@ -64,48 +84,62 @@ class MainWindow(QMainWindow):
         """Create the control panel widget."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        
-        # Title
-        title = QLabel("<b>Fit Controls</b>")
-        title.setStyleSheet("font-size: 14px;")
-        layout.addWidget(title)
-        
+
+        # Parameter selection (will be populated when par file is loaded)
+        self.param_group = QGroupBox("Parameters to Fit")
+        self.param_layout = QVBoxLayout()
+        self.param_group.setLayout(self.param_layout)
+        layout.addWidget(self.param_group)
+
+        self.param_checkboxes = {}
+
+        # Initially show placeholder message
+        self.param_placeholder = QLabel("Load .par file to see available parameters")
+        self.param_placeholder.setStyleSheet("color: gray; font-style: italic;")
+        self.param_layout.addWidget(self.param_placeholder)
+
+        layout.addSpacing(10)
+
         # Fit button
-        self.fit_button = QPushButton("Fit")
+        self.fit_button = QPushButton("Run Fit")
         self.fit_button.setMinimumHeight(40)
         self.fit_button.clicked.connect(self.on_fit_clicked)
         self.fit_button.setEnabled(False)
         layout.addWidget(self.fit_button)
-        
+
         # Reset button
-        self.reset_button = QPushButton("Reset")
+        self.reset_button = QPushButton("Reset to Prefit")
         self.reset_button.setMinimumHeight(40)
         self.reset_button.clicked.connect(self.on_reset_clicked)
         self.reset_button.setEnabled(False)
         layout.addWidget(self.reset_button)
-        
-        layout.addSpacing(30)
-        
+
+        layout.addSpacing(20)
+
         # Statistics section
         stats_title = QLabel("<b>Statistics</b>")
         stats_title.setStyleSheet("font-size: 14px;")
         layout.addWidget(stats_title)
-        
+
         self.rms_label = QLabel("RMS: --")
         self.rms_label.setStyleSheet("font-size: 12px;")
         layout.addWidget(self.rms_label)
-        
+
         self.iter_label = QLabel("Iterations: --")
         self.iter_label.setStyleSheet("font-size: 12px;")
         layout.addWidget(self.iter_label)
-        
+
         self.ntoa_label = QLabel("TOAs: --")
         self.ntoa_label.setStyleSheet("font-size: 12px;")
         layout.addWidget(self.ntoa_label)
-        
+
+        self.chi2_label = QLabel("χ²/dof: --")
+        self.chi2_label.setStyleSheet("font-size: 12px;")
+        layout.addWidget(self.chi2_label)
+
         # Stretch to push everything to top
         layout.addStretch()
-        
+
         return panel
     
     def _create_menu_bar(self):
@@ -181,6 +215,7 @@ class MainWindow(QMainWindow):
         if filename:
             self.par_file = Path(filename)
             self.status_bar.showMessage(f"Loaded .par: {self.par_file.name}")
+            self._update_available_parameters()
             self._check_ready_to_compute()
     
     def on_open_tim(self):
@@ -219,8 +254,11 @@ class MainWindow(QMainWindow):
             # Store data
             self.mjd = result['tdb_mjd']
             self.residuals_us = result['residuals_us']
+            self.prefit_residuals_us = result['residuals_us'].copy()
             self.errors_us = result.get('errors_us', None)
             self.rms_us = result['rms_us']
+            self.is_fitted = False
+            self.fit_results = None
             
             # Update plot
             self._update_plot()
@@ -280,12 +318,275 @@ class MainWindow(QMainWindow):
     
     def on_fit_clicked(self):
         """Handle Fit button click."""
-        # TODO: Implement fitting in Phase 2
-        self.status_bar.showMessage("Fitting not yet implemented (Phase 2)")
+        if not self.par_file or not self.tim_file:
+            QMessageBox.warning(self, "No Data", "Please load .par and .tim files first")
+            return
+
+        # Get selected parameters
+        fit_params = [param for param, checkbox in self.param_checkboxes.items()
+                      if checkbox.isChecked()]
+
+        if not fit_params:
+            QMessageBox.warning(self, "No Parameters",
+                              "Please select at least one parameter to fit")
+            return
+
+        # Disable fit button during fitting
+        self.fit_button.setEnabled(False)
+        self.status_bar.showMessage(f"Fitting {', '.join(fit_params)}...")
+
+        # Create and start fit worker
+        from jug.gui.workers.fit_worker import FitWorker
+
+        worker = FitWorker(self.par_file, self.tim_file, fit_params)
+        worker.signals.result.connect(self.on_fit_complete)
+        worker.signals.error.connect(self.on_fit_error)
+        worker.signals.finished.connect(self.on_fit_finished)
+
+        # Start in thread pool
+        self.thread_pool.start(worker)
     
+    def on_fit_complete(self, result):
+        """
+        Handle successful fit completion.
+
+        Parameters
+        ----------
+        result : dict
+            Fit results from fit_parameters_optimized
+        """
+        # Store fit results
+        self.fit_results = result
+        self.is_fitted = True
+
+        try:
+            # Recompute residuals with fitted parameters
+            self._compute_postfit_residuals(result)
+
+            # Update statistics
+            self.rms_label.setText(f"RMS: {result['final_rms']:.6f} μs")
+            self.iter_label.setText(f"Iterations: {result['iterations']}")
+
+            # Calculate chi-squared if we have errors
+            if self.errors_us is not None:
+                n_toas = len(self.mjd)
+                n_params = len(result['final_params'])
+                dof = n_toas - n_params
+                # Calculate proper chi-squared with postfit residuals
+                chi2 = np.sum((self.residuals_us / self.errors_us) ** 2)
+                chi2_dof = chi2 / dof
+                self.chi2_label.setText(f"χ²/dof: {chi2_dof:.2f}")
+
+            # Show fit results dialog
+            self._show_fit_results(result)
+
+            # Update status
+            param_str = ', '.join(result['final_params'].keys())
+            self.status_bar.showMessage(
+                f"Fit complete: {param_str} | "
+                f"RMS = {result['final_rms']:.6f} μs | "
+                f"{result['iterations']} iterations | "
+                f"{'converged' if result['converged'] else 'not converged'}"
+            )
+
+        except Exception as e:
+            self.status_bar.showMessage(f"Error computing postfit residuals: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _compute_postfit_residuals(self, result):
+        """
+        Compute postfit residuals by updating par file with fitted parameters.
+
+        Parameters
+        ----------
+        result : dict
+            Fit results containing final_params
+        """
+        import tempfile
+        from jug.residuals.simple_calculator import compute_residuals_simple
+
+        # Read original par file
+        with open(self.par_file, 'r') as f:
+            par_lines = f.readlines()
+
+        # Update fitted parameters in par file
+        updated_lines = []
+        fitted_params = result['final_params']
+        params_in_file = set()
+
+        for line in par_lines:
+            line_stripped = line.strip()
+            if not line_stripped or line_stripped.startswith('#'):
+                updated_lines.append(line)
+                continue
+
+            # Check if this line contains a fitted parameter
+            parts = line_stripped.split()
+            if parts:
+                param_name = parts[0]
+                params_in_file.add(param_name)
+                
+                if param_name in fitted_params:
+                    # Replace the value with the fitted value
+                    # Format: PARAM VALUE [flags...]
+                    fitted_value = fitted_params[param_name]
+
+                    # Preserve formatting based on parameter type
+                    if param_name == 'F0':
+                        new_line = f"{param_name:<12} {fitted_value:.15f}"
+                    elif param_name.startswith('F') and param_name[1:].isdigit():
+                        new_line = f"{param_name:<12} {fitted_value:.15e}"
+                    elif param_name.startswith('DM'):
+                        new_line = f"{param_name:<12} {fitted_value:.15f}"
+                    else:
+                        new_line = f"{param_name:<12} {fitted_value:.15e}"
+
+                    # Add flags if present (usually "1" for fitted params)
+                    if len(parts) > 1:
+                        # Keep existing flags
+                        flags = ' '.join(parts[2:]) if len(parts) > 2 else ''
+                        if flags:
+                            new_line += f" 1 {flags}"
+                        else:
+                            new_line += " 1"
+
+                    updated_lines.append(new_line + '\n')
+                else:
+                    updated_lines.append(line)
+            else:
+                updated_lines.append(line)
+        
+        # Add new parameters that weren't in the original file
+        new_params = [p for p in fitted_params.keys() if p not in params_in_file]
+        if new_params:
+            updated_lines.append('\n# Parameters added by fit:\n')
+            for param in sorted(new_params):
+                fitted_value = fitted_params[param]
+                # Format based on parameter type
+                if param == 'F0':
+                    new_line = f"{param:<12} {fitted_value:.15f} 1\n"
+                elif param.startswith('F') and param[1:].isdigit():
+                    new_line = f"{param:<12} {fitted_value:.15e} 1\n"
+                elif param.startswith('DM'):
+                    new_line = f"{param:<12} {fitted_value:.15f} 1\n"
+                else:
+                    new_line = f"{param:<12} {fitted_value:.15e} 1\n"
+                updated_lines.append(new_line)
+
+        # Write to temporary par file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.par', delete=False) as tmp:
+            tmp.writelines(updated_lines)
+            tmp_par_path = Path(tmp.name)
+
+        try:
+            # Compute residuals with updated parameters
+            postfit_result = compute_residuals_simple(
+                par_file=tmp_par_path,
+                tim_file=self.tim_file,
+                verbose=False
+            )
+
+            # Update residuals and plot
+            self.residuals_us = postfit_result['residuals_us']
+            self.postfit_residuals_us = postfit_result['residuals_us'].copy()
+            self.rms_us = postfit_result['rms_us']
+
+            # Update plot
+            self._update_plot()
+
+        finally:
+            # Clean up temporary file
+            tmp_par_path.unlink()
+
+        self.status_bar.showMessage("Postfit residuals computed successfully")
+
+    def on_fit_error(self, error_msg):
+        """
+        Handle fit error.
+
+        Parameters
+        ----------
+        error_msg : str
+            Error message from fit worker
+        """
+        QMessageBox.critical(self, "Fit Error", f"Fitting failed:\n\n{error_msg}")
+        self.status_bar.showMessage("Fit failed")
+
+    def on_fit_finished(self):
+        """Handle fit worker finishing (success or error)."""
+        self.fit_button.setEnabled(True)
+
+    def _show_fit_results(self, result):
+        """
+        Show fit results in a dialog.
+
+        Parameters
+        ----------
+        result : dict
+            Fit results
+        """
+        msg = "<h3>Fit Results</h3>"
+        msg += "<table border='1' cellpadding='5' style='border-collapse: collapse;'>"
+        msg += "<tr><th>Parameter</th><th>New Value</th><th>Previous Value</th><th>Change</th><th>Uncertainty</th></tr>"
+
+        for param, new_value in result['final_params'].items():
+            uncertainty = result['uncertainties'][param]
+            
+            # Get previous value (0.0 if not in original par file)
+            prev_value = self.initial_params.get(param, 0.0)
+            change = new_value - prev_value
+            
+            # Format based on parameter type
+            if param.startswith('F'):
+                if param == 'F0':
+                    new_val_str = f"{new_value:.15f} Hz"
+                    prev_val_str = f"{prev_value:.15f} Hz"
+                    change_str = f"{change:.15f} Hz"
+                else:
+                    new_val_str = f"{new_value:.6e} Hz/s"
+                    prev_val_str = f"{prev_value:.6e} Hz/s"
+                    change_str = f"{change:.6e} Hz/s"
+            elif param.startswith('DM'):
+                new_val_str = f"{new_value:.10f} pc cm⁻³"
+                prev_val_str = f"{prev_value:.10f} pc cm⁻³"
+                change_str = f"{change:.10f} pc cm⁻³"
+            else:
+                new_val_str = f"{new_value:.6e}"
+                prev_val_str = f"{prev_value:.6e}"
+                change_str = f"{change:.6e}"
+            
+            unc_str = f"{uncertainty:.2e}"
+            
+            msg += f"<tr><td><b>{param}</b></td><td>{new_val_str}</td><td>{prev_val_str}</td><td>{change_str}</td><td>{unc_str}</td></tr>"
+
+        msg += "</table><br>"
+        msg += f"<b>Final RMS:</b> {result['final_rms']:.6f} μs<br>"
+        msg += f"<b>Iterations:</b> {result['iterations']}<br>"
+        msg += f"<b>Converged:</b> {result['converged']}<br>"
+        msg += f"<b>Time:</b> {result['total_time']:.2f} s"
+
+        msgbox = QMessageBox(self)
+        msgbox.setWindowTitle("Fit Complete")
+        msgbox.setTextFormat(Qt.RichText)
+        msgbox.setText(msg)
+        msgbox.exec()
+
     def on_reset_clicked(self):
         """Handle Reset button click."""
-        if self.par_file and self.tim_file:
+        if self.prefit_residuals_us is not None:
+            # Reset to prefit residuals
+            self.residuals_us = self.prefit_residuals_us.copy()
+            self.is_fitted = False
+            self.fit_results = None
+            self._update_plot()
+
+            # Update statistics
+            self.rms_label.setText(f"RMS: {self.rms_us:.6f} μs")
+            self.iter_label.setText("Iterations: --")
+            self.chi2_label.setText("χ²/dof: --")
+            self.status_bar.showMessage("Reset to prefit residuals")
+        elif self.par_file and self.tim_file:
             self._compute_initial_residuals()
     
     def on_show_parameters(self):
@@ -306,6 +607,172 @@ class MainWindow(QMainWindow):
             "<h3>JUG Timing Analysis</h3>"
             "<p>JAX-based pulsar timing software</p>"
             "<p>Fast, independent, and extensible</p>"
-            "<p><b>Version:</b> 0.5.0 (GUI Phase 1)</p>"
+            "<p><b>Version:</b> 0.5.0 (GUI Phase 2)</p>"
             "<p><b>Framework:</b> PySide6 + pyqtgraph</p>"
         )
+
+    def load_files_from_args(self, par_file: str | None, tim_file: str | None):
+        """
+        Load .par and .tim files from command-line arguments.
+
+        Parameters
+        ----------
+        par_file : str or None
+            Path to .par file
+        tim_file : str or None
+            Path to .tim file
+        """
+        if par_file:
+            par_path = Path(par_file).resolve()
+            if par_path.exists():
+                self.par_file = par_path
+                self.status_bar.showMessage(f"Loaded .par: {self.par_file.name}")
+                self._update_available_parameters()
+            else:
+                QMessageBox.warning(
+                    self,
+                    "File Not Found",
+                    f"Cannot find .par file:\n{par_file}"
+                )
+                return
+
+        if tim_file:
+            tim_path = Path(tim_file).resolve()
+            if tim_path.exists():
+                self.tim_file = tim_path
+                self.status_bar.showMessage(f"Loaded .tim: {self.tim_file.name}")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "File Not Found",
+                    f"Cannot find .tim file:\n{tim_file}"
+                )
+                return
+
+        # Compute residuals if both files are loaded
+        if self.par_file and self.tim_file:
+            self._compute_initial_residuals()
+
+    def _parse_par_file_parameters(self):
+        """
+        Parse .par file to extract available fittable parameters.
+
+        Returns
+        -------
+        list of str
+            List of parameter names that exist in the par file
+        """
+        if not self.par_file:
+            return []
+
+        # Common fittable parameters we look for
+        fittable_params = [
+            'F0', 'F1', 'F2', 'F3', 'F4', 'F5',  # Spin
+            'DM', 'DM1', 'DM2', 'DM3',  # Dispersion
+            'RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX',  # Astrometry
+            'PB', 'A1', 'ECC', 'OM', 'T0', 'TASC',  # Binary
+            'EPS1', 'EPS2', 'M2', 'SINI', 'PBDOT'  # More binary
+        ]
+
+        found_params = []
+
+        try:
+            with open(self.par_file, 'r') as f:
+                for line in f:
+                    line_stripped = line.strip()
+                    if not line_stripped or line_stripped.startswith('#'):
+                        continue
+
+                    parts = line_stripped.split()
+                    if parts:
+                        param_name = parts[0]
+                        if param_name in fittable_params:
+                            found_params.append(param_name)
+
+        except Exception as e:
+            print(f"Error parsing par file: {e}")
+            return []
+
+        return found_params
+    
+    def _load_initial_parameter_values(self):
+        """
+        Load initial parameter values from .par file.
+        
+        Stores values in self.initial_params for comparison in fit results.
+        """
+        from jug.io.par_reader import parse_par_file
+        
+        if not self.par_file:
+            return
+        
+        try:
+            params = parse_par_file(self.par_file)
+            self.initial_params = dict(params)
+        except Exception as e:
+            print(f"Error loading initial parameter values: {e}")
+            self.initial_params = {}
+
+    def _update_available_parameters(self):
+        """Update the parameter checkboxes based on available parameters in par file."""
+        # Parse par file to get available parameters
+        params_in_file = self._parse_par_file_parameters()
+        
+        # Load initial parameter values from par file
+        self._load_initial_parameter_values()
+
+        # Add command-line fit parameters
+        all_params = list(set(params_in_file + self.cmdline_fit_params))
+
+        # Sort parameters by type and order
+        def param_sort_key(p):
+            # Sort order: F params, DM params, astrometry, binary
+            if p.startswith('F'):
+                return (0, int(p[1:]) if p[1:].isdigit() else 99)
+            elif p.startswith('DM'):
+                return (1, int(p[2:]) if len(p) > 2 and p[2:].isdigit() else 0)
+            elif p in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']:
+                return (2, ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX'].index(p))
+            else:
+                return (3, 0)
+
+        all_params.sort(key=param_sort_key)
+
+        # Clear existing checkboxes
+        for checkbox in self.param_checkboxes.values():
+            checkbox.deleteLater()
+        self.param_checkboxes.clear()
+
+        if self.param_placeholder:
+            self.param_placeholder.deleteLater()
+            self.param_placeholder = None
+
+        # Create new checkboxes
+        for param in all_params:
+            checkbox = QCheckBox(param)
+
+            # Pre-select if in command-line fit params
+            if param in self.cmdline_fit_params:
+                checkbox.setChecked(True)
+            # Default to F0, F1 if no command-line params specified
+            elif not self.cmdline_fit_params and param in ['F0', 'F1']:
+                checkbox.setChecked(True)
+
+            # Add note if parameter not in original par file
+            if param not in params_in_file:
+                checkbox.setStyleSheet("color: #0066cc;")  # Blue for added params
+                checkbox.setToolTip(f"{param} not in original .par file (will be fitted from scratch)")
+
+            self.param_checkboxes[param] = checkbox
+            self.param_layout.addWidget(checkbox)
+
+        self.available_params = all_params
+
+        # Update status
+        if all_params:
+            status_msg = f"Found {len(params_in_file)} fittable parameters in .par file"
+            if self.cmdline_fit_params:
+                added = [p for p in self.cmdline_fit_params if p not in params_in_file]
+                if added:
+                    status_msg += f" (+ {len(added)} from --fit)"
+            self.status_bar.showMessage(status_msg)

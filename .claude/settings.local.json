@@ -28,7 +28,18 @@
       "Bash(mamba activate:*)",
       "Bash(python:*)",
       "Bash(/bin/bash -c \"source ~/.bashrc && ml conda && mamba activate discotech && python test_piecewise_comparison_fresh.py\")",
-      "Bash(/bin/bash -l -c \"ml conda; mamba activate discotech; python test_piecewise_comparison_fresh.py\")"
+      "Bash(/bin/bash -l -c \"ml conda; mamba activate discotech; python test_piecewise_comparison_fresh.py\")",
+      "Bash(conda list:*)",
+      "Bash(mamba search:*)",
+      "Bash(mamba install:*)",
+      "Bash(jug-gui:*)",
+      "Bash(export QT_DEBUG_PLUGINS=1)",
+      "Bash(echo:*)",
+      "Bash(export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH)",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Bash(timeout 3 jug-gui:*)",
+      "Bash(timeout 2 jug-gui:*)"
     ],
     "deny": [],
     "ask": []

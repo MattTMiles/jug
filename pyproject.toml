@@ -35,10 +35,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = [
+qt = [
     "PySide6>=6.6.0",
     "pyqtgraph>=0.13.0",
     "matplotlib>=3.7.0",
+]
+server = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "python-multipart>=0.0.6",
+]
+gui = [
+    "jug-timing[qt]",
 ]
 dev = [
     "pytest>=7.4.0",
@@ -53,13 +61,14 @@ docs = [
     "sphinx-autodoc-typehints>=1.24.0",
 ]
 all = [
-    "jug-timing[gui,dev,docs]",
+    "jug-timing[qt,server,dev,docs]",
 ]
 
 [project.scripts]
 jug-compute-residuals = "jug.scripts.compute_residuals:main"
 jug-fit = "jug.scripts.fit_parameters:main"
 jug-gui = "jug.gui.main:main"
+jugd = "jug.scripts.jugd:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/jug"

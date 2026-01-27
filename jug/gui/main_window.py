@@ -20,6 +20,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("JUG Timing Analysis")
         self.setGeometry(100, 100, 1200, 800)
 
+        # Timing session (engine with caching)
+        self.session = None
+        
         # Data storage
         self.par_file = None
         self.tim_file = None
@@ -42,10 +45,15 @@ class MainWindow(QMainWindow):
         
         # Initial parameter values from .par file
         self.initial_params = {}
+        
+        # Plot items (reused for performance)
+        self.scatter_item = None
+        self.error_bar_item = None
+        self.zero_line = None
 
         # Thread pool for background tasks
         self.thread_pool = QThreadPool()
-        self.thread_pool.setMaxThreadCount(1)  # One fit at a time
+        self.thread_pool.setMaxThreadCount(2)  # Session + compute/fit
 
         # Setup UI
         self._setup_ui()
@@ -236,90 +244,175 @@ class MainWindow(QMainWindow):
     def _check_ready_to_compute(self):
         """Check if we have both files and can compute residuals."""
         if self.par_file and self.tim_file:
-            self._compute_initial_residuals()
+            self._create_session()
+    
+    def _create_session(self):
+        """Create timing session in background."""
+        from jug.gui.workers.session_worker import SessionWorker
+        
+        self.status_bar.showMessage("Loading files...")
+        
+        # Disable controls during load
+        if hasattr(self, 'fit_button'):
+            self.fit_button.setEnabled(False)
+        
+        # Create session worker
+        worker = SessionWorker(self.par_file, self.tim_file)
+        worker.signals.result.connect(self.on_session_ready)
+        worker.signals.error.connect(self.on_session_error)
+        worker.signals.progress.connect(self.on_session_progress)
+        worker.signals.finished.connect(self.on_session_finished)
+        
+        # Start in thread pool
+        self.thread_pool.start(worker)
+    
+    def on_session_ready(self, session):
+        """Handle successful session creation."""
+        self.session = session
+        
+        # Get initial params for GUI
+        self.initial_params = session.get_initial_params()
+        
+        # Now compute initial residuals
+        self._compute_initial_residuals()
+    
+    def on_session_error(self, error_msg):
+        """Handle session creation error."""
+        QMessageBox.critical(self, "Session Error", f"Failed to load files:\n\n{error_msg}")
+        self.status_bar.showMessage("Failed to load files")
+    
+    def on_session_progress(self, message):
+        """Handle session progress updates."""
+        self.status_bar.showMessage(message)
+    
+    def on_session_finished(self):
+        """Handle session worker completion."""
+        pass  # Re-enable handled in on_session_ready
     
     def _compute_initial_residuals(self):
-        """Compute and display initial residuals."""
-        from jug.residuals.simple_calculator import compute_residuals_simple
+        """Compute initial residuals using session (background)."""
+        if not self.session:
+            return
+        
+        from jug.gui.workers.compute_worker import ComputeWorker
         
         self.status_bar.showMessage("Computing residuals...")
         
-        try:
-            result = compute_residuals_simple(
-                par_file=self.par_file,
-                tim_file=self.tim_file,
-                verbose=False
-            )
-            
-            # Store data
-            self.mjd = result['tdb_mjd']
-            self.residuals_us = result['residuals_us']
-            self.prefit_residuals_us = result['residuals_us'].copy()
-            self.errors_us = result.get('errors_us', None)
-            self.rms_us = result['rms_us']
-            self.is_fitted = False
-            self.fit_results = None
-            
-            # Update plot
-            self._update_plot()
-            
-            # Enable controls
-            self.fit_button.setEnabled(True)
-            self.reset_button.setEnabled(True)
-            
-            # Update statistics
-            self.rms_label.setText(f"RMS: {self.rms_us:.6f} μs")
-            self.ntoa_label.setText(f"TOAs: {len(self.mjd)}")
-            
-            # Update status
-            self.status_bar.showMessage(
-                f"Loaded {len(self.mjd)} TOAs, Prefit RMS = {self.rms_us:.6f} μs"
-            )
-            
-        except Exception as e:
-            self.status_bar.showMessage(f"Error: {str(e)}")
-            print(f"Error computing residuals: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def _update_plot(self):
-        """Update the residual plot."""
-        self.plot_widget.clear()
+        # Create compute worker
+        worker = ComputeWorker(self.session)
+        worker.signals.result.connect(self.on_compute_complete)
+        worker.signals.error.connect(self.on_compute_error)
+        worker.signals.progress.connect(self.status_bar.showMessage)
+        worker.signals.finished.connect(self.on_compute_finished)
         
+        # Start in thread pool
+        self.thread_pool.start(worker)
+    
+    def on_compute_complete(self, result):
+        """Handle successful residual computation."""
+        # Store data
+        self.mjd = result['tdb_mjd']
+        self.residuals_us = result['residuals_us']
+        self.prefit_residuals_us = result['residuals_us'].copy()
+        self.errors_us = result.get('errors_us', None)
+        self.rms_us = result['rms_us']
+        self.is_fitted = False
+        self.fit_results = None
+        
+        # Update plot
+        self._update_plot()
+        
+        # Enable controls
+        self.fit_button.setEnabled(True)
+        self.reset_button.setEnabled(True)
+        
+        # Update statistics
+        self.rms_label.setText(f"RMS: {self.rms_us:.6f} μs")
+        self.ntoa_label.setText(f"TOAs: {len(self.mjd)}")
+        
+        # Update status
+        self.status_bar.showMessage(
+            f"Loaded {len(self.mjd)} TOAs, Prefit RMS = {self.rms_us:.6f} μs"
+        )
+    
+    def on_compute_error(self, error_msg):
+        """Handle computation error."""
+        # DEBUG
+        print(f"[DEBUG] Compute error: {error_msg}")
+        
+        QMessageBox.critical(self, "Compute Error", f"Computation failed:\n\n{error_msg}")
+        self.status_bar.showMessage("Computation failed")
+    
+    def on_compute_finished(self):
+        """Handle compute worker completion."""
+        pass  # Re-enable handled in on_compute_complete
+    
+    def _update_plot(self, auto_range=None):
+        """
+        Update the residual plot.
+        
+        Parameters
+        ----------
+        auto_range : bool, optional
+            If True, call autoRange(). If None, auto-ranges only on first plot.
+        """
         if self.mjd is None or self.residuals_us is None:
             return
         
-        # Add error bars if available
+        # Determine if this is first plot
+        is_first_plot = self.scatter_item is None
+        if auto_range is None:
+            auto_range = is_first_plot
+        
+        # Update or create scatter plot
+        if self.scatter_item is None:
+            # First time: create scatter item
+            self.scatter_item = pg.ScatterPlotItem(
+                size=5,
+                pen=pg.mkPen(None),
+                brush=pg.mkBrush(100, 100, 255, 120)
+            )
+            self.plot_widget.addItem(self.scatter_item)
+        
+        # Update scatter data (fast - no recreation)
+        self.scatter_item.setData(x=self.mjd, y=self.residuals_us)
+        
+        # Update or create error bars (optional for performance)
         if self.errors_us is not None:
-            error_bar = pg.ErrorBarItem(
+            if self.error_bar_item is None:
+                # First time: create error bar item
+                self.error_bar_item = pg.ErrorBarItem(
+                    beam=0.5,
+                    pen=pg.mkPen(color=(100, 100, 100, 100), width=1)
+                )
+                self.plot_widget.addItem(self.error_bar_item)
+            
+            # Update error bar data
+            self.error_bar_item.setData(
                 x=self.mjd,
                 y=self.residuals_us,
-                height=self.errors_us * 2,  # ±1σ
-                beam=0.5,
-                pen=pg.mkPen(color=(100, 100, 100, 100), width=1)
+                height=self.errors_us * 2  # ±1σ
             )
-            self.plot_widget.addItem(error_bar)
+        elif self.error_bar_item is not None:
+            # Remove error bars if no longer needed
+            self.plot_widget.removeItem(self.error_bar_item)
+            self.error_bar_item = None
         
-        # Scatter plot of residuals
-        scatter = pg.ScatterPlotItem(
-            x=self.mjd,
-            y=self.residuals_us,
-            size=5,
-            pen=pg.mkPen(None),
-            brush=pg.mkBrush(100, 100, 255, 120)
-        )
-        self.plot_widget.addItem(scatter)
+        # Add zero line (only once)
+        if self.zero_line is None:
+            self.zero_line = self.plot_widget.addLine(
+                y=0,
+                pen=pg.mkPen('r', style=Qt.DashLine, width=2)
+            )
         
-        # Zero line
-        self.plot_widget.addLine(y=0, pen=pg.mkPen('r', style=Qt.DashLine, width=2))
-        
-        # Auto-range
-        self.plot_widget.autoRange()
+        # Auto-range only when requested (not every update!)
+        if auto_range:
+            self.plot_widget.autoRange()
     
     def on_fit_clicked(self):
         """Handle Fit button click."""
-        if not self.par_file or not self.tim_file:
-            QMessageBox.warning(self, "No Data", "Please load .par and .tim files first")
+        if not self.session:
+            QMessageBox.warning(self, "No Session", "Please load .par and .tim files first")
             return
 
         # Get selected parameters
@@ -335,10 +428,10 @@ class MainWindow(QMainWindow):
         self.fit_button.setEnabled(False)
         self.status_bar.showMessage(f"Fitting {', '.join(fit_params)}...")
 
-        # Create and start fit worker
+        # Create and start fit worker (uses session)
         from jug.gui.workers.fit_worker import FitWorker
 
-        worker = FitWorker(self.par_file, self.tim_file, fit_params)
+        worker = FitWorker(self.session, fit_params)
         worker.signals.result.connect(self.on_fit_complete)
         worker.signals.error.connect(self.on_fit_error)
         worker.signals.finished.connect(self.on_fit_finished)
@@ -359,18 +452,76 @@ class MainWindow(QMainWindow):
         self.fit_results = result
         self.is_fitted = True
 
-        try:
-            # Recompute residuals with fitted parameters
-            self._compute_postfit_residuals(result)
+        # Store fit result temporarily for postfit callback
+        self._pending_fit_result = result
 
+        # Recompute residuals with fitted parameters (async)
+        # Stats and dialog will be shown when postfit completes
+        self._compute_postfit_residuals(result)
+
+    def _compute_postfit_residuals(self, result):
+        """
+        Compute postfit residuals using fitted parameters.
+        
+        Uses session for fast computation (no file I/O needed!).
+
+        Parameters
+        ----------
+        result : dict
+            Fit results containing final_params
+        """
+        if not self.session:
+            return
+        
+        # Use ComputeWorker with fitted parameters (background, but will be instant from cache)
+        from jug.gui.workers.compute_worker import ComputeWorker
+        
+        self.status_bar.showMessage("Computing postfit residuals...")
+        
+        # DEBUG
+        print(f"[DEBUG] Computing postfit with params: {list(result['final_params'].keys())}")
+        print(f"[DEBUG] F0 = {result['final_params'].get('F0', 'N/A')}")
+        
+        # Create compute worker with fitted parameters
+        worker = ComputeWorker(self.session, params=result['final_params'])
+        worker.signals.result.connect(self.on_postfit_compute_complete)
+        worker.signals.error.connect(self.on_compute_error)
+        worker.signals.finished.connect(lambda: None)  # No action needed
+        
+        # Start in thread pool
+        self.thread_pool.start(worker)
+    
+    def on_postfit_compute_complete(self, result):
+        """Handle postfit residual computation completion."""
+        # DEBUG
+        print(f"[DEBUG] Postfit compute complete: RMS = {result['rms_us']:.6f} μs")
+        print(f"[DEBUG] Residuals range: [{result['residuals_us'].min():.3f}, {result['residuals_us'].max():.3f}]")
+        
+        # Update ALL data (MJDs, residuals, errors, RMS)
+        self.mjd = result['tdb_mjd']
+        self.residuals_us = result['residuals_us']
+        self.postfit_residuals_us = result['residuals_us'].copy()
+        self.errors_us = result.get('errors_us', None)
+        self.rms_us = result['rms_us']
+        
+        # DEBUG
+        print(f"[DEBUG] Updated GUI RMS: {self.rms_us:.6f} μs")
+        
+        # Update plot (auto-range to show new residual scale after fit)
+        self._update_plot(auto_range=True)
+        
+        # Now update statistics and show dialog (fit result was stored)
+        if hasattr(self, '_pending_fit_result'):
+            fit_result = self._pending_fit_result
+            
             # Update statistics
-            self.rms_label.setText(f"RMS: {result['final_rms']:.6f} μs")
-            self.iter_label.setText(f"Iterations: {result['iterations']}")
+            self.rms_label.setText(f"RMS: {self.rms_us:.6f} μs")
+            self.iter_label.setText(f"Iterations: {fit_result['iterations']}")
 
             # Calculate chi-squared if we have errors
             if self.errors_us is not None:
                 n_toas = len(self.mjd)
-                n_params = len(result['final_params'])
+                n_params = len(fit_result['final_params'])
                 dof = n_toas - n_params
                 # Calculate proper chi-squared with postfit residuals
                 chi2 = np.sum((self.residuals_us / self.errors_us) ** 2)
@@ -378,128 +529,21 @@ class MainWindow(QMainWindow):
                 self.chi2_label.setText(f"χ²/dof: {chi2_dof:.2f}")
 
             # Show fit results dialog
-            self._show_fit_results(result)
+            self._show_fit_results(fit_result)
 
             # Update status
-            param_str = ', '.join(result['final_params'].keys())
+            param_str = ', '.join(fit_result['final_params'].keys())
             self.status_bar.showMessage(
                 f"Fit complete: {param_str} | "
-                f"RMS = {result['final_rms']:.6f} μs | "
-                f"{result['iterations']} iterations | "
-                f"{'converged' if result['converged'] else 'not converged'}"
+                f"RMS = {self.rms_us:.6f} μs | "
+                f"{fit_result['iterations']} iterations | "
+                f"{'converged' if fit_result['converged'] else 'not converged'}"
             )
-
-        except Exception as e:
-            self.status_bar.showMessage(f"Error computing postfit residuals: {e}")
-            import traceback
-            traceback.print_exc()
-
-    def _compute_postfit_residuals(self, result):
-        """
-        Compute postfit residuals by updating par file with fitted parameters.
-
-        Parameters
-        ----------
-        result : dict
-            Fit results containing final_params
-        """
-        import tempfile
-        from jug.residuals.simple_calculator import compute_residuals_simple
-
-        # Read original par file
-        with open(self.par_file, 'r') as f:
-            par_lines = f.readlines()
-
-        # Update fitted parameters in par file
-        updated_lines = []
-        fitted_params = result['final_params']
-        params_in_file = set()
-
-        for line in par_lines:
-            line_stripped = line.strip()
-            if not line_stripped or line_stripped.startswith('#'):
-                updated_lines.append(line)
-                continue
-
-            # Check if this line contains a fitted parameter
-            parts = line_stripped.split()
-            if parts:
-                param_name = parts[0]
-                params_in_file.add(param_name)
-                
-                if param_name in fitted_params:
-                    # Replace the value with the fitted value
-                    # Format: PARAM VALUE [flags...]
-                    fitted_value = fitted_params[param_name]
-
-                    # Preserve formatting based on parameter type
-                    if param_name == 'F0':
-                        new_line = f"{param_name:<12} {fitted_value:.15f}"
-                    elif param_name.startswith('F') and param_name[1:].isdigit():
-                        new_line = f"{param_name:<12} {fitted_value:.15e}"
-                    elif param_name.startswith('DM'):
-                        new_line = f"{param_name:<12} {fitted_value:.15f}"
-                    else:
-                        new_line = f"{param_name:<12} {fitted_value:.15e}"
-
-                    # Add flags if present (usually "1" for fitted params)
-                    if len(parts) > 1:
-                        # Keep existing flags
-                        flags = ' '.join(parts[2:]) if len(parts) > 2 else ''
-                        if flags:
-                            new_line += f" 1 {flags}"
-                        else:
-                            new_line += " 1"
-
-                    updated_lines.append(new_line + '\n')
-                else:
-                    updated_lines.append(line)
-            else:
-                updated_lines.append(line)
-        
-        # Add new parameters that weren't in the original file
-        new_params = [p for p in fitted_params.keys() if p not in params_in_file]
-        if new_params:
-            updated_lines.append('\n# Parameters added by fit:\n')
-            for param in sorted(new_params):
-                fitted_value = fitted_params[param]
-                # Format based on parameter type
-                if param == 'F0':
-                    new_line = f"{param:<12} {fitted_value:.15f} 1\n"
-                elif param.startswith('F') and param[1:].isdigit():
-                    new_line = f"{param:<12} {fitted_value:.15e} 1\n"
-                elif param.startswith('DM'):
-                    new_line = f"{param:<12} {fitted_value:.15f} 1\n"
-                else:
-                    new_line = f"{param:<12} {fitted_value:.15e} 1\n"
-                updated_lines.append(new_line)
-
-        # Write to temporary par file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.par', delete=False) as tmp:
-            tmp.writelines(updated_lines)
-            tmp_par_path = Path(tmp.name)
-
-        try:
-            # Compute residuals with updated parameters
-            postfit_result = compute_residuals_simple(
-                par_file=tmp_par_path,
-                tim_file=self.tim_file,
-                verbose=False
-            )
-
-            # Update residuals and plot
-            self.residuals_us = postfit_result['residuals_us']
-            self.postfit_residuals_us = postfit_result['residuals_us'].copy()
-            self.rms_us = postfit_result['rms_us']
-
-            # Update plot
-            self._update_plot()
-
-        finally:
-            # Clean up temporary file
-            tmp_par_path.unlink()
-
-        self.status_bar.showMessage("Postfit residuals computed successfully")
+            
+            # Clear pending result
+            delattr(self, '_pending_fit_result')
+        else:
+            self.status_bar.showMessage("Postfit residuals computed successfully")
 
     def on_fit_error(self, error_msg):
         """
@@ -651,7 +695,7 @@ class MainWindow(QMainWindow):
 
         # Compute residuals if both files are loaded
         if self.par_file and self.tim_file:
-            self._compute_initial_residuals()
+            self._check_ready_to_compute()
 
     def _parse_par_file_parameters(self):
         """

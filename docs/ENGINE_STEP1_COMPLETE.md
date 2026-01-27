@@ -220,23 +220,28 @@ jugd serve --port 8080
 
 ## Installation
 
-### Core (CLI + Engine)
+### Simple Installation (Recommended)
+
 ```bash
 pip install jug-timing
 ```
 
-### With Qt GUI
-```bash
-pip install jug-timing[qt]
-```
+This installs everything you need:
+- ✅ Core timing engine with JAX acceleration
+- ✅ Command-line tools (`jug-compute-residuals`, `jug-fit`)
+- ✅ Qt GUI (`jug-gui`) for interactive analysis
+- ✅ Server (`jugd`) for remote access
 
-### With Server
-```bash
-pip install jug-timing[server]
-```
+### Development Installation
 
-### All Features
 ```bash
+# With development tools (pytest, ruff, mypy, etc.)
+pip install jug-timing[dev]
+
+# For building documentation
+pip install jug-timing[docs]
+
+# Everything (includes dev + docs)
 pip install jug-timing[all]
 ```
 

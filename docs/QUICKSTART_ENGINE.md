@@ -2,18 +2,38 @@
 
 ## Installation
 
+### Simple Installation (Everything Included)
+
 ```bash
-# Core (CLI + engine)
+# Install JUG with all features (recommended)
 pip install jug-timing
 
-# With Qt GUI  
-pip install jug-timing[qt]
+# This includes:
+# - Core timing engine
+# - Command-line tools (jug-compute-residuals, jug-fit)
+# - Qt GUI (jug-gui)
+# - Server (jugd)
+```
 
-# With server
-pip install jug-timing[server]
+### Development Installation
 
-# Everything
+```bash
+# For development with testing tools
+pip install jug-timing[dev]
+
+# For building documentation
+pip install jug-timing[docs]
+
+# Everything including dev tools
 pip install jug-timing[all]
+```
+
+### From Source
+
+```bash
+git clone https://github.com/yourusername/jug
+cd jug
+pip install -e .  # Editable install with all features
 ```
 
 ## Command-Line Tools

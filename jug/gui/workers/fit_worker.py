@@ -27,25 +27,24 @@ class FitWorker(QRunnable):
     Worker thread for running parameter fitting in the background.
 
     This prevents the GUI from freezing during long-running fits.
+    
+    Updated to use TimingSession for better performance.
     """
 
-    def __init__(self, par_file: Path, tim_file: Path, fit_params: list[str]):
+    def __init__(self, session, fit_params: list[str]):
         """
         Initialize the fit worker.
 
         Parameters
         ----------
-        par_file : Path
-            Path to .par file
-        tim_file : Path
-            Path to .tim file
+        session : TimingSession
+            Existing timing session (with cached data)
         fit_params : list[str]
             List of parameters to fit (e.g., ['F0', 'F1', 'DM'])
         """
         super().__init__()
         self.signals = WorkerSignals()
-        self.par_file = par_file
-        self.tim_file = tim_file
+        self.session = session
         self.fit_params = fit_params
         self.is_running = True
 
@@ -57,15 +56,10 @@ class FitWorker(QRunnable):
         This method is called when the worker is started via QThreadPool.
         """
         try:
-            from jug.fitting.optimized_fitter import fit_parameters_optimized
-
-            # Run the fit (auto-detect device - will use GPU if available)
-            result = fit_parameters_optimized(
-                par_file=self.par_file,
-                tim_file=self.tim_file,
+            # Use session.fit_parameters (reuses cached data)
+            result = self.session.fit_parameters(
                 fit_params=self.fit_params,
-                device=None,  # Auto-detect (GPU if available, else CPU)
-                verbose=False  # Don't print to console in GUI mode
+                verbose=False
             )
 
             # Copy numpy arrays to ensure thread safety

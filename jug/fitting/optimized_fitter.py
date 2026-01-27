@@ -938,11 +938,25 @@ def _fit_parameters_general(
     errors_sec = errors_us * 1e-6
     weights = 1.0 / errors_sec**2
     
-    # Extract starting parameter values
+    # Extract starting parameter values (add defaults for missing parameters)
     param_values_start = []
     for param in fit_params:
         if param not in params:
-            raise ValueError(f"Parameter {param} not found in .par file")
+            # Add default value for missing parameter
+            if param.startswith('F') and param[1:].isdigit():
+                # Spin frequency derivatives default to 0.0
+                default_value = 0.0
+            elif param.startswith('DM') and (len(param) == 2 or param[2:].isdigit()):
+                # DM derivatives default to 0.0
+                default_value = 0.0
+            else:
+                # For other parameters, we don't have a good default
+                raise ValueError(f"Parameter {param} not found in .par file and no default available")
+            
+            params[param] = default_value
+            if verbose:
+                print(f"Warning: {param} not in .par file, using default value: {default_value}")
+        
         param_values_start.append(params[param])
     
     # Check which parameter types are requested (for verbose output)

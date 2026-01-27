@@ -1,0 +1,35 @@
+name: jug
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python>=3.10
+
+  # Core scientific stack
+  - numpy>=1.24.0
+  - scipy>=1.10.0
+  - astropy>=5.3.0
+
+  # JAX (CPU version - for GPU, see docs)
+  - jax>=0.4.0
+  - jaxlib>=0.4.0
+
+  # Optimization
+  - pip
+
+  # GUI dependencies (conda-forge for proper Qt integration)
+  - pyside6>=6.6.0
+  - pyqtgraph>=0.13.0
+  - matplotlib>=3.7.0
+
+  # Development tools (optional)
+  - pytest>=7.4.0
+  - pytest-cov>=4.1.0
+  - black>=23.0.0
+
+  # Install JUG itself via pip (in editable mode)
+  - pip:
+    - numpyro>=0.13.0
+    - optax>=0.1.7
+    - -e .

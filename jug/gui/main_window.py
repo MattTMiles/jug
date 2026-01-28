@@ -18,7 +18,9 @@ class MainWindow(QMainWindow):
     def __init__(self, fit_params=None):
         super().__init__()
         self.setWindowTitle("JUG Timing Analysis")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1152, 768)
+        self.setMinimumSize(1152, 768)
+        self.setMaximumSize(2304, 1536)
 
         # Timing session (engine with caching)
         self.session = None
@@ -36,6 +38,7 @@ class MainWindow(QMainWindow):
         self.postfit_residuals_us = None
         self.fit_results = None
         self.is_fitted = False
+        self.pulsar_name = None
 
         # Command-line fit parameters
         self.cmdline_fit_params = fit_params or []
@@ -68,24 +71,49 @@ class MainWindow(QMainWindow):
         # Main layout: Plot on left, controls on right
         main_layout = QHBoxLayout(central_widget)
         
-        # Left side: Large residual plot
+        # Left side: Plot area with title
+        plot_container = QWidget()
+        plot_layout = QVBoxLayout(plot_container)
+        plot_layout.setContentsMargins(0, 5, 0, 0)
+        plot_layout.setSpacing(15)
+        
+        # Title label above plot (pulsar name and RMS)
+        self.plot_title_label = QLabel("")
+        self.plot_title_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; margin-bottom: 5px;")
+        self.plot_title_label.setAlignment(Qt.AlignCenter)
+        plot_layout.addWidget(self.plot_title_label)
+        
+        # Large residual plot
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setLabel('left', 'Residual', units='μs')
         self.plot_widget.setLabel('bottom', 'MJD (TDB)', units='days')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.setBackground('w')  # White background
         
-        # Configure plot appearance
-        self.plot_widget.getAxis('left').setPen('k')
-        self.plot_widget.getAxis('bottom').setPen('k')
-        self.plot_widget.getAxis('left').setTextPen('k')
-        self.plot_widget.getAxis('bottom').setTextPen('k')
+        # Configure plot appearance for all axes
+        for axis in ['left', 'bottom', 'top', 'right']:
+            ax = self.plot_widget.getPlotItem().getAxis(axis)
+            ax.setPen(pg.mkPen('k', width=2))
+            if axis in ['left', 'bottom']:
+                ax.setTextPen('k')
+            else:
+                # Top and right: show border but no tick labels
+                ax.setStyle(showValues=False)
+                ax.show()
+        
+        # Disable SI prefix scaling on x-axis (show days, not kdays)
+        self.plot_widget.getAxis('bottom').enableAutoSIPrefix(False)
+        
+        # Add border around view box with thicker pen
+        self.plot_widget.getPlotItem().getViewBox().setBorder(pg.mkPen('k', width=2))
+        
+        plot_layout.addWidget(self.plot_widget)
         
         # Right side: Control panel
         control_panel = self._create_control_panel()
         
         # Add to main layout (plot takes 80%, controls 20%)
-        main_layout.addWidget(self.plot_widget, stretch=4)
+        main_layout.addWidget(plot_container, stretch=4)
         main_layout.addWidget(control_panel, stretch=1)
     
     def _create_control_panel(self):
@@ -115,12 +143,26 @@ class MainWindow(QMainWindow):
         self.fit_button.setEnabled(False)
         layout.addWidget(self.fit_button)
 
+        # Fit Report button
+        self.fit_report_button = QPushButton("Fit Report")
+        self.fit_report_button.setMinimumHeight(40)
+        self.fit_report_button.clicked.connect(self.on_show_fit_report)
+        self.fit_report_button.setEnabled(False)
+        layout.addWidget(self.fit_report_button)
+
         # Reset button
         self.reset_button = QPushButton("Reset to Prefit")
         self.reset_button.setMinimumHeight(40)
         self.reset_button.clicked.connect(self.on_reset_clicked)
         self.reset_button.setEnabled(False)
         layout.addWidget(self.reset_button)
+
+        # Fit Window to Data button
+        self.fit_window_button = QPushButton("Fit Window to Data")
+        self.fit_window_button.setMinimumHeight(40)
+        self.fit_window_button.clicked.connect(self.on_zoom_fit)
+        self.fit_window_button.setEnabled(False)
+        layout.addWidget(self.fit_window_button)
 
         layout.addSpacing(20)
 
@@ -321,10 +363,12 @@ class MainWindow(QMainWindow):
         
         # Update plot
         self._update_plot()
+        self._update_plot_title()
         
         # Enable controls
         self.fit_button.setEnabled(True)
         self.reset_button.setEnabled(True)
+        self.fit_window_button.setEnabled(True)
         
         # Update statistics
         self.rms_label.setText(f"RMS: {self.rms_us:.6f} μs")
@@ -408,6 +452,12 @@ class MainWindow(QMainWindow):
         # Auto-range only when requested (not every update!)
         if auto_range:
             self.plot_widget.autoRange()
+    
+    def _update_plot_title(self):
+        """Update the plot title with pulsar name and RMS."""
+        pulsar_str = self.pulsar_name if self.pulsar_name else "Unknown Pulsar"
+        rms_str = f"{self.rms_us:.6f} μs" if self.rms_us is not None else "--"
+        self.plot_title_label.setText(f"{pulsar_str}  |  RMS: {rms_str}")
     
     def on_fit_clicked(self):
         """Handle Fit button click."""
@@ -509,6 +559,7 @@ class MainWindow(QMainWindow):
         
         # Update plot (auto-range to show new residual scale after fit)
         self._update_plot(auto_range=True)
+        self._update_plot_title()
         
         # Now update statistics and show dialog (fit result was stored)
         if hasattr(self, '_pending_fit_result'):
@@ -528,8 +579,8 @@ class MainWindow(QMainWindow):
                 chi2_dof = chi2 / dof
                 self.chi2_label.setText(f"χ²/dof: {chi2_dof:.2f}")
 
-            # Show fit results dialog
-            self._show_fit_results(fit_result)
+            # Enable fit report button
+            self.fit_report_button.setEnabled(True)
 
             # Update status
             param_str = ', '.join(fit_result['final_params'].keys())
@@ -561,6 +612,11 @@ class MainWindow(QMainWindow):
         """Handle fit worker finishing (success or error)."""
         self.fit_button.setEnabled(True)
 
+    def on_show_fit_report(self):
+        """Show fit report dialog when button is clicked."""
+        if self.fit_results:
+            self._show_fit_results(self.fit_results)
+    
     def _show_fit_results(self, result):
         """
         Show fit results in a dialog.
@@ -570,6 +626,10 @@ class MainWindow(QMainWindow):
         result : dict
             Fit results
         """
+        # Build title with pulsar name and RMS
+        pulsar_str = self.pulsar_name if self.pulsar_name else 'Unknown'
+        title = f"{pulsar_str} - RMS: {result['final_rms']:.6f} μs"
+        
         msg = "<h3>Fit Results</h3>"
         msg += "<table border='1' cellpadding='5' style='border-collapse: collapse;'>"
         msg += "<tr><th>Parameter</th><th>New Value</th><th>Previous Value</th><th>Change</th><th>Uncertainty</th></tr>"
@@ -611,9 +671,20 @@ class MainWindow(QMainWindow):
         msg += f"<b>Time:</b> {result['total_time']:.2f} s"
 
         msgbox = QMessageBox(self)
-        msgbox.setWindowTitle("Fit Complete")
+        msgbox.setWindowTitle(title)
         msgbox.setTextFormat(Qt.RichText)
         msgbox.setText(msg)
+        
+        # Set dialog to 60% of screen height
+        from PySide6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen().geometry()
+        dialog_height = int(screen.height() * 0.6)
+        dialog_width = 800  # Fixed reasonable width
+        
+        # Must set size after show() for QMessageBox
+        msgbox.show()
+        msgbox.setFixedSize(dialog_width, dialog_height)
+        
         msgbox.exec()
 
     def on_reset_clicked(self):
@@ -623,7 +694,9 @@ class MainWindow(QMainWindow):
             self.residuals_us = self.prefit_residuals_us.copy()
             self.is_fitted = False
             self.fit_results = None
+            self.fit_report_button.setEnabled(False)
             self._update_plot()
+            self._update_plot_title()
 
             # Update statistics
             self.rms_label.setText(f"RMS: {self.rms_us:.6f} μs")
@@ -753,9 +826,13 @@ class MainWindow(QMainWindow):
         try:
             params = parse_par_file(self.par_file)
             self.initial_params = dict(params)
+            
+            # Extract pulsar name (PSRJ or PSR)
+            self.pulsar_name = params.get('PSRJ', params.get('PSR', 'Unknown'))
         except Exception as e:
             print(f"Error loading initial parameter values: {e}")
             self.initial_params = {}
+            self.pulsar_name = 'Unknown'
 
     def _update_available_parameters(self):
         """Update the parameter checkboxes based on available parameters in par file."""

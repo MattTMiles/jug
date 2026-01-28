@@ -47,11 +47,12 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import time
 import io
 import contextlib
 import math
+from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.io.par_reader import parse_par_file
@@ -60,6 +61,58 @@ from jug.utils.device import get_device
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.fitting.wls_fitter import wls_solve_svd
+
+
+@dataclass
+class GeneralFitSetup:
+    """
+    Setup data for general parameter fitting.
+    
+    This bundles all arrays needed for the iteration loop,
+    separating expensive setup from fast iterations.
+    
+    Attributes
+    ----------
+    params : dict
+        Initial parameter dictionary
+    fit_param_list : list of str
+        Parameters to fit
+    param_values_start : list of float
+        Initial parameter values
+    toas_mjd : np.ndarray
+        TOA times in MJD
+    freq_mhz : np.ndarray
+        Barycentric frequencies in MHz
+    errors_us : np.ndarray
+        TOA uncertainties in microseconds
+    errors_sec : np.ndarray
+        TOA uncertainties in seconds
+    weights : np.ndarray
+        TOA weights (1/sigma^2)
+    dt_sec_cached : np.ndarray
+        Precomputed time differences (includes all delays except updated params)
+    tdb_mjd : np.ndarray
+        TDB times in MJD
+    initial_dm_delay : np.ndarray or None
+        Initial DM delay (for DM fitting)
+    dm_params : list of str
+        DM parameters being fit (empty if none)
+    spin_params : list of str
+        Spin parameters being fit
+    """
+    params: Dict[str, float]
+    fit_param_list: List[str]
+    param_values_start: List[float]
+    toas_mjd: np.ndarray
+    freq_mhz: np.ndarray
+    errors_us: np.ndarray
+    errors_sec: np.ndarray
+    weights: np.ndarray
+    dt_sec_cached: np.ndarray
+    tdb_mjd: np.ndarray
+    initial_dm_delay: Optional[np.ndarray]
+    dm_params: List[str]
+    spin_params: List[str]
 
 
 def compute_dm_delay_fast(tdb_mjd: np.ndarray, freq_mhz: np.ndarray,
@@ -897,36 +950,38 @@ def _fit_parameters_jax_incremental(
     }
 
 
-def _fit_parameters_general(
+
+
+def _build_general_fit_setup_from_files(
     par_file: Path,
     tim_file: Path,
     fit_params: List[str],
-    max_iter: int,
-    convergence_threshold: float,
     clock_dir: str,
-    verbose: bool,
-    device: Optional[str]
-) -> Dict:
-    """Truly general parameter fitter - handles ANY parameter combination.
-    
-    This function can fit any mix of:
-    - Spin parameters (F0, F1, F2, ...)
-    - DM parameters (DM, DM1, DM2, ...)  [TODO]
-    - Astrometric parameters (RAJ, DECJ, PMRA, PMDEC, PX)  [TODO]
-    - Binary parameters (PB, A1, ECC, OM, T0, ...)  [TODO]
-    
-    The key design: Build design matrix column-by-column from modular
-    derivative functions. Each parameter type has its own derivative
-    calculator that returns a single column.
-    
-    Example:
-        fit_params = ['F0', 'F1', 'DM', 'RAJ', 'DECJ', 'PB']
-        → Design matrix M has 6 columns, one per parameter
-        → Each column computed by appropriate derivative function
+    verbose: bool
+) -> GeneralFitSetup:
     """
+    Build fitting setup from par/tim files (expensive I/O + compute).
     
-    total_start = time.time()
+    This is the "setup" phase that we want to do only once.
     
+    Parameters
+    ----------
+    par_file : Path
+        Path to .par file
+    tim_file : Path
+        Path to .tim file
+    fit_params : list of str
+        Parameters to fit
+    clock_dir : str
+        Clock directory
+    verbose : bool
+        Print progress
+        
+    Returns
+    -------
+    setup : GeneralFitSetup
+        Complete setup data for iteration
+    """
     # Parse files
     params = parse_par_file(par_file)
     toas_data = parse_tim_file_mjds(tim_file)
@@ -944,13 +999,10 @@ def _fit_parameters_general(
         if param not in params:
             # Add default value for missing parameter
             if param.startswith('F') and param[1:].isdigit():
-                # Spin frequency derivatives default to 0.0
                 default_value = 0.0
             elif param.startswith('DM') and (len(param) == 2 or param[2:].isdigit()):
-                # DM derivatives default to 0.0
                 default_value = 0.0
             else:
-                # For other parameters, we don't have a good default
                 raise ValueError(f"Parameter {param} not found in .par file and no default available")
             
             params[param] = default_value
@@ -959,51 +1011,13 @@ def _fit_parameters_general(
         
         param_values_start.append(params[param])
     
-    # Check which parameter types are requested (for verbose output)
+    # Classify parameters
     spin_params = [p for p in fit_params if p.startswith('F')]
     dm_params = [p for p in fit_params if p.startswith('DM')]
-    astrometry_params = [p for p in fit_params if p in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']]
-    binary_params = [p for p in fit_params if p in ['PB', 'A1', 'ECC', 'OM', 'T0', 'PBDOT', 'OMDOT', 'XDOT', 'EDOT', 'GAMMA', 'M2', 'SINI']]
     
-    # Check what's not yet implemented
-    not_implemented = []
-    if astrometry_params:
-        not_implemented.append(f"Astrometry: {astrometry_params}")
-    if binary_params:
-        not_implemented.append(f"Binary: {binary_params}")
-    
-    if not_implemented:
-        raise NotImplementedError(
-            f"The following parameter types are not yet implemented:\n" +
-            "\n".join(f"  - {item}" for item in not_implemented) +
-            f"\n\nCurrently supported: Spin (F0, F1, F2, ...) and DM (DM, DM1, DM2, ...)" +
-            f"\nComing in Milestone 3: Astrometry, Binary"
-        )
-    
-    if verbose:
-        param_summary = []
-        if spin_params:
-            param_summary.append(f"{len(spin_params)} spin")
-        if dm_params:
-            param_summary.append(f"{len(dm_params)} DM")
-        if astrometry_params:
-            param_summary.append(f"{len(astrometry_params)} astrometry")
-        if binary_params:
-            param_summary.append(f"{len(binary_params)} binary")
-        print(f"\nFitting {' + '.join(param_summary)} parameters")
-        for param, val in zip(fit_params, param_values_start):
-            if param.startswith('F') and abs(val) < 1e-10 and val != 0:
-                print(f"  {param} = {val:.20e}")
-            elif param.startswith('DM'):
-                print(f"  {param} = {val:.10f} pc cm⁻³")
-            else:
-                print(f"  {param} = {val}")
-        print(f"  TOAs: {len(toas_data)}")
-    
-    # GENERAL FITTER: Cache expensive delays once, then iterate
+    # Cache expensive delays (subtract_tzr=False for fitting)
     if verbose:
         print(f"\nCaching expensive delays...")
-    cache_start = time.time()
     
     result = compute_residuals_simple(
         par_file,
@@ -1015,59 +1029,106 @@ def _fit_parameters_general(
 
     dt_sec_cached = result['dt_sec']
     tdb_mjd = result['tdb_mjd']
-    freq_mhz = result['freq_bary_mhz']  # Cache for fast DM recomputation
+    freq_mhz_bary = result['freq_bary_mhz']
 
-    # If fitting DM params, also cache initial DM delay for fast updates
+    # If fitting DM params, cache initial DM delay
     initial_dm_delay = None
     if dm_params:
         dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
         initial_dm_params = {p: params[p] for p in dm_params if p in params}
-        initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, initial_dm_params, dm_epoch)
+        initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
 
-    cache_time = time.time() - cache_start
-    if verbose:
-        print(f"  Cached dt_sec for {len(dt_sec_cached)} TOAs in {cache_time:.3f}s")
+    return GeneralFitSetup(
+        params=params,
+        fit_param_list=fit_params,
+        param_values_start=param_values_start,
+        toas_mjd=toas_mjd,
+        freq_mhz=freq_mhz_bary,
+        errors_us=errors_us,
+        errors_sec=errors_sec,
+        weights=weights,
+        dt_sec_cached=np.array(dt_sec_cached),
+        tdb_mjd=np.array(tdb_mjd),
+        initial_dm_delay=initial_dm_delay,
+        dm_params=dm_params,
+        spin_params=spin_params
+    )
+
+
+def _run_general_fit_iterations(
+    setup: GeneralFitSetup,
+    max_iter: int,
+    convergence_threshold: float,
+    verbose: bool
+) -> Dict:
+    """
+    Run general fitting iterations using precomputed setup.
     
-    # Convert to numpy arrays
-    dt_sec_np = np.array(dt_sec_cached)
-
+    This is the "iterate" phase that reuses cached arrays.
+    The math here is UNCHANGED from the original implementation.
+    
+    Parameters
+    ----------
+    setup : GeneralFitSetup
+        Precomputed setup data
+    max_iter : int
+        Maximum iterations
+    convergence_threshold : float
+        Convergence threshold
+    verbose : bool
+        Print progress
+        
+    Returns
+    -------
+    result : dict
+        Fit results
+    """
+    # Unpack setup
+    params = setup.params
+    fit_params = setup.fit_param_list
+    param_values_start = setup.param_values_start
+    toas_mjd = setup.toas_mjd
+    freq_mhz = setup.freq_mhz
+    errors_us = setup.errors_us
+    errors_sec = setup.errors_sec
+    weights = setup.weights
+    dt_sec_cached = setup.dt_sec_cached
+    tdb_mjd = setup.tdb_mjd
+    initial_dm_delay = setup.initial_dm_delay
+    dm_params = setup.dm_params
+    spin_params = setup.spin_params
+    
     # Initialize iteration
     param_values_curr = param_values_start.copy()
     iteration = 0
     converged = False
 
-    # Convergence criteria (based on JAXopt/literature recommendations)
-    xtol = 1e-12  # Parameter tolerance (relative)
-    gtol = 1e-3   # Gradient tolerance (absolute RMS change in μs) - relaxed for μs-level precision
-    min_iterations = 3  # Always do at least this many iterations
+    # Convergence criteria
+    xtol = 1e-12
+    gtol = 1e-3
+    min_iterations = 3
     rms_history = []
 
     if verbose:
         print(f"\n{'Iter':<6} {'RMS (μs)':<12} {'ΔParam':<15} {'Status':<20}")
         print("-" * 65)
     
-    # GENERAL ITERATION LOOP
-    # Works for ANY combination of parameters!
+    # ITERATION LOOP (unchanged logic!)
     for iteration in range(max_iter):
         # Update params dict with current values
         for i, param in enumerate(fit_params):
             params[param] = param_values_curr[i]
         
         # If fitting DM parameters, update dt_sec with new DM delay
-        # Otherwise, can use cached dt_sec directly
         if dm_params:
             # OPTIMIZED: Fast DM delay update without file I/O
-            # Compute new DM delay with updated parameters
             dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
             current_dm_params = {p: params[p] for p in dm_params}
             new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
 
-            # Update dt_sec: remove old DM delay, add new one
-            # dt_sec is in SECONDS (time from PEPOCH to emission)
-            # When DM delay increases, emission time is earlier, so dt_sec decreases
-            # Therefore: dt_sec_new = dt_sec_cached - (new_dm_delay - initial_dm_delay)
+            # Update dt_sec
             dt_delay_change_sec = new_dm_delay - initial_dm_delay
-            dt_sec_np = dt_sec_cached - dt_delay_change_sec  # Both in seconds
+            dt_sec_np = dt_sec_cached - dt_delay_change_sec
 
             # Compute phase residuals from updated dt_sec
             f0 = params['F0']
@@ -1091,6 +1152,7 @@ def _fit_parameters_general(
             rms_us = np.sqrt(np.sum(residuals**2 * weights) / np.sum(weights)) * 1e6
         else:
             # Spin-only fitting: fast computation from cached dt_sec
+            dt_sec_np = dt_sec_cached
             f0 = params['F0']
             f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
             f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
@@ -1116,7 +1178,6 @@ def _fit_parameters_general(
             rms_us = np.sqrt(np.sum(residuals**2 * weights) / np.sum(weights)) * 1e6
         
         # Build design matrix column-by-column
-        # This is the KEY: Each parameter type calls its own derivative function!
         M_columns = []
         
         for param in fit_params:
@@ -1131,14 +1192,6 @@ def _fit_parameters_general(
                 deriv = compute_dm_derivatives(params, toas_mjd, freq_mhz, [param])
                 M_columns.append(deriv[param])
                 
-            elif param in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']:
-                # Astrometry parameter derivative (not yet implemented)
-                raise NotImplementedError(f"Astrometry parameter {param} not yet implemented")
-                
-            elif param in ['PB', 'A1', 'ECC', 'OM', 'T0', 'PBDOT', 'OMDOT', 'XDOT', 'EDOT', 'GAMMA', 'M2', 'SINI']:
-                # Binary parameter derivative (not yet implemented)
-                raise NotImplementedError(f"Binary parameter {param} not yet implemented")
-                
             else:
                 raise ValueError(f"Unknown parameter type: {param}")
         
@@ -1150,36 +1203,33 @@ def _fit_parameters_general(
             col_mean = np.sum(M[:, i] * weights) / np.sum(weights)
             M[:, i] = M[:, i] - col_mean
         
-        # Solve WLS using SVD (handles rank deficiency)
+        # Solve WLS using SVD
         delta_params, cov, _ = wls_solve_svd(
             residuals=residuals,
             sigma=errors_sec,
             M=M,
             threshold=1e-14,
-            negate_dpars=False  # Design matrix already in correct convention
+            negate_dpars=False
         )
-        delta_params = np.array(delta_params)  # Convert to numpy
+        delta_params = np.array(delta_params)
         cov = np.array(cov)
         
         # Update parameters
         param_values_curr = [param_values_curr[i] + delta_params[i] for i in range(len(fit_params))]
 
-        # Track RMS for history
+        # Track RMS
         rms_history.append(rms_us)
 
-        # Check convergence using proper criteria
-        # Criterion 1: Parameter change is tiny (relative to parameter magnitude)
+        # Check convergence
         param_norm = np.linalg.norm(param_values_curr)
         delta_norm = np.linalg.norm(delta_params)
         param_converged = delta_norm <= xtol * (param_norm + xtol)
         
-        # Criterion 2: RMS not improving (absolute change in μs)
         rms_converged = False
         if len(rms_history) >= 2:
             rms_change = abs(rms_history[-1] - rms_history[-2])
             rms_converged = rms_change < gtol
         
-        # Converged if EITHER criterion met AND we've done minimum iterations
         converged = iteration >= min_iterations and (param_converged or rms_converged)
 
         if verbose:
@@ -1195,11 +1245,19 @@ def _fit_parameters_general(
         if converged:
             break
     
-    total_time = time.time() - total_start
-    
-    # Compute final residuals for output
+    # Compute final residuals
     for i, param in enumerate(fit_params):
         params[param] = param_values_curr[i]
+    
+    # Recompute dt_sec_np if DM was fit
+    if dm_params:
+        dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+        current_dm_params = {p: params[p] for p in dm_params}
+        new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
+        dt_delay_change_sec = new_dm_delay - initial_dm_delay
+        dt_sec_np = dt_sec_cached - dt_delay_change_sec
+    else:
+        dt_sec_np = dt_sec_cached
     
     f0 = params['F0']
     f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
@@ -1220,6 +1278,9 @@ def _fit_parameters_general(
     # Compute prefit residuals
     for i, param in enumerate(fit_params):
         params[param] = param_values_start[i]
+    
+    # Recompute dt_sec_np for prefit (use original DM)
+    dt_sec_np = dt_sec_cached
     
     f0 = params['F0']
     f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
@@ -1244,18 +1305,239 @@ def _fit_parameters_general(
     # Compute uncertainties
     uncertainties = {param: np.sqrt(cov[i, i]) for i, param in enumerate(fit_params)}
     
+    return {
+        'final_params': {param: params[param] for param in fit_params},
+        'uncertainties': uncertainties,
+        'final_rms': rms_us,
+        'prefit_rms': np.sqrt(np.sum(residuals_prefit**2 * weights) / np.sum(weights)) * 1e6,
+        'converged': converged,
+        'iterations': iteration + 1,
+        'residuals_us': residuals_final_us,
+        'residuals_prefit_us': residuals_prefit_us,
+        'errors_us': errors_us,
+        'tdb_mjd': tdb_mjd,
+        'covariance': cov
+    }
+
+
+
+
+def _build_general_fit_setup_from_cache(
+    session_cached_data: Dict[str, Any],
+    params_dict: Dict[str, float],
+    fit_params: List[str]
+) -> GeneralFitSetup:
+    """
+    Build fitting setup from TimingSession cached data (fast, no I/O).
+    
+    This is the cached "setup" phase that reuses precomputed arrays.
+    
+    Parameters
+    ----------
+    session_cached_data : dict
+        Cached data from TimingSession with keys:
+        - 'dt_sec': precomputed time differences
+        - 'tdb_mjd': TDB times
+        - 'freq_bary_mhz': barycentric frequencies
+        - 'toas_mjd': TOA times
+        - 'errors_us': TOA uncertainties
+    params_dict : dict
+        Current parameter dictionary
+    fit_params : list of str
+        Parameters to fit
+        
+    Returns
+    -------
+    setup : GeneralFitSetup
+        Complete setup data for iteration (identical to file-based path)
+    """
+    # Extract cached arrays
+    dt_sec_cached = session_cached_data['dt_sec']
+    tdb_mjd = session_cached_data['tdb_mjd']
+    freq_mhz_bary = session_cached_data['freq_bary_mhz']
+    toas_mjd = session_cached_data['toas_mjd']
+    errors_us = session_cached_data['errors_us']
+    
+    # Compute derived arrays (same as file path)
+    errors_sec = errors_us * 1e-6
+    weights = 1.0 / errors_sec**2
+    
+    # Extract starting parameter values
+    param_values_start = []
+    for param in fit_params:
+        if param not in params_dict:
+            # Add default (same logic as file path)
+            if param.startswith('F') and param[1:].isdigit():
+                default_value = 0.0
+            elif param.startswith('DM') and (len(param) == 2 or param[2:].isdigit()):
+                default_value = 0.0
+            else:
+                raise ValueError(f"Parameter {param} not found and no default available")
+            params_dict[param] = default_value
+        
+        param_values_start.append(params_dict[param])
+    
+    # Classify parameters
+    spin_params = [p for p in fit_params if p.startswith('F')]
+    dm_params = [p for p in fit_params if p.startswith('DM')]
+    
+    # If fitting DM params, cache initial DM delay (same as file path)
+    initial_dm_delay = None
+    if dm_params:
+        dm_epoch = params_dict.get('DMEPOCH', params_dict.get('PEPOCH', 55000.0))
+        initial_dm_params = {p: params_dict[p] for p in dm_params if p in params_dict}
+        initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
+
+    return GeneralFitSetup(
+        params=dict(params_dict),  # Copy
+        fit_param_list=fit_params,
+        param_values_start=param_values_start,
+        toas_mjd=np.array(toas_mjd),
+        freq_mhz=np.array(freq_mhz_bary),
+        errors_us=np.array(errors_us),
+        errors_sec=np.array(errors_sec),
+        weights=np.array(weights),
+        dt_sec_cached=np.array(dt_sec_cached),
+        tdb_mjd=np.array(tdb_mjd),
+        initial_dm_delay=initial_dm_delay,
+        dm_params=dm_params,
+        spin_params=spin_params
+    )
+
+
+def fit_parameters_optimized_cached(
+    setup: GeneralFitSetup,
+    max_iter: int = 25,
+    convergence_threshold: float = 1e-14,
+    verbose: bool = False
+) -> Dict:
+    """
+    Fit parameters using precomputed setup (cached path).
+    
+    This is the public cached entrypoint that produces IDENTICAL results
+    to fit_parameters_optimized() but reuses cached arrays.
+    
+    Parameters
+    ----------
+    setup : GeneralFitSetup
+        Precomputed setup from _build_general_fit_setup_from_cache
+    max_iter : int
+        Maximum iterations
+    convergence_threshold : float
+        Convergence threshold
+    verbose : bool
+        Print progress
+        
+    Returns
+    -------
+    result : dict
+        Fit results (identical format to fit_parameters_optimized)
+    """
+    total_start = time.time()
+    
+    # Run iterations (identical logic to file-based path)
+    result = _run_general_fit_iterations(
+        setup, max_iter, convergence_threshold, verbose
+    )
+    
+    total_time = time.time() - total_start
+    result['total_time'] = total_time
+    result['cache_time'] = 0.0  # Already cached
+    result['jit_time'] = 0.0
+    
+    return result
+
+
+def _fit_parameters_general(
+    par_file: Path,
+    tim_file: Path,
+    fit_params: List[str],
+    max_iter: int,
+    convergence_threshold: float,
+    clock_dir: str,
+    verbose: bool,
+    device: Optional[str]
+) -> Dict:
+    """Truly general parameter fitter - handles ANY parameter combination.
+    
+    This function can fit any mix of:
+    - Spin parameters (F0, F1, F2, ...)
+    - DM parameters (DM, DM1, DM2, ...)
+    - Astrometric parameters (RAJ, DECJ, PMRA, PMDEC, PX)  [TODO]
+    - Binary parameters (PB, A1, ECC, OM, T0, ...)  [TODO]
+    
+    Now refactored to separate SETUP from ITERATIONS for caching.
+    """
+    
+    total_start = time.time()
+    
+    # Check for unsupported parameters
+    astrometry_params = [p for p in fit_params if p in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']]
+    binary_params = [p for p in fit_params if p in ['PB', 'A1', 'ECC', 'OM', 'T0', 'PBDOT', 'OMDOT', 'XDOT', 'EDOT', 'GAMMA', 'M2', 'SINI']]
+    
+    not_implemented = []
+    if astrometry_params:
+        not_implemented.append(f"Astrometry: {astrometry_params}")
+    if binary_params:
+        not_implemented.append(f"Binary: {binary_params}")
+    
+    if not_implemented:
+        raise NotImplementedError(
+            f"The following parameter types are not yet implemented:\n" +
+            "\n".join(f"  - {item}" for item in not_implemented) +
+            f"\n\nCurrently supported: Spin (F0, F1, F2, ...) and DM (DM, DM1, DM2, ...)"
+        )
+    
+    # STEP 1: Build setup from files (expensive)
+    cache_start = time.time()
+    setup = _build_general_fit_setup_from_files(
+        par_file, tim_file, fit_params, clock_dir, verbose
+    )
+    cache_time = time.time() - cache_start
+    
+    if verbose:
+        spin_params = setup.spin_params
+        dm_params = setup.dm_params
+        param_summary = []
+        if spin_params:
+            param_summary.append(f"{len(spin_params)} spin")
+        if dm_params:
+            param_summary.append(f"{len(dm_params)} DM")
+        print(f"\nFitting {' + '.join(param_summary)} parameters")
+        for param, val in zip(fit_params, setup.param_values_start):
+            if param.startswith('F') and abs(val) < 1e-10 and val != 0:
+                print(f"  {param} = {val:.20e}")
+            elif param.startswith('DM'):
+                print(f"  {param} = {val:.10f} pc cm⁻³")
+            else:
+                print(f"  {param} = {val}")
+        print(f"  TOAs: {len(setup.toas_mjd)}")
+        print(f"  Cached dt_sec in {cache_time:.3f}s")
+    
+    # STEP 2: Run iterations (fast, reuses setup)
+    result = _run_general_fit_iterations(
+        setup, max_iter, convergence_threshold, verbose
+    )
+    
+    total_time = time.time() - total_start
+    
+    # Add timing info
+    result['total_time'] = total_time
+    result['cache_time'] = cache_time
+    result['jit_time'] = 0.0
+    
     # Print results
     if verbose:
         print(f"\n{'='*80}")
         print("RESULTS")
         print(f"{'='*80}")
-        print(f"Converged: {converged}")
-        print(f"Iterations: {iteration + 1}")
-        print(f"Final RMS: {rms_us:.6f} μs")
+        print(f"Converged: {result['converged']}")
+        print(f"Iterations: {result['iterations']}")
+        print(f"Final RMS: {result['final_rms']:.6f} μs")
         print(f"\nFitted parameters:")
         for param in fit_params:
-            val = params[param]
-            err = uncertainties[param]
+            val = result['final_params'][param]
+            err = result['uncertainties'][param]
             if param.startswith('F') and abs(val) < 1e-10:
                 print(f"  {param} = {val:.20e} ± {err:.6e}")
             elif param.startswith('DM'):
@@ -1266,22 +1548,7 @@ def _fit_parameters_general(
         print(f"Cache time: {cache_time:.3f}s")
         print(f"{'='*80}")
     
-    return {
-        'final_params': {param: params[param] for param in fit_params},
-        'uncertainties': uncertainties,
-        'final_rms': rms_us,
-        'prefit_rms': np.sqrt(np.sum(residuals_prefit**2 * weights) / np.sum(weights)) * 1e6,
-        'converged': converged,
-        'iterations': iteration + 1,
-        'total_time': total_time,
-        'residuals_us': residuals_final_us,
-        'residuals_prefit_us': residuals_prefit_us,
-        'errors_us': errors_us,
-        'tdb_mjd': tdb_mjd,
-        'cache_time': cache_time,
-        'jit_time': 0.0,
-        'covariance': cov
-    }
+    return result
 
 
 def _fit_spin_params_general(

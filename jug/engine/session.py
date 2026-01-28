@@ -26,7 +26,11 @@ from astropy.time import Time
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.fitting.optimized_fitter import fit_parameters_optimized
+from jug.fitting.optimized_fitter import (
+    fit_parameters_optimized,
+    _build_general_fit_setup_from_cache,
+    fit_parameters_optimized_cached
+)
 
 
 class TimingSession:
@@ -92,7 +96,8 @@ class TimingSession:
         self._initial_params = dict(self.params)  # Copy for comparison
         
         # Cache for expensive computations
-        self._cached_result: Optional[Dict[str, Any]] = None
+        # Key change: cache separately by subtract_tzr mode for correctness
+        self._cached_result_by_mode: Dict[bool, Dict[str, Any]] = {}  # {subtract_tzr: result}
         self._cached_delays: Optional[Dict[str, Any]] = None  # For fast postfit
         self._cached_toa_data: Optional[Dict[str, Any]] = None  # For ultra-fast postfit
         
@@ -136,17 +141,17 @@ class TimingSession:
         - If params unchanged and cache exists, returns cached result
         - If params changed, creates temporary par file and recomputes
         """
-        # Check if we can use cache
+        # Check if we can use cache (must match subtract_tzr mode!)
         use_cache = (
-            self._cached_result is not None 
+            subtract_tzr in self._cached_result_by_mode
             and params is None 
             and not force_recompute
         )
         
         if use_cache:
             if self.verbose:
-                print("  Using cached residuals")
-            return self._cached_result
+                print(f"  Using cached residuals (subtract_tzr={subtract_tzr})")
+            return self._cached_result_by_mode[subtract_tzr]
         
         # If params provided, use fast evaluation if we have cached data
         if params is not None:
@@ -279,8 +284,8 @@ class TimingSession:
             verbose=False
         )
         
-        # Cache the result (only for original params)
-        self._cached_result = result
+        # Cache the result (only for original params), keyed by subtract_tzr
+        self._cached_result_by_mode[subtract_tzr] = result
         
         # Cache TOA data for fast postfit (enables 30x speedup!)
         if 'dt_sec' in result and 'tdb_mjd' in result:
@@ -338,8 +343,8 @@ class TimingSession:
         
         Notes
         -----
-        This method benefits from the session's cached file parsing.
-        Future: Will use cached delays for even faster fitting.
+        This method uses cached arrays when available for maximum performance.
+        On first fit, it computes residuals with subtract_tzr=False to populate cache.
         """
         if verbose is None:
             verbose = self.verbose
@@ -347,21 +352,72 @@ class TimingSession:
         if verbose:
             print(f"  Fitting {len(fit_params)} parameters: {', '.join(fit_params)}")
         
-        # Call existing optimized fitter
-        # It will re-parse files, but that's fast (TODO: optimize later)
-        result = fit_parameters_optimized(
-            par_file=self.par_file,
-            tim_file=self.tim_file,
-            fit_params=fit_params,
-            max_iter=max_iter,
-            convergence_threshold=convergence_threshold,
-            clock_dir=self.clock_dir,
-            device=device,
-            verbose=verbose
+        # FAST PATH: Use cached arrays if available
+        # Ensure we have cached residuals with subtract_tzr=False (needed for fitting)
+        if False not in self._cached_result_by_mode:
+            if verbose:
+                print("  Computing residuals (subtract_tzr=False) for fitting cache...")
+            # Populate cache with subtract_tzr=False
+            self.compute_residuals(subtract_tzr=False, force_recompute=False)
+        
+        # Check if we have all required cached data
+        cached_result = self._cached_result_by_mode.get(False)
+        has_required_cache = (
+            cached_result is not None
+            and 'dt_sec' in cached_result
+            and 'tdb_mjd' in cached_result
+            and 'freq_bary_mhz' in cached_result
         )
         
+        if has_required_cache:
+            # CACHED PATH: Build setup from cached arrays (fast!)
+            if verbose:
+                print("  Using cached arrays for fitting (fast path)")
+            
+            # Prepare cached data for setup builder
+            toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in self.toas_data])
+            errors_us = np.array([toa.error_us for toa in self.toas_data])
+            
+            session_cached_data = {
+                'dt_sec': cached_result['dt_sec'],
+                'tdb_mjd': cached_result['tdb_mjd'],
+                'freq_bary_mhz': cached_result['freq_bary_mhz'],
+                'toas_mjd': toas_mjd,
+                'errors_us': errors_us
+            }
+            
+            # Build setup from cache
+            setup = _build_general_fit_setup_from_cache(
+                session_cached_data,
+                self.params,
+                fit_params
+            )
+            
+            # Run cached fit
+            result = fit_parameters_optimized_cached(
+                setup,
+                max_iter=max_iter,
+                convergence_threshold=convergence_threshold,
+                verbose=verbose
+            )
+        else:
+            # FALLBACK PATH: Use file-based fitting (slower but always works)
+            if verbose:
+                print("  Cache incomplete, using file-based fitting")
+            
+            result = fit_parameters_optimized(
+                par_file=self.par_file,
+                tim_file=self.tim_file,
+                fit_params=fit_params,
+                max_iter=max_iter,
+                convergence_threshold=convergence_threshold,
+                clock_dir=self.clock_dir,
+                device=device,
+                verbose=verbose
+            )
+        
         # Invalidate residuals cache since parameters changed
-        self._cached_result = None
+        self._cached_result_by_mode.clear()
         
         return result
     

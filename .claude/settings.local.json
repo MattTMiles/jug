@@ -39,7 +39,8 @@
       "Bash(pip show:*)",
       "Bash(pip install:*)",
       "Bash(timeout 3 jug-gui:*)",
-      "Bash(timeout 2 jug-gui:*)"
+      "Bash(timeout 2 jug-gui:*)",
+      "Bash(xargs:*)"
     ],
     "deny": [],
     "ask": []

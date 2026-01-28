@@ -19,122 +19,260 @@ Design Philosophy:
 
 class LightTheme:
     """
-    Custom Light - Cream & Teal palette.
-    Light, warm theme with earthy accents.
+    Warm Paper-like Professional Light Theme.
+    
+    Design Philosophy:
+    - Primary text is warm near-black (neutral, readable)
+    - Teal (#1F4D4A) reserved for emphasis and interaction ONLY:
+      - Primary CTA (Run Fit button)
+      - Focus rings and active states
+      - Checked checkbox fills
+      - Key metric emphasis (RMS value)
+    - Paper-like warm backgrounds with 4 distinct surface levels
+    - Subtle borders by default, strong borders for major containers
     """
     NAME = "light"
 
-    # Background colors - cream-based light theme
-    BG_PRIMARY = "#F3EFE6"
-    BG_SECONDARY = "#ebe6db"
-    BG_TERTIARY = "#e3ded3"
-    BG_ELEVATED = "#ffffff"
+    # ==========================================================================
+    # BACKGROUND COLORS - 4 elevation levels (paper-like depth)
+    # ==========================================================================
+    BG_PRIMARY = "#F5F1E8"        # App background (warm paper)
+    BG_SECONDARY = "#EBE7DD"      # Sidebar background (slightly darker)
+    BG_TERTIARY = "#E3DFD5"       # Panel backgrounds
+    BG_ELEVATED = "#FDFCFA"       # Elevated cards (near-white warm)
 
-    # Surface colors
-    SURFACE = "#ffffff"
-    SURFACE_HOVER = "#f9f7f3"
-    SURFACE_BORDER = "#CCB999"
+    # ==========================================================================
+    # SURFACE COLORS
+    # ==========================================================================
+    SURFACE = "#FDFCFA"           # Card surfaces (warm white)
+    SURFACE_HOVER = "#F7F5F0"     # Hover state (gentle warm tint)
+    SURFACE_BORDER = "#D4C9B5"    # Strong border (major containers)
 
-    # Text colors
-    TEXT_PRIMARY = "#1F4D4A"
-    TEXT_SECONDARY = "#3d6b67"
-    TEXT_MUTED = "#788176"
-    TEXT_ACCENT = "#2b4162"
+    # Border tokens for hierarchy
+    BORDER_SUBTLE = "#D4C9B580"   # Subtle border (50% opacity) - most components
+    BORDER_STRONG = "#D4C9B5"     # Strong border - plot frame, selected containers
 
-    # Accent colors
-    ACCENT_PRIMARY = "#1F4D4A"
-    ACCENT_SECONDARY = "#2b4162"
-    ACCENT_TERTIARY = "#CCB999"
-    ACCENT_SUCCESS = "#1F4D4A"
-    ACCENT_WARNING = "#CCB999"
-    ACCENT_ERROR = "#9e2a2b"
+    # ==========================================================================
+    # TEXT COLORS - Warm neutrals (NOT teal for primary text)
+    # ==========================================================================
+    TEXT_PRIMARY = "#201E1B"      # Primary text: warm near-black
+    TEXT_SECONDARY = "#4A4641"    # Secondary text: warm dark gray
+    TEXT_MUTED = "#7A756D"        # Muted text: warm medium gray
+    TEXT_ACCENT = "#1F4D4A"       # Accent text: teal (for emphasis ONLY)
 
-    # Plot-specific colors
-    PLOT_BG = "#ffffff"
-    PLOT_GRID = "#e3ded3"
-    PLOT_AXES = "#1F4D4A"
-    PLOT_ZERO_LINE = "#9e2a2b"
+    # ==========================================================================
+    # ACCENT COLORS - Teal for interaction/emphasis
+    # ==========================================================================
+    ACCENT_PRIMARY = "#1F4D4A"    # Teal - CTA, focus, checked states, RMS value
+    ACCENT_SECONDARY = "#2b4162"  # Navy - data points, secondary emphasis
+    ACCENT_TERTIARY = "#CCB999"   # Warm tan - warnings, info
+    ACCENT_SUCCESS = "#2D6A4F"    # Muted green - success states
+    ACCENT_WARNING = "#B5890A"    # Warm amber - warning states
+    ACCENT_ERROR = "#9e2a2b"      # Muted red - error states
+
+    # ==========================================================================
+    # PLOT COLORS - Warm paper integration
+    # ==========================================================================
+    PLOT_BG = "#FDFCFA"           # Warm off-white (matches elevated surface)
+    PLOT_GRID = "#E8E4DA"         # Subtle warm grid
+    PLOT_AXES = "#4A4641"         # Neutral warm gray (NOT teal)
+    PLOT_ZERO_LINE = "#9e2a2b"    # Semantic red
 
     # Data visualization
-    DATA_POINTS = "#2b4162"
+    DATA_POINTS = "#2b4162"       # Navy (scientific, clear)
     DATA_POINTS_GLOW = "#4a6fa5"
-    ERROR_BARS = "#78817680"
+    ERROR_BARS = "#2b416260"      # Navy with 38% opacity (muted but visible)
 
-    # Button states
+    # ==========================================================================
+    # BUTTON STATES
+    # ==========================================================================
+    # Primary button: Teal (CTA emphasis)
     BTN_PRIMARY_BG = "#1F4D4A"
-    BTN_PRIMARY_HOVER = "#2a635f"
+    BTN_PRIMARY_HOVER = "#2A635F"
     BTN_PRIMARY_PRESSED = "#163836"
-    BTN_PRIMARY_TEXT = "#F3EFE6"
+    BTN_PRIMARY_TEXT = "#FDFCFA"  # Warm white on teal
 
-    BTN_SECONDARY_BG = "#ffffff"
-    BTN_SECONDARY_HOVER = "#f9f7f3"
-    BTN_SECONDARY_PRESSED = "#ebe6db"
-    BTN_SECONDARY_TEXT = "#1F4D4A"
+    # Secondary button: Neutral with subtle border
+    BTN_SECONDARY_BG = "#FDFCFA"
+    BTN_SECONDARY_HOVER = "#F7F5F0"
+    BTN_SECONDARY_PRESSED = "#EBE7DD"
+    BTN_SECONDARY_TEXT = "#201E1B"  # Warm near-black (not teal)
 
-    # Special states
-    DISABLED_BG = "#e3ded3"
-    DISABLED_TEXT = "#a8a49c"
-    FOCUS_RING = "#1F4D4A40"
+    # ==========================================================================
+    # SPECIAL STATES
+    # ==========================================================================
+    DISABLED_BG = "#E3DFD5"
+    DISABLED_TEXT = "#A8A49C"
+    FOCUS_RING = "#1F4D4A60"      # Teal focus ring (60% opacity)
 
 
 class SynthwaveTheme:
     """
     Synthwave '84 - Retro neon dark theme.
     Inspired by the VS Code Synthwave '84 extension.
+
+    Two variants controlled by _synthwave_variant:
+    - "classic": Pink-forward brand, cyan data (default)
+    - "scilab": Cyan-forward brand, pink data
     """
     NAME = "synthwave"
 
-    # Background colors - deep purple/dark
-    BG_PRIMARY = "#262335"
-    BG_SECONDARY = "#2a2139"
-    BG_TERTIARY = "#34294f"
-    BG_ELEVATED = "#3b2d5e"
+    # ==========================================================================
+    # SURFACE COLORS (4 elevation levels)
+    # ==========================================================================
+    BG_PRIMARY = "#262335"        # Main window background
+    BG_SECONDARY = "#241b2f"      # Sidebar / right panel background
+    BG_TERTIARY = "#1a1325"       # Panel backgrounds, plot container
+    BG_ELEVATED = "#34294f"       # Hover/selection surfaces
 
-    # Surface colors
-    SURFACE = "#34294f"
-    SURFACE_HOVER = "#3b2d5e"
-    SURFACE_BORDER = "#495495"
+    # ==========================================================================
+    # SURFACE & BORDER COLORS
+    # ==========================================================================
+    SURFACE = "#1a1325"           # Card backgrounds (use darkest for depth)
+    SURFACE_HOVER = "#34294f"     # Hover state
+    SURFACE_BORDER = "#49549580"  # Faded purple with transparency (subtle)
 
-    # Text colors
-    TEXT_PRIMARY = "#f4eee4"
-    TEXT_SECONDARY = "#b6b1c4"
-    TEXT_MUTED = "#848bbd"
-    TEXT_ACCENT = "#ff7edb"
+    # Additional border tokens
+    BORDER_SUBTLE = "#49549560"   # Even more subtle for dividers
+    GRID_SUBTLE = "#34294f66"     # Plot grid (very subtle)
 
-    # Accent colors - neon
-    ACCENT_PRIMARY = "#ff7edb"    # Neon pink
-    ACCENT_SECONDARY = "#36f9f6"  # Neon cyan
-    ACCENT_TERTIARY = "#fede5d"   # Neon yellow
-    ACCENT_SUCCESS = "#72f1b8"    # Neon green
-    ACCENT_WARNING = "#fede5d"    # Neon yellow
-    ACCENT_ERROR = "#fe4450"      # Neon red
+    # ==========================================================================
+    # TEXT COLORS
+    # ==========================================================================
+    TEXT_PRIMARY = "#ffffff"      # Primary headings
+    TEXT_SECONDARY = "#f4eee4"    # Body text
+    TEXT_MUTED = "#b6b1c4"        # Labels
+    TEXT_INACTIVE = "#848bbd"     # Muted/inactive
+    TEXT_ACCENT = "#ff7edb"       # Accent text (overridden by variant)
 
-    # Plot-specific colors
-    PLOT_BG = "#1a1525"           # Darker purple for plot
-    PLOT_GRID = "#34294f"
-    PLOT_AXES = "#b6b1c4"
-    PLOT_ZERO_LINE = "#fe4450"
+    # ==========================================================================
+    # NEON ACCENT PALETTE (static reference)
+    # ==========================================================================
+    NEON_PINK = "#ff7edb"
+    NEON_CYAN = "#36f9f6"
+    NEON_YELLOW = "#fede5d"
+    NEON_ORANGE = "#f97e72"
+    NEON_GREEN = "#72f1b8"
+    NEON_RED = "#fe4450"
+    NEON_BLUE = "#03edf9"
+    ELECTRIC_BLUE = "#00b3f0"
 
-    # Data visualization - neon cyan
-    DATA_POINTS = "#36f9f6"
+    # ==========================================================================
+    # ACCENT ROLES (variant-dependent, set by _get_variant_color)
+    # ==========================================================================
+    # These are defaults for "classic" mode - will be dynamically read
+    ACCENT_PRIMARY = "#ff7edb"    # Brand/CTA (pink in classic)
+    ACCENT_SECONDARY = "#36f9f6"  # Data emphasis (cyan in classic)
+    ACCENT_TERTIARY = "#fede5d"   # Warning/info
+    ACCENT_SUCCESS = "#72f1b8"    # Success
+    ACCENT_WARNING = "#fede5d"    # Warning
+    ACCENT_ERROR = "#fe4450"      # Error
+
+    # ==========================================================================
+    # PLOT COLORS
+    # ==========================================================================
+    PLOT_BG = "#1a1325"           # Dark purple plot background
+    PLOT_GRID = "#34294f50"       # Subtle grid
+    PLOT_AXES = "#b6b1c4"         # Lavender axes/ticks
+    PLOT_ZERO_LINE = "#fe4450"    # Neon red
+
+    # Data visualization
+    DATA_POINTS = "#36f9f6"       # Cyan (classic default)
+    DATA_POINTS_ALT = "#ff7edb"   # Pink (alternate)
     DATA_POINTS_GLOW = "#72f1b8"
-    ERROR_BARS = "#848bbd80"
+    ERROR_BARS = "#848bbd80"      # Muted purple, always visible
 
-    # Button states
+    # ==========================================================================
+    # BUTTON STATES
+    # ==========================================================================
+    # Primary button: pink gradient (classic) - will be adjusted by variant
     BTN_PRIMARY_BG = "#ff7edb"
     BTN_PRIMARY_HOVER = "#ff9de4"
     BTN_PRIMARY_PRESSED = "#e066c0"
-    BTN_PRIMARY_TEXT = "#262335"
+    BTN_PRIMARY_TEXT = "#1a1325"  # Dark text on bright button
 
-    BTN_SECONDARY_BG = "#34294f"
-    BTN_SECONDARY_HOVER = "#3b2d5e"
-    BTN_SECONDARY_PRESSED = "#2a2139"
+    # Secondary button: subtle surface
+    BTN_SECONDARY_BG = "#241b2f"
+    BTN_SECONDARY_HOVER = "#34294f"
+    BTN_SECONDARY_PRESSED = "#1a1325"
     BTN_SECONDARY_TEXT = "#f4eee4"
 
-    # Special states
-    DISABLED_BG = "#2a2139"
+    # ==========================================================================
+    # SPECIAL STATES
+    # ==========================================================================
+    DISABLED_BG = "#241b2f"
     DISABLED_TEXT = "#495495"
-    FOCUS_RING = "#ff7edb40"
+    FOCUS_RING = "#03edf940"      # Neon blue focus ring
+
+
+# =============================================================================
+# SYNTHWAVE VARIANT SYSTEM
+# =============================================================================
+_synthwave_variant = "classic"  # "classic" or "scilab"
+
+
+def get_synthwave_variant():
+    """Get current synthwave variant."""
+    return _synthwave_variant
+
+
+def set_synthwave_variant(variant):
+    """Set synthwave variant: 'classic' or 'scilab'."""
+    global _synthwave_variant
+    if variant in ("classic", "scilab"):
+        _synthwave_variant = variant
+
+
+def toggle_synthwave_variant():
+    """Toggle between classic and scilab variants."""
+    global _synthwave_variant
+    _synthwave_variant = "scilab" if _synthwave_variant == "classic" else "classic"
+    return _synthwave_variant
+
+
+def get_synthwave_accent_primary():
+    """Get primary accent based on variant."""
+    if _synthwave_variant == "scilab":
+        return SynthwaveTheme.NEON_CYAN
+    return SynthwaveTheme.NEON_PINK
+
+
+def get_synthwave_accent_secondary():
+    """Get secondary accent (data color) based on variant."""
+    if _synthwave_variant == "scilab":
+        return SynthwaveTheme.NEON_PINK
+    return SynthwaveTheme.NEON_CYAN
+
+
+def get_synthwave_btn_gradient():
+    """Get button gradient colors based on variant."""
+    if _synthwave_variant == "scilab":
+        return ("#36f9f6", "#03edf9", "#00b3f0")  # Cyan gradient
+    return ("#ff7edb", "#ff9de4", "#e066c0")      # Pink gradient
+
+
+def get_synthwave_rms_color():
+    """Get RMS highlight color (contrasts with data points)."""
+    if _synthwave_variant == "scilab":
+        return SynthwaveTheme.NEON_CYAN  # Cyan RMS when pink data
+    return SynthwaveTheme.NEON_PINK      # Pink RMS when cyan data
+
+
+def get_synthwave_data_colors():
+    """Get data point colors for current variant."""
+    if _synthwave_variant == "scilab":
+        return {
+            'primary': (255, 126, 219, 220),    # Pink primary
+            'alt': (54, 249, 246, 220),         # Cyan alt
+            'primary_hex': "#ff7edb",
+            'alt_hex': "#36f9f6",
+        }
+    return {
+        'primary': (54, 249, 246, 220),         # Cyan primary
+        'alt': (255, 126, 219, 220),            # Pink alt
+        'primary_hex': "#36f9f6",
+        'alt_hex': "#ff7edb",
+    }
 
 
 # Active theme (can be switched at runtime)
@@ -243,8 +381,47 @@ class BorderRadius:
 # QT STYLESHEETS
 # =============================================================================
 
+def get_dynamic_accent_primary():
+    """Get the current accent primary color (variant-aware for dark mode)."""
+    if is_dark_mode():
+        return get_synthwave_accent_primary()
+    return Colors.ACCENT_PRIMARY
+
+
+def get_dynamic_accent_secondary():
+    """Get the current accent secondary color (variant-aware for dark mode)."""
+    if is_dark_mode():
+        return get_synthwave_accent_secondary()
+    return Colors.ACCENT_SECONDARY
+
+
+def get_rms_emphasis_color():
+    """Get RMS value emphasis color (teal in light mode, variant-aware in dark mode)."""
+    if is_dark_mode():
+        return get_synthwave_rms_color()
+    return LightTheme.ACCENT_PRIMARY  # Teal for emphasis
+
+
+def get_border_subtle():
+    """Get the subtle border color (with fallback for themes without it)."""
+    return getattr(_current_theme, 'BORDER_SUBTLE', Colors.SURFACE_BORDER)
+
+
+def get_border_strong():
+    """Get the strong border color."""
+    return getattr(_current_theme, 'BORDER_STRONG', Colors.SURFACE_BORDER)
+
+
 def get_main_stylesheet():
     """Generate the complete application stylesheet."""
+    # Get dynamic accent colors based on current variant
+    accent_primary = get_dynamic_accent_primary()
+    accent_secondary = get_dynamic_accent_secondary()
+
+    # Get border colors (use subtle by default, strong for major containers)
+    border_subtle = get_border_subtle()
+    border_strong = get_border_strong()
+
     return f"""
     /* ===== GLOBAL STYLES ===== */
     QMainWindow {{
@@ -263,7 +440,7 @@ def get_main_stylesheet():
         background-color: {Colors.BG_SECONDARY};
         color: {Colors.TEXT_PRIMARY};
         padding: {Spacing.SM} {Spacing.MD};
-        border-bottom: 1px solid {Colors.SURFACE_BORDER};
+        border-bottom: 1px solid {border_subtle};
     }}
 
     QMenuBar::item {{
@@ -278,7 +455,7 @@ def get_main_stylesheet():
 
     QMenu {{
         background-color: {Colors.SURFACE};
-        border: 1px solid {Colors.SURFACE_BORDER};
+        border: 1px solid {border_subtle};
         border-radius: {BorderRadius.MD};
         padding: {Spacing.SM};
     }}
@@ -289,13 +466,13 @@ def get_main_stylesheet():
     }}
 
     QMenu::item:selected {{
-        background-color: {Colors.ACCENT_PRIMARY};
+        background-color: {accent_primary};
         color: {Colors.BTN_PRIMARY_TEXT};
     }}
 
     QMenu::separator {{
         height: 1px;
-        background: {Colors.SURFACE_BORDER};
+        background: {border_subtle};
         margin: {Spacing.SM} 0;
     }}
 
@@ -303,7 +480,7 @@ def get_main_stylesheet():
     QStatusBar {{
         background-color: {Colors.BG_SECONDARY};
         color: {Colors.TEXT_SECONDARY};
-        border-top: 1px solid {Colors.SURFACE_BORDER};
+        border-top: 1px solid {border_subtle};
         padding: {Spacing.SM} {Spacing.MD};
         font-size: {Typography.SIZE_SM};
     }}
@@ -331,30 +508,30 @@ def get_main_stylesheet():
     QPushButton:disabled {{
         background-color: {Colors.DISABLED_BG};
         color: {Colors.DISABLED_TEXT};
-        border: 1px solid {Colors.SURFACE_BORDER};
+        border: 1px solid {border_subtle};
     }}
 
     QPushButton:focus {{
         outline: none;
-        border: 2px solid {Colors.ACCENT_SECONDARY};
+        border: 2px solid {accent_primary};
     }}
 
     /* Secondary buttons */
     QPushButton.secondary {{
         background-color: {Colors.BTN_SECONDARY_BG};
         color: {Colors.BTN_SECONDARY_TEXT};
-        border: 1px solid {Colors.SURFACE_BORDER};
+        border: 1px solid {border_subtle};
     }}
 
     QPushButton.secondary:hover {{
         background-color: {Colors.BTN_SECONDARY_HOVER};
-        border-color: {Colors.ACCENT_PRIMARY};
+        border-color: {accent_primary};
     }}
 
     /* ===== GROUP BOX (Cards) ===== */
     QGroupBox {{
         background-color: {Colors.SURFACE};
-        border: 1px solid {Colors.SURFACE_BORDER};
+        border: 1px solid {border_subtle};
         border-radius: {BorderRadius.LG};
         margin-top: {Spacing.XL};
         padding: {Spacing.LG};
@@ -385,18 +562,18 @@ def get_main_stylesheet():
         width: 20px;
         height: 20px;
         border-radius: {BorderRadius.SM};
-        border: 2px solid {Colors.SURFACE_BORDER};
+        border: 2px solid {border_subtle};
         background-color: {Colors.BG_PRIMARY};
     }}
 
     QCheckBox::indicator:hover {{
-        border-color: {Colors.ACCENT_PRIMARY};
+        border-color: {accent_primary};
         background-color: {Colors.SURFACE_HOVER};
     }}
 
     QCheckBox::indicator:checked {{
-        background-color: {Colors.ACCENT_PRIMARY};
-        border-color: {Colors.ACCENT_PRIMARY};
+        background-color: {accent_primary};
+        border-color: {accent_primary};
         image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iMTAiIHZpZXdCb3g9IjAgMCAxMiAxMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEgNUw0LjUgOC41TDExIDEiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+Cjwvc3ZnPgo=);
     }}
 
@@ -411,7 +588,7 @@ def get_main_stylesheet():
 
     /* Added params (from --fit) */
     QCheckBox.added-param {{
-        color: {Colors.ACCENT_SECONDARY};
+        color: {accent_secondary};
     }}
 
     /* ===== LABELS ===== */
@@ -461,7 +638,7 @@ def get_main_stylesheet():
     }}
 
     QScrollBar::handle:vertical {{
-        background-color: {Colors.SURFACE_BORDER};
+        background-color: {border_subtle};
         border-radius: 6px;
         min-height: 40px;
         margin: 2px;
@@ -479,7 +656,7 @@ def get_main_stylesheet():
     QToolTip {{
         background-color: {Colors.SURFACE};
         color: {Colors.TEXT_PRIMARY};
-        border: 1px solid {Colors.SURFACE_BORDER};
+        border: 1px solid {border_subtle};
         border-radius: {BorderRadius.MD};
         padding: {Spacing.SM} {Spacing.MD};
         font-size: {Typography.SIZE_SM};
@@ -506,14 +683,14 @@ def get_main_stylesheet():
 
     QProgressBar {{
         background-color: {Colors.BG_PRIMARY};
-        border: 1px solid {Colors.SURFACE_BORDER};
+        border: 1px solid {border_subtle};
         border-radius: {BorderRadius.SM};
         height: 8px;
         text-align: center;
     }}
 
     QProgressBar::chunk {{
-        background-color: {Colors.ACCENT_PRIMARY};
+        background-color: {accent_primary};
         border-radius: {BorderRadius.SM};
     }}
     """
@@ -521,12 +698,13 @@ def get_main_stylesheet():
 
 def get_plot_title_style():
     """Style for the plot title label."""
+    border_subtle = get_border_subtle()
     return f"""
         font-size: {Typography.SIZE_LG};
         font-weight: {Typography.WEIGHT_SEMIBOLD};
         color: {Colors.TEXT_PRIMARY};
-        background: {Colors.BG_PRIMARY};
-        border: 1px solid {Colors.SURFACE_BORDER};
+        background: {Colors.SURFACE};
+        border: 1px solid {border_subtle};
         border-radius: {BorderRadius.MD};
         padding: {Spacing.MD} {Spacing.LG};
         margin: {Spacing.SM};
@@ -535,9 +713,10 @@ def get_plot_title_style():
 
 def get_stats_card_style():
     """Style for statistics card container."""
+    border_subtle = get_border_subtle()
     return f"""
         background-color: {Colors.SURFACE};
-        border: 1px solid {Colors.SURFACE_BORDER};
+        border: 1px solid {border_subtle};
         border-radius: {BorderRadius.LG};
         padding: {Spacing.LG};
     """
@@ -593,48 +772,80 @@ def get_section_title_style():
 
 def get_control_panel_style():
     """Style for the control panel container."""
+    border_subtle = get_border_subtle()
     return f"""
         background-color: {Colors.BG_SECONDARY};
-        border-left: 1px solid {Colors.SURFACE_BORDER};
+        border-left: 1px solid {border_subtle};
     """
 
 
 def get_primary_button_style():
-    """Style for primary action button (Run Fit)."""
-    return f"""
-        QPushButton {{
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 {Colors.ACCENT_SECONDARY}, stop:1 {Colors.ACCENT_PRIMARY});
-            color: {Colors.BTN_PRIMARY_TEXT};
-            border: none;
-            border-radius: {BorderRadius.MD};
-            padding: {Spacing.MD} {Spacing.LG};
-            font-size: {Typography.SIZE_BASE};
-            font-weight: {Typography.WEIGHT_SEMIBOLD};
-            min-height: 48px;
-        }}
-        QPushButton:hover {{
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 {Colors.ACCENT_TERTIARY}, stop:1 {Colors.ACCENT_SECONDARY});
-        }}
-        QPushButton:pressed {{
-            background: {Colors.BTN_PRIMARY_PRESSED};
-        }}
-        QPushButton:disabled {{
-            background: {Colors.DISABLED_BG};
-            color: {Colors.DISABLED_TEXT};
-            border: 1px solid {Colors.SURFACE_BORDER};
-        }}
-    """
+    """Style for primary action button (Run Fit) - teal CTA in light mode, gradient in dark."""
+    if is_dark_mode():
+        # Synthwave: variant-aware gradient
+        gradient = get_synthwave_btn_gradient()
+        grad_start, grad_mid, grad_end = gradient
+        return f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {grad_start}, stop:1 {grad_end});
+                color: {Colors.BTN_PRIMARY_TEXT};
+                border: none;
+                border-radius: {BorderRadius.MD};
+                padding: {Spacing.MD} {Spacing.LG};
+                font-size: {Typography.SIZE_BASE};
+                font-weight: {Typography.WEIGHT_SEMIBOLD};
+                min-height: 48px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {grad_mid}, stop:1 {grad_start});
+            }}
+            QPushButton:pressed {{
+                background: {Colors.BTN_PRIMARY_PRESSED};
+            }}
+            QPushButton:disabled {{
+                background: {Colors.DISABLED_BG};
+                color: {Colors.DISABLED_TEXT};
+                border: 1px solid {get_border_subtle()};
+            }}
+        """
+    else:
+        # Light mode: solid teal CTA (emphasis color)
+        return f"""
+            QPushButton {{
+                background-color: {Colors.BTN_PRIMARY_BG};
+                color: {Colors.BTN_PRIMARY_TEXT};
+                border: none;
+                border-radius: {BorderRadius.MD};
+                padding: {Spacing.MD} {Spacing.LG};
+                font-size: {Typography.SIZE_BASE};
+                font-weight: {Typography.WEIGHT_SEMIBOLD};
+                min-height: 48px;
+            }}
+            QPushButton:hover {{
+                background-color: {Colors.BTN_PRIMARY_HOVER};
+            }}
+            QPushButton:pressed {{
+                background-color: {Colors.BTN_PRIMARY_PRESSED};
+            }}
+            QPushButton:disabled {{
+                background-color: {Colors.DISABLED_BG};
+                color: {Colors.DISABLED_TEXT};
+                border: 1px solid {get_border_subtle()};
+            }}
+        """
 
 
 def get_secondary_button_style():
     """Style for secondary action buttons."""
+    accent_primary = get_dynamic_accent_primary()
+    border_subtle = get_border_subtle()
     return f"""
         QPushButton {{
             background-color: {Colors.BTN_SECONDARY_BG};
             color: {Colors.BTN_SECONDARY_TEXT};
-            border: 1px solid {Colors.SURFACE_BORDER};
+            border: 1px solid {border_subtle};
             border-radius: {BorderRadius.MD};
             padding: {Spacing.MD} {Spacing.LG};
             font-size: {Typography.SIZE_BASE};
@@ -643,7 +854,7 @@ def get_secondary_button_style():
         }}
         QPushButton:hover {{
             background-color: {Colors.BTN_SECONDARY_HOVER};
-            border-color: {Colors.ACCENT_PRIMARY};
+            border-color: {accent_primary};
         }}
         QPushButton:pressed {{
             background-color: {Colors.BTN_SECONDARY_PRESSED};
@@ -651,7 +862,7 @@ def get_secondary_button_style():
         QPushButton:disabled {{
             background-color: {Colors.DISABLED_BG};
             color: {Colors.DISABLED_TEXT};
-            border: 1px solid {Colors.SURFACE_BORDER};
+            border: 1px solid {border_subtle};
         }}
     """
 
@@ -661,7 +872,7 @@ def get_secondary_button_style():
 # =============================================================================
 
 class PlotTheme:
-    """PyQtGraph plot styling - adapts to current theme."""
+    """PyQtGraph plot styling - adapts to current theme and variant."""
 
     AXIS_PEN_WIDTH = 2
     SCATTER_SIZE = 7
@@ -686,13 +897,14 @@ class PlotTheme:
 
     @classmethod
     def get_grid_alpha(cls):
-        return 0.3 if is_dark_mode() else 0.5
+        return 0.25 if is_dark_mode() else 0.5
 
     @classmethod
     def get_scatter_color(cls):
-        """Get scatter color based on theme."""
+        """Get primary scatter color based on theme and variant."""
         if is_dark_mode():
-            return (54, 249, 246, 220)  # Neon cyan #36f9f6
+            colors = get_synthwave_data_colors()
+            return colors['primary']
         else:
             return (43, 65, 98, 220)    # Navy #2b4162
 
@@ -700,23 +912,26 @@ class PlotTheme:
     def get_scatter_color_alt(cls):
         """Get alternate scatter color (for toggle)."""
         if is_dark_mode():
-            return (255, 126, 219, 220)  # Neon pink #ff7edb
+            colors = get_synthwave_data_colors()
+            return colors['alt']
         else:
             return (94, 24, 3, 220)      # Burgundy #5E1803
 
     @classmethod
     def get_error_bar_color(cls):
+        """Error bars: muted purple, always visible."""
         if is_dark_mode():
-            return (132, 139, 189, 90)  # #848bbd
+            return (132, 139, 189, 128)  # #848bbd with good visibility
         else:
-            return (43, 65, 98, 90)     # Navy with transparency
+            return (43, 65, 98, 90)      # Navy with transparency
 
     @classmethod
     def get_error_bar_color_alt(cls):
+        """Error bars for alt data color."""
         if is_dark_mode():
-            return (255, 126, 219, 90)  # Pink with transparency
+            return (132, 139, 189, 128)  # Same muted purple (always visible)
         else:
-            return (94, 24, 3, 90)      # Burgundy with transparency
+            return (94, 24, 3, 90)       # Burgundy with transparency
 
     @classmethod
     def get_zero_line_color(cls):
@@ -725,6 +940,19 @@ class PlotTheme:
     @classmethod
     def get_label_color(cls):
         return Colors.PLOT_AXES
+
+    @classmethod
+    def get_rms_highlight_color(cls):
+        """Get RMS highlight color based on theme and variant.
+        
+        In light mode: teal (ACCENT_PRIMARY) for emphasis.
+        In dark mode: variant-aware (pink or cyan).
+        """
+        if is_dark_mode():
+            return get_synthwave_rms_color()
+        else:
+            # Light mode: teal for key metric emphasis
+            return LightTheme.ACCENT_PRIMARY  # #1F4D4A teal
 
 
 def get_plot_axis_style():

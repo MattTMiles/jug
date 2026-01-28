@@ -27,6 +27,9 @@ from jug.gui.theme import (
     get_control_panel_style,
     get_primary_button_style,
     get_secondary_button_style,
+    get_border_subtle,
+    get_border_strong,
+    get_rms_emphasis_color,
     configure_plot_widget,
     create_scatter_item,
     create_error_bar_item,
@@ -40,6 +43,10 @@ from jug.gui.theme import (
     set_theme,
     is_dark_mode,
     PlotTheme,
+    get_synthwave_variant,
+    toggle_synthwave_variant,
+    get_synthwave_rms_color,
+    get_dynamic_accent_primary,
 )
 
 
@@ -88,7 +95,6 @@ class MainWindow(QMainWindow):
         self.error_bar_item = None
         self.zero_line = None
         self.show_zero_line = False  # Zero line hidden by default
-        self.data_point_color = "primary"  # "primary" or "alt" (theme-dependent)
 
         # Thread pool for background tasks
         self.thread_pool = QThreadPool()
@@ -131,7 +137,7 @@ class MainWindow(QMainWindow):
         self.plot_frame.setStyleSheet(f"""
             QFrame {{
                 background-color: {Colors.PLOT_BG};
-                border: 1px solid {Colors.SURFACE_BORDER};
+                border: 1px solid {get_border_strong()};
                 border-radius: 12px;
             }}
         """)
@@ -221,7 +227,7 @@ class MainWindow(QMainWindow):
         stats_card.setStyleSheet(f"""
             QWidget {{
                 background-color: {Colors.SURFACE};
-                border: 1px solid {Colors.SURFACE_BORDER};
+                border: 1px solid {get_border_subtle()};
                 border-radius: 12px;
             }}
             QLabel {{
@@ -245,20 +251,21 @@ class MainWindow(QMainWindow):
         """)
         stats_layout.addWidget(self.stats_title)
 
-        # Create stat rows with label + value
-        self.rms_label = self._create_stat_row(stats_layout, "RMS", "--")
-        # Highlight RMS value - contrasts with data point color (burgundy when points are navy)
+        # Create stat rows with label + value (store both for theme updates)
+        self.rms_label_text, self.rms_label = self._create_stat_row(stats_layout, "RMS", "--")
+        # Highlight RMS value with teal (emphasis color) - uses theme-aware accent
+        rms_color = get_rms_emphasis_color()
         self.rms_label.setStyleSheet(f"""
             font-family: monospace;
             font-size: 14px;
             font-weight: 600;
-            color: #5E1803;
+            color: {rms_color};
             background: transparent;
             border: none;
         """)
-        self.iter_label = self._create_stat_row(stats_layout, "Iterations", "--")
-        self.ntoa_label = self._create_stat_row(stats_layout, "TOAs", "--")
-        self.chi2_label = self._create_stat_row(stats_layout, "χ²/dof", "--")
+        self.iter_label_text, self.iter_label = self._create_stat_row(stats_layout, "Iterations", "--")
+        self.ntoa_label_text, self.ntoa_label = self._create_stat_row(stats_layout, "TOAs", "--")
+        self.chi2_label_text, self.chi2_label = self._create_stat_row(stats_layout, "χ²/dof", "--")
 
         layout.addWidget(stats_card)
 
@@ -277,7 +284,7 @@ class MainWindow(QMainWindow):
         self.params_drawer.setStyleSheet(f"""
             QFrame {{
                 background-color: {Colors.SURFACE};
-                border-left: 1px solid {Colors.SURFACE_BORDER};
+                border-left: 1px solid {get_border_subtle()};
             }}
         """)
         self.params_drawer.setFixedWidth(200)
@@ -433,15 +440,16 @@ class MainWindow(QMainWindow):
         self.zero_line_action.setChecked(self.show_zero_line)
         self.zero_line_action.triggered.connect(self.on_toggle_zero_line)
 
-        # Data point color toggle
-        self.color_toggle_action = view_menu.addAction("Data Points: Navy")
-        self.color_toggle_action.triggered.connect(self.on_toggle_data_color)
-
         view_menu.addSeparator()
 
         # Theme toggle
         self.theme_action = view_menu.addAction("Theme: Light")
         self.theme_action.triggered.connect(self.on_toggle_theme)
+
+        # Color variant toggle (only visible in dark mode)
+        self.variant_action = view_menu.addAction("Color Variant: Classic")
+        self.variant_action.triggered.connect(self.on_toggle_color_variant)
+        self.variant_action.setVisible(False)  # Hidden until dark mode activated
 
         view_menu.addSeparator()
 
@@ -836,10 +844,10 @@ class MainWindow(QMainWindow):
         pulsar_str = self.pulsar_name if self.pulsar_name else 'Unknown'
         title = f"{pulsar_str} - Fit Results"
 
-        # Colors for styling
+        # Colors for styling (use dynamic accent for theme/variant awareness)
         text_neutral = "#111827"
         text_muted = "#6b7280"
-        accent = Colors.ACCENT_PRIMARY
+        accent = get_dynamic_accent_primary()
         border = Colors.SURFACE_BORDER
         converged_color = Colors.ACCENT_SUCCESS if result['converged'] else Colors.ACCENT_WARNING
         converged_text = "Yes" if result['converged'] else "No"
@@ -981,57 +989,39 @@ class MainWindow(QMainWindow):
                 self.plot_widget.removeItem(self.zero_line)
                 self.zero_line = None
 
-    def on_toggle_data_color(self):
-        """Toggle data point color between primary and alternate."""
-        colors = get_scatter_colors()
+    def on_toggle_color_variant(self):
+        """Toggle between Classic Synthwave '84 and Sci-Lab Futuristic variants."""
+        if not is_dark_mode():
+            return  # Only works in dark mode
 
-        if self.data_point_color == "primary":
-            self.data_point_color = "alt"
-            point_color = colors['alt']
-            error_color = PlotTheme.get_error_bar_color_alt()
-            if is_dark_mode():
-                self.color_toggle_action.setText("Data Points: Pink")
-                rms_color = "#36f9f6"  # Cyan when points are pink
-            else:
-                self.color_toggle_action.setText("Data Points: Burgundy")
-                rms_color = "#2b4162"  # Navy when points are burgundy
+        # Toggle the variant
+        new_variant = toggle_synthwave_variant()
+
+        # Update menu text
+        if new_variant == "scilab":
+            self.variant_action.setText("Color Variant: Sci-Lab")
         else:
-            self.data_point_color = "primary"
-            point_color = colors['primary']
-            error_color = PlotTheme.get_error_bar_color()
-            if is_dark_mode():
-                self.color_toggle_action.setText("Data Points: Cyan")
-                rms_color = "#ff7edb"  # Pink when points are cyan
-            else:
-                self.color_toggle_action.setText("Data Points: Navy")
-                rms_color = "#5E1803"  # Burgundy when points are navy
+            self.variant_action.setText("Color Variant: Classic")
 
-        # Update scatter plot if it exists
-        if self.scatter_item is not None:
-            self.scatter_item.setBrush(pg.mkBrush(*point_color))
-
-        # Update error bars if they exist
-        if self.error_bar_item is not None:
-            self.error_bar_item.setData(pen=pg.mkPen(color=error_color, width=2.0))
-
-        # Update RMS label color to contrast with data points
-        self.rms_label.setStyleSheet(f"""
-            font-family: monospace;
-            font-size: 14px;
-            font-weight: 600;
-            color: {rms_color};
-            background: transparent;
-            border: none;
-        """)
+        # Refresh the entire UI with new variant colors
+        self._apply_theme()
 
     def on_toggle_theme(self):
         """Toggle between light and dark (Synthwave) themes."""
         if is_dark_mode():
             set_theme(LightTheme)
             self.theme_action.setText("Theme: Light")
+            self.variant_action.setVisible(False)  # Hide variant toggle in light mode
         else:
             set_theme(SynthwaveTheme)
             self.theme_action.setText("Theme: Synthwave '84")
+            self.variant_action.setVisible(True)  # Show variant toggle in dark mode
+            # Update variant action text based on current variant
+            variant = get_synthwave_variant()
+            if variant == "scilab":
+                self.variant_action.setText("Color Variant: Sci-Lab")
+            else:
+                self.variant_action.setText("Color Variant: Classic")
 
         # Refresh the entire UI
         self._apply_theme()
@@ -1054,7 +1044,7 @@ class MainWindow(QMainWindow):
         self.plot_frame.setStyleSheet(f"""
             QFrame {{
                 background-color: {Colors.PLOT_BG};
-                border: 1px solid {Colors.SURFACE_BORDER};
+                border: 1px solid {get_border_strong()};
                 border-radius: 12px;
             }}
         """)
@@ -1074,7 +1064,7 @@ class MainWindow(QMainWindow):
         self.params_drawer.setStyleSheet(f"""
             QFrame {{
                 background-color: {Colors.SURFACE};
-                border-left: 1px solid {Colors.SURFACE_BORDER};
+                border-left: 1px solid {get_border_subtle()};
             }}
         """)
 
@@ -1085,7 +1075,7 @@ class MainWindow(QMainWindow):
                 widget.setStyleSheet(f"""
                     QWidget {{
                         background-color: {Colors.SURFACE};
-                        border: 1px solid {Colors.SURFACE_BORDER};
+                        border: 1px solid {get_border_subtle()};
                         border-radius: 12px;
                     }}
                     QLabel {{
@@ -1094,20 +1084,50 @@ class MainWindow(QMainWindow):
                     }}
                 """)
 
-        # Update scatter plot colors
+        # Update section titles
+        self.action_title.setStyleSheet(get_section_title_style())
+        self.stats_title.setStyleSheet(f"""
+            font-size: 14px;
+            font-weight: 600;
+            color: {Colors.TEXT_PRIMARY};
+            background: transparent;
+            border: none;
+            padding-bottom: 8px;
+        """)
+        self.params_header_label.setStyleSheet(get_section_title_style())
+
+        # Update stat labels (not values)
+        stat_label_style = f"""
+            font-size: 12px;
+            color: {Colors.TEXT_SECONDARY};
+            background: transparent;
+            border: none;
+        """
+        self.rms_label_text.setStyleSheet(stat_label_style)
+        self.iter_label_text.setStyleSheet(stat_label_style)
+        self.ntoa_label_text.setStyleSheet(stat_label_style)
+        self.chi2_label_text.setStyleSheet(stat_label_style)
+
+        # Update stat values (except RMS which has special styling)
+        stat_value_style = f"""
+            font-family: monospace;
+            font-size: 14px;
+            color: {Colors.TEXT_PRIMARY};
+            background: transparent;
+            border: none;
+        """
+        self.iter_label.setStyleSheet(stat_value_style)
+        self.ntoa_label.setStyleSheet(stat_value_style)
+        self.chi2_label.setStyleSheet(stat_value_style)
+
+        # Update scatter plot colors (always use primary - variant controls what "primary" means)
         colors = get_scatter_colors()
         if self.scatter_item is not None:
-            if self.data_point_color == "primary":
-                self.scatter_item.setBrush(pg.mkBrush(*colors['primary']))
-            else:
-                self.scatter_item.setBrush(pg.mkBrush(*colors['alt']))
+            self.scatter_item.setBrush(pg.mkBrush(*colors['primary']))
 
-        # Update error bar colors
+        # Update error bar colors (always visible, muted)
         if self.error_bar_item is not None:
-            if self.data_point_color == "primary":
-                error_color = PlotTheme.get_error_bar_color()
-            else:
-                error_color = PlotTheme.get_error_bar_color_alt()
+            error_color = PlotTheme.get_error_bar_color()
             self.error_bar_item.setData(pen=pg.mkPen(color=error_color, width=2.0))
 
         # Update zero line if visible
@@ -1115,23 +1135,8 @@ class MainWindow(QMainWindow):
             self.plot_widget.removeItem(self.zero_line)
             self.zero_line = create_zero_line(self.plot_widget)
 
-        # Update color toggle menu text
-        if is_dark_mode():
-            if self.data_point_color == "primary":
-                self.color_toggle_action.setText("Data Points: Cyan")
-            else:
-                self.color_toggle_action.setText("Data Points: Pink")
-        else:
-            if self.data_point_color == "primary":
-                self.color_toggle_action.setText("Data Points: Navy")
-            else:
-                self.color_toggle_action.setText("Data Points: Burgundy")
-
-        # Update RMS label color
-        if is_dark_mode():
-            rms_color = "#36f9f6" if self.data_point_color == "alt" else "#ff7edb"
-        else:
-            rms_color = "#2b4162" if self.data_point_color == "alt" else "#5E1803"
+        # Update RMS label color (teal in light mode, variant-aware in dark mode)
+        rms_color = get_rms_emphasis_color()
 
         self.rms_label.setStyleSheet(f"""
             font-family: monospace;
@@ -1152,10 +1157,11 @@ class MainWindow(QMainWindow):
         msg = QMessageBox(self)
         msg.setWindowTitle("About JUG")
         msg.setTextFormat(Qt.RichText)
+        accent = get_dynamic_accent_primary()
         msg.setText(
             f"""
             <div style='text-align: center;'>
-                <h2 style='color: {Colors.ACCENT_PRIMARY}; margin-bottom: 8px;'>✦ JUG Timing Analysis</h2>
+                <h2 style='color: {accent}; margin-bottom: 8px;'>✦ JUG Timing Analysis</h2>
                 <p style='color: {Colors.TEXT_SECONDARY}; font-size: 14px;'>
                     JAX-based pulsar timing software
                 </p>

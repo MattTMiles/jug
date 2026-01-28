@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
     QCheckBox, QGroupBox, QMessageBox, QProgressDialog,
     QFrame, QScrollArea, QSizePolicy, QApplication
 )
-from PySide6.QtCore import Qt, QThreadPool
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF
+from PySide6.QtGui import QFont, QCursor
 import pyqtgraph as pg
 import numpy as np
 
@@ -47,6 +47,8 @@ from jug.gui.theme import (
     toggle_synthwave_variant,
     get_synthwave_rms_color,
     get_dynamic_accent_primary,
+    get_light_variant,
+    toggle_light_variant,
 )
 
 
@@ -73,6 +75,14 @@ class MainWindow(QMainWindow):
         self.mjd = None
         self.errors_us = None
         self.rms_us = None
+        
+        # Original data (for full restart, before any deletions)
+        self.original_mjd = None
+        self.original_residuals_us = None
+        self.original_errors_us = None
+        
+        # Deleted TOA indices (track which original TOAs have been deleted)
+        self.deleted_indices = set()
 
         # Fit state
         self.prefit_residuals_us = None
@@ -96,6 +106,16 @@ class MainWindow(QMainWindow):
         self.zero_line = None
         self.show_zero_line = False  # Zero line hidden by default
 
+        # Box zoom state
+        self.box_zoom_active = False
+        self.box_zoom_start = None  # (x, y) in data coordinates
+        self.box_zoom_rect = None   # LinearRegionItem or ROI for visual feedback
+        
+        # Box delete state
+        self.box_delete_active = False
+        self.box_delete_start = None
+        self.box_delete_rect = None
+
         # Thread pool for background tasks
         self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(2)  # Session + compute/fit
@@ -104,6 +124,9 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._create_menu_bar()
         self._create_status_bar()
+        
+        # Install event filter for key handling
+        self.installEventFilter(self)
     
     def _setup_ui(self):
         """Setup the main user interface with modern styling."""
@@ -131,6 +154,9 @@ class MainWindow(QMainWindow):
         # Large residual plot with modern styling
         self.plot_widget = pg.PlotWidget()
         configure_plot_widget(self.plot_widget)
+        
+        # Connect to view range changes to scale error bar caps
+        self.plot_widget.getPlotItem().getViewBox().sigRangeChanged.connect(self._on_view_range_changed)
 
         # Add subtle rounded corners effect via container
         self.plot_frame = QFrame()
@@ -206,10 +232,10 @@ class MainWindow(QMainWindow):
         self.fit_report_button.setEnabled(False)
         layout.addWidget(self.fit_report_button)
 
-        self.reset_button = QPushButton("↺  Reset to Prefit")
+        self.reset_button = QPushButton("↺  Restart")
         self.reset_button.setStyleSheet(secondary_style)
         self.reset_button.setCursor(Qt.PointingHandCursor)
-        self.reset_button.clicked.connect(self.on_reset_clicked)
+        self.reset_button.clicked.connect(self.on_restart_clicked)
         self.reset_button.setEnabled(False)
         layout.addWidget(self.reset_button)
 
@@ -419,6 +445,11 @@ class MainWindow(QMainWindow):
         save_par_action.setEnabled(False)
         self.save_par_action = save_par_action
         
+        self.save_tim_action = file_menu.addAction("Save .tim...")
+        self.save_tim_action.setShortcut("Ctrl+Shift+S")
+        self.save_tim_action.triggered.connect(self.on_save_tim)
+        self.save_tim_action.setEnabled(False)
+        
         file_menu.addSeparator()
         
         exit_action = file_menu.addAction("E&xit")
@@ -446,16 +477,27 @@ class MainWindow(QMainWindow):
         self.theme_action = view_menu.addAction("Theme: Light")
         self.theme_action.triggered.connect(self.on_toggle_theme)
 
-        # Color variant toggle (only visible in dark mode)
-        self.variant_action = view_menu.addAction("Color Variant: Classic")
+        # Color variant toggle (available in both light and dark modes)
+        self.variant_action = view_menu.addAction("Data Color: Navy")
         self.variant_action.triggered.connect(self.on_toggle_color_variant)
-        self.variant_action.setVisible(False)  # Hidden until dark mode activated
 
         view_menu.addSeparator()
 
         zoom_fit_action = view_menu.addAction("Zoom to Fit")
         zoom_fit_action.setShortcut("Ctrl+0")
         zoom_fit_action.triggered.connect(self.on_zoom_fit)
+
+        unzoom_action = view_menu.addAction("Unzoom (Fit to Data)")
+        unzoom_action.setShortcut("U")
+        unzoom_action.triggered.connect(self.on_zoom_fit)
+
+        box_zoom_action = view_menu.addAction("Box Zoom...")
+        box_zoom_action.setShortcut("Z")
+        box_zoom_action.triggered.connect(self._handle_box_zoom_key)
+
+        box_delete_action = view_menu.addAction("Box Delete...")
+        box_delete_action.setShortcut("Shift+Z")
+        box_delete_action.triggered.connect(self._handle_box_delete_key)
         
         # Tools menu
         tools_menu = menubar.addMenu("&Tools")
@@ -464,9 +506,9 @@ class MainWindow(QMainWindow):
         fit_action.setShortcut("Ctrl+F")
         fit_action.triggered.connect(self.on_fit_clicked)
         
-        reset_action = tools_menu.addAction("Reset to Initial")
-        reset_action.setShortcut("Ctrl+R")
-        reset_action.triggered.connect(self.on_reset_clicked)
+        restart_action = tools_menu.addAction("Restart")
+        restart_action.setShortcut("Ctrl+R")
+        restart_action.triggered.connect(self.on_restart_clicked)
         
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -584,6 +626,13 @@ class MainWindow(QMainWindow):
         self.is_fitted = False
         self.fit_results = None
         
+        # Store original data for full restart (only on first load)
+        if self.original_mjd is None:
+            self.original_mjd = self.mjd.copy()
+            self.original_residuals_us = self.residuals_us.copy()
+            self.original_errors_us = self.errors_us.copy() if self.errors_us is not None else None
+            self.deleted_indices = set()
+        
         # Update plot
         self._update_plot()
         self._update_plot_title()
@@ -592,6 +641,7 @@ class MainWindow(QMainWindow):
         self.fit_button.setEnabled(True)
         self.reset_button.setEnabled(True)
         self.fit_window_button.setEnabled(True)
+        self.save_tim_action.setEnabled(True)
         
         # Update statistics (now just values, labels are separate)
         self.rms_label.setText(f"{self.rms_us:.6f} μs")
@@ -690,12 +740,24 @@ class MainWindow(QMainWindow):
 
         # Disable fit button during fitting
         self.fit_button.setEnabled(False)
-        self.status_bar.showMessage(f"Fitting {', '.join(fit_params)}...")
+        
+        # Create TOA mask if we have deleted TOAs
+        toa_mask = None
+        n_total = len(self.original_mjd) if self.original_mjd is not None else 0
+        n_deleted = len(self.deleted_indices) if self.deleted_indices else 0
+        
+        if n_deleted > 0 and n_total > 0:
+            # Create boolean mask: True for TOAs to include, False for deleted
+            toa_mask = np.array([i not in self.deleted_indices for i in range(n_total)])
+            n_used = np.sum(toa_mask)
+            self.status_bar.showMessage(f"Fitting {', '.join(fit_params)} on {n_used} TOAs ({n_deleted} excluded)...")
+        else:
+            self.status_bar.showMessage(f"Fitting {', '.join(fit_params)}...")
 
-        # Create and start fit worker (uses session)
+        # Run fit with mask
         from jug.gui.workers.fit_worker import FitWorker
 
-        worker = FitWorker(self.session, fit_params)
+        worker = FitWorker(self.session, fit_params, toa_mask=toa_mask)
         worker.signals.result.connect(self.on_fit_complete)
         worker.signals.error.connect(self.on_fit_error)
         worker.signals.finished.connect(self.on_fit_finished)
@@ -761,15 +823,35 @@ class MainWindow(QMainWindow):
         print(f"[DEBUG] Postfit compute complete: RMS = {result['rms_us']:.6f} μs")
         print(f"[DEBUG] Residuals range: [{result['residuals_us'].min():.3f}, {result['residuals_us'].max():.3f}]")
         
-        # Update ALL data (MJDs, residuals, errors, RMS)
-        self.mjd = result['tdb_mjd']
-        self.residuals_us = result['residuals_us']
-        self.postfit_residuals_us = result['residuals_us'].copy()
-        self.errors_us = result.get('errors_us', None)
-        self.rms_us = result['rms_us']
+        # Get full data from session
+        full_mjd = result['tdb_mjd']
+        full_residuals = result['residuals_us']
+        full_errors = result.get('errors_us', None)
+        
+        # Filter out deleted TOAs if any have been deleted
+        if self.deleted_indices and len(self.deleted_indices) > 0:
+            # Create mask for non-deleted indices
+            keep_mask = np.array([i not in self.deleted_indices for i in range(len(full_mjd))])
+            self.mjd = full_mjd[keep_mask]
+            self.residuals_us = full_residuals[keep_mask]
+            self.postfit_residuals_us = full_residuals[keep_mask].copy()
+            self.prefit_residuals_us = self.prefit_residuals_us  # Keep current prefit (already filtered)
+            if full_errors is not None:
+                self.errors_us = full_errors[keep_mask]
+            else:
+                self.errors_us = None
+            # Recalculate RMS for filtered data
+            self.rms_us = np.sqrt(np.mean(self.residuals_us**2))
+        else:
+            # No deletions - use all data
+            self.mjd = full_mjd
+            self.residuals_us = full_residuals
+            self.postfit_residuals_us = full_residuals.copy()
+            self.errors_us = full_errors
+            self.rms_us = result['rms_us']
         
         # DEBUG
-        print(f"[DEBUG] Updated GUI RMS: {self.rms_us:.6f} μs")
+        print(f"[DEBUG] Updated GUI RMS: {self.rms_us:.6f} μs (after filtering {len(self.deleted_indices)} deleted TOAs)")
         
         # Update plot (auto-range to show new residual scale after fit)
         self._update_plot(auto_range=True)
@@ -952,22 +1034,34 @@ class MainWindow(QMainWindow):
         msgbox.setFixedSize(dialog_width, dialog_height)
         msgbox.exec()
 
-    def on_reset_clicked(self):
-        """Handle Reset button click."""
-        if self.prefit_residuals_us is not None:
-            # Reset to prefit residuals
-            self.residuals_us = self.prefit_residuals_us.copy()
+    def on_restart_clicked(self):
+        """Handle Restart button click - restore original data including deleted TOAs."""
+        if self.original_mjd is not None:
+            # Restore all original data
+            self.mjd = self.original_mjd.copy()
+            self.residuals_us = self.original_residuals_us.copy()
+            self.prefit_residuals_us = self.original_residuals_us.copy()
+            self.errors_us = self.original_errors_us.copy() if self.original_errors_us is not None else None
+            self.deleted_indices = set()
+            
+            # Recalculate RMS
+            self.rms_us = np.sqrt(np.mean(self.residuals_us**2))
+            
+            # Reset fit state
             self.is_fitted = False
             self.fit_results = None
             self.fit_report_button.setEnabled(False)
-            self._update_plot()
+            
+            # Update plot
+            self._update_plot(auto_range=True)
             self._update_plot_title()
 
-            # Update statistics (values only)
+            # Update statistics
             self.rms_label.setText(f"{self.rms_us:.6f} μs")
+            self.ntoa_label.setText(f"{len(self.mjd)}")
             self.iter_label.setText("--")
             self.chi2_label.setText("--")
-            self.status_bar.showMessage("Reset to prefit residuals")
+            self.status_bar.showMessage(f"Restarted: restored {len(self.mjd)} TOAs")
         elif self.par_file and self.tim_file:
             self._compute_initial_residuals()
     
@@ -990,18 +1084,21 @@ class MainWindow(QMainWindow):
                 self.zero_line = None
 
     def on_toggle_color_variant(self):
-        """Toggle between Classic Synthwave '84 and Sci-Lab Futuristic variants."""
-        if not is_dark_mode():
-            return  # Only works in dark mode
-
-        # Toggle the variant
-        new_variant = toggle_synthwave_variant()
-
-        # Update menu text
-        if new_variant == "scilab":
-            self.variant_action.setText("Color Variant: Sci-Lab")
+        """Toggle data color variant (navy/burgundy in light, classic/scilab in dark)."""
+        if is_dark_mode():
+            # Dark mode: toggle between classic and scilab
+            new_variant = toggle_synthwave_variant()
+            if new_variant == "scilab":
+                self.variant_action.setText("Data Color: Cyan/Pink")
+            else:
+                self.variant_action.setText("Data Color: Pink/Cyan")
         else:
-            self.variant_action.setText("Color Variant: Classic")
+            # Light mode: toggle between navy and burgundy
+            new_variant = toggle_light_variant()
+            if new_variant == "burgundy":
+                self.variant_action.setText("Data Color: Burgundy")
+            else:
+                self.variant_action.setText("Data Color: Navy")
 
         # Refresh the entire UI with new variant colors
         self._apply_theme()
@@ -1011,17 +1108,21 @@ class MainWindow(QMainWindow):
         if is_dark_mode():
             set_theme(LightTheme)
             self.theme_action.setText("Theme: Light")
-            self.variant_action.setVisible(False)  # Hide variant toggle in light mode
+            # Update variant action text for light mode
+            variant = get_light_variant()
+            if variant == "burgundy":
+                self.variant_action.setText("Data Color: Burgundy")
+            else:
+                self.variant_action.setText("Data Color: Navy")
         else:
             set_theme(SynthwaveTheme)
             self.theme_action.setText("Theme: Synthwave '84")
-            self.variant_action.setVisible(True)  # Show variant toggle in dark mode
-            # Update variant action text based on current variant
+            # Update variant action text for dark mode
             variant = get_synthwave_variant()
             if variant == "scilab":
-                self.variant_action.setText("Color Variant: Sci-Lab")
+                self.variant_action.setText("Data Color: Cyan/Pink")
             else:
-                self.variant_action.setText("Color Variant: Classic")
+                self.variant_action.setText("Data Color: Pink/Cyan")
 
         # Refresh the entire UI
         self._apply_theme()
@@ -1150,6 +1251,37 @@ class MainWindow(QMainWindow):
     def on_zoom_fit(self):
         """Zoom plot to fit data."""
         self.plot_widget.autoRange()
+
+    def _on_view_range_changed(self, view_box, ranges):
+        """Handle view range changes to scale error bar caps."""
+        if self.error_bar_item is None or self.mjd is None:
+            return
+        
+        # Get the x-axis range
+        x_range = ranges[0]
+        x_span = x_range[1] - x_range[0]
+        
+        if x_span <= 0:
+            return
+        
+        # Calculate beam size as a fraction of the visible x range
+        # Target: caps should be about 0.5% of visible width
+        beam_fraction = 0.005
+        new_beam = x_span * beam_fraction
+        
+        # Clamp to reasonable bounds (in MJD days)
+        min_beam = 0.1    # Minimum 0.1 days
+        max_beam = 50.0   # Maximum 50 days
+        new_beam = max(min_beam, min(max_beam, new_beam))
+        
+        # Update the error bar item's beam width
+        # ErrorBarItem stores beam in opts, we need to update and redraw
+        self.error_bar_item.setData(
+            x=self.mjd,
+            y=self.residuals_us,
+            height=self.errors_us * 2 if self.errors_us is not None else None,
+            beam=new_beam
+        )
     
     def on_about(self):
         """Show about dialog with modern styling."""
@@ -1356,3 +1488,449 @@ class MainWindow(QMainWindow):
                 if added:
                     status_msg += f" (+ {len(added)} from --fit)"
             self.status_bar.showMessage(status_msg)
+
+    # =========================================================================
+    # BOX ZOOM FEATURE
+    # =========================================================================
+
+    def eventFilter(self, obj, event):
+        """Handle key events for box zoom, box delete, and unzoom."""
+        if event.type() == QEvent.KeyPress:
+            modifiers = event.modifiers()
+            key = event.key()
+            
+            if key == Qt.Key_Z:
+                if modifiers & Qt.ShiftModifier:
+                    # Shift+Z for box delete
+                    self._handle_box_delete_key()
+                else:
+                    # Z for box zoom
+                    self._handle_box_zoom_key()
+                return True
+            elif key == Qt.Key_U:
+                self.on_zoom_fit()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _handle_box_zoom_key(self):
+        """Handle 'z' key press for box zoom."""
+        if self.box_delete_active:
+            return  # Don't interfere with delete mode
+        if not self.box_zoom_active:
+            # Start box zoom mode and set first corner at current mouse position
+            self._start_box_zoom()
+        else:
+            # Complete box zoom
+            self._complete_box_zoom()
+
+    def _start_box_zoom(self):
+        """Start box zoom mode - set first corner at current mouse position."""
+        self.box_zoom_active = True
+        
+        # Get current mouse position in data coordinates
+        view_box = self.plot_widget.getPlotItem().getViewBox()
+        
+        # Get mouse position relative to the plot
+        global_pos = QCursor.pos()
+        widget_pos = self.plot_widget.mapFromGlobal(global_pos)
+        scene_pos = self.plot_widget.mapToScene(widget_pos)
+        
+        # Check if mouse is within the plot area
+        if view_box.sceneBoundingRect().contains(scene_pos):
+            mouse_point = view_box.mapSceneToView(scene_pos)
+            self.box_zoom_start = (mouse_point.x(), mouse_point.y())
+            self._create_zoom_rect(mouse_point.x(), mouse_point.y())
+            self.status_bar.showMessage("Box zoom: Move mouse to select region, press 'z' to zoom (Esc to cancel)")
+        else:
+            # Mouse not in plot - wait for it to enter
+            self.box_zoom_start = None
+            self.status_bar.showMessage("Box zoom: Move mouse into plot and press 'z' to set corner (Esc to cancel)")
+        
+        # Connect mouse events on the plot
+        view_box.scene().sigMouseMoved.connect(self._on_box_zoom_move)
+        
+        # Change cursor to crosshair
+        self.plot_widget.setCursor(QCursor(Qt.CrossCursor))
+
+    def _on_box_zoom_move(self, scene_pos):
+        """Handle mouse move during box zoom to update selection rectangle."""
+        if not self.box_zoom_active:
+            return
+        
+        view_box = self.plot_widget.getPlotItem().getViewBox()
+        
+        if not view_box.sceneBoundingRect().contains(scene_pos):
+            return
+            
+        mouse_point = view_box.mapSceneToView(scene_pos)
+        
+        # If we don't have a start point yet, set it now (mouse entered plot)
+        if self.box_zoom_start is None:
+            self.box_zoom_start = (mouse_point.x(), mouse_point.y())
+            self._create_zoom_rect(mouse_point.x(), mouse_point.y())
+            self.status_bar.showMessage("Box zoom: Move mouse to select region, press 'z' to zoom (Esc to cancel)")
+        else:
+            # Update the zoom rectangle visualization
+            self._update_zoom_rect(mouse_point.x(), mouse_point.y())
+
+    def _create_zoom_rect(self, x, y):
+        """Create the visual zoom selection rectangle."""
+        # Use a semi-transparent rectangle
+        # We'll create it as a simple polygon or use LinearRegionItems
+        
+        # Create horizontal and vertical region items for the box
+        accent = get_dynamic_accent_primary()
+        
+        # Store for later - we'll use a simple ROI approach
+        self.box_zoom_rect = pg.RectROI(
+            [x, y], [0, 0],
+            pen=pg.mkPen(accent, width=2, style=Qt.DashLine),
+            movable=False,
+            resizable=False
+        )
+        self.box_zoom_rect.removeHandle(0)  # Remove the resize handle
+        self.plot_widget.addItem(self.box_zoom_rect)
+
+    def _update_zoom_rect(self, x, y):
+        """Update the zoom rectangle as mouse moves."""
+        if self.box_zoom_rect is None or self.box_zoom_start is None:
+            return
+            
+        x0, y0 = self.box_zoom_start
+        
+        # Calculate width and height (can be negative)
+        width = x - x0
+        height = y - y0
+        
+        # RectROI needs positive size, so adjust position if needed
+        new_x = min(x0, x)
+        new_y = min(y0, y)
+        new_width = abs(width)
+        new_height = abs(height)
+        
+        self.box_zoom_rect.setPos([new_x, new_y])
+        self.box_zoom_rect.setSize([new_width, new_height])
+
+    def _complete_box_zoom(self):
+        """Complete box zoom using current rectangle."""
+        if self.box_zoom_rect is None or self.box_zoom_start is None:
+            self._cancel_box_zoom()
+            return
+            
+        # Get the rectangle bounds
+        pos = self.box_zoom_rect.pos()
+        size = self.box_zoom_rect.size()
+        
+        x_min = pos.x()
+        y_min = pos.y()
+        x_max = x_min + size.x()
+        y_max = y_min + size.y()
+        
+        # Only zoom if we have a meaningful rectangle
+        if size.x() > 0 and size.y() > 0:
+            self._zoom_to_box((x_min, y_min), (x_max, y_max))
+        
+        self._cancel_box_zoom()
+
+    def _zoom_to_box(self, start, end):
+        """Zoom the plot to the specified box region."""
+        x0, y0 = start
+        x1, y1 = end
+        
+        # Ensure proper ordering
+        x_min, x_max = min(x0, x1), max(x0, x1)
+        y_min, y_max = min(y0, y1), max(y0, y1)
+        
+        # Set the view range
+        view_box = self.plot_widget.getPlotItem().getViewBox()
+        view_box.setRange(xRange=(x_min, x_max), yRange=(y_min, y_max), padding=0)
+        
+        self.status_bar.showMessage(f"Zoomed to region: MJD [{x_min:.2f}, {x_max:.2f}], Residual [{y_min:.2f}, {y_max:.2f}] μs")
+
+    def _cancel_box_zoom(self):
+        """Cancel box zoom mode and clean up."""
+        self.box_zoom_active = False
+        self.box_zoom_start = None
+        
+        # Remove the zoom rectangle
+        if self.box_zoom_rect is not None:
+            self.plot_widget.removeItem(self.box_zoom_rect)
+            self.box_zoom_rect = None
+        
+        # Disconnect mouse events
+        try:
+            view_box = self.plot_widget.getPlotItem().getViewBox()
+            view_box.scene().sigMouseMoved.disconnect(self._on_box_zoom_move)
+        except (TypeError, RuntimeError):
+            pass  # Already disconnected
+        
+        # Restore cursor
+        self.plot_widget.setCursor(QCursor(Qt.ArrowCursor))
+        
+        if "Box zoom" in self.status_bar.currentMessage():
+            self.status_bar.showMessage("Ready")
+
+    def keyPressEvent(self, event):
+        """Handle key press events."""
+        if event.key() == Qt.Key_Escape:
+            if self.box_zoom_active:
+                self._cancel_box_zoom()
+                self.status_bar.showMessage("Box zoom cancelled")
+                return
+            if self.box_delete_active:
+                self._cancel_box_delete()
+                self.status_bar.showMessage("Box delete cancelled")
+                return
+        super().keyPressEvent(event)
+
+    # =========================================================================
+    # BOX DELETE FEATURE
+    # =========================================================================
+
+    def _handle_box_delete_key(self):
+        """Handle 'Shift+Z' key press for box delete."""
+        if self.box_zoom_active:
+            return  # Don't interfere with zoom mode
+        if not self.box_delete_active:
+            self._start_box_delete()
+        else:
+            self._complete_box_delete()
+
+    def _start_box_delete(self):
+        """Start box delete mode - set first corner at current mouse position."""
+        self.box_delete_active = True
+        
+        # Get current mouse position in data coordinates
+        view_box = self.plot_widget.getPlotItem().getViewBox()
+        
+        # Get mouse position relative to the plot
+        global_pos = QCursor.pos()
+        widget_pos = self.plot_widget.mapFromGlobal(global_pos)
+        scene_pos = self.plot_widget.mapToScene(widget_pos)
+        
+        # Check if mouse is within the plot area
+        if view_box.sceneBoundingRect().contains(scene_pos):
+            mouse_point = view_box.mapSceneToView(scene_pos)
+            self.box_delete_start = (mouse_point.x(), mouse_point.y())
+            self._create_delete_rect(mouse_point.x(), mouse_point.y())
+            self.status_bar.showMessage("Box delete: Move mouse to select region, press 'Shift+Z' to delete (Esc to cancel)")
+        else:
+            self.box_delete_start = None
+            self.status_bar.showMessage("Box delete: Move mouse into plot and press 'Shift+Z' to set corner (Esc to cancel)")
+        
+        # Connect mouse events on the plot
+        view_box.scene().sigMouseMoved.connect(self._on_box_delete_move)
+        
+        # Change cursor to crosshair
+        self.plot_widget.setCursor(QCursor(Qt.CrossCursor))
+
+    def _on_box_delete_move(self, scene_pos):
+        """Handle mouse move during box delete to update selection rectangle."""
+        if not self.box_delete_active:
+            return
+        
+        view_box = self.plot_widget.getPlotItem().getViewBox()
+        
+        if not view_box.sceneBoundingRect().contains(scene_pos):
+            return
+            
+        mouse_point = view_box.mapSceneToView(scene_pos)
+        
+        # If we don't have a start point yet, set it now (mouse entered plot)
+        if self.box_delete_start is None:
+            self.box_delete_start = (mouse_point.x(), mouse_point.y())
+            self._create_delete_rect(mouse_point.x(), mouse_point.y())
+            self.status_bar.showMessage("Box delete: Move mouse to select region, press 'Shift+Z' to delete (Esc to cancel)")
+        else:
+            # Update the delete rectangle visualization
+            self._update_delete_rect(mouse_point.x(), mouse_point.y())
+
+    def _create_delete_rect(self, x, y):
+        """Create the visual delete selection rectangle (red/warning color)."""
+        # Use error/warning color for delete
+        delete_color = Colors.ACCENT_ERROR
+        
+        self.box_delete_rect = pg.RectROI(
+            [x, y], [0, 0],
+            pen=pg.mkPen(delete_color, width=2, style=Qt.DashLine),
+            movable=False,
+            resizable=False
+        )
+        self.box_delete_rect.removeHandle(0)
+        self.plot_widget.addItem(self.box_delete_rect)
+
+    def _update_delete_rect(self, x, y):
+        """Update the delete rectangle as mouse moves."""
+        if self.box_delete_rect is None or self.box_delete_start is None:
+            return
+            
+        x0, y0 = self.box_delete_start
+        
+        new_x = min(x0, x)
+        new_y = min(y0, y)
+        new_width = abs(x - x0)
+        new_height = abs(y - y0)
+        
+        self.box_delete_rect.setPos([new_x, new_y])
+        self.box_delete_rect.setSize([new_width, new_height])
+
+    def _complete_box_delete(self):
+        """Complete box delete - remove points within the rectangle."""
+        if self.box_delete_rect is None or self.box_delete_start is None:
+            self._cancel_box_delete()
+            return
+            
+        # Get the rectangle bounds
+        pos = self.box_delete_rect.pos()
+        size = self.box_delete_rect.size()
+        
+        x_min = pos.x()
+        y_min = pos.y()
+        x_max = x_min + size.x()
+        y_max = y_min + size.y()
+        
+        # Only delete if we have a meaningful rectangle
+        if size.x() > 0 and size.y() > 0:
+            self._delete_points_in_box(x_min, x_max, y_min, y_max)
+        
+        self._cancel_box_delete()
+
+    def _delete_points_in_box(self, x_min, x_max, y_min, y_max):
+        """Delete data points within the specified box region."""
+        if self.mjd is None or self.residuals_us is None:
+            return
+        
+        # Find points inside the box
+        inside_mask = (
+            (self.mjd >= x_min) & (self.mjd <= x_max) &
+            (self.residuals_us >= y_min) & (self.residuals_us <= y_max)
+        )
+        
+        n_delete = np.sum(inside_mask)
+        if n_delete == 0:
+            self.status_bar.showMessage("No points in selection")
+            return
+        
+        # Track deleted indices relative to original data
+        # Find which original indices these correspond to
+        current_to_original = self._get_current_to_original_mapping()
+        for i, is_inside in enumerate(inside_mask):
+            if is_inside:
+                self.deleted_indices.add(current_to_original[i])
+        
+        # Keep points outside the box
+        keep_mask = ~inside_mask
+        self.mjd = self.mjd[keep_mask]
+        self.residuals_us = self.residuals_us[keep_mask]
+        self.prefit_residuals_us = self.prefit_residuals_us[keep_mask]
+        if self.errors_us is not None:
+            self.errors_us = self.errors_us[keep_mask]
+        
+        # Recalculate RMS
+        if len(self.residuals_us) > 0:
+            self.rms_us = np.sqrt(np.mean(self.residuals_us**2))
+        else:
+            self.rms_us = 0.0
+        
+        # Update plot
+        self._update_plot()
+        self._update_plot_title()
+        
+        # Update statistics
+        self.rms_label.setText(f"{self.rms_us:.6f} μs")
+        self.ntoa_label.setText(f"{len(self.mjd)}")
+        
+        self.status_bar.showMessage(f"Deleted {n_delete} TOAs ({len(self.mjd)} remaining)")
+
+    def _get_current_to_original_mapping(self):
+        """Get mapping from current data indices to original data indices."""
+        if self.original_mjd is None:
+            return list(range(len(self.mjd)))
+        
+        # Build list of original indices that haven't been deleted
+        original_indices = [i for i in range(len(self.original_mjd)) if i not in self.deleted_indices]
+        return original_indices
+
+    def _cancel_box_delete(self):
+        """Cancel box delete mode and clean up."""
+        self.box_delete_active = False
+        self.box_delete_start = None
+        
+        # Remove the delete rectangle
+        if self.box_delete_rect is not None:
+            self.plot_widget.removeItem(self.box_delete_rect)
+            self.box_delete_rect = None
+        
+        # Disconnect mouse events
+        try:
+            view_box = self.plot_widget.getPlotItem().getViewBox()
+            view_box.scene().sigMouseMoved.disconnect(self._on_box_delete_move)
+        except (TypeError, RuntimeError):
+            pass
+        
+        # Restore cursor
+        self.plot_widget.setCursor(QCursor(Qt.ArrowCursor))
+        
+        if "Box delete" in self.status_bar.currentMessage():
+            self.status_bar.showMessage("Ready")
+
+    # =========================================================================
+    # SAVE TIM FILE
+    # =========================================================================
+
+    def on_save_tim(self):
+        """Save current TOAs to a new .tim file (excluding deleted points)."""
+        if self.tim_file is None:
+            QMessageBox.warning(self, "No Data", "No .tim file loaded")
+            return
+        
+        # Suggest a filename
+        original_name = self.tim_file.stem
+        suggested_name = f"{original_name}_filtered.tim"
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save .tim File", suggested_name, "Tim Files (*.tim);;All Files (*)"
+        )
+        
+        if not filename:
+            return  # User cancelled
+        
+        try:
+            self._write_filtered_tim(filename)
+            self.status_bar.showMessage(f"Saved {len(self.mjd)} TOAs to {Path(filename).name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save .tim file:\n\n{e}")
+
+    def _write_filtered_tim(self, output_path):
+        """Write filtered TOAs to a new .tim file."""
+        # Read original .tim file
+        with open(self.tim_file, 'r') as f:
+            lines = f.readlines()
+        
+        # Parse and filter lines
+        output_lines = []
+        toa_index = 0  # Index into original TOA data
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # Keep comment lines and FORMAT/MODE lines
+            if not stripped or stripped.startswith('C ') or stripped.upper().startswith('FORMAT') or stripped.upper().startswith('MODE'):
+                output_lines.append(line)
+                continue
+            
+            # Check if this is a TOA line (not a comment)
+            # TOA lines typically start with a filename or have specific format
+            parts = stripped.split()
+            if len(parts) >= 3:
+                # This looks like a TOA line
+                if toa_index not in self.deleted_indices:
+                    output_lines.append(line)
+                toa_index += 1
+            else:
+                # Not a TOA line, keep it
+                output_lines.append(line)
+        
+        # Write output file
+        with open(output_path, 'w') as f:
+            f.writelines(output_lines)

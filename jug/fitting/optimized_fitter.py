@@ -1325,7 +1325,8 @@ def _run_general_fit_iterations(
 def _build_general_fit_setup_from_cache(
     session_cached_data: Dict[str, Any],
     params_dict: Dict[str, float],
-    fit_params: List[str]
+    fit_params: List[str],
+    toa_mask: Optional[np.ndarray] = None
 ) -> GeneralFitSetup:
     """
     Build fitting setup from TimingSession cached data (fast, no I/O).
@@ -1345,6 +1346,9 @@ def _build_general_fit_setup_from_cache(
         Current parameter dictionary
     fit_params : list of str
         Parameters to fit
+    toa_mask : ndarray of bool, optional
+        Boolean mask indicating which TOAs to include (True = include).
+        If None, all TOAs are used.
         
     Returns
     -------
@@ -1357,6 +1361,14 @@ def _build_general_fit_setup_from_cache(
     freq_mhz_bary = session_cached_data['freq_bary_mhz']
     toas_mjd = session_cached_data['toas_mjd']
     errors_us = session_cached_data['errors_us']
+    
+    # Apply TOA mask if provided
+    if toa_mask is not None:
+        dt_sec_cached = dt_sec_cached[toa_mask]
+        tdb_mjd = tdb_mjd[toa_mask]
+        freq_mhz_bary = freq_mhz_bary[toa_mask]
+        toas_mjd = toas_mjd[toa_mask]
+        errors_us = errors_us[toa_mask]
     
     # Compute derived arrays (same as file path)
     errors_sec = errors_us * 1e-6

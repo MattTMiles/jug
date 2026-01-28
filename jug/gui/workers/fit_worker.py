@@ -31,7 +31,7 @@ class FitWorker(QRunnable):
     Updated to use TimingSession for better performance.
     """
 
-    def __init__(self, session, fit_params: list[str]):
+    def __init__(self, session, fit_params: list[str], toa_mask: np.ndarray = None):
         """
         Initialize the fit worker.
 
@@ -41,11 +41,15 @@ class FitWorker(QRunnable):
             Existing timing session (with cached data)
         fit_params : list[str]
             List of parameters to fit (e.g., ['F0', 'F1', 'DM'])
+        toa_mask : ndarray of bool, optional
+            Boolean mask indicating which TOAs to include (True = include).
+            If None, all TOAs are used.
         """
         super().__init__()
         self.signals = WorkerSignals()
         self.session = session
         self.fit_params = fit_params
+        self.toa_mask = toa_mask
         self.is_running = True
 
     @Slot()
@@ -59,7 +63,8 @@ class FitWorker(QRunnable):
             # Use session.fit_parameters (reuses cached data)
             result = self.session.fit_parameters(
                 fit_params=self.fit_params,
-                verbose=False
+                verbose=False,
+                toa_mask=self.toa_mask
             )
 
             # Copy numpy arrays to ensure thread safety

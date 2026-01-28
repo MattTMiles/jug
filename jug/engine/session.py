@@ -312,7 +312,8 @@ class TimingSession:
         max_iter: int = 25,
         convergence_threshold: float = 1e-14,
         device: Optional[str] = None,
-        verbose: Optional[bool] = None
+        verbose: Optional[bool] = None,
+        toa_mask: Optional[np.ndarray] = None
     ) -> Dict[str, Any]:
         """
         Fit timing model parameters.
@@ -329,6 +330,9 @@ class TimingSession:
             'cpu', 'gpu', or None (auto-detect)
         verbose : bool, optional
             Print fitting progress (uses session verbose if not specified)
+        toa_mask : ndarray of bool, optional
+            Boolean mask indicating which TOAs to include in fit (True = include).
+            If None, all TOAs are used. This allows fitting on a subset of data.
         
         Returns
         -------
@@ -350,7 +354,12 @@ class TimingSession:
             verbose = self.verbose
         
         if verbose:
-            print(f"  Fitting {len(fit_params)} parameters: {', '.join(fit_params)}")
+            n_toas = len(self.toas_data)
+            if toa_mask is not None:
+                n_used = np.sum(toa_mask)
+                print(f"  Fitting {len(fit_params)} parameters: {', '.join(fit_params)} ({n_used}/{n_toas} TOAs)")
+            else:
+                print(f"  Fitting {len(fit_params)} parameters: {', '.join(fit_params)}")
         
         # FAST PATH: Use cached arrays if available
         # Ensure we have cached residuals with subtract_tzr=False (needed for fitting)
@@ -386,11 +395,12 @@ class TimingSession:
                 'errors_us': errors_us
             }
             
-            # Build setup from cache
+            # Build setup from cache (with optional TOA mask)
             setup = _build_general_fit_setup_from_cache(
                 session_cached_data,
                 self.params,
-                fit_params
+                fit_params,
+                toa_mask=toa_mask
             )
             
             # Run cached fit

@@ -278,6 +278,45 @@ def get_synthwave_data_colors():
 # Active theme (can be switched at runtime)
 _current_theme = LightTheme
 
+# Light mode variant: "navy" (default) or "burgundy"
+_light_variant = "navy"
+
+
+def get_light_variant():
+    """Get current light mode variant."""
+    return _light_variant
+
+
+def set_light_variant(variant):
+    """Set light mode variant: 'navy' or 'burgundy'."""
+    global _light_variant
+    if variant in ("navy", "burgundy"):
+        _light_variant = variant
+
+
+def toggle_light_variant():
+    """Toggle between navy and burgundy variants in light mode."""
+    global _light_variant
+    _light_variant = "burgundy" if _light_variant == "navy" else "navy"
+    return _light_variant
+
+
+def get_light_data_colors():
+    """Get data point colors for current light mode variant."""
+    if _light_variant == "burgundy":
+        return {
+            'primary': (94, 24, 3, 220),       # Burgundy primary
+            'alt': (43, 65, 98, 220),          # Navy alt
+            'primary_hex': "#5E1803",
+            'alt_hex': "#2b4162",
+        }
+    return {
+        'primary': (43, 65, 98, 220),          # Navy primary (default)
+        'alt': (94, 24, 3, 220),               # Burgundy alt
+        'primary_hex': "#2b4162",
+        'alt_hex': "#5E1803",
+    }
+
 
 def get_current_theme():
     """Get the currently active theme."""
@@ -906,7 +945,8 @@ class PlotTheme:
             colors = get_synthwave_data_colors()
             return colors['primary']
         else:
-            return (43, 65, 98, 220)    # Navy #2b4162
+            colors = get_light_data_colors()
+            return colors['primary']
 
     @classmethod
     def get_scatter_color_alt(cls):
@@ -915,15 +955,19 @@ class PlotTheme:
             colors = get_synthwave_data_colors()
             return colors['alt']
         else:
-            return (94, 24, 3, 220)      # Burgundy #5E1803
+            colors = get_light_data_colors()
+            return colors['alt']
 
     @classmethod
     def get_error_bar_color(cls):
-        """Error bars: muted purple, always visible."""
+        """Error bars: muted, always visible, matches data color."""
         if is_dark_mode():
             return (132, 139, 189, 128)  # #848bbd with good visibility
         else:
-            return (43, 65, 98, 90)      # Navy with transparency
+            colors = get_light_data_colors()
+            # Extract RGB from primary and add transparency
+            r, g, b, _ = colors['primary']
+            return (r, g, b, 90)
 
     @classmethod
     def get_error_bar_color_alt(cls):
@@ -931,7 +975,9 @@ class PlotTheme:
         if is_dark_mode():
             return (132, 139, 189, 128)  # Same muted purple (always visible)
         else:
-            return (94, 24, 3, 90)       # Burgundy with transparency
+            colors = get_light_data_colors()
+            r, g, b, _ = colors['alt']
+            return (r, g, b, 90)
 
     @classmethod
     def get_zero_line_color(cls):

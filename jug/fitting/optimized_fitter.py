@@ -1059,14 +1059,15 @@ def _run_general_fit_iterations(
     setup: GeneralFitSetup,
     max_iter: int,
     convergence_threshold: float,
-    verbose: bool
+    verbose: bool,
+    solver_mode: str = "exact"
 ) -> Dict:
     """
     Run general fitting iterations using precomputed setup.
-    
+
     This is the "iterate" phase that reuses cached arrays.
     The math here is UNCHANGED from the original implementation.
-    
+
     Parameters
     ----------
     setup : GeneralFitSetup
@@ -1077,7 +1078,10 @@ def _run_general_fit_iterations(
         Convergence threshold
     verbose : bool
         Print progress
-        
+    solver_mode : str, default "exact"
+        Solver mode: "exact" (SVD, bit-for-bit reproducible) or
+        "fast" (QR/lstsq, faster but may differ slightly).
+
     Returns
     -------
     result : dict
@@ -1177,21 +1181,28 @@ def _run_general_fit_iterations(
             # Compute RMS
             rms_us = np.sqrt(np.sum(residuals**2 * weights) / np.sum(weights)) * 1e6
         
-        # Build design matrix column-by-column
+        # Build design matrix - BATCHED derivative computation
+        # Compute all spin derivatives in one call, all DM derivatives in one call
+        # This avoids per-parameter function call overhead
         M_columns = []
-        
+
+        # Batch spin parameters
+        spin_params_list = [p for p in fit_params if p.startswith('F')]
+        if spin_params_list:
+            from jug.fitting.derivatives_spin import compute_spin_derivatives
+            spin_derivs = compute_spin_derivatives(params, toas_mjd, spin_params_list)
+
+        # Batch DM parameters
+        dm_params_list = [p for p in fit_params if p.startswith('DM')]
+        if dm_params_list:
+            dm_derivs = compute_dm_derivatives(params, toas_mjd, freq_mhz, dm_params_list)
+
+        # Assemble columns in original fit_params order (preserves exact behavior)
         for param in fit_params:
             if param.startswith('F'):
-                # Spin parameter derivative
-                from jug.fitting.derivatives_spin import compute_spin_derivatives
-                deriv = compute_spin_derivatives(params, toas_mjd, [param])
-                M_columns.append(deriv[param])
-                
+                M_columns.append(spin_derivs[param])
             elif param.startswith('DM'):
-                # DM parameter derivative
-                deriv = compute_dm_derivatives(params, toas_mjd, freq_mhz, [param])
-                M_columns.append(deriv[param])
-                
+                M_columns.append(dm_derivs[param])
             else:
                 raise ValueError(f"Unknown parameter type: {param}")
         
@@ -1203,16 +1214,35 @@ def _run_general_fit_iterations(
             col_mean = np.sum(M[:, i] * weights) / np.sum(weights)
             M[:, i] = M[:, i] - col_mean
         
-        # Solve WLS using SVD
-        delta_params, cov, _ = wls_solve_svd(
-            residuals=residuals,
-            sigma=errors_sec,
-            M=M,
-            threshold=1e-14,
-            negate_dpars=False
-        )
-        delta_params = np.array(delta_params)
-        cov = np.array(cov)
+        # Solve WLS using selected solver
+        if solver_mode == "fast":
+            # FAST solver: QR-based lstsq (faster, may differ slightly)
+            # Weight the problem: sqrt(W)*M @ dp = sqrt(W)*r
+            sqrt_weights = np.sqrt(weights)
+            M_weighted = M * sqrt_weights[:, None]
+            r_weighted = residuals * sqrt_weights
+
+            # Use numpy lstsq (QR-based, faster than SVD)
+            delta_params, _, _, _ = np.linalg.lstsq(M_weighted, r_weighted, rcond=None)
+
+            # Compute covariance from normal equations
+            MtWM = M_weighted.T @ M_weighted
+            try:
+                cov = np.linalg.inv(MtWM)
+            except np.linalg.LinAlgError:
+                # Fallback to pseudo-inverse if singular
+                cov = np.linalg.pinv(MtWM)
+        else:
+            # EXACT solver: SVD-based (bit-for-bit reproducible)
+            delta_params, cov, _ = wls_solve_svd(
+                residuals=residuals,
+                sigma=errors_sec,
+                M=M,
+                threshold=1e-14,
+                negate_dpars=False
+            )
+            delta_params = np.array(delta_params)
+            cov = np.array(cov)
         
         # Update parameters
         param_values_curr = [param_values_curr[i] + delta_params[i] for i in range(len(fit_params))]
@@ -1421,14 +1451,15 @@ def fit_parameters_optimized_cached(
     setup: GeneralFitSetup,
     max_iter: int = 25,
     convergence_threshold: float = 1e-14,
-    verbose: bool = False
+    verbose: bool = False,
+    solver_mode: str = "exact"
 ) -> Dict:
     """
     Fit parameters using precomputed setup (cached path).
-    
+
     This is the public cached entrypoint that produces IDENTICAL results
     to fit_parameters_optimized() but reuses cached arrays.
-    
+
     Parameters
     ----------
     setup : GeneralFitSetup
@@ -1439,17 +1470,20 @@ def fit_parameters_optimized_cached(
         Convergence threshold
     verbose : bool
         Print progress
-        
+    solver_mode : str, default "exact"
+        Solver mode: "exact" (SVD, bit-for-bit reproducible) or
+        "fast" (QR/lstsq, faster but may differ slightly).
+
     Returns
     -------
     result : dict
         Fit results (identical format to fit_parameters_optimized)
     """
     total_start = time.time()
-    
+
     # Run iterations (identical logic to file-based path)
     result = _run_general_fit_iterations(
-        setup, max_iter, convergence_threshold, verbose
+        setup, max_iter, convergence_threshold, verbose, solver_mode=solver_mode
     )
     
     total_time = time.time() - total_start

@@ -313,11 +313,12 @@ class TimingSession:
         convergence_threshold: float = 1e-14,
         device: Optional[str] = None,
         verbose: Optional[bool] = None,
-        toa_mask: Optional[np.ndarray] = None
+        toa_mask: Optional[np.ndarray] = None,
+        solver_mode: str = "exact"
     ) -> Dict[str, Any]:
         """
         Fit timing model parameters.
-        
+
         Parameters
         ----------
         fit_params : list of str
@@ -333,7 +334,10 @@ class TimingSession:
         toa_mask : ndarray of bool, optional
             Boolean mask indicating which TOAs to include in fit (True = include).
             If None, all TOAs are used. This allows fitting on a subset of data.
-        
+        solver_mode : str, default "exact"
+            Solver mode: "exact" (SVD, bit-for-bit reproducible) or
+            "fast" (QR/lstsq, faster but may differ slightly).
+
         Returns
         -------
         result : dict
@@ -344,7 +348,7 @@ class TimingSession:
             - 'iterations': Number of iterations
             - 'converged': Whether fit converged
             - etc.
-        
+
         Notes
         -----
         This method uses cached arrays when available for maximum performance.
@@ -408,7 +412,8 @@ class TimingSession:
                 setup,
                 max_iter=max_iter,
                 convergence_threshold=convergence_threshold,
-                verbose=verbose
+                verbose=verbose,
+                solver_mode=solver_mode
             )
         else:
             # FALLBACK PATH: Use file-based fitting (slower but always works)

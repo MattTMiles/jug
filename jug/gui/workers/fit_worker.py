@@ -27,11 +27,12 @@ class FitWorker(QRunnable):
     Worker thread for running parameter fitting in the background.
 
     This prevents the GUI from freezing during long-running fits.
-    
+
     Updated to use TimingSession for better performance.
     """
 
-    def __init__(self, session, fit_params: list[str], toa_mask: np.ndarray = None):
+    def __init__(self, session, fit_params: list[str], toa_mask: np.ndarray = None,
+                 solver_mode: str = "exact"):
         """
         Initialize the fit worker.
 
@@ -44,12 +45,15 @@ class FitWorker(QRunnable):
         toa_mask : ndarray of bool, optional
             Boolean mask indicating which TOAs to include (True = include).
             If None, all TOAs are used.
+        solver_mode : str, default "exact"
+            Solver mode: "exact" (SVD, reproducible) or "fast" (QR, faster).
         """
         super().__init__()
         self.signals = WorkerSignals()
         self.session = session
         self.fit_params = fit_params
         self.toa_mask = toa_mask
+        self.solver_mode = solver_mode
         self.is_running = True
 
     @Slot()
@@ -64,7 +68,8 @@ class FitWorker(QRunnable):
             result = self.session.fit_parameters(
                 fit_params=self.fit_params,
                 verbose=False,
-                toa_mask=self.toa_mask
+                toa_mask=self.toa_mask,
+                solver_mode=self.solver_mode
             )
 
             # Copy numpy arrays to ensure thread safety

@@ -1111,6 +1111,10 @@ def _run_general_fit_iterations(
     iteration = 0
     converged = False
 
+    # Pre-compute sum of weights ONCE outside iteration loop (performance optimization)
+    # This is mathematically identical - weights array doesn't change during fitting
+    sum_weights = np.sum(weights)
+
     # Convergence criteria
     xtol = 1e-12
     gtol = 1e-3
@@ -1152,12 +1156,12 @@ def _run_general_fit_iterations(
             phase_wrapped = phase - np.round(phase)
             residuals = phase_wrapped / f0
 
-            # Subtract weighted mean
-            weighted_mean = np.sum(residuals * weights) / np.sum(weights)
+            # Subtract weighted mean (use pre-computed sum_weights)
+            weighted_mean = np.sum(residuals * weights) / sum_weights
             residuals = residuals - weighted_mean
 
-            # Compute RMS
-            rms_us = np.sqrt(np.sum(residuals**2 * weights) / np.sum(weights)) * 1e6
+            # Compute RMS (use pre-computed sum_weights)
+            rms_us = np.sqrt(np.sum(residuals**2 * weights) / sum_weights) * 1e6
         else:
             # Spin-only fitting: fast computation from cached dt_sec
             dt_sec_np = dt_sec_cached
@@ -1178,13 +1182,13 @@ def _run_general_fit_iterations(
             # Convert to time residuals
             residuals = phase_wrapped / f0
             
-            # Subtract weighted mean
-            weighted_mean = np.sum(residuals * weights) / np.sum(weights)
+            # Subtract weighted mean (use pre-computed sum_weights)
+            weighted_mean = np.sum(residuals * weights) / sum_weights
             residuals = residuals - weighted_mean
-            
-            # Compute RMS
-            rms_us = np.sqrt(np.sum(residuals**2 * weights) / np.sum(weights)) * 1e6
-        
+
+            # Compute RMS (use pre-computed sum_weights)
+            rms_us = np.sqrt(np.sum(residuals**2 * weights) / sum_weights) * 1e6
+
         # Build design matrix - BATCHED derivative computation
         # Compute all spin derivatives in one call, all DM derivatives in one call
         # This avoids per-parameter function call overhead
@@ -1213,9 +1217,9 @@ def _run_general_fit_iterations(
         # Assemble design matrix
         M = np.column_stack(M_columns)
         
-        # Subtract weighted mean from each column
+        # Subtract weighted mean from each column (use pre-computed sum_weights)
         for i in range(M.shape[1]):
-            col_mean = np.sum(M[:, i] * weights) / np.sum(weights)
+            col_mean = np.sum(M[:, i] * weights) / sum_weights
             M[:, i] = M[:, i] - col_mean
         
         # Solve WLS using selected solver
@@ -1277,9 +1281,9 @@ def _run_general_fit_iterations(
 
                 phase_wrapped_trial = phase_trial - np.round(phase_trial)
                 residuals_trial = phase_wrapped_trial / f0_trial
-                weighted_mean_trial = np.sum(residuals_trial * weights) / np.sum(weights)
+                weighted_mean_trial = np.sum(residuals_trial * weights) / sum_weights
                 residuals_trial = residuals_trial - weighted_mean_trial
-                rms_trial = np.sqrt(np.sum(residuals_trial**2 * weights) / np.sum(weights)) * 1e6
+                rms_trial = np.sqrt(np.sum(residuals_trial**2 * weights) / sum_weights) * 1e6
 
                 if rms_trial < best_rms:
                     best_rms = rms_trial

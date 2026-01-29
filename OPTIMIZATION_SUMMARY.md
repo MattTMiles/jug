@@ -1,5 +1,9 @@
 # JUG Performance Optimization - Cached Fitting Implementation
 
+> **Note**: For a comprehensive overview of ALL JUG performance optimizations (including geometry caching, JAX compilation caching, etc.), see **PERFORMANCE_IMPROVEMENTS.md**.
+> 
+> This document details the cached fitting implementation specifically.
+
 ## Summary
 
 Implemented bit-for-bit identical cached fitting path that eliminates redundant expensive setup work, resulting in **5x faster fitting** for typical 10k TOA datasets.

@@ -9,6 +9,14 @@ import argparse
 import sys
 from pathlib import Path
 
+# Configure JAX compilation cache EARLY (before any JIT functions are called)
+from jug.utils.jax_cache import configure_jax_compilation_cache
+configure_jax_compilation_cache()
+
+# Configure Astropy for deterministic behavior (before any Astropy imports)
+from jug.utils.astropy_config import configure_astropy
+configure_astropy()
+
 # Enable JAX 64-bit precision
 import jax
 jax.config.update("jax_enable_x64", True)

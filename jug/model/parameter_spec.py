@@ -1,0 +1,641 @@
+"""
+ParameterSpec Registry
+======================
+
+Defines parameter metadata for all timing model parameters. This replaces
+scattered param.startswith() checks with spec-driven routing.
+
+Key concepts:
+- ParameterSpec: Immutable dataclass defining parameter properties
+- DerivativeGroup: Enum for routing to appropriate derivative functions
+- PARAMETER_REGISTRY: Dict mapping canonical names to specs
+- Aliases: Alternative names (e.g., NU -> F0)
+
+Usage:
+    from jug.model.parameter_spec import get_spec, canonicalize_param_name
+
+    # Get spec for a parameter
+    spec = get_spec('F0')
+    print(spec.group)  # 'spin'
+    print(spec.derivative_group)  # DerivativeGroup.SPIN
+
+    # Resolve aliases
+    canonical = canonicalize_param_name('NU')  # Returns 'F0'
+
+    # List parameters by group
+    spin_params = list_params_by_group('spin')
+"""
+
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Optional, Tuple, Dict, List
+
+
+class DerivativeGroup(Enum):
+    """
+    Groups parameters by their derivative computation pathway.
+
+    Each group corresponds to a different derivative function module:
+    - SPIN: derivatives_spin.py (F0, F1, F2, ...)
+    - DM: derivatives_dm.py (DM, DM1, DM2, ...)
+    - ASTROMETRY: derivatives_astrometry.py (RAJ, DECJ, PMRA, PMDEC, PX)
+    - BINARY: derivatives_binary.py (PB, A1, ECC, OM, T0, ...)
+    - EPOCH: Reference epochs (PEPOCH, DMEPOCH, POSEPOCH, T0) - not fitted directly
+    - JUMP: Backend/receiver offsets
+    - FD: Frequency-dependent delays
+    """
+    SPIN = auto()
+    DM = auto()
+    ASTROMETRY = auto()
+    BINARY = auto()
+    EPOCH = auto()
+    JUMP = auto()
+    FD = auto()
+
+
+@dataclass(frozen=True)
+class ParameterSpec:
+    """
+    Specification for a timing model parameter.
+
+    Attributes
+    ----------
+    name : str
+        Canonical name (F0, RAJ, etc.)
+    group : str
+        Human-readable group (spin, dm, astrometry, binary, epoch)
+    dtype : str
+        Numeric type (float64 or longdouble)
+    internal_unit : str
+        Internal storage unit (Hz, rad, s, pc/cm^3)
+    par_unit_str : str
+        Human-readable unit label for .par files
+    aliases : tuple
+        Alternative names that resolve to this parameter
+    component_name : str
+        Name of the component that provides this parameter
+    derivative_group : DerivativeGroup
+        Routing group for derivative computation
+    default_fit : bool
+        Whether this parameter is fitted by default
+    gui_visible : bool
+        Whether to show in GUI parameter list
+    requires : tuple
+        Prerequisites (e.g., DM1 requires DMEPOCH)
+    par_codec_name : str
+        Name of codec for I/O transformation
+
+    Notes
+    -----
+    - All angles are stored internally as radians
+    - Codecs handle conversion at I/O boundary only
+    - This class is immutable (frozen=True)
+    """
+    name: str
+    group: str
+    derivative_group: DerivativeGroup
+    dtype: str = "float64"
+    internal_unit: str = ""
+    par_unit_str: str = ""
+    aliases: Tuple[str, ...] = ()
+    component_name: str = ""
+    default_fit: bool = False
+    gui_visible: bool = True
+    requires: Tuple[str, ...] = ()
+    par_codec_name: str = "float"
+
+
+# =============================================================================
+# Parameter Registry
+# =============================================================================
+
+# Spin parameters
+_SPIN_PARAMS = [
+    ParameterSpec(
+        name="F0",
+        group="spin",
+        derivative_group=DerivativeGroup.SPIN,
+        dtype="float64",
+        internal_unit="Hz",
+        par_unit_str="Hz",
+        aliases=("NU", "F"),
+        component_name="SpinComponent",
+        default_fit=True,
+        requires=("PEPOCH",),
+    ),
+    ParameterSpec(
+        name="F1",
+        group="spin",
+        derivative_group=DerivativeGroup.SPIN,
+        dtype="float64",
+        internal_unit="Hz/s",
+        par_unit_str="s^-2",
+        aliases=("NUDOT", "FDOT"),
+        component_name="SpinComponent",
+        default_fit=True,
+        requires=("PEPOCH",),
+    ),
+    ParameterSpec(
+        name="F2",
+        group="spin",
+        derivative_group=DerivativeGroup.SPIN,
+        dtype="longdouble",  # High-order terms need precision
+        internal_unit="Hz/s^2",
+        par_unit_str="s^-3",
+        component_name="SpinComponent",
+        requires=("PEPOCH",),
+    ),
+    ParameterSpec(
+        name="F3",
+        group="spin",
+        derivative_group=DerivativeGroup.SPIN,
+        dtype="longdouble",
+        internal_unit="Hz/s^3",
+        par_unit_str="s^-4",
+        component_name="SpinComponent",
+        requires=("PEPOCH",),
+    ),
+    ParameterSpec(
+        name="PEPOCH",
+        group="epoch",
+        derivative_group=DerivativeGroup.EPOCH,
+        dtype="float64",
+        internal_unit="MJD",
+        par_unit_str="MJD",
+        component_name="SpinComponent",
+        gui_visible=False,
+        par_codec_name="epoch_mjd",
+    ),
+]
+
+# DM parameters
+_DM_PARAMS = [
+    ParameterSpec(
+        name="DM",
+        group="dm",
+        derivative_group=DerivativeGroup.DM,
+        dtype="float64",
+        internal_unit="pc/cm^3",
+        par_unit_str="pc cm^-3",
+        aliases=("DM0",),
+        component_name="DispersionComponent",
+        default_fit=True,
+    ),
+    ParameterSpec(
+        name="DM1",
+        group="dm",
+        derivative_group=DerivativeGroup.DM,
+        dtype="float64",
+        internal_unit="pc/cm^3/yr",
+        par_unit_str="pc cm^-3 yr^-1",
+        component_name="DispersionComponent",
+        requires=("DMEPOCH",),
+    ),
+    ParameterSpec(
+        name="DM2",
+        group="dm",
+        derivative_group=DerivativeGroup.DM,
+        dtype="float64",
+        internal_unit="pc/cm^3/yr^2",
+        par_unit_str="pc cm^-3 yr^-2",
+        component_name="DispersionComponent",
+        requires=("DMEPOCH",),
+    ),
+    ParameterSpec(
+        name="DMEPOCH",
+        group="epoch",
+        derivative_group=DerivativeGroup.EPOCH,
+        dtype="float64",
+        internal_unit="MJD",
+        par_unit_str="MJD",
+        component_name="DispersionComponent",
+        gui_visible=False,
+        par_codec_name="epoch_mjd",
+    ),
+]
+
+# Astrometry parameters
+_ASTROMETRY_PARAMS = [
+    ParameterSpec(
+        name="RAJ",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="rad",  # CRITICAL: radians internally
+        par_unit_str="HH:MM:SS.sss",
+        component_name="AstrometryComponent",
+        requires=("POSEPOCH",),
+        par_codec_name="raj",
+    ),
+    ParameterSpec(
+        name="DECJ",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="rad",  # CRITICAL: radians internally
+        par_unit_str="DD:MM:SS.sss",
+        component_name="AstrometryComponent",
+        requires=("POSEPOCH",),
+        par_codec_name="decj",
+    ),
+    ParameterSpec(
+        name="PMRA",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="rad/yr",
+        par_unit_str="mas/yr",
+        aliases=("PMRAC",),  # PM in RA*cos(DEC)
+        component_name="AstrometryComponent",
+        requires=("POSEPOCH",),
+    ),
+    ParameterSpec(
+        name="PMDEC",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="rad/yr",
+        par_unit_str="mas/yr",
+        component_name="AstrometryComponent",
+        requires=("POSEPOCH",),
+    ),
+    ParameterSpec(
+        name="PX",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="rad",  # arcsec -> rad
+        par_unit_str="mas",
+        aliases=("PARALLAX",),
+        component_name="AstrometryComponent",
+    ),
+    ParameterSpec(
+        name="POSEPOCH",
+        group="epoch",
+        derivative_group=DerivativeGroup.EPOCH,
+        dtype="float64",
+        internal_unit="MJD",
+        par_unit_str="MJD",
+        component_name="AstrometryComponent",
+        gui_visible=False,
+        par_codec_name="epoch_mjd",
+    ),
+]
+
+# Binary Keplerian parameters
+_BINARY_PARAMS = [
+    ParameterSpec(
+        name="PB",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="day",
+        par_unit_str="d",
+        aliases=("PORB",),
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="A1",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="lt-s",
+        par_unit_str="lt-s",
+        aliases=("ASINI",),
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="ECC",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        aliases=("E",),
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="OM",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="rad",
+        par_unit_str="deg",
+        aliases=("OMEGA",),
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="T0",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="MJD",
+        par_unit_str="MJD",
+        component_name="BinaryComponent",
+        par_codec_name="epoch_mjd",
+    ),
+    # ELL1 parameters
+    ParameterSpec(
+        name="TASC",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="MJD",
+        par_unit_str="MJD",
+        component_name="BinaryComponent",
+        par_codec_name="epoch_mjd",
+    ),
+    ParameterSpec(
+        name="EPS1",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="EPS2",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        component_name="BinaryComponent",
+    ),
+]
+
+# Build the registry
+PARAMETER_REGISTRY: Dict[str, ParameterSpec] = {}
+_ALIAS_MAP: Dict[str, str] = {}  # alias -> canonical name
+
+for spec in _SPIN_PARAMS + _DM_PARAMS + _ASTROMETRY_PARAMS + _BINARY_PARAMS:
+    PARAMETER_REGISTRY[spec.name] = spec
+    for alias in spec.aliases:
+        _ALIAS_MAP[alias] = spec.name
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+def canonicalize_param_name(name: str) -> str:
+    """
+    Resolve parameter aliases to canonical names.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name (possibly an alias)
+
+    Returns
+    -------
+    str
+        Canonical parameter name
+
+    Examples
+    --------
+    >>> canonicalize_param_name('NU')
+    'F0'
+    >>> canonicalize_param_name('F0')
+    'F0'
+    >>> canonicalize_param_name('UNKNOWN')
+    'UNKNOWN'
+    """
+    return _ALIAS_MAP.get(name, name)
+
+
+def get_spec(name: str) -> Optional[ParameterSpec]:
+    """
+    Get the ParameterSpec for a parameter.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name (aliases are resolved)
+
+    Returns
+    -------
+    ParameterSpec or None
+        The spec if found, None otherwise
+
+    Examples
+    --------
+    >>> spec = get_spec('F0')
+    >>> spec.group
+    'spin'
+    >>> spec = get_spec('NU')  # Alias
+    >>> spec.name
+    'F0'
+    """
+    canonical = canonicalize_param_name(name)
+    return PARAMETER_REGISTRY.get(canonical)
+
+
+def get_derivative_group(name: str) -> Optional[DerivativeGroup]:
+    """
+    Get the derivative group for a parameter.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name (aliases are resolved)
+
+    Returns
+    -------
+    DerivativeGroup or None
+        The derivative group if found, None otherwise
+
+    Examples
+    --------
+    >>> get_derivative_group('F0')
+    DerivativeGroup.SPIN
+    >>> get_derivative_group('DM')
+    DerivativeGroup.DM
+    """
+    spec = get_spec(name)
+    return spec.derivative_group if spec else None
+
+
+def list_params_by_group(group: str) -> List[str]:
+    """
+    List all parameters in a group.
+
+    Parameters
+    ----------
+    group : str
+        Group name (spin, dm, astrometry, binary, epoch)
+
+    Returns
+    -------
+    list of str
+        Parameter names in the group
+
+    Examples
+    --------
+    >>> list_params_by_group('spin')
+    ['F0', 'F1', 'F2', 'F3', 'PEPOCH']
+    """
+    return [
+        spec.name for spec in PARAMETER_REGISTRY.values()
+        if spec.group == group
+    ]
+
+
+def list_params_by_derivative_group(derivative_group: DerivativeGroup) -> List[str]:
+    """
+    List all parameters in a derivative group.
+
+    Parameters
+    ----------
+    derivative_group : DerivativeGroup
+        The derivative group
+
+    Returns
+    -------
+    list of str
+        Parameter names in the derivative group
+    """
+    return [
+        spec.name for spec in PARAMETER_REGISTRY.values()
+        if spec.derivative_group == derivative_group
+    ]
+
+
+def list_fittable_params() -> List[str]:
+    """
+    List all parameters that can be fitted.
+
+    Returns parameters where derivative_group is not EPOCH
+    (epochs are reference points, not fitted directly).
+
+    Returns
+    -------
+    list of str
+        Fittable parameter names
+
+    Examples
+    --------
+    >>> 'F0' in list_fittable_params()
+    True
+    >>> 'PEPOCH' in list_fittable_params()
+    False
+    """
+    return [
+        spec.name for spec in PARAMETER_REGISTRY.values()
+        if spec.derivative_group != DerivativeGroup.EPOCH
+    ]
+
+
+def is_spin_param(name: str) -> bool:
+    """
+    Check if a parameter is a spin parameter.
+
+    This replaces param.startswith('F') checks.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name
+
+    Returns
+    -------
+    bool
+        True if spin parameter, False otherwise
+    """
+    spec = get_spec(name)
+    return spec is not None and spec.derivative_group == DerivativeGroup.SPIN
+
+
+def is_dm_param(name: str) -> bool:
+    """
+    Check if a parameter is a DM parameter.
+
+    This replaces param.startswith('DM') checks.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name
+
+    Returns
+    -------
+    bool
+        True if DM parameter, False otherwise
+    """
+    spec = get_spec(name)
+    return spec is not None and spec.derivative_group == DerivativeGroup.DM
+
+
+def is_astrometry_param(name: str) -> bool:
+    """
+    Check if a parameter is an astrometry parameter.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name
+
+    Returns
+    -------
+    bool
+        True if astrometry parameter, False otherwise
+    """
+    spec = get_spec(name)
+    return spec is not None and spec.derivative_group == DerivativeGroup.ASTROMETRY
+
+
+def is_binary_param(name: str) -> bool:
+    """
+    Check if a parameter is a binary parameter.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name
+
+    Returns
+    -------
+    bool
+        True if binary parameter, False otherwise
+    """
+    spec = get_spec(name)
+    return spec is not None and spec.derivative_group == DerivativeGroup.BINARY
+
+
+def get_spin_params_from_list(params: List[str]) -> List[str]:
+    """
+    Filter a list to only spin parameters.
+
+    Replacement for: [p for p in params if p.startswith('F') and p[1:].isdigit()]
+
+    Parameters
+    ----------
+    params : list of str
+        Parameter names to filter
+
+    Returns
+    -------
+    list of str
+        Only the spin parameters
+    """
+    return [p for p in params if is_spin_param(p)]
+
+
+def get_dm_params_from_list(params: List[str]) -> List[str]:
+    """
+    Filter a list to only DM parameters.
+
+    Replacement for: [p for p in params if p.startswith('DM')]
+
+    Parameters
+    ----------
+    params : list of str
+        Parameter names to filter
+
+    Returns
+    -------
+    list of str
+        Only the DM parameters
+    """
+    return [p for p in params if is_dm_param(p)]

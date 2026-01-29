@@ -4,9 +4,38 @@ This module provides functions to parse and interpolate tempo2-style clock
 correction files for the observatory → UTC → TAI → TT clock chain.
 """
 
+from functools import lru_cache
 from pathlib import Path
 from bisect import bisect_left
 import numpy as np
+
+
+@lru_cache(maxsize=16)
+def _parse_clock_file_cached(path_str: str) -> tuple:
+    """Internal cached clock file parser.
+    
+    Returns tuple of (mjd_tuple, offset_tuple) for hashability.
+    """
+    mjds = []
+    offsets = []
+    path = Path(path_str)
+
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    mjd = float(parts[0])
+                    offset = float(parts[1])
+                    mjds.append(mjd)
+                    offsets.append(offset)
+                except ValueError:
+                    continue
+
+    return (tuple(mjds), tuple(offsets))
 
 
 def parse_clock_file(path: Path | str) -> dict:
@@ -27,34 +56,24 @@ def parse_clock_file(path: Path | str) -> dict:
     File format: MJD offset(seconds) [optional columns]
 
     Lines starting with '#' are comments and are skipped.
+    
+    Results are cached using functools.lru_cache for performance.
+    Repeated calls with the same path return cached arrays.
 
     Examples
     --------
     >>> clock_data = parse_clock_file("data/clock/mk2utc.clk")
     >>> print(f"Clock file has {len(clock_data['mjd'])} entries")
     """
-    mjds = []
-    offsets = []
-    path = Path(path)
-
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            parts = line.split()
-            if len(parts) >= 2:
-                try:
-                    mjd = float(parts[0])
-                    offset = float(parts[1])
-                    mjds.append(mjd)
-                    offsets.append(offset)
-                except ValueError:
-                    continue
-
+    # Resolve to absolute path string for consistent caching
+    path_str = str(Path(path).resolve())
+    
+    # Get cached tuples and convert to arrays
+    mjd_tuple, offset_tuple = _parse_clock_file_cached(path_str)
+    
     return {
-        'mjd': np.array(mjds),
-        'offset': np.array(offsets)
+        'mjd': np.array(mjd_tuple),
+        'offset': np.array(offset_tuple)
     }
 
 

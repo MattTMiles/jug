@@ -16,6 +16,14 @@ import sys
 from pathlib import Path
 import numpy as np
 
+# Configure JAX compilation cache EARLY (before any JIT functions are called)
+from jug.utils.jax_cache import configure_jax_compilation_cache
+configure_jax_compilation_cache()
+
+# Configure Astropy for deterministic behavior (before any Astropy imports)
+from jug.utils.astropy_config import configure_astropy
+configure_astropy()
+
 from jug.fitting.optimized_fitter import fit_parameters_optimized
 from jug.utils.device import set_device_preference, print_device_info
 from jug.io.par_reader import parse_par_file

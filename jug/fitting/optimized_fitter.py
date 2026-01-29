@@ -62,6 +62,18 @@ from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.fitting.wls_fitter import wls_solve_svd
 
+# Import ParameterSpec system for spec-driven routing
+from jug.model.parameter_spec import (
+    is_spin_param,
+    is_dm_param,
+    get_spin_params_from_list,
+    get_dm_params_from_list,
+    DerivativeGroup,
+    get_derivative_group,
+)
+# Lazy import to avoid circular dependency with components
+# get_component is imported where needed in functions below
+
 
 @dataclass
 class GeneralFitSetup:
@@ -113,6 +125,107 @@ class GeneralFitSetup:
     initial_dm_delay: Optional[np.ndarray]
     dm_params: List[str]
     spin_params: List[str]
+
+
+# =============================================================================
+# Parameter Routing Helpers (spec-driven replacements for startswith checks)
+# =============================================================================
+
+def _get_param_default_value(param: str) -> float:
+    """
+    Get default value for a parameter not found in .par file.
+
+    This is the spec-driven replacement for:
+        if param.startswith('F') and param[1:].isdigit(): default = 0.0
+        elif param.startswith('DM') and ...: default = 0.0
+
+    Parameters
+    ----------
+    param : str
+        Parameter name
+
+    Returns
+    -------
+    float or None
+        Default value if known, None if no default available
+
+    Notes
+    -----
+    Spin and DM parameters default to 0.0 (higher-order terms often missing).
+    Returns None for unknown parameters to trigger an error.
+    """
+    if is_spin_param(param):
+        return 0.0
+    elif is_dm_param(param):
+        return 0.0
+    else:
+        return None  # No default - will raise error
+
+
+def _format_param_value_for_print(param: str, value: float, uncertainty: float = None) -> str:
+    """
+    Format parameter value for printing.
+
+    This is the spec-driven replacement for startswith checks in print statements.
+
+    Parameters
+    ----------
+    param : str
+        Parameter name
+    value : float
+        Parameter value
+    uncertainty : float, optional
+        Uncertainty (if available)
+
+    Returns
+    -------
+    str
+        Formatted string
+    """
+    if is_spin_param(param) and abs(value) < 1e-10:
+        if uncertainty is not None:
+            return f"  {param} = {value:.20e} ± {uncertainty:.6e}"
+        else:
+            if value != 0:
+                return f"  {param} = {value:.20e}"
+            else:
+                return f"  {param} = {value:.15f}"
+    elif is_dm_param(param):
+        if uncertainty is not None:
+            return f"  {param} = {value:.10f} ± {uncertainty:.6e} pc cm⁻³"
+        else:
+            return f"  {param} = {value:.10f} pc cm⁻³"
+    else:
+        if uncertainty is not None:
+            return f"  {param} = {value:.15f} ± {uncertainty:.6e}"
+        else:
+            return f"  {param} = {value:.15f}"
+
+
+def _route_params_by_derivative_group(fit_params: List[str]) -> Dict[DerivativeGroup, List[str]]:
+    """
+    Route parameters by their derivative computation group.
+
+    This is the spec-driven replacement for:
+        spin_params = [p for p in fit_params if p.startswith('F')]
+        dm_params = [p for p in fit_params if p.startswith('DM')]
+
+    Parameters
+    ----------
+    fit_params : list of str
+        Parameters to fit
+
+    Returns
+    -------
+    dict
+        Mapping from DerivativeGroup to list of parameters
+    """
+    grouped = {}
+    for param in fit_params:
+        group = get_derivative_group(param)
+        if group is not None:
+            grouped.setdefault(group, []).append(param)
+    return grouped
 
 
 def compute_dm_delay_fast(tdb_mjd: np.ndarray, freq_mhz: np.ndarray,
@@ -920,12 +1033,7 @@ def _fit_parameters_jax_incremental(
         for param in fit_params:
             val = params[param]
             err = uncertainties[param]
-            if param.startswith('F') and abs(val) < 1e-10:
-                print(f"  {param} = {val:.20e} ± {err:.6e}")
-            elif param.startswith('DM'):
-                print(f"  {param} = {val:.10f} ± {err:.6e} pc cm⁻³")
-            else:
-                print(f"  {param} = {val:.15f} ± {err:.6e}")
+            print(_format_param_value_for_print(param, val, err))
         print(f"\nTotal time: {total_time:.3f}s")
         print(f"Cache time: {cache_time:.3f}s")
         print(f"Iteration time: {iter_time:.3f}s")
@@ -997,23 +1105,20 @@ def _build_general_fit_setup_from_files(
     param_values_start = []
     for param in fit_params:
         if param not in params:
-            # Add default value for missing parameter
-            if param.startswith('F') and param[1:].isdigit():
-                default_value = 0.0
-            elif param.startswith('DM') and (len(param) == 2 or param[2:].isdigit()):
-                default_value = 0.0
-            else:
+            # Add default value for missing parameter (spec-driven)
+            default_value = _get_param_default_value(param)
+            if default_value is None:
                 raise ValueError(f"Parameter {param} not found in .par file and no default available")
-            
+
             params[param] = default_value
             if verbose:
                 print(f"Warning: {param} not in .par file, using default value: {default_value}")
-        
+
         param_values_start.append(params[param])
-    
-    # Classify parameters
-    spin_params = [p for p in fit_params if p.startswith('F')]
-    dm_params = [p for p in fit_params if p.startswith('DM')]
+
+    # Classify parameters (spec-driven)
+    spin_params = get_spin_params_from_list(fit_params)
+    dm_params = get_dm_params_from_list(fit_params)
     
     # Cache expensive delays (subtract_tzr=False for fitting)
     if verbose:
@@ -1194,22 +1299,24 @@ def _run_general_fit_iterations(
         # This avoids per-parameter function call overhead
         M_columns = []
 
-        # Batch spin parameters
-        spin_params_list = [p for p in fit_params if p.startswith('F')]
+        # Batch spin parameters (spec-driven routing via component)
+        spin_params_list = get_spin_params_from_list(fit_params)
+        spin_derivs = {}
         if spin_params_list:
             from jug.fitting.derivatives_spin import compute_spin_derivatives
             spin_derivs = compute_spin_derivatives(params, toas_mjd, spin_params_list)
 
-        # Batch DM parameters
-        dm_params_list = [p for p in fit_params if p.startswith('DM')]
+        # Batch DM parameters (spec-driven routing via component)
+        dm_params_list = get_dm_params_from_list(fit_params)
+        dm_derivs = {}
         if dm_params_list:
             dm_derivs = compute_dm_derivatives(params, toas_mjd, freq_mhz, dm_params_list)
 
         # Assemble columns in original fit_params order (preserves exact behavior)
         for param in fit_params:
-            if param.startswith('F'):
+            if is_spin_param(param):
                 M_columns.append(spin_derivs[param])
-            elif param.startswith('DM'):
+            elif is_dm_param(param):
                 M_columns.append(dm_derivs[param])
             else:
                 raise ValueError(f"Unknown parameter type: {param}")
@@ -1473,20 +1580,17 @@ def _build_general_fit_setup_from_cache(
     param_values_start = []
     for param in fit_params:
         if param not in params_dict:
-            # Add default (same logic as file path)
-            if param.startswith('F') and param[1:].isdigit():
-                default_value = 0.0
-            elif param.startswith('DM') and (len(param) == 2 or param[2:].isdigit()):
-                default_value = 0.0
-            else:
+            # Add default (spec-driven, same logic as file path)
+            default_value = _get_param_default_value(param)
+            if default_value is None:
                 raise ValueError(f"Parameter {param} not found and no default available")
             params_dict[param] = default_value
-        
+
         param_values_start.append(params_dict[param])
-    
-    # Classify parameters
-    spin_params = [p for p in fit_params if p.startswith('F')]
-    dm_params = [p for p in fit_params if p.startswith('DM')]
+
+    # Classify parameters (spec-driven)
+    spin_params = get_spin_params_from_list(fit_params)
+    dm_params = get_dm_params_from_list(fit_params)
     
     # If fitting DM params, cache initial DM delay (same as file path)
     initial_dm_delay = None
@@ -1616,12 +1720,7 @@ def _fit_parameters_general(
             param_summary.append(f"{len(dm_params)} DM")
         print(f"\nFitting {' + '.join(param_summary)} parameters")
         for param, val in zip(fit_params, setup.param_values_start):
-            if param.startswith('F') and abs(val) < 1e-10 and val != 0:
-                print(f"  {param} = {val:.20e}")
-            elif param.startswith('DM'):
-                print(f"  {param} = {val:.10f} pc cm⁻³")
-            else:
-                print(f"  {param} = {val}")
+            print(_format_param_value_for_print(param, val))
         print(f"  TOAs: {len(setup.toas_mjd)}")
         print(f"  Cached dt_sec in {cache_time:.3f}s")
     
@@ -1649,12 +1748,7 @@ def _fit_parameters_general(
         for param in fit_params:
             val = result['final_params'][param]
             err = result['uncertainties'][param]
-            if param.startswith('F') and abs(val) < 1e-10:
-                print(f"  {param} = {val:.20e} ± {err:.6e}")
-            elif param.startswith('DM'):
-                print(f"  {param} = {val:.10f} ± {err:.6e} pc cm⁻³")
-            else:
-                print(f"  {param} = {val:.15f} ± {err:.6e}")
+            print(_format_param_value_for_print(param, val, err))
         print(f"\nTotal time: {total_time:.3f}s")
         print(f"Cache time: {cache_time:.3f}s")
         print(f"{'='*80}")

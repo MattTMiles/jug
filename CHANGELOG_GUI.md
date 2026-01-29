@@ -1,5 +1,51 @@
 # JUG GUI Changelog
 
+## 2026-01-29 - Performance Optimization + RMS Fix
+
+### Fixed
+- ✅ **RMS calculation**: GUI now uses engine-consistent weighted RMS formula
+  - Before: Unweighted `sqrt(mean(r²))` - different from engine
+  - After: Weighted `sqrt(sum(w*r²)/sum(w))` where `w = 1/σ²`
+  - RMS now EXACTLY matches engine/CLI/Python API (bit-for-bit)
+
+### Added
+- ✅ **Geometry Disk Cache**: Dramatically faster warm starts
+  - `compute_ssb_obs_pos_vel`: 580ms → 0.75ms (773x faster!)
+  - Warm session: 736ms → 162ms (4.5x faster)
+  - Cache stored in `~/.cache/jug/geometry/`
+  - Keyed by: TDB times hash + observatory + ephemeris + versions
+
+- ✅ **JAX Compilation Cache**: Faster cold starts across sessions
+  - Persistent compilation cache in `~/.cache/jug/jax_compilation/`
+  - Override with `JUG_JAX_CACHE_DIR` env var
+
+- ✅ **Astropy Configuration**: Deterministic IERS behavior
+  - Prevents surprise downloads during operations
+  - Force offline mode with `JUG_ASTROPY_OFFLINE=1`
+
+- ✅ **Data Prefetch Command**: Prepare for offline use
+  - `python -m jug.scripts.download_data` - prefetch IERS/ephemeris
+  - `python -m jug.scripts.download_data --status` - show cache status
+  - `python -m jug.scripts.download_data --clear-geom-cache` - clear geometry cache
+
+- ✅ **Geometry Profiling**: Debug performance issues
+  - Enable with `JUG_PROFILE_GEOM=1`
+  - Shows call counts, timing, call sites
+
+- ✅ **Canonical Stats Module**: Engine-consistent statistics
+  - `jug/engine/stats.py` - single source of truth for RMS
+  - `compute_residual_stats(residuals_us, errors_us)` - used by GUI
+
+### Performance Summary
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Warm session | ~736ms | ~162ms | **4.5x faster** |
+| Geometry cache hit | ~580ms | ~0.75ms | **773x faster** |
+| Cold→Warm speedup | 5.1x | 15.1x | **3x better** |
+
+---
+
 ## 2026-01-27 - Phase 2 Complete + Device Selection + Dynamic Parameters
 
 ### Fixed

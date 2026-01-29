@@ -51,6 +51,9 @@ from jug.gui.theme import (
     toggle_light_variant,
 )
 
+# Import canonical stats function (engine is source of truth)
+from jug.engine.stats import compute_residual_stats
+
 
 class MainWindow(QMainWindow):
     """Main window for JUG timing analysis GUI."""
@@ -893,8 +896,9 @@ class MainWindow(QMainWindow):
                 self.errors_us = full_errors[keep_mask]
             else:
                 self.errors_us = None
-            # Recalculate RMS for filtered data
-            self.rms_us = np.sqrt(np.mean(self.residuals_us**2))
+            # Recalculate RMS for filtered data using canonical engine stats
+            stats = compute_residual_stats(self.residuals_us, self.errors_us)
+            self.rms_us = stats['weighted_rms_us']
         else:
             # No deletions - use all data
             self.mjd = full_mjd
@@ -1101,8 +1105,9 @@ class MainWindow(QMainWindow):
             # Reset cached keep mask (all True = keep all TOAs)
             self._keep_mask = np.ones(len(self.original_mjd), dtype=bool)
             
-            # Recalculate RMS
-            self.rms_us = np.sqrt(np.mean(self.residuals_us**2))
+            # Recalculate RMS using canonical engine stats
+            stats = compute_residual_stats(self.residuals_us, self.errors_us)
+            self.rms_us = stats['weighted_rms_us']
             
             # Reset fit state
             self.is_fitted = False
@@ -1915,11 +1920,9 @@ class MainWindow(QMainWindow):
         if self.errors_us is not None:
             self.errors_us = self.errors_us[keep_mask]
         
-        # Recalculate RMS
-        if len(self.residuals_us) > 0:
-            self.rms_us = np.sqrt(np.mean(self.residuals_us**2))
-        else:
-            self.rms_us = 0.0
+        # Recalculate RMS using canonical engine stats
+        stats = compute_residual_stats(self.residuals_us, self.errors_us)
+        self.rms_us = stats['weighted_rms_us']
         
         # Update plot
         self._update_plot()

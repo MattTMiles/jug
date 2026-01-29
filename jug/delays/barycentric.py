@@ -4,7 +4,10 @@ This module provides functions to compute the geometric (Roemer) delay,
 Shapiro delay, and related astrometric quantities for pulsar timing.
 """
 
-from typing import Tuple
+import os
+import time
+import traceback
+from typing import Dict, Optional, Tuple
 import numpy as np
 from astropy import units as u
 from astropy.time import Time
@@ -12,10 +15,39 @@ from astropy.coordinates import EarthLocation, get_body_barycentric_posvel, sola
 
 from jug.utils.constants import C_KM_S, AU_KM, SECS_PER_DAY
 
+# Profiling support (guarded by env var)
+_PROFILE_ENABLED = os.environ.get('JUG_PROFILE_GEOM', '').strip() == '1'
+_call_stats = {
+    'compute_ssb_obs_pos_vel': {'count': 0, 'total_time': 0.0, 'call_sites': []}
+}
+
+
+def get_geometry_profile_stats() -> dict:
+    """Get profiling statistics for geometry functions.
+    
+    Only populated when JUG_PROFILE_GEOM=1 environment variable is set.
+    
+    Returns
+    -------
+    dict
+        Statistics including call counts, total time, and call sites.
+    """
+    return dict(_call_stats)
+
+
+def reset_geometry_profile_stats():
+    """Reset profiling statistics."""
+    global _call_stats
+    _call_stats = {
+        'compute_ssb_obs_pos_vel': {'count': 0, 'total_time': 0.0, 'call_sites': []}
+    }
+
 
 def compute_ssb_obs_pos_vel(
     tdb_mjd: np.ndarray,
-    obs_itrf_km: np.ndarray
+    obs_itrf_km: np.ndarray,
+    timings: Optional[Dict[str, float]] = None,
+    use_cache: bool = True
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute observatory position and velocity relative to Solar System Barycenter.
 
@@ -28,6 +60,12 @@ def compute_ssb_obs_pos_vel(
         Times in TDB (MJD)
     obs_itrf_km : np.ndarray
         Observatory position in ITRF coordinates (km), shape (3,) [X, Y, Z]
+    timings : dict, optional
+        If provided, internal stage timings are recorded into this dict.
+        Keys: 'time_obj_creation', 'earth_ephemeris', 'gcrs_transform', 
+              'gcrs_transform_plus', 'velocity_derivation'
+    use_cache : bool, default True
+        Whether to use disk cache for repeated datasets.
 
     Returns
     -------
@@ -50,13 +88,48 @@ def compute_ssb_obs_pos_vel(
     >>> pos, vel = compute_ssb_obs_pos_vel(tdb, obs_pos)
     >>> print(f"Position shape: {pos.shape}")  # (2, 3)
     """
+    # Profiling instrumentation
+    if _PROFILE_ENABLED:
+        func_start = time.perf_counter()
+        # Capture call site (limited stack for efficiency)
+        stack = traceback.extract_stack(limit=6)
+        call_site = ' -> '.join(f"{s.filename.split('/')[-1]}:{s.lineno}" for s in stack[:-1])
+        _call_stats['compute_ssb_obs_pos_vel']['call_sites'].append(call_site)
+    
+    # Ensure arrays are proper dtype
+    tdb_mjd = np.asarray(tdb_mjd, dtype=np.float64)
+    obs_itrf_km = np.asarray(obs_itrf_km, dtype=np.float64)
+    
+    # Try disk cache first
+    if use_cache:
+        from jug.utils.geom_cache import get_geometry_cache
+        cache = get_geometry_cache()
+        cached = cache.load(tdb_mjd, obs_itrf_km, ephemeris="de440")
+        if cached is not None:
+            if _PROFILE_ENABLED:
+                _call_stats['compute_ssb_obs_pos_vel']['count'] += 1
+                _call_stats['compute_ssb_obs_pos_vel']['total_time'] += time.perf_counter() - func_start
+            if timings is not None:
+                timings['cache_hit'] = True
+            return cached
+    
+    t0 = time.perf_counter() if timings is not None else None
+    
     times = Time(tdb_mjd, format='mjd', scale='tdb')
+    
+    if timings is not None:
+        timings['time_obj_creation'] = time.perf_counter() - t0
+        t0 = time.perf_counter()
 
     # Get Earth position and velocity from DE440
     with solar_system_ephemeris.set('de440'):
         earth_pv = get_body_barycentric_posvel('earth', times)
         ssb_geo_pos = earth_pv[0].xyz.to(u.km).value.T  # Geocenter position
         ssb_geo_vel = earth_pv[1].xyz.to(u.km/u.s).value.T  # Geocenter velocity
+
+    if timings is not None:
+        timings['earth_ephemeris'] = time.perf_counter() - t0
+        t0 = time.perf_counter()
 
     # Convert observatory ITRF position to EarthLocation
     obs_itrf = EarthLocation.from_geocentric(
@@ -73,6 +146,10 @@ def compute_ssb_obs_pos_vel(
         obs_gcrs.cartesian.z.to(u.km).value
     ])
 
+    if timings is not None:
+        timings['gcrs_transform'] = time.perf_counter() - t0
+        t0 = time.perf_counter()
+
     # Compute observatory velocity via numerical derivative
     dt_sec = 1.0  # 1 second timestep
     times_plus = Time(tdb_mjd + dt_sec/SECS_PER_DAY, format='mjd', scale='tdb')
@@ -83,6 +160,110 @@ def compute_ssb_obs_pos_vel(
         obs_gcrs_plus.cartesian.z.to(u.km).value
     ])
     geo_obs_vel = (geo_obs_pos_plus - geo_obs_pos) / dt_sec  # km/s
+
+    if timings is not None:
+        timings['gcrs_transform_plus'] = time.perf_counter() - t0
+        t0 = time.perf_counter()
+
+    # Observatory position and velocity at SSB
+    ssb_obs_pos = ssb_geo_pos + geo_obs_pos
+    ssb_obs_vel = ssb_geo_vel + geo_obs_vel
+
+    if timings is not None:
+        timings['velocity_derivation'] = time.perf_counter() - t0
+        timings['cache_hit'] = False
+    
+    # Ensure float64 output
+    ssb_obs_pos = np.asarray(ssb_obs_pos, dtype=np.float64)
+    ssb_obs_vel = np.asarray(ssb_obs_vel, dtype=np.float64)
+    
+    # Save to disk cache
+    if use_cache:
+        cache.save(tdb_mjd, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris="de440")
+    
+    # Update profiling stats
+    if _PROFILE_ENABLED:
+        _call_stats['compute_ssb_obs_pos_vel']['count'] += 1
+        _call_stats['compute_ssb_obs_pos_vel']['total_time'] += time.perf_counter() - func_start
+
+    return ssb_obs_pos, ssb_obs_vel
+
+
+def compute_ssb_obs_pos_vel_gcrs_posvel(
+    tdb_mjd: np.ndarray,
+    obs_itrf_km: np.ndarray,
+    timings: Optional[Dict[str, float]] = None
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute SSB position/velocity using EarthLocation.get_gcrs_posvel().
+    
+    This is an EXPERIMENTAL alternative to compute_ssb_obs_pos_vel that uses
+    Astropy's built-in get_gcrs_posvel() method instead of numerical
+    differentiation for velocity.
+    
+    WARNING: This function may NOT produce bit-for-bit identical results
+    to the baseline compute_ssb_obs_pos_vel. Use only if equivalence tests pass.
+    
+    Parameters
+    ----------
+    tdb_mjd : np.ndarray
+        Times in TDB (MJD)
+    obs_itrf_km : np.ndarray
+        Observatory position in ITRF coordinates (km), shape (3,) [X, Y, Z]
+    timings : dict, optional
+        If provided, internal stage timings are recorded.
+
+    Returns
+    -------
+    ssb_obs_pos : np.ndarray
+        Observatory position relative to SSB (km), shape (n_times, 3)
+    ssb_obs_vel : np.ndarray
+        Observatory velocity relative to SSB (km/s), shape (n_times, 3)
+    """
+    t0 = time.perf_counter() if timings is not None else None
+    
+    times = Time(tdb_mjd, format='mjd', scale='tdb')
+    
+    if timings is not None:
+        timings['time_obj_creation'] = time.perf_counter() - t0
+        t0 = time.perf_counter()
+
+    # Get Earth position and velocity from DE440
+    with solar_system_ephemeris.set('de440'):
+        earth_pv = get_body_barycentric_posvel('earth', times)
+        ssb_geo_pos = earth_pv[0].xyz.to(u.km).value.T
+        ssb_geo_vel = earth_pv[1].xyz.to(u.km/u.s).value.T
+
+    if timings is not None:
+        timings['earth_ephemeris'] = time.perf_counter() - t0
+        t0 = time.perf_counter()
+
+    # Convert observatory ITRF position to EarthLocation
+    obs_itrf = EarthLocation.from_geocentric(
+        obs_itrf_km[0] * u.km,
+        obs_itrf_km[1] * u.km,
+        obs_itrf_km[2] * u.km
+    )
+
+    # Use get_gcrs_posvel for both position AND velocity
+    # Returns (CartesianRepresentation for position, CartesianRepresentation for velocity)
+    obs_gcrs_pv = obs_itrf.get_gcrs_posvel(obstime=times)
+    
+    # Position - obs_gcrs_pv[0] is already CartesianRepresentation
+    geo_obs_pos = np.column_stack([
+        obs_gcrs_pv[0].x.to(u.km).value,
+        obs_gcrs_pv[0].y.to(u.km).value,
+        obs_gcrs_pv[0].z.to(u.km).value
+    ])
+    
+    # Velocity - obs_gcrs_pv[1] is CartesianRepresentation with velocity units
+    geo_obs_vel = np.column_stack([
+        obs_gcrs_pv[1].x.to(u.km/u.s).value,
+        obs_gcrs_pv[1].y.to(u.km/u.s).value,
+        obs_gcrs_pv[1].z.to(u.km/u.s).value
+    ])
+
+    if timings is not None:
+        timings['gcrs_posvel'] = time.perf_counter() - t0
 
     # Observatory position and velocity at SSB
     ssb_obs_pos = ssb_geo_pos + geo_obs_pos

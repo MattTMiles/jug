@@ -5,8 +5,10 @@ test cases before integration into the main calculator.
 """
 
 import numpy as np
+# Ensure JAX is configured for x64 precision
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
 import jax
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from jug.delays.binary_bt import bt_binary_delay_vectorized

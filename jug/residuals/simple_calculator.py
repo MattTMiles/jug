@@ -11,9 +11,9 @@ from astropy.coordinates import EarthLocation, get_body_barycentric_posvel, sola
 from astropy.time import Time
 from astropy import units as u
 
-# Enable JAX 64-bit precision
-import jax
-jax.config.update("jax_enable_x64", True)
+# Ensure JAX is configured for x64 precision
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
 import jax.numpy as jnp
 
 from jug.io.par_reader import parse_par_file, get_longdouble, parse_ra, parse_dec

@@ -5,10 +5,10 @@ that combines DM, solar wind, FD, and binary delays into a single kernel.
 This is the key optimization that makes JUG 100x faster than PINT.
 """
 
+# Ensure JAX is configured for x64 precision
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
 import jax
-
-# CRITICAL: Enable float64 for JAX before any operations
-jax.config.update('jax_enable_x64', True)
 
 import jax.numpy as jnp
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY, T_SUN_SEC

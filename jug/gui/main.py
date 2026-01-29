@@ -8,9 +8,9 @@ import sys
 import os
 import argparse
 
-# Configure JAX compilation cache EARLY (before any JIT functions are called)
-from jug.utils.jax_cache import configure_jax_compilation_cache
-configure_jax_compilation_cache()
+# Configure JAX (x64 precision + compilation cache) EARLY
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
 
 # Configure Astropy for deterministic behavior (before any Astropy imports)
 from jug.utils.astropy_config import configure_astropy

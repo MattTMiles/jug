@@ -109,8 +109,9 @@ def benchmark_imports(timer: StageTimer) -> None:
         from astropy.coordinates import get_body_barycentric_posvel, solar_system_ephemeris
     
     with timer.stage("import: jax"):
+        from jug.utils.jax_setup import ensure_jax_x64
+        ensure_jax_x64()
         import jax
-        jax.config.update("jax_enable_x64", True)
         import jax.numpy as jnp
     
     # JUG modules

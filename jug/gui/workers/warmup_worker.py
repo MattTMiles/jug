@@ -42,8 +42,9 @@ class WarmupWorker(QRunnable):
             self.signals.progress.emit("Warming up JAX...")
 
             # Import JAX functions that need warming up
+            from jug.utils.jax_setup import ensure_jax_x64
+            ensure_jax_x64()
             import jax
-            jax.config.update("jax_enable_x64", True)
             import jax.numpy as jnp
 
             # Use SMALL fixed size for warmup (JAX JIT works with any size after)

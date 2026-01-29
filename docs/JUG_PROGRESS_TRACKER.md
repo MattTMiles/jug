@@ -1,8 +1,8 @@
 # JUG Implementation Progress Tracker
 
-**Last Updated**: 2026-01-29 (Architecture Foundation Complete ✅)
-**Current Version**: M5 GUI Complete + Performance Optimizations + Architecture Foundation ✅
-**Active Milestone**: M6 Complete Parameter Fitting
+**Last Updated**: 2026-01-29 (Lazy JAX Import Complete ✅)
+**Current Version**: M5 GUI Complete + Performance Optimizations + Architecture Foundation + Lazy JAX Import ✅
+**Active Milestone**: M6B Data & Environment Determinism (then M6A remaining, then M6)
 
 This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
 
@@ -22,8 +22,9 @@ This document tracks the implementation progress of JUG from notebook to product
 | M5: Desktop GUI (v0.5.0) | ✅ COMPLETED | 100% | 2026-01-27 |
 | M5.1: GUI Performance | ✅ COMPLETED | 100% | 2026-01-29 |
 | M5.2: Architecture Foundation | ✅ COMPLETED | 100% | 2026-01-29 |
+| M5.3: Lazy JAX Import | ✅ COMPLETED | 100% | 2026-01-29 |
+| **M6B: Data & Environment Determinism** | 🚧 IN PROGRESS | 40% | **HIGH PRIORITY (DO FIRST)** |
 | **M6A: Parity & Regression Infrastructure** | 🚧 IN PROGRESS | 85% | **HIGH PRIORITY** |
-| **M6B: Data & Environment Determinism** | 🚧 IN PROGRESS | 40% | **HIGH PRIORITY** |
 | **M6: Complete Parameter Fitting** | ⏸️ NOT STARTED | 0% | **HIGH PRIORITY** |
 | M7: White Noise Models (v0.7.0) | ⏸️ NOT STARTED | 0% | TBD |
 | M8: GP Noise Models (v0.8.0) | ⏸️ NOT STARTED | 0% | TBD |
@@ -250,7 +251,95 @@ Implemented the ParameterSpec + Component Graph architecture to provide a clean 
 
 ---
 
+## Milestone 5.3: Lazy JAX Import ✅
+
+**Status**: COMPLETED (2026-01-29)
+**Duration**: 1 session
+**Time Invested**: ~2 hours
+
+### Summary
+
+Refactored JUG to NOT import JAX at package import time. This improves cold-start performance and makes parity/determinism testing easier in environments without JAX.
+
+### Problem Solved
+
+- `jug/__init__.py` was importing JAX and setting `jax_enable_x64` at import time
+- This forced jaxlib dependency + JAX import overhead for any `import jug`, even for codecs/tests/tools
+- This harmed cold start and made parity/determinism work harder in environments without JAX
+
+### Implementation
+
+#### A) Created jug/utils/jax_setup.py ✅
+- `ensure_jax_x64()`: Imports JAX and sets `jax_enable_x64=True` (idempotent)
+- `assert_jax_x64()`: Raises if x64 not enabled
+- `is_jax_configured()`: Check if JAX has been configured
+- `get_jax_info()`: Get JAX configuration information
+- Integrates with existing `jax_cache.py` for compilation cache setup
+
+#### B) Updated jug/__init__.py ✅
+- Removed ALL top-level `import jax` and `jax.config.update(...)`
+- Now lightweight: just version info and docstring
+- No import-time side effects
+
+#### C) Updated Entry Points ✅
+- `jug-gui` (gui/main.py): Calls `ensure_jax_x64()` at start
+- `jug-fit` (scripts/fit_parameters.py): Calls `ensure_jax_x64()` at start
+- `jug-compute-residuals` (scripts/compute_residuals.py): Calls `ensure_jax_x64()` at start
+
+#### D) Updated JAX-Using Modules ✅
+- `jug/delays/combined.py`: Calls `ensure_jax_x64()` at module load
+- `jug/residuals/simple_calculator.py`: Calls `ensure_jax_x64()` at module load
+- `jug/fitting/optimized_fitter.py`: Calls `ensure_jax_x64()` at module load
+- `jug/tests/test_binary_models.py`: Calls `ensure_jax_x64()`
+- `jug/scripts/benchmark_stages.py`: Calls `ensure_jax_x64()`
+- `jug/gui/workers/warmup_worker.py`: Calls `ensure_jax_x64()`
+
+#### E) Fixed jug/utils/__init__.py ✅
+- Removed eager import of `device.py` (which imports JAX)
+- Only exports non-JAX utilities at module level
+- JAX-dependent utilities must be imported explicitly from submodules
+
+### Tests Added
+
+**File**: `jug/tests/test_lazy_jax_import.py`
+- `test_import_jug_does_not_import_jax()`: Verifies `import jug` doesn't import JAX
+- `test_import_jug_model_does_not_import_jax()`: Verifies model imports don't import JAX
+- `test_import_jug_io_does_not_import_jax()`: Verifies I/O imports don't import JAX
+- `test_ensure_jax_x64_is_idempotent()`: Verifies multiple calls are safe
+- `test_jax_x64_actually_enabled()`: Verifies JAX x64 is actually enabled
+- `test_assert_jax_x64_raises_before_config()`: Verifies error if not configured
+
+### Golden Files Regenerated
+
+- Golden files regenerated with new code to establish baseline
+- All golden regression tests pass with `np.array_equal` (bit-for-bit identical)
+
+### Files Created
+- `jug/utils/jax_setup.py` - Centralized JAX configuration
+- `jug/tests/test_lazy_jax_import.py` - Lazy import tests
+
+### Files Modified
+- `jug/__init__.py` - Removed JAX import
+- `jug/utils/__init__.py` - Removed eager device import
+- `jug/scripts/compute_residuals.py` - Use ensure_jax_x64()
+- `jug/scripts/fit_parameters.py` - Use ensure_jax_x64()
+- `jug/gui/main.py` - Use ensure_jax_x64()
+- `jug/delays/combined.py` - Use ensure_jax_x64()
+- `jug/residuals/simple_calculator.py` - Use ensure_jax_x64()
+- `jug/fitting/optimized_fitter.py` - Use ensure_jax_x64()
+- `jug/tests/test_binary_models.py` - Use ensure_jax_x64()
+- `jug/scripts/benchmark_stages.py` - Use ensure_jax_x64()
+- `jug/gui/workers/warmup_worker.py` - Use ensure_jax_x64()
+
+---
+
 ## Why These Milestones Exist
+
+**Milestone Ordering (UPDATED 2026-01-29)**:
+1. **M5.3 Lazy JAX Import** ✅ - Done first to improve cold-start and simplify determinism work
+2. **M6B Data & Environment Determinism** - Do BEFORE M6A remaining tasks (cross-tool parity is flakier without pinned assets)
+3. **M6A Parity & Regression Infrastructure** - Finish remaining tasks (codec tests, GUI angle tests, parity harness)
+4. **M6 Complete Parameter Fitting** - Gate on design matrix parity vs PINT before implementing
 
 **M6A and M6B are prerequisites for M6** because:
 
@@ -261,6 +350,8 @@ Implemented the ParameterSpec + Component Graph architecture to provide a clean 
 3. **Cross-Tool Parity**: JUG aims to match PINT and tempo2. A structured harness for comparing outputs across tools makes validation systematic rather than ad-hoc.
 
 4. **Architecture Foundation**: The ParameterSpec registry and component graph provide a clean extension point for new parameter types, replacing 11+ scattered `param.startswith()` checks with spec-driven routing.
+
+5. **Lazy JAX Import** (M5.3): JAX must NOT be imported at package import time. This improves cold-start for non-JAX operations, makes testing easier in JAX-free environments, and reduces import overhead.
 
 ---
 
@@ -334,10 +425,14 @@ Establish a comprehensive regression testing and cross-tool parity infrastructur
   - **Status**: COMPLETED ✅
 
 #### Cross-Tool Parity Harness ⏸️
-- [ ] **6A.7** Implement parity comparison infrastructure
+- [ ] **6A.7** Implement parity comparison infrastructure (OPTIONAL-BY-DEFAULT)
   - [ ] JUG vs PINT comparison utilities
   - [ ] JUG vs tempo2 comparison utilities
   - [ ] Structured parity reports (HTML/JSON)
+  - [ ] Put parity tests behind `@pytest.mark.parity` marker
+  - [ ] Default CI runs exclude parity tests unless explicitly enabled
+  - [ ] Provide local runner script that generates report if deps exist
+  - **Rationale**: Parity tests may require external deps (tempo2 build, clock files)
   - **Status**: NOT STARTED
 
 #### Engine/GUI/CLI/API Equivalence ✅
@@ -492,7 +587,17 @@ Currently JUG can fit:
 - ⏸️ JUMP parameters (backend/receiver offsets)
 - ⏸️ FD parameters (frequency-dependent delays)
 
-### Tasks (0/8 completed)
+### Tasks (0/9 completed)
+
+#### Phase 0: Design Matrix Parity Gate (REQUIRED FIRST)
+
+- [ ] **6.0** Design matrix column parity vs PINT
+  - [ ] Compare JUG design matrix columns vs PINT for RAJ/DECJ/PMRA/PMDEC/PX
+  - [ ] Verify POSEPOCH behavior matches PINT
+  - [ ] Document any convention differences (sign, epoch, units)
+  - [ ] This MUST pass before implementing full astrometry fitting
+  - **Rationale**: Catch convention/sign/epoch mismatches early, don't rely only on residual parity
+  - **Reference**: PINT `astrometry.py` design matrix implementation
 
 #### Phase 1: Astrometry (1 week)
 
@@ -503,7 +608,7 @@ Currently JUG can fit:
   - [ ] d(delay)/d(PMRA) - proper motion RA
   - [ ] d(delay)/d(PMDEC) - proper motion DEC
   - [ ] d(delay)/d(PX) - parallax
-  - [ ] Validate against PINT design matrix
+  - [ ] Validate against PINT design matrix (from 6.0)
   - **Estimated time**: 8 hours
   - **Reference**: PINT `astrometry.py`, Tempo2 `astrometry.C`
 

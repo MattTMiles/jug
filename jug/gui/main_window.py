@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QFileDialog, QLabel, QPushButton, QStatusBar,
     QCheckBox, QGroupBox, QMessageBox, QProgressDialog,
-    QFrame, QScrollArea, QSizePolicy, QApplication, QComboBox
+    QFrame, QScrollArea, QSizePolicy, QApplication, QMenu
 )
 from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer
 from PySide6.QtGui import QFont, QCursor
@@ -230,28 +230,82 @@ class MainWindow(QMainWindow):
         self.fit_button.setEnabled(False)
         layout.addWidget(self.fit_button)
 
-        # Solver mode dropdown
+        # Solver mode dropdown (using QPushButton + QMenu for proper styling)
         solver_layout = QHBoxLayout()
+        solver_layout.setContentsMargins(0, 0, 0, 0)
         solver_layout.setSpacing(8)
         self.solver_label = QLabel("Solver:")
         self.solver_label.setStyleSheet(f"""
-            font-size: 12px;
-            color: {Colors.TEXT_SECONDARY};
+            font-size: 13px;
+            font-weight: bold;
+            color: {Colors.TEXT_PRIMARY};
+            border: none;
+            margin: 0;
+            padding: 0;
         """)
         solver_layout.addWidget(self.solver_label)
 
-        self.solver_combo = QComboBox()
-        self.solver_combo.addItem("Exact (reproducible)", "exact")
-        self.solver_combo.addItem("Fast", "fast")
-        self.solver_combo.setCurrentIndex(0)  # Default to exact
-        self.solver_combo.currentIndexChanged.connect(self._on_solver_mode_changed)
-        # Styling handled by global stylesheet for theme consistency
-        self.solver_combo.setToolTip(
+        # Solver button with dropdown menu
+        self.solver_button = QPushButton("  Exact ▾")
+        self.solver_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Colors.BG_SECONDARY};
+                color: {Colors.TEXT_PRIMARY};
+                border: 1px solid {get_border_subtle()};
+                border-radius: 4px;
+                padding: 2px 10px;
+                font-size: 12px;
+                text-align: left;
+            }}
+            QPushButton:hover {{
+                border-color: {get_dynamic_accent_primary()};
+                background-color: {Colors.SURFACE_HOVER};
+            }}
+            QPushButton::menu-indicator {{
+                width: 0px;
+            }}
+        """)
+        self.solver_button.setToolTip(
             "Exact: SVD-based, bit-for-bit reproducible\n"
             "Fast: QR-based, faster but may differ slightly"
         )
-        solver_layout.addWidget(self.solver_combo)
-        solver_layout.addStretch()
+
+        # Create dropdown menu
+        self.solver_menu = QMenu(self)
+        self.solver_menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {Colors.SURFACE};
+                color: {Colors.TEXT_PRIMARY};
+                border: 1px solid {get_border_subtle()};
+                border-radius: 4px;
+                padding: 2px;
+            }}
+            QMenu::item {{
+                padding: 5px 12px;
+                border-radius: 3px;
+            }}
+            QMenu::item:hover {{
+                background-color: {Colors.SURFACE_HOVER};
+            }}
+            QMenu::item:selected {{
+                background-color: {get_dynamic_accent_primary()};
+                color: {Colors.BTN_PRIMARY_TEXT};
+            }}
+        """)
+
+        # Add menu items
+        exact_action = self.solver_menu.addAction("Exact (reproducible)")
+        exact_action.setData("exact")
+        exact_action.triggered.connect(lambda: self._set_solver_mode("exact", "Exact"))
+
+        fast_action = self.solver_menu.addAction("Fast")
+        fast_action.setData("fast")
+        fast_action.triggered.connect(lambda: self._set_solver_mode("fast", "Fast"))
+
+        self.solver_button.setMenu(self.solver_menu)
+        self.solver_button.setCursor(Qt.PointingHandCursor)
+        self.solver_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        solver_layout.addWidget(self.solver_button)
         layout.addLayout(solver_layout)
 
         # Secondary buttons with consistent styling
@@ -278,7 +332,7 @@ class MainWindow(QMainWindow):
         self.fit_window_button.setEnabled(False)
         layout.addWidget(self.fit_window_button)
 
-        layout.addSpacing(16)
+        layout.addSpacing(8)
 
         # Statistics card
         stats_card = QWidget()
@@ -1313,11 +1367,11 @@ class MainWindow(QMainWindow):
         """Zoom plot to fit data."""
         self.plot_widget.autoRange()
 
-    def _on_solver_mode_changed(self, index):
-        """Handle solver mode dropdown change."""
-        self.solver_mode = self.solver_combo.itemData(index)
-        mode_name = "Exact" if self.solver_mode == "exact" else "Fast"
-        self.status_bar.showMessage(f"Solver mode: {mode_name}")
+    def _set_solver_mode(self, mode: str, display_name: str):
+        """Set the solver mode from dropdown menu selection."""
+        self.solver_mode = mode
+        self.solver_button.setText(f"  {display_name} ▾")
+        self.status_bar.showMessage(f"Solver mode: {display_name}")
 
     def _on_view_range_changed(self, view_box, ranges):
         """Handle view range changes to scale error bar caps.
@@ -1342,7 +1396,7 @@ class MainWindow(QMainWindow):
         new_beam = x_span * beam_fraction
 
         # Clamp to reasonable bounds (in MJD days)
-        min_beam = 0.1    # Minimum 0.1 days
+        min_beam = 0.001  # Minimum 0.001 days (~1.4 minutes) for tight zoom
         max_beam = 50.0   # Maximum 50 days
         new_beam = max(min_beam, min(max_beam, new_beam))
 

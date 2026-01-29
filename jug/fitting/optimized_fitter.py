@@ -42,8 +42,10 @@ Status
 ⏳ Binary: TODO
 """
 
+# Ensure JAX is configured for x64 precision
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
 import jax
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 from pathlib import Path

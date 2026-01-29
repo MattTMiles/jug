@@ -247,23 +247,7 @@ class MainWindow(QMainWindow):
         self.solver_combo.addItem("Fast", "fast")
         self.solver_combo.setCurrentIndex(0)  # Default to exact
         self.solver_combo.currentIndexChanged.connect(self._on_solver_mode_changed)
-        self.solver_combo.setStyleSheet(f"""
-            QComboBox {{
-                background-color: {Colors.SURFACE};
-                border: 1px solid {get_border_subtle()};
-                border-radius: 6px;
-                padding: 4px 8px;
-                font-size: 12px;
-                color: {Colors.TEXT_PRIMARY};
-            }}
-            QComboBox:hover {{
-                border-color: {get_border_strong()};
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                padding-right: 8px;
-            }}
-        """)
+        # Styling handled by global stylesheet for theme consistency
         self.solver_combo.setToolTip(
             "Exact: SVD-based, bit-for-bit reproducible\n"
             "Fast: QR-based, faster but may differ slightly"
@@ -1000,11 +984,13 @@ class MainWindow(QMainWindow):
         pulsar_str = self.pulsar_name if self.pulsar_name else 'Unknown'
         title = f"{pulsar_str} - Fit Results"
 
-        # Colors for styling (use dynamic accent for theme/variant awareness)
-        text_neutral = "#111827"
-        text_muted = "#6b7280"
+        # Colors for styling (use theme-aware colors for dark/light mode compatibility)
+        text_neutral = Colors.TEXT_PRIMARY  # Main text color
+        text_muted = Colors.TEXT_SECONDARY  # Secondary/muted text
         accent = get_dynamic_accent_primary()
         border = Colors.SURFACE_BORDER
+        bg_surface = Colors.SURFACE
+        bg_secondary = Colors.BG_SECONDARY
         converged_color = Colors.ACCENT_SUCCESS if result['converged'] else Colors.ACCENT_WARNING
         converged_text = "Yes" if result['converged'] else "No"
 

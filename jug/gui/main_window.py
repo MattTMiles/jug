@@ -708,19 +708,22 @@ class MainWindow(QMainWindow):
         self._schedule_jax_warmup()
     
     def _schedule_jax_warmup(self):
-        """Schedule JAX warmup in background to avoid first-fit lag."""
-        if self.mjd is None or len(self.mjd) == 0:
-            return
+        """Schedule JAX warmup in background to avoid first-fit lag.
 
-        from jug.gui.workers.warmup_worker import WarmupWorker
-
-        # Create warmup worker with actual data size
-        worker = WarmupWorker(n_toas=len(self.mjd))
-        worker.signals.progress.connect(lambda msg: None)  # Silent warmup
-        worker.signals.finished.connect(lambda: None)
-
-        # Run in thread pool (low priority)
-        self.thread_pool.start(worker)
+        Note: Warmup is currently disabled to avoid slowing down initial load.
+        The first fit will trigger JIT compilation instead.
+        """
+        # DISABLED: Warmup can slow down load on some systems
+        # Uncomment to enable background JIT warmup:
+        #
+        # if self.mjd is None or len(self.mjd) == 0:
+        #     return
+        # from jug.gui.workers.warmup_worker import WarmupWorker
+        # worker = WarmupWorker(n_toas=len(self.mjd))
+        # worker.signals.progress.connect(lambda msg: None)
+        # worker.signals.finished.connect(lambda: None)
+        # self.thread_pool.start(worker)
+        pass
 
     def on_compute_error(self, error_msg):
         """Handle computation error."""

@@ -40,7 +40,12 @@
       "Bash(pip install:*)",
       "Bash(timeout 3 jug-gui:*)",
       "Bash(timeout 2 jug-gui:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nPerf: Smooth pan/zoom via throttled beam updates + fix clock verbose\n\nA\\) Pan/zoom smoothness \\(HIGH PRIORITY\\):\n- Replace O\\(N\\) setData\\(\\) with O\\(1\\) setOpts\\(beam=...\\) during view changes\n- Add QTimer throttling \\(33ms\\) to coalesce rapid updates during drag\n- Error bars remain always visible, just beam width updates\n\nB\\) Clock validation overhead:\n- Fix hardcoded verbose=True in check_clock_files call\n- Now respects the function''s verbose parameter\n\nC\\) Deleted TOA mask optimization:\n- Add cached boolean numpy mask \\(self._keep_mask\\) for deleted TOAs\n- Update mask incrementally on delete \\(O\\(1\\) per delete\\)\n- Avoid O\\(N*M\\) Python loop membership checks during fit\n\nD\\) Add solver mode GUI control:\n- Add dropdown for Exact vs Fast solver mode\n- Wire through to FitWorker\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git cherry-pick:*)"
     ],
     "deny": [],
     "ask": []

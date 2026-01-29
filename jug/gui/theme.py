@@ -276,7 +276,8 @@ def get_synthwave_data_colors():
 
 
 # Active theme (can be switched at runtime)
-_current_theme = LightTheme
+# Default to dark mode (Synthwave) for better visibility
+_current_theme = SynthwaveTheme
 
 # Light mode variant: "navy" (default) or "burgundy"
 _light_variant = "navy"
@@ -689,6 +690,53 @@ def get_main_stylesheet():
 
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
         height: 0;
+    }}
+
+    /* ===== COMBOBOX ===== */
+    QComboBox {{
+        background-color: {Colors.BG_SECONDARY};
+        color: {Colors.TEXT_PRIMARY};
+        border: 1px solid {border_subtle};
+        border-radius: {BorderRadius.MD};
+        padding: {Spacing.SM} {Spacing.MD};
+        font-size: {Typography.SIZE_SM};
+        min-height: 28px;
+    }}
+
+    QComboBox:hover {{
+        border-color: {accent_primary};
+    }}
+
+    QComboBox::drop-down {{
+        border: none;
+        padding-right: {Spacing.SM};
+    }}
+
+    QComboBox::down-arrow {{
+        image: none;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid {Colors.TEXT_SECONDARY};
+        margin-right: {Spacing.SM};
+    }}
+
+    QComboBox QAbstractItemView {{
+        background-color: {Colors.SURFACE};
+        color: {Colors.TEXT_PRIMARY};
+        border: 1px solid {border_subtle};
+        border-radius: {BorderRadius.MD};
+        selection-background-color: {accent_primary};
+        selection-color: {Colors.BTN_PRIMARY_TEXT};
+        padding: {Spacing.XS};
+    }}
+
+    QComboBox QAbstractItemView::item {{
+        padding: {Spacing.SM} {Spacing.MD};
+        min-height: 28px;
+    }}
+
+    QComboBox QAbstractItemView::item:hover {{
+        background-color: {Colors.SURFACE_HOVER};
     }}
 
     /* ===== TOOLTIPS ===== */

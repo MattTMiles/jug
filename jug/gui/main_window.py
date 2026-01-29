@@ -8,9 +8,9 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QFileDialog, QLabel, QPushButton, QStatusBar,
     QCheckBox, QGroupBox, QMessageBox, QProgressDialog,
-    QFrame, QScrollArea, QSizePolicy, QApplication
+    QFrame, QScrollArea, QSizePolicy, QApplication, QComboBox
 )
-from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF
+from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer
 from PySide6.QtGui import QFont, QCursor
 import pyqtgraph as pg
 import numpy as np
@@ -115,6 +115,16 @@ class MainWindow(QMainWindow):
         self.box_delete_active = False
         self.box_delete_start = None
         self.box_delete_rect = None
+
+        # Error bar beam update throttling (for smooth pan/zoom over X11)
+        self._beam_update_timer = None
+        self._pending_beam = None
+
+        # Cached boolean mask for deleted TOAs (avoids O(N) Python loop)
+        self._keep_mask = None  # Will be initialized when data loads
+
+        # Solver mode for fitting (exact or fast)
+        self.solver_mode = "exact"  # "exact" or "fast"
 
         # Thread pool for background tasks
         self.thread_pool = QThreadPool()
@@ -221,6 +231,46 @@ class MainWindow(QMainWindow):
         self.fit_button.clicked.connect(self.on_fit_clicked)
         self.fit_button.setEnabled(False)
         layout.addWidget(self.fit_button)
+
+        # Solver mode dropdown
+        solver_layout = QHBoxLayout()
+        solver_layout.setSpacing(8)
+        self.solver_label = QLabel("Solver:")
+        self.solver_label.setStyleSheet(f"""
+            font-size: 12px;
+            color: {Colors.TEXT_SECONDARY};
+        """)
+        solver_layout.addWidget(self.solver_label)
+
+        self.solver_combo = QComboBox()
+        self.solver_combo.addItem("Exact (reproducible)", "exact")
+        self.solver_combo.addItem("Fast", "fast")
+        self.solver_combo.setCurrentIndex(0)  # Default to exact
+        self.solver_combo.currentIndexChanged.connect(self._on_solver_mode_changed)
+        self.solver_combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {Colors.SURFACE};
+                border: 1px solid {get_border_subtle()};
+                border-radius: 6px;
+                padding: 4px 8px;
+                font-size: 12px;
+                color: {Colors.TEXT_PRIMARY};
+            }}
+            QComboBox:hover {{
+                border-color: {get_border_strong()};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                padding-right: 8px;
+            }}
+        """)
+        self.solver_combo.setToolTip(
+            "Exact: SVD-based, bit-for-bit reproducible\n"
+            "Fast: QR-based, faster but may differ slightly"
+        )
+        solver_layout.addWidget(self.solver_combo)
+        solver_layout.addStretch()
+        layout.addLayout(solver_layout)
 
         # Secondary buttons with consistent styling
         secondary_style = get_secondary_button_style()
@@ -632,6 +682,8 @@ class MainWindow(QMainWindow):
             self.original_residuals_us = self.residuals_us.copy()
             self.original_errors_us = self.errors_us.copy() if self.errors_us is not None else None
             self.deleted_indices = set()
+            # Initialize keep mask (all True = keep all TOAs)
+            self._keep_mask = np.ones(len(self.original_mjd), dtype=bool)
         
         # Update plot
         self._update_plot()
@@ -741,23 +793,24 @@ class MainWindow(QMainWindow):
         # Disable fit button during fitting
         self.fit_button.setEnabled(False)
         
-        # Create TOA mask if we have deleted TOAs
+        # Use cached TOA mask if we have deleted TOAs (O(1) vs O(N) Python loop)
         toa_mask = None
         n_total = len(self.original_mjd) if self.original_mjd is not None else 0
         n_deleted = len(self.deleted_indices) if self.deleted_indices else 0
-        
+
         if n_deleted > 0 and n_total > 0:
-            # Create boolean mask: True for TOAs to include, False for deleted
-            toa_mask = np.array([i not in self.deleted_indices for i in range(n_total)])
+            # Use pre-computed boolean mask (updated incrementally on delete)
+            toa_mask = self._keep_mask
             n_used = np.sum(toa_mask)
             self.status_bar.showMessage(f"Fitting {', '.join(fit_params)} on {n_used} TOAs ({n_deleted} excluded)...")
         else:
             self.status_bar.showMessage(f"Fitting {', '.join(fit_params)}...")
 
-        # Run fit with mask
+        # Run fit with mask and solver mode
         from jug.gui.workers.fit_worker import FitWorker
 
-        worker = FitWorker(self.session, fit_params, toa_mask=toa_mask)
+        worker = FitWorker(self.session, fit_params, toa_mask=toa_mask,
+                           solver_mode=self.solver_mode)
         worker.signals.result.connect(self.on_fit_complete)
         worker.signals.error.connect(self.on_fit_error)
         worker.signals.finished.connect(self.on_fit_finished)
@@ -830,8 +883,8 @@ class MainWindow(QMainWindow):
         
         # Filter out deleted TOAs if any have been deleted
         if self.deleted_indices and len(self.deleted_indices) > 0:
-            # Create mask for non-deleted indices
-            keep_mask = np.array([i not in self.deleted_indices for i in range(len(full_mjd))])
+            # Use pre-computed boolean mask (O(1) vs O(N) Python loop)
+            keep_mask = self._keep_mask
             self.mjd = full_mjd[keep_mask]
             self.residuals_us = full_residuals[keep_mask]
             self.postfit_residuals_us = full_residuals[keep_mask].copy()
@@ -1043,6 +1096,8 @@ class MainWindow(QMainWindow):
             self.prefit_residuals_us = self.original_residuals_us.copy()
             self.errors_us = self.original_errors_us.copy() if self.original_errors_us is not None else None
             self.deleted_indices = set()
+            # Reset cached keep mask (all True = keep all TOAs)
+            self._keep_mask = np.ones(len(self.original_mjd), dtype=bool)
             
             # Recalculate RMS
             self.rms_us = np.sqrt(np.mean(self.residuals_us**2))
@@ -1252,36 +1307,65 @@ class MainWindow(QMainWindow):
         """Zoom plot to fit data."""
         self.plot_widget.autoRange()
 
+    def _on_solver_mode_changed(self, index):
+        """Handle solver mode dropdown change."""
+        self.solver_mode = self.solver_combo.itemData(index)
+        mode_name = "Exact" if self.solver_mode == "exact" else "Fast"
+        self.status_bar.showMessage(f"Solver mode: {mode_name}")
+
     def _on_view_range_changed(self, view_box, ranges):
-        """Handle view range changes to scale error bar caps."""
+        """Handle view range changes to scale error bar caps.
+
+        OPTIMIZED: Uses throttling to coalesce rapid updates during pan/zoom.
+        Only updates beam width, NOT the x/y/height arrays (O(1) vs O(N)).
+        This makes panning/zooming smooth, especially over X11.
+        """
         if self.error_bar_item is None or self.mjd is None:
             return
-        
+
         # Get the x-axis range
         x_range = ranges[0]
         x_span = x_range[1] - x_range[0]
-        
+
         if x_span <= 0:
             return
-        
+
         # Calculate beam size as a fraction of the visible x range
         # Target: caps should be about 0.5% of visible width
         beam_fraction = 0.005
         new_beam = x_span * beam_fraction
-        
+
         # Clamp to reasonable bounds (in MJD days)
         min_beam = 0.1    # Minimum 0.1 days
         max_beam = 50.0   # Maximum 50 days
         new_beam = max(min_beam, min(max_beam, new_beam))
-        
-        # Update the error bar item's beam width
-        # ErrorBarItem stores beam in opts, we need to update and redraw
-        self.error_bar_item.setData(
-            x=self.mjd,
-            y=self.residuals_us,
-            height=self.errors_us * 2 if self.errors_us is not None else None,
-            beam=new_beam
-        )
+
+        # THROTTLED UPDATE: Store pending beam and schedule update
+        # This coalesces rapid updates during mouse drag (30 FPS = 33ms)
+        self._pending_beam = new_beam
+
+        if self._beam_update_timer is None:
+            self._beam_update_timer = QTimer()
+            self._beam_update_timer.setSingleShot(True)
+            self._beam_update_timer.timeout.connect(self._apply_pending_beam)
+
+        # Restart timer on each range change (coalesces updates)
+        if not self._beam_update_timer.isActive():
+            self._beam_update_timer.start(33)  # ~30 FPS, safe for X11
+
+    def _apply_pending_beam(self):
+        """Apply the pending beam width update to error bars.
+
+        OPTIMIZED: Uses setOpts() to update only the beam width,
+        NOT the x/y/height arrays. This is O(1) vs O(N).
+        """
+        if self._pending_beam is None or self.error_bar_item is None:
+            return
+
+        # Update ONLY the beam width - do NOT re-upload x/y/height arrays!
+        # ErrorBarItem.setOpts() updates rendering options without array copies
+        self.error_bar_item.setOpts(beam=self._pending_beam)
+        self._pending_beam = None
     
     def on_about(self):
         """Show about dialog with modern styling."""
@@ -1816,7 +1900,11 @@ class MainWindow(QMainWindow):
         current_to_original = self._get_current_to_original_mapping()
         for i, is_inside in enumerate(inside_mask):
             if is_inside:
-                self.deleted_indices.add(current_to_original[i])
+                orig_idx = current_to_original[i]
+                self.deleted_indices.add(orig_idx)
+                # Update cached mask (O(1) update)
+                if self._keep_mask is not None:
+                    self._keep_mask[orig_idx] = False
         
         # Keep points outside the box
         keep_mask = ~inside_mask

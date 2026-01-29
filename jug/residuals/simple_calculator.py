@@ -117,7 +117,7 @@ def compute_residuals_simple(
     mjd_end = np.max(mjd_utc)
     
     if verbose: print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
-    clock_ok = check_clock_files(mjd_start, mjd_end, mk_clock, gps_clock, bipm_clock, verbose=True)
+    clock_ok = check_clock_files(mjd_start, mjd_end, mk_clock, gps_clock, bipm_clock, verbose=verbose)
     if not clock_ok:
         if verbose: print(f"   ⚠️  Clock file validation found issues (see above)")
 

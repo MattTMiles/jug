@@ -219,11 +219,6 @@ class MainWindow(QMainWindow):
 
         self.param_checkboxes = {}
 
-        # Action buttons section
-        self.action_title = QLabel("Actions")
-        self.action_title.setStyleSheet(get_section_title_style())
-        layout.addWidget(self.action_title)
-
         # Primary action: Run Fit (special styling)
         self.fit_button = QPushButton("▶  Run Fit")
         self.fit_button.setStyleSheet(get_primary_button_style())
@@ -1248,7 +1243,6 @@ class MainWindow(QMainWindow):
                 """)
 
         # Update section titles
-        self.action_title.setStyleSheet(get_section_title_style())
         self.stats_title.setStyleSheet(f"""
             font-size: 14px;
             font-weight: 600;

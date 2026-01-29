@@ -1087,6 +1087,10 @@ def _run_general_fit_iterations(
     result : dict
         Fit results
     """
+    # Normalize solver_mode
+    solver_mode = solver_mode.lower().strip() if solver_mode else "exact"
+    if solver_mode not in ("exact", "fast"):
+        solver_mode = "exact"
     # Unpack setup
     params = setup.params
     fit_params = setup.fit_param_list
@@ -1216,22 +1220,79 @@ def _run_general_fit_iterations(
         
         # Solve WLS using selected solver
         if solver_mode == "fast":
-            # FAST solver: QR-based lstsq (faster, may differ slightly)
-            # Weight the problem: sqrt(W)*M @ dp = sqrt(W)*r
-            sqrt_weights = np.sqrt(weights)
-            M_weighted = M * sqrt_weights[:, None]
-            r_weighted = residuals * sqrt_weights
+            # FAST solver: QR-based lstsq with proper conditioning
+            # Mirrors wls_solve_svd's conditioning for numerical stability
 
-            # Use numpy lstsq (QR-based, faster than SVD)
-            delta_params, _, _, _ = np.linalg.lstsq(M_weighted, r_weighted, rcond=None)
+            # Step 1: Weight by sigma (same as Exact solver)
+            r1 = residuals / errors_sec
+            M1 = M / errors_sec[:, None]
 
-            # Compute covariance from normal equations
-            MtWM = M_weighted.T @ M_weighted
+            # Step 2: Normalize design matrix columns (CRITICAL for stability)
+            # This handles mixed-scale params like F0 (~300) vs F1 (~1e-15)
+            col_norms = np.sqrt(np.sum(M1**2, axis=0))
+            col_norms = np.where(col_norms == 0, 1.0, col_norms)  # Avoid div by zero
+            M2 = M1 / col_norms[None, :]
+
+            # Step 3: Solve normalized system with QR/lstsq
+            delta_normalized, _, _, _ = np.linalg.lstsq(M2, r1, rcond=None)
+
+            # Step 4: Unnormalize solution
+            delta_params = delta_normalized / col_norms
+
+            # Step 5: Compute covariance and unnormalize
+            # cov_normalized = (M2.T @ M2)^{-1}
+            # cov = (cov_normalized / col_norms).T / col_norms
+            M2tM2 = M2.T @ M2
             try:
-                cov = np.linalg.inv(MtWM)
+                cov_normalized = np.linalg.inv(M2tM2)
             except np.linalg.LinAlgError:
-                # Fallback to pseudo-inverse if singular
-                cov = np.linalg.pinv(MtWM)
+                cov_normalized = np.linalg.pinv(M2tM2)
+            cov = (cov_normalized / col_norms).T / col_norms
+
+            # Step 6: Damping / line search to prevent divergence
+            # Only accept step if it improves RMS (or use reduced step)
+            rms_before = rms_us
+            best_factor = 1.0
+            best_rms = float('inf')
+
+            for damping_iter in range(6):
+                factor = 0.5 ** damping_iter if damping_iter > 0 else 1.0
+                trial_params_list = [param_values_curr[i] + factor * delta_params[i]
+                                     for i in range(len(fit_params))]
+
+                # Quick RMS evaluation with trial params
+                trial_params_dict = dict(zip(fit_params, trial_params_list))
+                params_trial = {**params, **trial_params_dict}
+
+                # Recompute phase with trial parameters (using available dt_sec_np)
+                f0_trial = params_trial.get('F0', params['F0'])
+                f_values_trial = [params_trial.get(f'F{i}', 0.0) for i in range(10)]
+                f_values_trial = [v for v in f_values_trial if v != 0.0 or f_values_trial.index(v) == 0]
+
+                phase_trial = np.zeros_like(dt_sec_np)
+                factorial_t = 1.0
+                for n, f_val in enumerate(f_values_trial):
+                    factorial_t *= (n + 1) if n > 0 else 1.0
+                    phase_trial += f_val * (dt_sec_np ** (n + 1)) / factorial_t
+
+                phase_wrapped_trial = phase_trial - np.round(phase_trial)
+                residuals_trial = phase_wrapped_trial / f0_trial
+                weighted_mean_trial = np.sum(residuals_trial * weights) / np.sum(weights)
+                residuals_trial = residuals_trial - weighted_mean_trial
+                rms_trial = np.sqrt(np.sum(residuals_trial**2 * weights) / np.sum(weights)) * 1e6
+
+                if rms_trial < best_rms:
+                    best_rms = rms_trial
+                    best_factor = factor
+
+                if rms_trial <= rms_before * 1.01:  # Accept if not much worse
+                    break
+
+            # Apply best damped step
+            if best_factor < 1.0 and verbose:
+                print(f"         (damped step: factor={best_factor:.3f})")
+            delta_params = delta_params * best_factor
+
         else:
             # EXACT solver: SVD-based (bit-for-bit reproducible)
             delta_params, cov, _ = wls_solve_svd(

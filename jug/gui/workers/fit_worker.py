@@ -53,7 +53,10 @@ class FitWorker(QRunnable):
         self.session = session
         self.fit_params = fit_params
         self.toa_mask = toa_mask
-        self.solver_mode = solver_mode
+        # Normalize solver_mode to lowercase
+        self.solver_mode = solver_mode.lower().strip() if solver_mode else "exact"
+        if self.solver_mode not in ("exact", "fast"):
+            self.solver_mode = "exact"
         self.is_running = True
 
     @Slot()

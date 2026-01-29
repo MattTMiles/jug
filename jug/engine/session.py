@@ -356,7 +356,12 @@ class TimingSession:
         """
         if verbose is None:
             verbose = self.verbose
-        
+
+        # Normalize solver_mode
+        solver_mode = solver_mode.lower().strip() if solver_mode else "exact"
+        if solver_mode not in ("exact", "fast"):
+            solver_mode = "exact"
+
         if verbose:
             n_toas = len(self.toas_data)
             if toa_mask is not None:

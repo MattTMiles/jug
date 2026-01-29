@@ -1,8 +1,8 @@
 # JUG Implementation Progress Tracker
 
-**Last Updated**: 2026-01-09 (GUI Development Started 🚧)
-**Current Version**: Milestone 2 Complete + JAX Incremental Fitting ✅, GUI Development 🚧
-**Active Milestone**: M5 - Desktop GUI (v0.5.0)
+**Last Updated**: 2026-01-29 (Architecture Foundation Complete ✅)
+**Current Version**: M5 GUI Complete + Performance Optimizations + Architecture Foundation ✅
+**Active Milestone**: M6 Complete Parameter Fitting
 
 This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
 
@@ -16,16 +16,596 @@ This document tracks the implementation progress of JUG from notebook to product
 | M1: Core Timing Package (v0.1.0) | ✅ COMPLETED | 100% | 2025-11-29 |
 | M2: Gradient-Based Fitting (v0.2.0) | ✅ COMPLETED | 100% | 2025-12-01 |
 | M2.5: Multi-Binary Support | ✅ COMPLETED | 100% | 2025-11-30 |
-| M3: White Noise Models (v0.3.0) | ⏸️ NOT STARTED | 0% | TBD |
-| M4: GP Noise Models (v0.4.0) | ⏸️ NOT STARTED | 0% | TBD |
-| M5: Desktop GUI (v0.5.0) | 🚧 IN PROGRESS | 5% | 2026-01-23 |
-| M6: Bayesian Priors (v0.6.0) | ⏸️ NOT STARTED | 0% | TBD |
-| M7: Advanced Models (v0.7.0) | ⏸️ NOT STARTED | 0% | TBD |
-| M8: GUI Polish (v0.8.0) | ⏸️ NOT STARTED | 0% | TBD |
-| M9: Performance Optimization (v0.9.0) | ⏸️ NOT STARTED | 0% | TBD |
-| M10: v1.0.0 Release | ⏸️ NOT STARTED | 0% | TBD |
+| M2.6: Longdouble Precision | ✅ COMPLETED | 100% | 2025-12-02 |
+| M2.7: DM Parameter Fitting | ✅ COMPLETED | 100% | 2025-12-04 |
+| M2.8: JAX Incremental Fitting | ✅ COMPLETED | 100% | 2026-01-09 |
+| M5: Desktop GUI (v0.5.0) | ✅ COMPLETED | 100% | 2026-01-27 |
+| M5.1: GUI Performance | ✅ COMPLETED | 100% | 2026-01-29 |
+| M5.2: Architecture Foundation | ✅ COMPLETED | 100% | 2026-01-29 |
+| **M6A: Parity & Regression Infrastructure** | 🚧 IN PROGRESS | 85% | **HIGH PRIORITY** |
+| **M6B: Data & Environment Determinism** | 🚧 IN PROGRESS | 40% | **HIGH PRIORITY** |
+| **M6: Complete Parameter Fitting** | ⏸️ NOT STARTED | 0% | **HIGH PRIORITY** |
+| M7: White Noise Models (v0.7.0) | ⏸️ NOT STARTED | 0% | TBD |
+| M8: GP Noise Models (v0.8.0) | ⏸️ NOT STARTED | 0% | TBD |
+| M9: Bayesian Priors (v0.9.0) | ⏸️ NOT STARTED | 0% | TBD |
 
 **Legend**: ✅ Completed | 🚧 In Progress | ⏸️ Not Started | ⚠️ Blocked
+
+---
+
+## Current Capabilities Summary (2026-01-29)
+
+### Core Features ✅
+- **Residual Computation**: Matches PINT/Tempo2 to <10ns precision
+- **Parameter Fitting**: WLS fitter with analytical derivatives
+  - ✅ Spin: F0, F1, F2, F3, ... (any order)
+  - ✅ DM: DM, DM1, DM2, DM3, ... (any order)
+  - ⏸️ Astrometry: RAJ, DECJ, PMRA, PMDEC, PX (architecture ready, derivatives pending)
+  - ⏸️ Binary: PB, A1, ECC, OM, T0, etc. (architecture ready, derivatives pending)
+  - ⏸️ JUMP parameters (not yet)
+- **Binary Models**: ELL1, ELL1H, DD, DDH, DDK, DDGR, BT, T2
+- **Multi-Backend Support**: MeerKAT, Parkes, GBT, VLA, etc.
+- **Clock Corrections**: Automatic clock file loading and caching
+
+### Architecture Foundation ✅ (NEW)
+- **ParameterSpec Registry**: 20+ parameters defined with metadata
+  - Spin: F0, F1, F2, F3, PEPOCH
+  - DM: DM, DM1, DM2, DMEPOCH
+  - Astrometry: RAJ, DECJ, PMRA, PMDEC, PX, POSEPOCH
+  - Binary: PB, A1, ECC, OM, T0, TASC, EPS1, EPS2
+- **I/O Codecs**: Type-safe parsing/formatting
+  - Float codec, Epoch MJD codec
+  - RAJ/DECJ sexagesimal <-> radians codecs
+- **Component Graph**: Modular derivative routing
+  - SpinComponent, DispersionComponent implemented
+  - AstrometryComponent, BinaryComponent ready to add
+- **Golden Regression Tests**: Bit-for-bit equivalence tests
+  - J1909-3744 prefit/postfit residuals
+  - Covariance matrix
+  - Scalar statistics (WRMS, chi2, dof)
+
+### GUI Features ✅
+- **Interactive Visualization**: pyqtgraph-based residual plotting (10k+ TOAs smooth)
+- **Parameter Fitting**: Background fit worker with progress indication
+- **Parameter Selection**: Dynamic checkboxes, can add parameters not in .par
+- **Fit Results**: 5-column dialog (New, Previous, Change, Uncertainty, Name)
+- **Device Selection**: CPU (default) or GPU via `--gpu` flag
+- **TOA Deletion**: Box selection with mouse, Undo (U) support
+- **Prefit/Postfit Toggle**: Show original or fitted residuals
+- **Modern Themes**: Light and Dark (Synthwave) themes
+
+### Performance Optimizations ✅
+- **Cached Fitting**: 257x faster for subsequent fits (0.01s vs 3.0s)
+- **JAX Compilation Cache**: Persistent across sessions
+- **Geometry Disk Cache**: ~4.5x faster warm session (162ms vs 736ms)
+- **Astropy Configuration**: Deterministic IERS behavior, no surprise downloads
+- **Canonical Stats**: Engine-consistent RMS across GUI/CLI/API
+
+### CLI Tools ✅
+- `jug-gui`: Interactive GUI with device selection
+- `jug-fit`: Command-line parameter fitting
+- `jug-compute-residuals`: Compute residuals from files
+- `python -m jug.scripts.download_data`: Prefetch IERS/ephemeris data
+- `python -m jug.scripts.benchmark_interactive`: Performance benchmarking
+
+### Test Infrastructure ✅
+- **Golden Regression Tests**: Bit-for-bit equivalence with np.array_equal
+- **Geometry Cache Tests**: Disk cache correctness
+- **Stats Tests**: Canonical RMS computation
+- **Binary Model Tests**: Multi-pulsar validation
+- **Session Cache Tests**: Cache separation correctness
+- **ParameterSpec Tests**: Registry and routing validation
+
+---
+
+## Milestone 5.1: GUI Performance Optimization ✅
+
+**Status**: COMPLETED (2026-01-29)
+**Duration**: Multi-session
+**Time Invested**: ~20 hours
+
+### Summary
+
+Implemented comprehensive performance optimizations to make JUG feel "buttery smooth":
+
+### A) JAX Persistent Compilation Cache ✅
+- **File**: `jug/utils/jax_cache.py`
+- **Effect**: Reduces cold-start JIT time on subsequent runs
+- **Environment Variables**:
+  - `JUG_JAX_CACHE_DIR`: Override cache location
+  - `JUG_JAX_EXPLAIN_CACHE_MISSES=1`: Debug cache behavior
+
+### B) Geometry Disk Cache ✅
+- **File**: `jug/utils/geom_cache.py`
+- **Effect**: 4.5x faster warm session (162ms vs 736ms)
+- **Cache Key**: TDB times hash + observatory + ephemeris + versions
+- **Environment Variables**:
+  - `JUG_GEOM_CACHE_DIR`: Override cache location
+  - `JUG_GEOM_CACHE_DISABLE=1`: Disable caching
+
+### C) Astropy Configuration ✅
+- **File**: `jug/utils/astropy_config.py`
+- **Effect**: Prevents surprise IERS downloads, deterministic behavior
+- **Environment Variables**:
+  - `JUG_ASTROPY_OFFLINE=1`: Force offline mode
+  - `JUG_ASTROPY_CACHE_DIR`: Override cache location
+
+### D) Canonical Stats Function ✅
+- **File**: `jug/engine/stats.py`
+- **Effect**: GUI RMS exactly matches engine (bit-for-bit)
+- **Formula**: `wrms = sqrt(sum(w*r²)/sum(w))` where `w = 1/σ²`
+
+### E) Call Profiling ✅
+- **File**: `jug/delays/barycentric.py`
+- **Effect**: Debug geometry call counts and timing
+- **Environment Variables**:
+  - `JUG_PROFILE_GEOM=1`: Enable profiling
+
+### Performance Results
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Warm session total | ~736ms | ~162ms | **4.5x faster** |
+| compute_ssb_obs_pos_vel (cache hit) | ~580ms | ~0.75ms | **773x faster** |
+| Warm interactive fit | ~12ms | ~12ms | Same (already fast) |
+| Cold→Warm session speedup | 5.1x | 15.1x | **3x better** |
+
+### Files Created
+- `jug/utils/jax_cache.py` - JAX compilation cache configuration
+- `jug/utils/geom_cache.py` - Geometry disk cache
+- `jug/utils/astropy_config.py` - Astropy IERS configuration
+- `jug/engine/stats.py` - Canonical residual statistics
+- `jug/scripts/download_data.py` - Data prefetch command
+- `jug/tests/test_geom_cache.py` - Geometry cache tests
+- `jug/tests/test_stats.py` - Stats function tests
+
+### Files Modified
+- `jug/delays/barycentric.py` - Added profiling + disk cache
+- `jug/gui/main.py` - Early config calls
+- `jug/gui/main_window.py` - Use canonical stats for RMS
+- `jug/scripts/compute_residuals.py` - Early config calls
+- `jug/scripts/fit_parameters.py` - Early config calls
+
+---
+
+## Milestone 5.2: Architecture Foundation ✅
+
+**Status**: COMPLETED (2026-01-29)
+**Duration**: Multi-session
+**Time Invested**: ~8 hours
+
+### Summary
+
+Implemented the ParameterSpec + Component Graph architecture to provide a clean extension point for adding new parameter types. This replaces 11+ scattered `param.startswith()` checks with spec-driven routing, making it straightforward to add astrometry and binary parameter fitting.
+
+### A) ParameterSpec Registry ✅
+- **File**: `jug/model/parameter_spec.py`
+- **Features**:
+  - `ParameterSpec` dataclass with full metadata (name, group, dtype, units, aliases, etc.)
+  - `DerivativeGroup` enum for routing (SPIN, DM, ASTROMETRY, BINARY, EPOCH, JUMP, FD)
+  - 20+ parameters defined: Spin (5), DM (4), Astrometry (6), Binary (8)
+  - Helper functions: `get_spec()`, `canonicalize_param_name()`, `list_params_by_group()`
+
+### B) I/O Codecs ✅
+- **File**: `jug/model/codecs.py`
+- **Features**:
+  - `Codec` protocol for type-safe parsing/formatting
+  - `FloatCodec` - default numeric handling
+  - `EpochMJDCodec` - MJD epoch parsing
+  - `RAJCodec` - sexagesimal hours <-> radians
+  - `DECJCodec` - sexagesimal degrees <-> radians
+  - All angles stored as radians internally, converted at I/O boundary only
+
+### C) Component Graph ✅
+- **Directory**: `jug/model/components/`
+- **Files**:
+  - `base.py` - `TimingComponent` protocol
+  - `spin.py` - `SpinComponent` (wraps existing spin derivatives)
+  - `dispersion.py` - `DispersionComponent` (wraps existing DM derivatives)
+- **Design**: Components are thin wrappers, no math reimplementation
+
+### D) Fitter Routing Refactor ✅
+- Design matrix assembly now uses ParameterSpec routing
+- Removed ad-hoc `param.startswith()` style branching
+- Outputs remain bit-for-bit identical (verified by golden tests)
+
+### E) Golden Regression Tests ✅
+- **Directory**: `jug/tests/golden/`
+- **Files**:
+  - `generate_golden.py` - Script to regenerate golden outputs
+  - `j1909_prefit_residuals.npy` - Stored prefit residuals
+  - `j1909_postfit_residuals.npy` - Stored postfit residuals
+  - `j1909_covariance.npy` - Stored covariance matrix
+  - `j1909_scalars.json` - WRMS, chi2, dof
+- **Test file**: `jug/tests/test_golden_regression.py`
+- **Assertion**: `np.array_equal()` - NO tolerances allowed
+
+### F) Architecture Documentation ✅
+- **File**: `docs/MODEL_ARCHITECTURE.md`
+- Step-by-step guide for adding new parameters
+- Example: Adding PMRA (Proper Motion in RA)
+- Checklist for new parameters
+
+### Files Created
+- `jug/model/__init__.py`
+- `jug/model/parameter_spec.py` - ParameterSpec registry
+- `jug/model/codecs.py` - I/O codecs
+- `jug/model/components/__init__.py`
+- `jug/model/components/base.py` - TimingComponent protocol
+- `jug/model/components/spin.py` - SpinComponent
+- `jug/model/components/dispersion.py` - DispersionComponent
+- `jug/tests/golden/generate_golden.py`
+- `jug/tests/golden/j1909_*.npy` - Golden outputs
+- `jug/tests/golden/j1909_scalars.json`
+- `jug/tests/test_golden_regression.py`
+- `docs/MODEL_ARCHITECTURE.md`
+
+### Impact
+
+**This milestone unblocks M6** (Complete Parameter Fitting):
+- Adding astrometry derivatives: Just create `derivatives_astrometry.py` + `AstrometryComponent`
+- Adding binary derivatives: Just create `derivatives_binary.py` + `BinaryComponent`
+- All routing already in place via ParameterSpec
+- Golden tests will catch any regressions
+
+---
+
+## Why These Milestones Exist
+
+**M6A and M6B are prerequisites for M6** because:
+
+1. **Regression Prevention**: Before implementing new derivative code (astrometry, binary), we need golden tests that catch any bit-level regressions. Without these, a subtle bug in F0 fitting could go unnoticed when adding RAJ fitting.
+
+2. **Cold-Start Determinism**: HPC environments and CI systems start with empty caches. JUG must produce identical results whether caches are warm or cold, and must not download data mid-computation (which can fail or produce different versions).
+
+3. **Cross-Tool Parity**: JUG aims to match PINT and tempo2. A structured harness for comparing outputs across tools makes validation systematic rather than ad-hoc.
+
+4. **Architecture Foundation**: The ParameterSpec registry and component graph provide a clean extension point for new parameter types, replacing 11+ scattered `param.startswith()` checks with spec-driven routing.
+
+---
+
+## Milestone 6A: Parity & Regression Infrastructure 🚧 **HIGH PRIORITY**
+
+**Status**: IN PROGRESS (85%)
+**Priority**: HIGH - Required before implementing new derivatives
+**Started**: 2026-01-29
+**Target Date**: TBD
+
+### Goal
+Establish a comprehensive regression testing and cross-tool parity infrastructure to ensure JUG produces bit-for-bit identical results and matches PINT/tempo2 outputs.
+
+### Tasks
+
+#### Golden Regression Tests ✅
+- [x] **6A.1** Create golden test infrastructure
+  - [x] Create `jug/tests/golden/` directory with stored outputs
+  - [x] Implement `generate_golden.py` script for generating reference outputs
+  - [x] Store J1909-3744 prefit/postfit residuals, covariance, and scalars
+  - [x] Golden assertions use `np.array_equal` (NO tolerances)
+  - **Files created**: 
+    - `jug/tests/golden/generate_golden.py`
+    - `jug/tests/golden/j1909_prefit_residuals.npy`
+    - `jug/tests/golden/j1909_postfit_residuals.npy`
+    - `jug/tests/golden/j1909_covariance.npy`
+    - `jug/tests/golden/j1909_scalars.json`
+  - **Test file**: `jug/tests/test_golden_regression.py`
+  - **Status**: COMPLETED ✅
+
+- [x] **6A.2** Enforce determinism
+  - [x] Force CPU-only JAX: `JAX_PLATFORM_NAME=cpu`
+  - [x] Document determinism requirements
+  - **Status**: COMPLETED ✅
+
+#### ParameterSpec Registry ✅
+- [x] **6A.3** Create ParameterSpec system
+  - [x] Create `jug/model/parameter_spec.py` with ParameterSpec dataclass
+  - [x] Implement DerivativeGroup enum for routing
+  - [x] Define 20+ parameters: Spin (F0-F3, PEPOCH), DM (DM, DM1, DM2, DMEPOCH), Astrometry (RAJ, DECJ, PMRA, PMDEC, PX, POSEPOCH), Binary (PB, A1, ECC, OM, T0, TASC, EPS1, EPS2)
+  - [x] Helper functions: canonicalize_param_name(), get_spec(), list_params_by_group(), list_fittable_params()
+  - **File**: `jug/model/parameter_spec.py`
+  - **Status**: COMPLETED ✅
+
+#### I/O Codecs ✅
+- [x] **6A.4** Create codec system for I/O transformations
+  - [x] Create `jug/model/codecs.py`
+  - [x] Implement float codec (default)
+  - [x] Implement epoch MJD codec
+  - [x] Implement RAJ codec (sexagesimal hours <-> radians)
+  - [x] Implement DECJ codec (sexagesimal degrees <-> radians)
+  - [x] All angles stored as radians internally
+  - **File**: `jug/model/codecs.py`
+  - **Status**: COMPLETED ✅
+
+#### Component Graph ✅
+- [x] **6A.5** Create component graph skeleton
+  - [x] Create `jug/model/components/base.py` with TimingComponent protocol
+  - [x] Create `jug/model/components/spin.py` - SpinComponent wrapper
+  - [x] Create `jug/model/components/dispersion.py` - DispersionComponent wrapper
+  - [x] Components call existing derivative modules (no math reimplementation)
+  - **Directory**: `jug/model/components/`
+  - **Status**: COMPLETED ✅
+
+#### Fitter Routing Refactor ✅
+- [x] **6A.6** Route fitter through specs
+  - [x] Refactor design matrix assembly to use ParameterSpec routing
+  - [x] Replace param.startswith() style branching with spec-driven routing
+  - [x] Keep existing derivative modules unchanged
+  - [x] Outputs remain bit-for-bit identical
+  - **Status**: COMPLETED ✅
+
+#### Cross-Tool Parity Harness ⏸️
+- [ ] **6A.7** Implement parity comparison infrastructure
+  - [ ] JUG vs PINT comparison utilities
+  - [ ] JUG vs tempo2 comparison utilities
+  - [ ] Structured parity reports (HTML/JSON)
+  - **Status**: NOT STARTED
+
+#### Engine/GUI/CLI/API Equivalence ✅
+- [x] **6A.8** Equivalence test suite
+  - [x] Bit-for-bit identical results across GUI/CLI/API paths (internal JUG)
+  - [x] Engine is canonical - GUI actions = engine operations
+  - [x] Canonical stats function ensures GUI RMS matches engine
+  - **File**: `jug/engine/stats.py`
+  - **Status**: COMPLETED ✅
+
+### Architecture Documentation ✅
+- [x] **6A.9** Create architecture guide
+  - [x] Document how to add new parameters safely
+  - [x] Step-by-step example for adding PMRA
+  - [x] Checklist for new parameters
+  - **File**: `docs/MODEL_ARCHITECTURE.md`
+  - **Status**: COMPLETED ✅
+
+### Prerequisites for M6 - ALL MET ✅
+- [x] ParameterSpec registry
+- [x] Component graph skeleton
+- [x] Derivative routing refactor
+- [x] Strict golden tests
+
+### Deliverables - Status
+
+**Code**:
+- [x] `jug/tests/golden/` - Golden test infrastructure ✅
+- [x] `jug/tests/test_golden_regression.py` - Bit-for-bit golden tests ✅
+- [x] `jug/model/parameter_spec.py` - ParameterSpec registry ✅
+- [x] `jug/model/codecs.py` - I/O codecs (angles as radians internally) ✅
+- [x] `jug/model/components/` - Component graph skeleton ✅
+
+**Tests**:
+- [x] Golden regression tests (exact equality) ✅
+- [ ] Codec round-trip tests (RAJ/DECJ) - NEEDS TESTS
+- [ ] GUI angle edit equivalence tests - NEEDS TESTS
+
+### Success Criteria
+
+- [x] All golden tests pass with `np.array_equal` (no tolerances) ✅
+- [x] GUI/CLI/API produce bit-for-bit identical outputs ✅
+- [x] Cold-start produces same results as warm-start ✅
+- [x] ParameterSpec registry covers 20+ parameters ✅
+- [x] Component graph routes spin/DM correctly ✅
+
+---
+
+## Milestone 6B: Data & Environment Determinism 🚧 **HIGH PRIORITY**
+
+**Status**: IN PROGRESS (40%)
+**Priority**: HIGH - Required for reliable CI/HPC usage
+**Started**: 2026-01-29
+**Target Date**: TBD
+
+### Goal
+Ensure JUG has deterministic, verifiable data dependencies with offline-safe operation for HPC environments.
+
+### Tasks
+
+#### Prefetch Infrastructure ✅
+- [x] **6B.1** Create data download script
+  - [x] Create `jug/scripts/download_data.py`
+  - [x] Support IERS data prefetch via Astropy
+  - [x] Support ephemeris prefetch (DE440)
+  - [x] Cache directory configuration (`JUG_CACHE_DIR`)
+  - **Status**: COMPLETED ✅
+
+#### Astropy/IERS Configuration ✅
+- [x] **6B.2** Implement deterministic IERS policy
+  - [x] Create `jug/utils/astropy_config.py`
+  - [x] `configure_astropy_iers()` function
+  - [x] Prevent surprise network access during runtime
+  - [x] Offline mode support (`JUG_ASTROPY_OFFLINE=1`)
+  - **Status**: COMPLETED ✅
+
+#### Data Manifest ⏸️
+- [ ] **6B.3** Create data manifest
+  - [ ] Create `jug/data/manifest.json` with sha256 checksums
+  - [ ] Include pulsar data files (PAR/TIM)
+  - [ ] Include clock correction files
+  - [ ] Version the manifest format
+  - **Status**: NOT STARTED
+
+#### Data Verification ⏸️
+- [ ] **6B.4** Implement verification utilities
+  - [ ] Add `verify_data_integrity()` to download_data.py
+  - [ ] Check sha256 against manifest
+  - [ ] Report mismatches clearly
+  - **Status**: NOT STARTED
+
+#### Offline-Safe Mode ⏸️
+- [ ] **6B.5** Implement offline-safe operation
+  - [ ] Add `run_offline_safe()` function
+  - [ ] Fail early if required data is missing (no surprise downloads)
+  - [ ] Environment variable: `JUG_OFFLINE=1` to enforce
+  - **Status**: NOT STARTED
+
+#### Cache Configuration ✅
+- [x] **6B.6** Document cache locations
+  - [x] Default cache: `~/.cache/jug/`
+  - [x] Environment variable: `JUG_CACHE_DIR` override
+  - [x] `JUG_GEOM_CACHE_DIR` for geometry cache
+  - [x] `JUG_JAX_CACHE_DIR` for JAX compilation cache
+  - **Status**: COMPLETED ✅
+
+### Deliverables
+
+**Code**:
+- [x] `jug/scripts/download_data.py` - Prefetch utilities ✅
+- [x] `jug/utils/astropy_config.py` - IERS configuration ✅
+- [ ] `jug/data/manifest.json` - Data checksums ⏸️
+
+**Documentation**:
+- [ ] HPC usage guide
+- [x] Cache location reference (in docstrings) ✅
+- [x] Offline mode documentation (in astropy_config.py) ✅
+
+### Success Criteria
+
+- [x] Prefetch command downloads IERS and ephemeris ✅
+- [x] Astropy configured for deterministic behavior ✅
+- [ ] All data files have sha256 in manifest ⏸️
+- [ ] `verify_data_integrity()` catches corrupted files ⏸️
+- [ ] `JUG_OFFLINE=1` prevents any network access during compute ⏸️
+- [ ] Clear documentation for HPC deployments ⏸️
+
+---
+
+## Milestone 6: Complete Parameter Fitting ⏸️ **HIGH PRIORITY**
+
+**Status**: NOT STARTED
+**Priority**: HIGH - Required for feature parity with PINT/Tempo2
+**Estimated Duration**: 2-3 weeks
+**Target Date**: TBD
+
+### Goal
+Implement fitting for ALL timing model parameters that PINT and Tempo2 can fit. This is essential for JUG to be a complete pulsar timing tool.
+
+### Background
+
+Currently JUG can fit:
+- ✅ Spin parameters: F0, F1, F2, F3, ... (any order)
+- ✅ DM parameters: DM, DM1, DM2, DM3, ... (any order)
+
+**Missing** (PINT/Tempo2 can fit these):
+- ⏸️ Astrometry: RAJ, DECJ, PMRA, PMDEC, PX (parallax)
+- ⏸️ Binary Keplerian: PB, A1, ECC, OM, T0 (or TASC for ELL1)
+- ⏸️ Binary Post-Keplerian: PBDOT, OMDOT, GAMMA, SINI, M2, XDOT, EDOT
+- ⏸️ Binary ELL1-specific: EPS1, EPS2
+- ⏸️ Binary Shapiro: H3, H4, STIG (orthometric parameterization)
+- ⏸️ JUMP parameters (backend/receiver offsets)
+- ⏸️ FD parameters (frequency-dependent delays)
+
+### Tasks (0/8 completed)
+
+#### Phase 1: Astrometry (1 week)
+
+- [ ] **6.1** Implement astrometric derivatives
+  - [ ] Create `jug/fitting/derivatives_astrometry.py`
+  - [ ] d(delay)/d(RAJ) - right ascension
+  - [ ] d(delay)/d(DECJ) - declination
+  - [ ] d(delay)/d(PMRA) - proper motion RA
+  - [ ] d(delay)/d(PMDEC) - proper motion DEC
+  - [ ] d(delay)/d(PX) - parallax
+  - [ ] Validate against PINT design matrix
+  - **Estimated time**: 8 hours
+  - **Reference**: PINT `astrometry.py`, Tempo2 `astrometry.C`
+
+- [ ] **6.2** Test astrometry fitting
+  - [ ] Test on pulsar with known proper motion
+  - [ ] Test parallax fitting (requires multi-year data)
+  - [ ] Compare fitted values to PINT/Tempo2
+  - **Estimated time**: 4 hours
+
+#### Phase 2: Binary Parameters (1 week)
+
+- [ ] **6.3** Implement binary Keplerian derivatives
+  - [ ] Create `jug/fitting/derivatives_binary.py`
+  - [ ] d(delay)/d(PB) - orbital period
+  - [ ] d(delay)/d(A1) - projected semi-major axis
+  - [ ] d(delay)/d(ECC) - eccentricity (or EPS1/EPS2 for ELL1)
+  - [ ] d(delay)/d(OM) - longitude of periastron
+  - [ ] d(delay)/d(T0) - epoch of periastron (or TASC for ELL1)
+  - [ ] Handle different binary models (ELL1 vs DD vs BT)
+  - **Estimated time**: 12 hours
+  - **Reference**: PINT `binary_*.py`, Tempo2 `binary.C`
+
+- [ ] **6.4** Implement binary post-Keplerian derivatives
+  - [ ] d(delay)/d(PBDOT) - orbital decay
+  - [ ] d(delay)/d(OMDOT) - periastron advance
+  - [ ] d(delay)/d(GAMMA) - Einstein delay amplitude
+  - [ ] d(delay)/d(SINI) - sin(inclination)
+  - [ ] d(delay)/d(M2) - companion mass
+  - [ ] d(delay)/d(XDOT) - orbital decay via x
+  - [ ] d(delay)/d(EDOT) - eccentricity derivative
+  - **Estimated time**: 8 hours
+
+- [ ] **6.5** Implement Shapiro delay derivatives
+  - [ ] M2/SINI parameterization (DD, BT)
+  - [ ] H3/H4/STIG orthometric parameterization (ELL1H, DDH)
+  - **Estimated time**: 4 hours
+
+- [ ] **6.6** Test binary fitting
+  - [ ] Test on J1909-3744 (ELL1 binary)
+  - [ ] Test on DD binary pulsar
+  - [ ] Compare fitted orbital parameters to PINT/Tempo2
+  - **Estimated time**: 6 hours
+
+#### Phase 3: Additional Parameters (3-5 days)
+
+- [ ] **6.7** Implement JUMP parameters
+  - [ ] Add JUMP handling to design matrix
+  - [ ] Support per-backend and per-receiver JUMPs
+  - [ ] Test on multi-backend dataset
+  - **Estimated time**: 6 hours
+
+- [ ] **6.8** Implement FD parameters (frequency-dependent delays)
+  - [ ] d(delay)/d(FD1), d(delay)/d(FD2), ...
+  - [ ] Test on pulsar with significant FD terms
+  - **Estimated time**: 4 hours
+
+### Deliverables
+
+**Code**:
+- [ ] `jug/fitting/derivatives_astrometry.py` - Astrometric parameter derivatives
+- [ ] `jug/fitting/derivatives_binary.py` - Binary parameter derivatives
+- [ ] Updated `jug/fitting/optimized_fitter.py` - Integration with new derivatives
+- [ ] Updated GUI parameter selection - Show all fittable parameters
+
+**Tests**:
+- [ ] `jug/tests/test_astrometry_fitting.py` - Astrometry validation
+- [ ] `jug/tests/test_binary_fitting.py` - Binary parameter validation
+- [ ] `jug/tests/test_jump_fitting.py` - JUMP parameter validation
+
+**Documentation**:
+- [ ] Parameter fitting reference guide
+- [ ] Derivative formulas documentation
+
+### Success Criteria
+
+- [ ] Can fit ALL parameters that PINT/Tempo2 can fit
+- [ ] Fitted values match PINT/Tempo2 within uncertainties
+- [ ] Covariance matrices match PINT/Tempo2
+- [ ] Works on diverse pulsar types (isolated, binary, MSP)
+- [ ] GUI shows all fittable parameters
+
+### Technical Notes
+
+**Derivative computation approach**:
+1. Analytical derivatives preferred (faster, exact)
+2. Use PINT's formulas as reference (well-tested)
+3. Validate against PINT design matrix before integration
+4. Keep longdouble precision for high-order spin terms
+
+**Binary model complexity**:
+- ELL1: Uses EPS1/EPS2 instead of ECC/OM (simpler for low-ecc)
+- DD: Full Damour-Deruelle with all post-Keplerian terms
+- BT: Blandford-Teukolsky (simpler, fewer PK terms)
+- T2: Tempo2 general model (most flexible)
+
+### Priority Rationale
+
+This milestone is HIGH PRIORITY because:
+1. **Feature parity**: Users expect to fit any parameter
+2. **Science cases**: Many analyses require binary/astrometry fitting
+3. **GUI completeness**: GUI shows parameters but can't fit them all
+4. **Foundation complete**: Spin/DM fitting proves the architecture works
 
 ---
 
@@ -868,7 +1448,7 @@ Ensure JUG works across different observatories, backends, and receiver systems.
 
 ---
 
-## Milestone 5: White Noise Models (v0.5.0) ⏸️
+## Milestone 7: White Noise Models (v0.7.0) ⏸️
 
 **Status**: NOT STARTED
 **Estimated Duration**: 1-2 weeks
@@ -879,7 +1459,7 @@ Add EFAC, EQUAD, ECORR support for white noise modeling.
 
 ### Tasks (0/3 completed)
 
-- [ ] **5.1** Implement white noise classes
+- [ ] **7.1** Implement white noise classes
   - [ ] Create `jug/noise/white.py`
   - [ ] EFAC: Multiplicative error scaling
   - [ ] EQUAD: Additive white noise
@@ -887,13 +1467,13 @@ Add EFAC, EQUAD, ECORR support for white noise modeling.
   - **Assigned to**: Claude
   - **Estimated time**: 2 hours
 
-- [ ] **5.2** Integrate with fitting
+- [ ] **7.2** Integrate with fitting
   - [ ] Fit white noise parameters jointly with timing model
   - [ ] Add to CLI: `jug-fit --fit-noise`
   - **Assigned to**: Claude
   - **Estimated time**: 1 hour
 
-- [ ] **5.3** Write tests
+- [ ] **7.3** Write tests
   - [ ] Test EFAC/EQUAD scaling
   - [ ] Test ECORR block-diagonal structure
   - [ ] Test likelihood computation
@@ -911,7 +1491,7 @@ Add EFAC, EQUAD, ECORR support for white noise modeling.
 
 ---
 
-## Milestone 6: GP Noise Models (v0.6.0) ⏸️
+## Milestone 8: GP Noise Models (v0.8.0) ⏸️
 
 **Status**: NOT STARTED
 **Estimated Duration**: 2-3 weeks
@@ -922,28 +1502,28 @@ Implement Fourier-domain GP noise using FFT covariance method.
 
 ### Tasks (0/4 completed)
 
-- [ ] **6.1** Port FFT covariance from discovery
+- [ ] **8.1** Port FFT covariance from discovery
   - [ ] Extract `psd2cov()` from discovery package
   - [ ] Create `jug/noise/fft_covariance.py`
   - [ ] Adapt for JUG's JAX framework
   - **Assigned to**: Claude
   - **Estimated time**: 4-6 hours
 
-- [ ] **6.2** Implement GP noise classes
+- [ ] **8.2** Implement GP noise classes
   - [ ] Create `jug/noise/red_noise.py` (achromatic power-law)
   - [ ] Create `jug/noise/dm_noise.py` (chromatic DM variations)
   - [ ] Create `jug/noise/chromatic_noise.py` (scattering)
   - **Assigned to**: Claude
   - **Estimated time**: 3-4 hours
 
-- [ ] **6.3** Test noise models
+- [ ] **8.3** Test noise models
   - [ ] Test red noise on synthetic data
   - [ ] Test DM noise frequency scaling
   - [ ] Validate covariance matrices (positive definite)
   - **Assigned to**: You (physics) + Claude (code)
   - **Estimated time**: 3-4 hours
 
-- [ ] **6.4** Create user extensibility
+- [ ] **8.4** Create user extensibility
   - [ ] Design API for custom PSD functions
   - [ ] Create registration decorator
   - [ ] Write example custom noise model
@@ -963,144 +1543,71 @@ Implement Fourier-domain GP noise using FFT covariance method.
 
 ---
 
-## Milestone 7: Desktop GUI (v0.7.0) ⏸️
+## Milestone 9: Bayesian Priors (v0.9.0) ⏸️
 
 **Status**: NOT STARTED
-**Estimated Duration**: 3-4 weeks (iterative)
+**Estimated Duration**: 2-3 weeks
 **Target Date**: TBD
 
 ### Goal
-Build PyQt6 GUI with residual plot, parameter panel, fit control, and noise diagnostics.
+Add Bayesian prior support for parameter estimation using NumPyro.
 
-### Tasks (0/5 completed)
+### Tasks (0/4 completed)
 
-- [ ] **7.1** GUI skeleton
-  - [ ] Create `jug/gui/main_window.py`
-  - [ ] Layout: Residual plot + parameter panel + fit controls
-  - [ ] File menu: Open .par, .tim, Save .par
-  - **Assigned to**: Claude (build) + You (refine)
-  - **Estimated time**: 1 day
+- [ ] **9.1** Design prior specification API
+  - [ ] Define prior classes (Uniform, Normal, LogUniform, etc.)
+  - [ ] Create parameter-to-prior mapping
+  - **Estimated time**: 4 hours
 
-- [ ] **7.2** Real-time parameter updates
-  - [ ] Editable parameter table
-  - [ ] Recompute residuals on parameter change
-  - [ ] Debounced updates (300ms lag)
-  - **Assigned to**: Claude + You (test responsiveness)
-  - **Estimated time**: 3 hours
+- [ ] **9.2** Integrate with NumPyro
+  - [ ] Create likelihood function compatible with NumPyro
+  - [ ] Implement MCMC sampling (NUTS)
+  - [ ] Implement nested sampling (if desired)
+  - **Estimated time**: 8 hours
 
-- [ ] **7.3** Interactive flagging
-  - [ ] Click TOA to flag/unflag
-  - [ ] Visual indicators (grayed out, red X)
-  - [ ] Buttons: Flag Selected, Unflag All
-  - **Assigned to**: Claude + You
-  - **Estimated time**: 3 hours
+- [ ] **9.3** Add prior specification to CLI/GUI
+  - [ ] CLI: `jug-fit --prior F0:normal:0:1e-12`
+  - [ ] GUI: Prior specification dialog
+  - **Estimated time**: 4 hours
 
-- [ ] **7.4** Fit integration
-  - [ ] 'Fit Selected' button calls optimizer
-  - [ ] Progress bar during fit
-  - [ ] Update parameters and uncertainties after fit
-  - [ ] 'Reset' and 'Undo' buttons
-  - **Assigned to**: Claude + You
-  - **Estimated time**: 5 hours
-
-- [ ] **7.5** Noise diagnostics panel
-  - [ ] Power spectrum plot (periodogram vs. model)
-  - [ ] ACF plot
-  - [ ] Residual histogram
-  - [ ] Tabs to switch between plots
-  - **Assigned to**: Claude + You
-  - **Estimated time**: 5 hours
+- [ ] **9.4** Validate against published results
+  - [ ] Compare posteriors to PINT/enterprise
+  - [ ] Test on well-characterized pulsars
+  - **Estimated time**: 6 hours
 
 ### Deliverables
-- [ ] `jug/gui/` module with PyQt6 components
-- [ ] CLI tool: `jug-gui`
-- [ ] Functional GUI with core features
+- [ ] `jug/fitting/priors.py` - Prior specification
+- [ ] `jug/fitting/bayesian.py` - NumPyro integration
+- [ ] Updated CLI and GUI
+- [ ] Validation tests
 
 ### Success Criteria
-- ✅ GUI launches and displays residuals
-- ✅ Real-time updates <100ms lag
-- ✅ Fit converges from GUI
-- ✅ Interactive flagging works reliably
+- ✅ Can specify priors for any parameter
+- ✅ MCMC sampling produces valid posteriors
+- ✅ Results match PINT/enterprise
 
 ---
 
-## Milestone 8: Bayesian Priors (v0.8.0) ⏸️
+## Future Roadmap (v1.0.0)
 
-**Status**: NOT STARTED
-**Target Date**: TBD
+The following features are planned for future releases:
 
-### Tasks (0/3 completed)
+### GUI Enhancements
+- Multi-panel residual views (time, orbital phase, frequency)
+- Publication-quality figure export
+- Session save/load
+- Noise diagnostic panels (power spectrum, ACF, histograms)
 
-- [ ] **8.1** Design prior specification syntax
-- [ ] **8.2** Implement prior parsing and storage
-- [ ] **8.3** Integrate priors into NumPyro model
-- [ ] **8.4** Add prior specification panel to GUI
+### Advanced Models
+- Glitch model support
+- Extended binary effects (PBDOT fitting, GR tests)
 
-### Deliverables
-- [ ] Prior syntax for .par files or separate .prior file
-- [ ] `jug/fitting/priors.py` module
-- [ ] GUI prior specification panel
-
----
-
-## Milestone 9: Advanced Models (v0.9.0) ⏸️
-
-**Status**: NOT STARTED
-**Target Date**: TBD
-
-### Tasks (0/3 completed)
-
-- [ ] **9.1** Implement glitch model
-- [ ] **9.2** Implement FD parameters
-- [ ] **9.3** Implement higher-order binary effects
-
-### Deliverables
-- [ ] `jug/models/glitch.py`
-- [ ] `jug/models/fd.py`
-- [ ] Extended binary models with PBDOT, OMDOT, etc.
-
----
-
-## Milestone 10: GUI Polish (v0.10.0) ⏸️
-
-**Status**: NOT STARTED
-**Target Date**: TBD
-
-### Tasks (0/4 completed)
-
-- [ ] **10.1** Multi-panel residual views
-- [ ] **10.2** Publication-quality figure export
-- [ ] **10.3** Session save/load
-- [ ] **10.4** Noise diagnostic improvements
-
----
-
-## Milestone 11: Performance Optimization (v0.11.0) ⏸️
-
-**Status**: NOT STARTED
-**Target Date**: TBD
-
-### Tasks (0/4 completed)
-
-- [ ] **11.1** Profile code, identify bottlenecks
-- [ ] **11.2** Vectorize planet Shapiro loop
-- [ ] **11.3** Sparse matrix support for ECORR
-- [ ] **11.4** GPU acceleration (optional)
-
----
-
-## Milestone 12: v1.0.0 Release ⏸️
-
-**Status**: NOT STARTED
-**Target Date**: TBD
-
-### Tasks (0/5 completed)
-
-- [ ] **12.1** Complete documentation (user guide, API, tutorials)
-- [ ] **12.2** Achieve >90% test coverage
-- [ ] **12.3** Set up CI/CD pipeline
-- [ ] **12.4** Benchmark: JUG vs. Tempo2 vs. PINT
-- [ ] **12.5** Prepare publication (JOSS or A&A)
+### v1.0.0 Release Requirements
+- Complete documentation (user guide, API reference, tutorials)
+- >90% test coverage
+- CI/CD pipeline
+- Performance benchmarks vs Tempo2/PINT
+- Publication (JOSS or A&A)
 
 ---
 
@@ -1118,10 +1625,10 @@ Build PyQt6 GUI with residual plot, parameter panel, fit control, and noise diag
 ### Git Workflow (Recommended)
 ```bash
 # Create feature branch for each milestone
-git checkout -b milestone-1-core-package
+git checkout -b milestone-6-parameter-fitting
 
 # Make incremental commits
-git add jug/io/par_reader.py
+git add jug/fitting/derivatives_astrometry.py
 git commit -m "Add .par file parser"
 
 # Merge when milestone complete
@@ -1213,6 +1720,9 @@ _Use this section to track open questions or blockers_
 | 2025-11-29 | Claude | Completed Milestone 1 (Core Timing Package) |
 | 2025-11-29 | Claude | Started Milestone 2 - Session 4: Researched optimizers, implemented Gauss-Newton |
 | 2025-11-30 | Claude | Session 8: JAX fitting diagnosis - converges but differs from PINT by 7-8σ |
+| 2026-01-29 | Claude | M6A 85% complete: Golden tests, ParameterSpec, Codecs, Component graph, Fitter routing |
+| 2026-01-29 | Claude | M6B 40% complete: Download script, Astropy config, cache locations |
+| 2026-01-29 | Claude | Added MODEL_ARCHITECTURE.md for adding new parameters |
 
 ---
 

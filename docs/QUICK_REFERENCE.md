@@ -2,8 +2,8 @@
 
 **JUG** - JAX-based Pulsar Timing Software
 
-**Last Updated**: 2025-12-04
-**Version**: v0.2.0 (Milestone 2 Complete)
+**Last Updated**: 2026-01-29
+**Version**: v0.5.2 (GUI + Performance + Architecture Foundation Complete)
 **Status**: Production Ready ✅
 
 ---
@@ -12,12 +12,14 @@
 
 1. [Installation](#installation)
 2. [Quick Start (5 minutes)](#quick-start-5-minutes)
-3. [Python API](#python-api)
-4. [Command Line Interface](#command-line-interface-coming-soon)
-5. [Features & Capabilities](#features--capabilities)
-6. [Performance Guide](#performance-guide)
-7. [Troubleshooting](#troubleshooting)
-8. [Examples](#examples)
+3. [GUI Usage](#gui-usage)
+4. [Python API](#python-api)
+5. [Command Line Interface](#command-line-interface)
+6. [Features & Capabilities](#features--capabilities)
+7. [Performance Guide](#performance-guide)
+8. [Adding New Parameters](#adding-new-parameters)
+9. [Troubleshooting](#troubleshooting)
+10. [Examples](#examples)
 
 ---
 
@@ -68,7 +70,23 @@ JUG automatically finds these files in the installation:
 
 ## Quick Start (5 minutes)
 
-### Option 1: Command Line (Fastest!)
+### Option 1: GUI (Recommended for Interactive Work!)
+
+```bash
+# Launch empty GUI
+jug-gui
+
+# Launch with files pre-loaded
+jug-gui pulsar.par pulsar.tim
+
+# Launch with GPU acceleration (for large datasets)
+jug-gui --gpu pulsar.par pulsar.tim
+
+# Add parameters not in .par file
+jug-gui --fit F2 F3 pulsar.par pulsar.tim
+```
+
+### Option 2: Command Line (For Scripting)
 
 ```bash
 # Compute residuals
@@ -84,7 +102,7 @@ jug-fit my_pulsar.par my_pulsar.tim --fit F0 F1 DM --output fitted.par
 jug-fit my_pulsar.par my_pulsar.tim --fit F0 F1 --plot
 ```
 
-### Option 2: Python API (For scripting)
+### Option 3: Python API (For Custom Scripts)
 
 ```python
 from jug.residuals.simple_calculator import compute_residuals_simple
@@ -118,6 +136,76 @@ print(f"DM = {result['final_params']['DM']:.10f} pc cm⁻³")
 ```
 
 **That's it!** No complex configuration needed.
+
+---
+
+## GUI Usage
+
+### Launching the GUI
+
+```bash
+# Basic launch
+jug-gui
+
+# With files
+jug-gui data/pulsars/J1909-3744_tdb.par data/pulsars/J1909-3744.tim
+
+# With GPU mode (for large datasets)
+jug-gui --gpu pulsar.par pulsar.tim
+
+# With additional parameters to fit (not in .par file)
+jug-gui --fit F2 F3 DM3 pulsar.par pulsar.tim
+```
+
+### Basic Workflow
+
+1. **Load Data**: File → Open .par... then File → Open .tim...
+2. **View Prefit Residuals**: Automatically plotted
+3. **Select Parameters**: Check boxes for F0, F1, DM, etc.
+4. **Run Fit**: Click "Run Fit" button (Ctrl+F)
+5. **View Results**: Fit dialog shows parameters, changes, uncertainties
+6. **Iterate**: Adjust, delete TOAs, refit as needed
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+P | Open .par file |
+| Ctrl+T | Open .tim file |
+| Ctrl+F | Run fit |
+| Ctrl+R | Reset to prefit |
+| Ctrl+0 | Zoom to fit plot |
+| U | Undo last TOA deletion |
+| Ctrl+Q | Quit |
+
+### TOA Deletion
+
+1. Click and drag to draw a box around TOAs to delete
+2. Release mouse to delete selected TOAs
+3. RMS automatically updates using weighted formula
+4. Press 'U' to undo last deletion
+5. Click "Reset to Prefit" to restore all TOAs
+
+### Theme Selection
+
+- **Light Theme**: Default professional look
+- **Dark Theme (Synthwave)**: Toggle via View menu
+- Error bars always visible in both themes
+
+### Performance Tips
+
+- **First fit**: ~0.8 seconds (caching setup)
+- **Subsequent fits**: ~0.01 seconds (257x faster!)
+- Use CPU mode (default) for typical datasets (<100k TOAs)
+- Use `--gpu` flag for very large datasets (>100k TOAs)
+
+### Statistics Panel
+
+The right panel shows:
+- **RMS**: Weighted RMS in μs (engine-consistent formula)
+- **Iterations**: Number of fit iterations
+- **TOAs**: Count of active TOAs
+- **χ²/dof**: Reduced chi-squared
 
 ---
 
@@ -332,10 +420,10 @@ export JUG_DEVICE=auto
 ### What JUG Can Do Now ✅
 
 #### Timing Models
-- **Spin parameters**: F0, F1, F2 (arbitrary order)
-- **Astrometry**: RA, DEC, proper motion (PMRA, PMDEC), parallax (PX)
-- **Dispersion**: DM, DM1, DM2 (polynomial DM model)
-- **Binary models**: ELL1/ELL1H (low eccentricity), BT/DD (eccentric orbits)
+- **Spin parameters**: F0, F1, F2, F3, ... (arbitrary order) - **FITTABLE**
+- **Dispersion**: DM, DM1, DM2, DM3, ... (polynomial DM model) - **FITTABLE**
+- **Astrometry**: RA, DEC, proper motion (PMRA, PMDEC), parallax (PX) - residuals only
+- **Binary models**: ELL1/ELL1H, BT/DD/DDH/DDK/DDGR, T2 - residuals only
 - **TZR phase reference**: Automatic handling
 
 #### Delay Corrections
@@ -344,14 +432,22 @@ export JUG_DEVICE=auto
 - **Binary delays**: Roemer + Einstein + Shapiro (companion)
 - **DM delay**: Frequency-dependent cold plasma delay
 
-#### Fitting
+#### Fitting (Current)
 - **Analytical derivatives**: PINT-compatible, exact to 20 decimal places
-- **Spin parameters**: F0, F1, F2, ... (any order) ✅
-- **DM parameters**: DM, DM1, DM2, ... (time-evolving dispersion) ✅ NEW!
-- **General architecture**: Can fit ANY combination of parameters
+- **Spin parameters**: F0, F1, F2, F3, ... (any order) ✅
+- **DM parameters**: DM, DM1, DM2, DM3, ... (time-evolving dispersion) ✅
 - **Weighted least squares**: SVD-based solver, numerically stable
-- **Fast convergence**: 5-15 iterations typical
+- **Fast convergence**: 4-15 iterations typical
 - **Uncertainties**: Covariance matrix from WLS solution
+- **Cached fitting**: 257x faster for subsequent fits
+
+#### GUI Features
+- **Desktop application**: PySide6 + pyqtgraph
+- **Interactive plotting**: 10k+ TOAs rendered smoothly
+- **Parameter fitting**: Background worker, progress indication
+- **TOA deletion**: Box selection, undo support
+- **Themes**: Light and Dark (Synthwave)
+- **Statistics**: Weighted RMS matching engine
 
 #### Precision
 - **Longdouble spin arithmetic**: 80-bit precision for F0/F1/F2
@@ -359,26 +455,74 @@ export JUG_DEVICE=auto
 - **Nanosecond agreement**: <5 ns RMS vs PINT/Tempo2
 
 #### User Interface
-- **Command-line tools**: `jug-fit` and `jug-compute-residuals` ready to use
+- **GUI**: `jug-gui` desktop application
+- **Command-line tools**: `jug-fit` and `jug-compute-residuals`
 - **Python API**: Clean, documented interface for scripting
 - **Plotting**: Built-in residual plots (via `--plot` flag)
-- **Device selection**: CPU/GPU/auto modes for optimal performance
+- **Device selection**: CPU/GPU modes
 
-### What's Coming 🔄
+### What's Coming Next 🔄
 
-#### Milestone 3: White Noise
+#### Milestone 6: Complete Parameter Fitting (HIGH PRIORITY)
+- **Astrometry fitting**: RAJ, DECJ, PMRA, PMDEC, PX
+- **Binary parameter fitting**: PB, A1, ECC, OM, T0, PBDOT, OMDOT, etc.
+- **JUMP parameters**: Backend/receiver offsets
+- **FD parameters**: Frequency-dependent delays
+
+#### Milestone 7: White Noise
 - EFAC/EQUAD/ECORR noise parameters
 - Per-backend noise modeling
 
-#### Milestone 4: GP Noise
+#### Milestone 8: GP Noise
 - Red noise (power-law spectrum)
 - DM variations (chromatic GP)
 - FFT covariance for O(N log N) likelihood
 
-#### Milestone 5: GUI
-- PyQt6 desktop interface
-- Real-time parameter updates
-- Interactive TOA flagging
+#### Milestone 9: Bayesian Priors
+- NumPyro integration
+- MCMC/nested sampling
+- Prior specification API
+
+---
+
+## Adding New Parameters
+
+JUG uses a **ParameterSpec + Component Graph** architecture that makes it straightforward to add new parameter types. For a detailed guide, see `docs/MODEL_ARCHITECTURE.md`.
+
+### Quick Summary
+
+1. **Add ParameterSpec**: Define metadata in `jug/model/parameter_spec.py`
+2. **Add Codec** (if needed): For unit conversions in `jug/model/codecs.py`
+3. **Implement Derivative**: Add to `jug/fitting/derivatives_*.py`
+4. **Create Component**: Wrap in `jug/model/components/`
+5. **Add Tests**: Golden regression + unit tests
+
+### Example: Adding PMRA
+
+```python
+# In jug/model/parameter_spec.py
+'PMRA': ParameterSpec(
+    name='PMRA',
+    group='astrometry',
+    derivative_group=DerivativeGroup.ASTROMETRY,
+    internal_unit='rad/yr',
+    par_unit_str='mas/yr',
+    component_name='AstrometryComponent',
+),
+```
+
+### Current Architecture
+
+```
+jug/model/
+├── parameter_spec.py   # 20+ parameters defined
+├── codecs.py           # RAJ/DECJ angle codecs
+└── components/
+    ├── spin.py         # SpinComponent ✅
+    └── dispersion.py   # DispersionComponent ✅
+```
+
+**See**: `docs/MODEL_ARCHITECTURE.md` for the full step-by-step guide.
 
 ---
 
@@ -921,35 +1065,71 @@ Design philosophy:
 
 ## Version History
 
-**v0.2.0** (Current - Milestone 2)
+**v0.5.1** (Current - 2026-01-29)
+- ✅ Geometry disk cache (4.5x faster warm session)
+- ✅ JAX compilation cache (faster cold starts)
+- ✅ Canonical stats module (GUI/CLI/API consistency)
+- ✅ Astropy configuration (deterministic behavior)
+- ✅ Data prefetch command (`python -m jug.scripts.download_data`)
+- ✅ Performance profiling tools
+
+**v0.5.0** (GUI Complete - 2026-01-27)
+- ✅ PySide6 desktop GUI with pyqtgraph plotting
+- ✅ Interactive residual visualization (10k+ TOAs smooth)
+- ✅ Parameter fitting with background threading
+- ✅ Dynamic parameter selection (add params not in .par)
+- ✅ TOA deletion with box selection and undo
+- ✅ 5-column fit results dialog
+- ✅ Device selection (CPU/GPU)
+- ✅ Light and Dark (Synthwave) themes
+- ✅ Cached fitting (257x faster subsequent fits)
+
+**v0.2.0** (Milestone 2 - 2025-12-05)
 - ✅ Spin parameter fitting (F0, F1, F2)
-- ✅ DM parameter fitting (DM, DM1, DM2) - Added Dec 4, 2025
+- ✅ DM parameter fitting (DM, DM1, DM2)
 - ✅ General fitter architecture (can fit ANY parameter combination)
 - ✅ Analytical derivatives with WLS solver
 - ✅ Longdouble precision for unlimited time spans
+- ✅ JAX incremental fitting integration
 - ✅ 10-20× faster than PINT for large datasets
 - ✅ Nanosecond-level accuracy validation
 - ✅ Command-line tools (`jug-fit`, `jug-compute-residuals`)
 - ✅ GPU/CPU device selection with auto mode
 - ✅ Built-in residual plotting
 
-**v0.1.0** (Milestone 1)
+**v0.1.0** (Milestone 1 - 2025-11-29)
 - ✅ Residual computation pipeline
 - ✅ Complete delay corrections
-- ✅ Binary model support (ELL1, BT, DD)
+- ✅ Binary model support (ELL1, ELL1H, DD, DDH, BT, T2)
 - ✅ Clock correction system
 
 **Coming Next** (Milestone 3)
 - 🔄 White noise models (EFAC, EQUAD, ECORR)
 - 🔄 Astrometry parameter fitting (RAJ, DECJ, PMRA, PMDEC, PX)
 - 🔄 Binary parameter fitting (PB, A1, ECC, OM, etc.)
-- 🔄 Enhanced .par file output with uncertainties
+- 🔄 Save fitted .par files from GUI
 
 ---
 
 ## Quick Command Cheatsheet
 
-### Command Line (Fastest Way to Start!)
+### GUI (Recommended!)
+
+```bash
+# Launch GUI
+jug-gui
+
+# With files
+jug-gui pulsar.par pulsar.tim
+
+# With GPU
+jug-gui --gpu pulsar.par pulsar.tim
+
+# With extra parameters
+jug-gui --fit F2 DM2 pulsar.par pulsar.tim
+```
+
+### Command Line
 
 ```bash
 # Compute residuals
@@ -960,9 +1140,6 @@ jug-fit pulsar.par pulsar.tim --fit F0 F1
 
 # Fit F0, F1, and DM
 jug-fit pulsar.par pulsar.tim --fit F0 F1 DM
-
-# Fit with plot and save
-jug-fit pulsar.par pulsar.tim --fit F0 F1 --plot --output fitted.par
 
 # Fit with plot and save
 jug-fit pulsar.par pulsar.tim --fit F0 F1 --plot --output fitted.par
@@ -998,7 +1175,10 @@ print(fit['converged'])          # True/False
 ### One-Liner Quick Reference
 
 ```bash
-# Complete workflow in one command
+# GUI workflow
+jug-gui pulsar.par pulsar.tim
+
+# CLI workflow
 jug-fit pulsar.par pulsar.tim --fit F0 F1 --plot --output fitted.par
 ```
 

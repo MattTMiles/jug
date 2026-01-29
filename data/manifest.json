@@ -1,0 +1,38 @@
+{
+  "version": "1.0.0",
+  "description": "JUG data file manifest for integrity verification",
+  "files": {
+    "pulsars/J1909-3744_tdb.par": {
+      "sha256": "bd1b81c6fa704919234b43b7798c79be0f7df70ffec0f80336e545ad6e0c8d27",
+      "size_bytes": 2737
+    },
+    "pulsars/J1909-3744.tim": {
+      "sha256": "3e70da32c9327f3d3c86def605ec8a11d2ddb287814d79991c10770c6e36db0b",
+      "size_bytes": 3586278
+    },
+    "clock/mk2utc.clk": {
+      "sha256": "5e7cee4413c79d92c70e22b59ca7f45e58063bd963beef28a0d905ec990a8fbe",
+      "size_bytes": 5829464
+    },
+    "clock/tai2tt_bipm2024.clk": {
+      "sha256": "ec071a094fef0e67a9ed5941b7b13f7ae892047ee92744ef7c78d100d48a8118",
+      "size_bytes": 80566
+    },
+    "clock/tai2tt_bipm2022.clk": {
+      "sha256": "3008fb0db51eea448aeb913dd9329c59aea76850a5adde1dddeeb972b3757f80",
+      "size_bytes": 75758
+    },
+    "clock/tai2tt_bipm2021.clk": {
+      "sha256": "14a85a50f4ae37a0202202f55a9c8ee5f10b36caec6cfdea4220115f151125f5",
+      "size_bytes": 74785
+    },
+    "clock/utc2tai.clk": {
+      "sha256": "cade8c0b65ad37682e8e265a10e7587454faf9c5a1d77009458daacf940847bf",
+      "size_bytes": 3089
+    },
+    "observatory/observatories.dat": {
+      "sha256": "1bb9faad79ab66a653d4f7b0a4556bb621a3f7a95a13ef8b2eaf2c366b6731cf",
+      "size_bytes": 10439
+    }
+  }
+}

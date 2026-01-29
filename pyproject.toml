@@ -63,6 +63,7 @@ all = [
 jug-compute-residuals = "jug.scripts.compute_residuals:main"
 jug-fit = "jug.scripts.fit_parameters:main"
 jug-gui = "jug.gui.main:main"
+jug-benchmark = "jug.scripts.benchmark_stages:main"
 jugd = "jug.scripts.jugd:main"
 
 [project.urls]

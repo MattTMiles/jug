@@ -7,6 +7,7 @@ LAUNCH:
 $ jug-gui                                    # Empty GUI
 $ jug-gui pulsar.par pulsar.tim             # Load files directly
 $ jug-gui --gpu pulsar.par pulsar.tim       # Load with GPU mode
+$ jug-gui --fit F2 F3 pulsar.par pulsar.tim # Add parameters not in .par
 $ jug-gui --help                            # Show help
 
 Example with J1909-3744:
@@ -24,7 +25,8 @@ WORKFLOW:
    ☐ F2, DM, DM1, DM2 (optional)
 
 4. Click "Run Fit" button
-   → Wait 2-4 seconds
+   → Wait 0.8-2 seconds (first fit)
+   → Subsequent fits: ~0.01 seconds!
    → Fit results dialog appears
 
 5. View statistics in right panel:
@@ -33,7 +35,11 @@ WORKFLOW:
    - TOAs
    - χ²/dof
 
-6. Click "Reset to Prefit" to restore original residuals
+6. Delete TOAs: Click+drag to draw box, release to delete
+   - Press 'U' to undo last deletion
+   - RMS automatically updates
+
+7. Click "Reset to Prefit" to restore original residuals
 
 
 KEYBOARD SHORTCUTS:
@@ -43,6 +49,7 @@ Ctrl+T  - Open .tim file
 Ctrl+F  - Run fit
 Ctrl+R  - Reset to prefit
 Ctrl+0  - Zoom to fit plot
+U       - Undo last TOA deletion
 Ctrl+Q  - Quit
 
 
@@ -58,7 +65,21 @@ F0 = 339.315691919040830 Hz
 F1 = -1.614750e-15 Hz/s
 RMS = 0.403684 μs
 Iterations = 4
-Time = ~2 seconds
+Time = ~0.8 seconds (first), ~0.01s (subsequent)
+
+
+PERFORMANCE:
+------------
+JUG is heavily optimized:
+- First fit: ~0.8 seconds (caching setup)
+- Subsequent fits: ~0.01 seconds (257x faster!)
+- Warm session: ~162ms (4.5x faster with geometry cache)
+
+To prefetch data for offline use:
+$ python -m jug.scripts.download_data
+
+To check cache status:
+$ python -m jug.scripts.download_data --status
 
 
 TROUBLESHOOTING:
@@ -80,6 +101,7 @@ DOCUMENTATION:
 --------------
 - Full guide: docs/QUICK_REFERENCE.md
 - Installation: INSTALL.md
+- Performance: PERFORMANCE_IMPROVEMENTS.md
 - Phase 2 details: docs/GUI_PHASE2_COMPLETE.md
 
 

@@ -46,8 +46,9 @@ class WarmupWorker(QRunnable):
             jax.config.update("jax_enable_x64", True)
             import jax.numpy as jnp
 
-            # Create dummy arrays matching the data shape
-            n = self.n_toas
+            # Use SMALL fixed size for warmup (JAX JIT works with any size after)
+            # This keeps warmup fast (~1-2s) regardless of actual data size
+            n = min(100, self.n_toas)  # Small size for fast JIT
             dt_sec = jnp.array(np.random.randn(n) * 86400.0 * 1000)  # ~1000 days span
             errors = jnp.array(np.abs(np.random.randn(n)) * 1e-6 + 1e-6)
             weights = 1.0 / errors**2

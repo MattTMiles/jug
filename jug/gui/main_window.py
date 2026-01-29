@@ -703,12 +703,30 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(
             f"Loaded {len(self.mjd)} TOAs, Prefit RMS = {self.rms_us:.6f} μs"
         )
+
+        # Schedule JAX warmup in background (avoids first-fit lag)
+        self._schedule_jax_warmup()
     
+    def _schedule_jax_warmup(self):
+        """Schedule JAX warmup in background to avoid first-fit lag."""
+        if self.mjd is None or len(self.mjd) == 0:
+            return
+
+        from jug.gui.workers.warmup_worker import WarmupWorker
+
+        # Create warmup worker with actual data size
+        worker = WarmupWorker(n_toas=len(self.mjd))
+        worker.signals.progress.connect(lambda msg: None)  # Silent warmup
+        worker.signals.finished.connect(lambda: None)
+
+        # Run in thread pool (low priority)
+        self.thread_pool.start(worker)
+
     def on_compute_error(self, error_msg):
         """Handle computation error."""
         # DEBUG
         print(f"[DEBUG] Compute error: {error_msg}")
-        
+
         QMessageBox.critical(self, "Compute Error", f"Computation failed:\n\n{error_msg}")
         self.status_bar.showMessage("Computation failed")
     

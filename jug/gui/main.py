@@ -69,7 +69,30 @@ Note: CPU is faster for typical pulsar timing (<100k TOAs).
         os.environ['JAX_PLATFORMS'] = 'cpu'
         # Don't print message for default behavior
 
-    # Import after setting JAX_PLATFORMS
+    # Configure pyqtgraph BEFORE importing Qt widgets
+    import pyqtgraph as pg
+
+    # Detect remote/SSH environment for performance optimization
+    is_remote = os.environ.get('JUG_REMOTE_UI', '').lower() in ('1', 'true', 'yes')
+    is_ssh = 'SSH_CLIENT' in os.environ or 'SSH_TTY' in os.environ
+
+    pg_opts = {'useOpenGL': False}  # Default: no OpenGL (more stable)
+
+    if is_remote or is_ssh:
+        # Remote mode: disable antialiasing for faster rendering over X11
+        pg_opts['antialias'] = False
+        print("JUG GUI: Remote mode detected, optimizing for X11")
+    else:
+        pg_opts['antialias'] = True
+
+    # Opt-in OpenGL via environment variable
+    if os.environ.get('JUG_PG_USE_OPENGL', '').lower() in ('1', 'true'):
+        pg_opts['useOpenGL'] = True
+        print("JUG GUI: OpenGL enabled")
+
+    pg.setConfigOptions(**pg_opts)
+
+    # Import after setting JAX_PLATFORMS and pyqtgraph config
     from PySide6.QtWidgets import QApplication
     from jug.gui.main_window import MainWindow
 

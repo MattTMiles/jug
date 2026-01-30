@@ -686,5 +686,7 @@ def compute_residuals_simple(
         'freq_bary_mhz': np.array(freq_bary_mhz, dtype=np.float64),
         'tzr_phase': float(tzr_phase),
         # Add emission time (computed with longdouble, converted to float64)
-        'dt_sec': np.array(dt_sec, dtype=np.float64)
+        'dt_sec': np.array(dt_sec, dtype=np.float64),
+        # Roemer+Shapiro delay for computing barycentric times (needed for binary fitting)
+        'roemer_shapiro_sec': np.array(roemer_shapiro, dtype=np.float64),
     }

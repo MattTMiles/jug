@@ -1224,6 +1224,101 @@ def _build_general_fit_setup_from_files(
     )
 
 
+def _compute_full_model_residuals(
+    params: Dict,
+    setup: GeneralFitSetup,
+) -> tuple:
+    """
+    Compute TRUE residuals using the full nonlinear model.
+    
+    This function recomputes all delays (DM, binary, astrometric) from the
+    current parameter values, ensuring the residuals reflect the actual model.
+    This is analogous to PINT's ModelState.resids which recomputes the full model.
+    
+    Parameters
+    ----------
+    params : dict
+        Current parameter dictionary with updated values
+    setup : GeneralFitSetup
+        The fitting setup with cached geometry data
+        
+    Returns
+    -------
+    residuals_sec : np.ndarray
+        Time residuals in seconds
+    chi2 : float
+        Chi-squared statistic
+    rms_us : float
+        RMS of residuals in microseconds
+    wrms_us : float
+        Weighted RMS in microseconds
+    """
+    # Get cached arrays
+    dt_sec_cached = setup.dt_sec_cached
+    tdb_mjd = setup.tdb_mjd
+    freq_mhz = setup.freq_mhz
+    weights = setup.weights
+    errors_sec = setup.errors_sec
+    
+    # Start with cached dt_sec (contains initial delays)
+    dt_sec_np = dt_sec_cached.copy()
+    
+    # Apply DM delay correction
+    dm_params = setup.dm_params
+    if dm_params:
+        dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+        current_dm_params = {p: params[p] for p in dm_params}
+        new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
+        dm_delay_change = new_dm_delay - setup.initial_dm_delay
+        dt_sec_np = dt_sec_np - dm_delay_change
+    
+    # Apply binary delay correction
+    binary_params = setup.binary_params
+    if binary_params and setup.initial_binary_delay is not None:
+        from jug.fitting.derivatives_binary import compute_ell1_binary_delay
+        toas_bary = tdb_mjd - setup.roemer_shapiro_sec / SECS_PER_DAY
+        new_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params))
+        binary_delay_change = new_binary_delay - setup.initial_binary_delay
+        dt_sec_np = dt_sec_np - binary_delay_change
+    
+    # Apply astrometric delay correction (CRITICAL for astrometry fitting)
+    astrometry_params = setup.astrometry_params
+    if astrometry_params and setup.initial_astrometric_delay is not None:
+        from jug.fitting.derivatives_astrometry import compute_astrometric_delay
+        new_astrometric_delay = np.array(compute_astrometric_delay(
+            params, tdb_mjd, setup.ssb_obs_pos_ls
+        ))
+        astrometric_delay_change = new_astrometric_delay - setup.initial_astrometric_delay
+        dt_sec_np = dt_sec_np - astrometric_delay_change
+    
+    # Compute phase from dt_sec
+    f0 = params['F0']
+    f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
+    f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
+    
+    phase = np.zeros_like(dt_sec_np)
+    factorial = 1.0
+    for n, f_val in enumerate(f_values):
+        factorial *= (n + 1) if n > 0 else 1.0
+        phase += f_val * (dt_sec_np ** (n + 1)) / factorial
+    
+    # Wrap phase and convert to time residuals
+    phase_wrapped = phase - np.round(phase)
+    residuals_sec = phase_wrapped / f0
+    
+    # Subtract weighted mean
+    sum_weights = np.sum(weights)
+    weighted_mean = np.sum(residuals_sec * weights) / sum_weights
+    residuals_sec = residuals_sec - weighted_mean
+    
+    # Compute statistics
+    chi2 = np.sum((residuals_sec / errors_sec) ** 2)
+    rms_us = np.sqrt(np.sum(residuals_sec**2 * weights) / sum_weights) * 1e6
+    wrms_us = np.sqrt(np.sum((residuals_sec * 1e6)**2 * weights) / sum_weights)
+    
+    return residuals_sec, chi2, rms_us, wrms_us
+
+
 def _run_general_fit_iterations(
     setup: GeneralFitSetup,
     max_iter: int,
@@ -1235,7 +1330,9 @@ def _run_general_fit_iterations(
     Run general fitting iterations using precomputed setup.
 
     This is the "iterate" phase that reuses cached arrays.
-    The math here is UNCHANGED from the original implementation.
+    
+    Uses PINT-style damping: each WLS step is validated against the full 
+    nonlinear model, and step size is reduced if chi2 worsens.
 
     Parameters
     ----------
@@ -1260,17 +1357,6 @@ def _run_general_fit_iterations(
     solver_mode = solver_mode.lower().strip() if solver_mode else "exact"
     if solver_mode not in ("exact", "fast"):
         solver_mode = "exact"
-        
-    # IMPORTANT WARNING: Astrometry parameter fitting has known limitations
-    # The linear approximation used during iterations doesn't fully capture
-    # the non-linear relationship between astrometry parameters (RAJ, DECJ, 
-    # PMRA, PMDEC, PX) and timing residuals. This can cause:
-    # 1. Reported RMS to be lower than true RMS
-    # 2. Divergence when fitting repeatedly
-    #
-    # Workaround: Fit astrometry parameters in a single fit, not repeatedly.
-    # The proper fix requires restructuring to recompute the full model
-    # after each iteration (like PINT does).
     
     # Unpack setup
     params = setup.params
@@ -1307,23 +1393,36 @@ def _run_general_fit_iterations(
     # This is mathematically identical - weights array doesn't change during fitting
     sum_weights = np.sum(weights)
 
-    # Convergence criteria
+    # Convergence criteria (PINT-style)
     xtol = 1e-12
-    gtol = 1e-3
+    required_chi2_decrease = 1e-2  # Minimum chi2 decrease to continue
+    max_chi2_increase = 1e-2  # Maximum allowed chi2 increase before rejecting step
+    min_lambda = 1e-3  # Minimum step scaling factor
     min_iterations = 3
-    rms_history = []
+    
+    # Compute initial full-model chi2 for comparison
+    for i, param in enumerate(fit_params):
+        params[param] = param_values_curr[i]
+    _, current_chi2, current_rms_us, _ = _compute_full_model_residuals(params, setup)
+    best_chi2 = current_chi2
+    best_param_values = param_values_curr.copy()
+    
+    # Track RMS history (using full-model RMS)
+    rms_history = [current_rms_us]
 
     if verbose:
-        print(f"\n{'Iter':<6} {'RMS (μs)':<12} {'ΔParam':<15} {'Status':<20}")
-        print("-" * 65)
+        print(f"\n{'Iter':<6} {'RMS (μs)':<12} {'ΔParam':<15} {'λ':<8} {'Status':<20}")
+        print("-" * 75)
     
-    # ITERATION LOOP (unchanged logic!)
+    # ITERATION LOOP (PINT-style damping with full-model validation)
     for iteration in range(max_iter):
         # Update params dict with current values
         for i, param in enumerate(fit_params):
             params[param] = param_values_curr[i]
         
-        # Start with cached dt_sec and apply corrections for DM and binary changes
+        # Build design matrix using linearized residuals
+        # (We compute residuals for the design matrix using cached delays for spin/DM/binary,
+        # but we validate the full step against the true model)
         dt_sec_np = dt_sec_cached.copy()
 
         # If fitting DM parameters, update dt_sec with new DM delay
@@ -1341,18 +1440,10 @@ def _run_general_fit_iterations(
             binary_delay_change = new_binary_delay - initial_binary_delay
             dt_sec_np = dt_sec_np - binary_delay_change
 
-        # NOTE: We intentionally do NOT update dt_sec for astrometric delay changes
-        # during iterations. The WLS solver handles astrometry changes through the 
-        # linear derivative approximation. Updating the full non-linear delay causes
-        # instability because small position changes lead to large delay changes that
-        # aren't captured by the first-order Taylor expansion.
-        #
-        # This is similar to PINT's approach where the design matrix is computed
-        # at the current parameter values, but the residuals use the same delays.
-        # The astrometric delay is recomputed for the FINAL residual calculation
-        # to provide an accurate reported RMS.
+        # Note: For design matrix computation, we use linearized residuals
+        # (not updating astrometric delay here - that's handled by the derivatives)
 
-        # Compute phase residuals from updated dt_sec
+        # Compute phase residuals from updated dt_sec (linearized)
         f0 = params['F0']
         f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
         f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
@@ -1370,12 +1461,7 @@ def _run_general_fit_iterations(
         weighted_mean = np.sum(residuals * weights) / sum_weights
         residuals = residuals - weighted_mean
 
-        # Compute RMS (use pre-computed sum_weights)
-        rms_us = np.sqrt(np.sum(residuals**2 * weights) / sum_weights) * 1e6
-
         # Build design matrix - BATCHED derivative computation
-        # Compute all spin derivatives in one call, all DM derivatives in one call
-        # This avoids per-parameter function call overhead
         M_columns = []
 
         # Batch spin parameters (spec-driven routing via component)
@@ -1395,17 +1481,12 @@ def _run_general_fit_iterations(
         binary_params_list = get_binary_params_from_list(fit_params)
         binary_derivs = {}
         if binary_params_list:
-            # Binary derivatives require barycentric TOAs
             if setup.roemer_shapiro_sec is None:
                 raise ValueError(
                     "Binary fitting requires roemer_shapiro_sec in setup. "
                     "Ensure compute_residuals_simple returns 'roemer_shapiro_sec'."
                 )
-            
-            # Compute barycentric TOAs (TOAs corrected for Solar System delays)
-            # Subtract roemer_shapiro to get barycentric time
             toas_bary_mjd = toas_mjd - setup.roemer_shapiro_sec / SECS_PER_DAY
-            
             from jug.fitting.derivatives_binary import compute_binary_derivatives_ell1
             binary_derivs = compute_binary_derivatives_ell1(params, toas_bary_mjd, binary_params_list)
 
@@ -1413,13 +1494,11 @@ def _run_general_fit_iterations(
         astrometry_params_list = get_astrometry_params_from_list(fit_params)
         astrometry_derivs = {}
         if astrometry_params_list:
-            # Astrometry derivatives require SSB to observatory position
             if setup.ssb_obs_pos_ls is None:
                 raise ValueError(
                     "Astrometry fitting requires ssb_obs_pos_ls in setup. "
                     "Ensure compute_residuals_simple returns 'ssb_obs_pos_ls'."
                 )
-            
             from jug.fitting.derivatives_astrometry import compute_astrometry_derivatives
             astrometry_derivs = compute_astrometry_derivatives(
                 params, toas_mjd, setup.ssb_obs_pos_ls, astrometry_params_list
@@ -1446,81 +1525,22 @@ def _run_general_fit_iterations(
             col_mean = np.sum(M[:, i] * weights) / sum_weights
             M[:, i] = M[:, i] - col_mean
         
-        # Solve WLS using selected solver
+        # Solve WLS to get step direction
         if solver_mode == "fast":
             # FAST solver: QR-based lstsq with proper conditioning
-            # Mirrors wls_solve_svd's conditioning for numerical stability
-
-            # Step 1: Weight by sigma (same as Exact solver)
             r1 = residuals / errors_sec
             M1 = M / errors_sec[:, None]
-
-            # Step 2: Normalize design matrix columns (CRITICAL for stability)
-            # This handles mixed-scale params like F0 (~300) vs F1 (~1e-15)
             col_norms = np.sqrt(np.sum(M1**2, axis=0))
-            col_norms = np.where(col_norms == 0, 1.0, col_norms)  # Avoid div by zero
+            col_norms = np.where(col_norms == 0, 1.0, col_norms)
             M2 = M1 / col_norms[None, :]
-
-            # Step 3: Solve normalized system with QR/lstsq
             delta_normalized, _, _, _ = np.linalg.lstsq(M2, r1, rcond=None)
-
-            # Step 4: Unnormalize solution
             delta_params = delta_normalized / col_norms
-
-            # Step 5: Compute covariance and unnormalize
-            # cov_normalized = (M2.T @ M2)^{-1}
-            # cov = (cov_normalized / col_norms).T / col_norms
             M2tM2 = M2.T @ M2
             try:
                 cov_normalized = np.linalg.inv(M2tM2)
             except np.linalg.LinAlgError:
                 cov_normalized = np.linalg.pinv(M2tM2)
             cov = (cov_normalized / col_norms).T / col_norms
-
-            # Step 6: Damping / line search to prevent divergence
-            # Only accept step if it improves RMS (or use reduced step)
-            rms_before = rms_us
-            best_factor = 1.0
-            best_rms = float('inf')
-
-            for damping_iter in range(6):
-                factor = 0.5 ** damping_iter if damping_iter > 0 else 1.0
-                trial_params_list = [param_values_curr[i] + factor * delta_params[i]
-                                     for i in range(len(fit_params))]
-
-                # Quick RMS evaluation with trial params
-                trial_params_dict = dict(zip(fit_params, trial_params_list))
-                params_trial = {**params, **trial_params_dict}
-
-                # Recompute phase with trial parameters (using available dt_sec_np)
-                f0_trial = params_trial.get('F0', params['F0'])
-                f_values_trial = [params_trial.get(f'F{i}', 0.0) for i in range(10)]
-                f_values_trial = [v for v in f_values_trial if v != 0.0 or f_values_trial.index(v) == 0]
-
-                phase_trial = np.zeros_like(dt_sec_np)
-                factorial_t = 1.0
-                for n, f_val in enumerate(f_values_trial):
-                    factorial_t *= (n + 1) if n > 0 else 1.0
-                    phase_trial += f_val * (dt_sec_np ** (n + 1)) / factorial_t
-
-                phase_wrapped_trial = phase_trial - np.round(phase_trial)
-                residuals_trial = phase_wrapped_trial / f0_trial
-                weighted_mean_trial = np.sum(residuals_trial * weights) / sum_weights
-                residuals_trial = residuals_trial - weighted_mean_trial
-                rms_trial = np.sqrt(np.sum(residuals_trial**2 * weights) / sum_weights) * 1e6
-
-                if rms_trial < best_rms:
-                    best_rms = rms_trial
-                    best_factor = factor
-
-                if rms_trial <= rms_before * 1.01:  # Accept if not much worse
-                    break
-
-            # Apply best damped step
-            if best_factor < 1.0 and verbose:
-                print(f"         (damped step: factor={best_factor:.3f})")
-            delta_params = delta_params * best_factor
-
         else:
             # EXACT solver: SVD-based (bit-for-bit reproducible)
             delta_params, cov, _ = wls_solve_svd(
@@ -1533,104 +1553,115 @@ def _run_general_fit_iterations(
             delta_params = np.array(delta_params)
             cov = np.array(cov)
         
-        # Update parameters
-        param_values_curr = [param_values_curr[i] + delta_params[i] for i in range(len(fit_params))]
-
-        # Track RMS
-        rms_history.append(rms_us)
+        # PINT-style damping: validate step against full model
+        # Try lambda = 1.0, 0.5, 0.25, ... until chi2 improves or min_lambda reached
+        lambda_ = 1.0
+        step_accepted = False
+        chi2_decrease = 0
+        
+        while lambda_ >= min_lambda:
+            # Trial parameters with scaled step
+            trial_param_values = [
+                param_values_curr[i] + lambda_ * delta_params[i]
+                for i in range(len(fit_params))
+            ]
+            
+            # Check for NaN/Inf in trial parameters
+            if any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
+                lambda_ /= 2
+                continue
+            
+            # Update params dict with trial values
+            trial_params = params.copy()
+            for i, param in enumerate(fit_params):
+                trial_params[param] = trial_param_values[i]
+            
+            # Compute full-model chi2 with trial parameters
+            try:
+                _, trial_chi2, trial_rms_us, _ = _compute_full_model_residuals(trial_params, setup)
+            except Exception:
+                # If evaluation fails, reduce step
+                lambda_ /= 2
+                continue
+            
+            # Check if chi2 improved (or didn't worsen too much)
+            chi2_decrease = current_chi2 - trial_chi2
+            
+            if chi2_decrease < -max_chi2_increase:
+                # Chi2 worsened beyond tolerance - reduce step
+                lambda_ /= 2
+            else:
+                # Step accepted
+                step_accepted = True
+                param_values_curr = trial_param_values
+                current_chi2 = trial_chi2
+                current_rms_us = trial_rms_us
+                
+                # Track best state
+                if trial_chi2 < best_chi2:
+                    best_chi2 = trial_chi2
+                    best_param_values = trial_param_values.copy()
+                break
+        
+        if not step_accepted:
+            # Couldn't improve even with very small steps - we've converged
+            if verbose:
+                print(f"         (step rejected at λ={lambda_:.4f}, converged at minimum)")
+            converged = True
+            break
+        
+        # Track RMS history (full-model RMS)
+        rms_history.append(current_rms_us)
 
         # Check convergence
         param_norm = np.linalg.norm(param_values_curr)
-        delta_norm = np.linalg.norm(delta_params)
+        delta_norm = np.linalg.norm([lambda_ * d for d in delta_params])
         param_converged = delta_norm <= xtol * (param_norm + xtol)
         
+        chi2_converged = False
+        if -max_chi2_increase <= chi2_decrease < required_chi2_decrease and lambda_ == 1.0:
+            # Full step taken but chi2 didn't improve much - converged
+            chi2_converged = True
+        
+        # Also check RMS convergence (if RMS change is tiny, we've converged)
         rms_converged = False
         if len(rms_history) >= 2:
             rms_change = abs(rms_history[-1] - rms_history[-2])
-            rms_converged = rms_change < gtol
+            rms_converged = rms_change < 1e-6  # Less than 1 ns change
         
-        converged = iteration >= min_iterations and (param_converged or rms_converged)
+        converged = iteration >= min_iterations and (param_converged or chi2_converged or rms_converged)
 
         if verbose:
             status = ""
             if converged:
                 if param_converged:
                     status = "✓ Params converged"
+                elif chi2_converged:
+                    status = "✓ Chi2 stable"
                 elif rms_converged:
                     status = "✓ RMS stable"
-            max_delta = np.max(np.abs(delta_params))
-            print(f"{iteration+1:<6} {rms_us:>11.6f}  {max_delta:>13.6e}  {status:<20}")
+            max_delta = np.max(np.abs([lambda_ * d for d in delta_params]))
+            lambda_str = f"{lambda_:.3f}" if lambda_ < 1.0 else "1.0"
+            print(f"{iteration+1:<6} {current_rms_us:>11.6f}  {max_delta:>13.6e}  {lambda_str:<8} {status:<20}")
 
         if converged:
             break
     
-    # Compute final residuals
+    # Use the best state found
+    param_values_curr = best_param_values
     for i, param in enumerate(fit_params):
         params[param] = param_values_curr[i]
     
-    # Recompute dt_sec_np with ALL delay changes (DM, binary, astrometric)
-    dt_sec_np = dt_sec_cached.copy()
-    
-    # DM delay change
-    if dm_params:
-        dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
-        current_dm_params = {p: params[p] for p in dm_params}
-        new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
-        dt_delay_change_sec = new_dm_delay - initial_dm_delay
-        dt_sec_np = dt_sec_np - dt_delay_change_sec
-    
-    # Binary delay change
-    if binary_params and initial_binary_delay is not None:
-        from jug.fitting.derivatives_binary import compute_ell1_binary_delay
-        new_binary_delay = np.array(compute_ell1_binary_delay(toas_bary_for_binary, params))
-        binary_delay_change = new_binary_delay - initial_binary_delay
-        dt_sec_np = dt_sec_np - binary_delay_change
-    
-    # Astrometric delay change (for accurate final RMS)
-    if astrometry_params and initial_astrometric_delay is not None:
-        from jug.fitting.derivatives_astrometry import compute_astrometric_delay
-        new_astrometric_delay = np.array(compute_astrometric_delay(params, tdb_mjd, ssb_obs_pos_ls))
-        astrometric_delay_change = new_astrometric_delay - initial_astrometric_delay
-        dt_sec_np = dt_sec_np - astrometric_delay_change
-    
-    f0 = params['F0']
-    f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
-    f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
-    
-    phase = np.zeros_like(dt_sec_np)
-    factorial = 1.0
-    for n, f_val in enumerate(f_values):
-        factorial *= (n + 1) if n > 0 else 1.0
-        phase += f_val * (dt_sec_np ** (n + 1)) / factorial
-    
-    phase_wrapped = phase - np.round(phase)
-    residuals_final = phase_wrapped / f0
-    weighted_mean_res = np.sum(residuals_final * weights) / np.sum(weights)
-    residuals_final = residuals_final - weighted_mean_res
-    residuals_final_us = residuals_final * 1e6
+    # Compute final TRUE residuals using full model
+    residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = _compute_full_model_residuals(params, setup)
+    residuals_final_us = residuals_final_sec * 1e6
     
     # Compute prefit residuals
     for i, param in enumerate(fit_params):
         params[param] = param_values_start[i]
     
-    # Recompute dt_sec_np for prefit (use original DM)
-    dt_sec_np = dt_sec_cached
-    
-    f0 = params['F0']
-    f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
-    f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
-    
-    phase = np.zeros_like(dt_sec_np)
-    factorial = 1.0
-    for n, f_val in enumerate(f_values):
-        factorial *= (n + 1) if n > 0 else 1.0
-        phase += f_val * (dt_sec_np ** (n + 1)) / factorial
-    
-    phase_wrapped = phase - np.round(phase)
-    residuals_prefit = phase_wrapped / f0
-    weighted_mean_pre = np.sum(residuals_prefit * weights) / np.sum(weights)
-    residuals_prefit = residuals_prefit - weighted_mean_pre
-    residuals_prefit_us = residuals_prefit * 1e6
+    residuals_prefit_sec, _, prefit_rms_us, _ = _compute_full_model_residuals(params, setup)
+    residuals_prefit_us = residuals_prefit_sec * 1e6
     
     # Restore final parameter values
     for i, param in enumerate(fit_params):
@@ -1642,15 +1673,16 @@ def _run_general_fit_iterations(
     return {
         'final_params': {param: params[param] for param in fit_params},
         'uncertainties': uncertainties,
-        'final_rms': rms_us,
-        'prefit_rms': np.sqrt(np.sum(residuals_prefit**2 * weights) / np.sum(weights)) * 1e6,
+        'final_rms': final_rms_us,  # TRUE full-model RMS
+        'prefit_rms': prefit_rms_us,
         'converged': converged,
         'iterations': iteration + 1,
         'residuals_us': residuals_final_us,
         'residuals_prefit_us': residuals_prefit_us,
         'errors_us': errors_us,
         'tdb_mjd': tdb_mjd,
-        'covariance': cov
+        'covariance': cov,
+        'final_chi2': final_chi2,
     }
 
 

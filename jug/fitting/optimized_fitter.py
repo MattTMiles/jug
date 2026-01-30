@@ -69,9 +69,11 @@ from jug.model.parameter_spec import (
     is_spin_param,
     is_dm_param,
     is_binary_param,
+    is_astrometry_param,
     get_spin_params_from_list,
     get_dm_params_from_list,
     get_binary_params_from_list,
+    get_astrometry_params_from_list,
     DerivativeGroup,
     get_derivative_group,
 )
@@ -117,8 +119,12 @@ class GeneralFitSetup:
         Spin parameters being fit
     binary_params : list of str
         Binary parameters being fit (empty if none)
+    astrometry_params : list of str
+        Astrometry parameters being fit (empty if none)
     roemer_shapiro_sec : np.ndarray or None
         Roemer + Shapiro delays in seconds (for binary fitting)
+    ssb_obs_pos_ls : np.ndarray or None
+        SSB to observatory position in light-seconds (for astrometry fitting)
     """
     params: Dict[str, float]
     fit_param_list: List[str]
@@ -134,8 +140,10 @@ class GeneralFitSetup:
     dm_params: List[str]
     spin_params: List[str]
     binary_params: List[str]
+    astrometry_params: List[str]
     roemer_shapiro_sec: Optional[np.ndarray]
     initial_binary_delay: Optional[np.ndarray]  # For binary fitting iteration
+    ssb_obs_pos_ls: Optional[np.ndarray]
 
 
 # =============================================================================
@@ -1105,6 +1113,13 @@ def _build_general_fit_setup_from_files(
     params = parse_par_file(par_file)
     toas_data = parse_tim_file_mjds(tim_file)
     
+    # Convert RAJ/DECJ from strings to radians (needed for fitting)
+    from jug.io.par_reader import parse_ra, parse_dec
+    if 'RAJ' in params and isinstance(params['RAJ'], str):
+        params['RAJ'] = parse_ra(params['RAJ'])
+    if 'DECJ' in params and isinstance(params['DECJ'], str):
+        params['DECJ'] = parse_dec(params['DECJ'])
+    
     # Extract TOA data
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
     freq_mhz = np.array([toa.freq_mhz for toa in toas_data])
@@ -1131,6 +1146,7 @@ def _build_general_fit_setup_from_files(
     spin_params = get_spin_params_from_list(fit_params)
     dm_params = get_dm_params_from_list(fit_params)
     binary_params = get_binary_params_from_list(fit_params)
+    astrometry_params = get_astrometry_params_from_list(fit_params)
     
     # Cache expensive delays (subtract_tzr=False for fitting)
     if verbose:
@@ -1170,6 +1186,16 @@ def _build_general_fit_setup_from_files(
         from jug.fitting.derivatives_binary import compute_ell1_binary_delay
         initial_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params))
 
+    # If fitting astrometry params, extract ssb_obs_pos_ls
+    ssb_obs_pos_ls = None
+    if astrometry_params:
+        ssb_obs_pos_ls = result.get('ssb_obs_pos_ls')
+        if ssb_obs_pos_ls is None:
+            raise ValueError(
+                "Astrometry fitting requires ssb_obs_pos_ls in compute_residuals_simple output. "
+                "Please update compute_residuals_simple to return 'ssb_obs_pos_ls'."
+            )
+
     return GeneralFitSetup(
         params=params,
         fit_param_list=fit_params,
@@ -1185,8 +1211,10 @@ def _build_general_fit_setup_from_files(
         dm_params=dm_params,
         spin_params=spin_params,
         binary_params=binary_params,
+        astrometry_params=astrometry_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
-        initial_binary_delay=initial_binary_delay
+        initial_binary_delay=initial_binary_delay,
+        ssb_obs_pos_ls=ssb_obs_pos_ls
     )
 
 
@@ -1349,6 +1377,22 @@ def _run_general_fit_iterations(
             from jug.fitting.derivatives_binary import compute_binary_derivatives_ell1
             binary_derivs = compute_binary_derivatives_ell1(params, toas_bary_mjd, binary_params_list)
 
+        # Batch astrometry parameters (spec-driven routing via component)
+        astrometry_params_list = get_astrometry_params_from_list(fit_params)
+        astrometry_derivs = {}
+        if astrometry_params_list:
+            # Astrometry derivatives require SSB to observatory position
+            if setup.ssb_obs_pos_ls is None:
+                raise ValueError(
+                    "Astrometry fitting requires ssb_obs_pos_ls in setup. "
+                    "Ensure compute_residuals_simple returns 'ssb_obs_pos_ls'."
+                )
+            
+            from jug.fitting.derivatives_astrometry import compute_astrometry_derivatives
+            astrometry_derivs = compute_astrometry_derivatives(
+                params, toas_mjd, setup.ssb_obs_pos_ls, astrometry_params_list
+            )
+
         # Assemble columns in original fit_params order (preserves exact behavior)
         for param in fit_params:
             if is_spin_param(param):
@@ -1357,6 +1401,8 @@ def _run_general_fit_iterations(
                 M_columns.append(dm_derivs[param])
             elif is_binary_param(param):
                 M_columns.append(binary_derivs[param])
+            elif is_astrometry_param(param):
+                M_columns.append(astrometry_derivs[param])
             else:
                 raise ValueError(f"Unknown parameter type: {param}")
         
@@ -1625,12 +1671,24 @@ def _build_general_fit_setup_from_cache(
                 raise ValueError(f"Parameter {param} not found and no default available")
             params_dict[param] = default_value
 
-        param_values_start.append(params_dict[param])
+        # Convert to float, handling special cases for RAJ/DECJ
+        value = params_dict[param]
+        if param == 'RAJ' and isinstance(value, str):
+            from jug.io.par_reader import parse_ra
+            value = parse_ra(value)
+        elif param == 'DECJ' and isinstance(value, str):
+            from jug.io.par_reader import parse_dec
+            value = parse_dec(value)
+        else:
+            value = float(value)
+        
+        param_values_start.append(value)
 
     # Classify parameters (spec-driven)
     spin_params = get_spin_params_from_list(fit_params)
     dm_params = get_dm_params_from_list(fit_params)
     binary_params = get_binary_params_from_list(fit_params)
+    astrometry_params = get_astrometry_params_from_list(fit_params)
     
     # If fitting DM params, cache initial DM delay (same as file path)
     initial_dm_delay = None
@@ -1658,6 +1716,18 @@ def _build_general_fit_setup_from_cache(
         from jug.fitting.derivatives_binary import compute_ell1_binary_delay
         initial_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params_dict))
 
+    # If fitting astrometry params, extract ssb_obs_pos_ls
+    ssb_obs_pos_ls = None
+    if astrometry_params:
+        ssb_obs_pos_ls = session_cached_data.get('ssb_obs_pos_ls')
+        if ssb_obs_pos_ls is None:
+            raise ValueError(
+                "Astrometry fitting requires ssb_obs_pos_ls in setup. "
+                "Ensure compute_residuals_simple returns 'ssb_obs_pos_ls'."
+            )
+        if toa_mask is not None:
+            ssb_obs_pos_ls = ssb_obs_pos_ls[toa_mask]
+
     return GeneralFitSetup(
         params=dict(params_dict),  # Copy
         fit_param_list=fit_params,
@@ -1673,8 +1743,10 @@ def _build_general_fit_setup_from_cache(
         dm_params=dm_params,
         spin_params=spin_params,
         binary_params=binary_params,
+        astrometry_params=astrometry_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
-        initial_binary_delay=initial_binary_delay
+        initial_binary_delay=initial_binary_delay,
+        ssb_obs_pos_ls=ssb_obs_pos_ls
     )
 
 
@@ -1747,20 +1819,6 @@ def _fit_parameters_general(
     """
     
     total_start = time.time()
-    
-    # Check for unsupported parameters
-    astrometry_params = [p for p in fit_params if p in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']]
-    
-    not_implemented = []
-    if astrometry_params:
-        not_implemented.append(f"Astrometry: {astrometry_params}")
-    
-    if not_implemented:
-        raise NotImplementedError(
-            f"The following parameter types are not yet implemented:\n" +
-            "\n".join(f"  - {item}" for item in not_implemented) +
-            f"\n\nCurrently supported: Spin (F0, F1, F2, ...), DM (DM, DM1, DM2, ...), and Binary (PB, A1, TASC, EPS1, EPS2, ...)"
-        )
     
     # STEP 1: Build setup from files (expensive)
     cache_start = time.time()

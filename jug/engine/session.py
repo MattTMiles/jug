@@ -500,7 +500,8 @@ class TimingSession:
                 'freq_bary_mhz': cached_result['freq_bary_mhz'],
                 'toas_mjd': toas_mjd,
                 'errors_us': errors_us,
-                'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec')
+                'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
+                'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls')
             }
             
             # Build setup from cache (with optional TOA mask)
@@ -538,7 +539,14 @@ class TimingSession:
         # Update session params with fitted values (CRITICAL for iterative fitting!)
         # Without this, subsequent fits would use old params and diverge.
         if result.get('success', True) and 'final_params' in result:
-            self.params.update(result['final_params'])
+            from jug.io.par_reader import format_ra, format_dec
+            updated_params = result['final_params'].copy()
+            # Convert RAJ/DECJ from radians back to string format for consistency
+            if 'RAJ' in updated_params:
+                updated_params['RAJ'] = format_ra(updated_params['RAJ'])
+            if 'DECJ' in updated_params:
+                updated_params['DECJ'] = format_dec(updated_params['DECJ'])
+            self.params.update(updated_params)
 
         # Invalidate residuals cache since parameters changed
         self._cached_result_by_mode.clear()

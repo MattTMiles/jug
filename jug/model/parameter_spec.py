@@ -695,3 +695,20 @@ def get_binary_params_from_list(params: List[str]) -> List[str]:
         Only the binary parameters (ELL1: PB, A1, TASC, EPS1, EPS2, PBDOT, SINI, M2, etc.)
     """
     return [p for p in params if is_binary_param(p)]
+
+
+def get_astrometry_params_from_list(params: List[str]) -> List[str]:
+    """
+    Filter a list to only astrometry parameters.
+
+    Parameters
+    ----------
+    params : list of str
+        Parameter names to filter
+
+    Returns
+    -------
+    list of str
+        Only the astrometry parameters (RAJ, DECJ, PMRA, PMDEC, PX)
+    """
+    return [p for p in params if is_astrometry_param(p)]

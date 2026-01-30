@@ -14,7 +14,7 @@ For fitting, PINT divides these by F0 to get ∂(phase)/∂(param).
 Reference: PINT src/pint/models/astrometry.py
 """
 
-import numpy as np
+import jax.numpy as jnp
 from typing import Dict, List, Optional
 import math
 
@@ -28,12 +28,12 @@ HOURANGLE_PER_RAD = 12.0 / math.pi  # ~3.819 hourangle/rad
 DEG_PER_RAD = 180.0 / math.pi
 
 
-def compute_earth_position_angles(ssb_obs_pos: np.ndarray) -> Dict[str, np.ndarray]:
+def compute_earth_position_angles(ssb_obs_pos: jnp.ndarray) -> Dict[str, jnp.ndarray]:
     """Compute Earth position angles from SSB-to-observatory position vectors.
     
     Parameters
     ----------
-    ssb_obs_pos : np.ndarray
+    ssb_obs_pos : jnp.ndarray
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
         
     Returns
@@ -50,11 +50,11 @@ def compute_earth_position_angles(ssb_obs_pos: np.ndarray) -> Dict[str, np.ndarr
     y = ssb_obs_pos[:, 1]
     z = ssb_obs_pos[:, 2]
     
-    r = np.sqrt(x**2 + y**2 + z**2)
-    xy = np.sqrt(x**2 + y**2)
+    r = jnp.sqrt(x**2 + y**2 + z**2)
+    xy = jnp.sqrt(x**2 + y**2)
     
-    earth_ra = np.arctan2(y, x)
-    earth_dec = np.arctan2(z, xy)
+    earth_ra = jnp.arctan2(y, x)
+    earth_dec = jnp.arctan2(z, xy)
     
     return {
         'ssb_obs_r': r,
@@ -69,8 +69,8 @@ def compute_earth_position_angles(ssb_obs_pos: np.ndarray) -> Dict[str, np.ndarr
 def d_delay_d_RAJ(
     psr_ra: float,
     psr_dec: float,
-    ssb_obs_pos: np.ndarray,
-) -> np.ndarray:
+    ssb_obs_pos: jnp.ndarray,
+) -> jnp.ndarray:
     """Compute derivative of delay with respect to RAJ.
     
     The astrometric delay is:
@@ -85,12 +85,12 @@ def d_delay_d_RAJ(
         Pulsar right ascension in radians
     psr_dec : float
         Pulsar declination in radians
-    ssb_obs_pos : np.ndarray
+    ssb_obs_pos : jnp.ndarray
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
         
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         ∂(delay)/∂(RAJ) in units of seconds/radian
         Shape (n_toas,)
         
@@ -102,7 +102,7 @@ def d_delay_d_RAJ(
     rd = compute_earth_position_angles(ssb_obs_pos)
     
     # Geometric factor: cos(dec_e) * cos(dec_p) * sin(ra_p - ra_e)
-    geom = np.cos(rd['earth_dec']) * np.cos(psr_dec) * np.sin(psr_ra - rd['earth_ra'])
+    geom = jnp.cos(rd['earth_dec']) * jnp.cos(psr_dec) * jnp.sin(psr_ra - rd['earth_ra'])
     
     # ∂τ/∂RA = r * geom / c
     # ssb_obs_r is in light-seconds, so r/c = ssb_obs_r (in seconds)
@@ -114,8 +114,8 @@ def d_delay_d_RAJ(
 def d_delay_d_DECJ(
     psr_ra: float,
     psr_dec: float,
-    ssb_obs_pos: np.ndarray,
-) -> np.ndarray:
+    ssb_obs_pos: jnp.ndarray,
+) -> jnp.ndarray:
     """Compute derivative of delay with respect to DECJ.
     
     The derivative w.r.t. DEC (in radians) is:
@@ -127,20 +127,20 @@ def d_delay_d_DECJ(
         Pulsar right ascension in radians
     psr_dec : float
         Pulsar declination in radians
-    ssb_obs_pos : np.ndarray
+    ssb_obs_pos : jnp.ndarray
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
         
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         ∂(delay)/∂(DECJ) in units of seconds/radian
         Shape (n_toas,)
     """
     rd = compute_earth_position_angles(ssb_obs_pos)
     
     # Geometric factor
-    geom = (np.cos(rd['earth_dec']) * np.sin(psr_dec) * np.cos(psr_ra - rd['earth_ra'])
-            - np.sin(rd['earth_dec']) * np.cos(psr_dec))
+    geom = (jnp.cos(rd['earth_dec']) * jnp.sin(psr_dec) * jnp.cos(psr_ra - rd['earth_ra'])
+            - jnp.sin(rd['earth_dec']) * jnp.cos(psr_dec))
     
     dd_ddecj = rd['ssb_obs_r'] * geom  # seconds/radian
     
@@ -150,10 +150,10 @@ def d_delay_d_DECJ(
 def d_delay_d_PMRA(
     psr_ra: float,
     psr_dec: float,
-    ssb_obs_pos: np.ndarray,
-    toas_mjd: np.ndarray,
+    ssb_obs_pos: jnp.ndarray,
+    toas_mjd: jnp.ndarray,
     posepoch_mjd: float,
-) -> np.ndarray:
+) -> jnp.ndarray:
     """Compute derivative of delay with respect to PMRA (proper motion in RA).
     
     Proper motion in RA causes the pulsar position to change linearly with time:
@@ -168,16 +168,16 @@ def d_delay_d_PMRA(
         Pulsar right ascension in radians
     psr_dec : float
         Pulsar declination in radians (needed for RA derivative)
-    ssb_obs_pos : np.ndarray
+    ssb_obs_pos : jnp.ndarray
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
-    toas_mjd : np.ndarray
+    toas_mjd : jnp.ndarray
         TOA times in MJD (TDB), shape (n_toas,)
     posepoch_mjd : float
         Position epoch in MJD (TDB)
         
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         ∂(delay)/∂(PMRA) in units of seconds/(rad/year)
         Shape (n_toas,)
         
@@ -195,7 +195,7 @@ def d_delay_d_PMRA(
     
     # PMRA geometric factor: cos(earth_dec) * sin(psr_ra - earth_ra)
     # Note: NO cos(psr_dec) because PMRA = dRA/dt * cos(dec)
-    geom = np.cos(rd['earth_dec']) * np.sin(psr_ra - rd['earth_ra'])
+    geom = jnp.cos(rd['earth_dec']) * jnp.sin(psr_ra - rd['earth_ra'])
     
     # ∂τ/∂PMRA = dt * r * geom / c
     dd_dpmra = dt_years * rd['ssb_obs_r'] * geom  # seconds/(rad/year)
@@ -206,10 +206,10 @@ def d_delay_d_PMRA(
 def d_delay_d_PMDEC(
     psr_ra: float,
     psr_dec: float,
-    ssb_obs_pos: np.ndarray,
-    toas_mjd: np.ndarray,
+    ssb_obs_pos: jnp.ndarray,
+    toas_mjd: jnp.ndarray,
     posepoch_mjd: float,
-) -> np.ndarray:
+) -> jnp.ndarray:
     """Compute derivative of delay with respect to PMDEC (proper motion in DEC).
     
     Parameters
@@ -218,16 +218,16 @@ def d_delay_d_PMDEC(
         Pulsar right ascension in radians
     psr_dec : float
         Pulsar declination in radians
-    ssb_obs_pos : np.ndarray
+    ssb_obs_pos : jnp.ndarray
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
-    toas_mjd : np.ndarray
+    toas_mjd : jnp.ndarray
         TOA times in MJD (TDB), shape (n_toas,)
     posepoch_mjd : float
         Position epoch in MJD (TDB)
         
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         ∂(delay)/∂(PMDEC) in units of seconds/(rad/year)
         Shape (n_toas,)
     """
@@ -238,8 +238,8 @@ def d_delay_d_PMDEC(
     dt_years = dt_days / 365.25
     
     # DEC geometric factor (same as d_delay_d_DECJ)
-    geom = (np.cos(rd['earth_dec']) * np.sin(psr_dec) * np.cos(psr_ra - rd['earth_ra'])
-            - np.sin(rd['earth_dec']) * np.cos(psr_dec))
+    geom = (jnp.cos(rd['earth_dec']) * jnp.sin(psr_dec) * jnp.cos(psr_ra - rd['earth_ra'])
+            - jnp.sin(rd['earth_dec']) * jnp.cos(psr_dec))
     
     # ∂τ/∂PMDEC = dt * r * geom / c
     dd_dpmdec = dt_years * rd['ssb_obs_r'] * geom  # seconds/(rad/year)
@@ -250,7 +250,7 @@ def d_delay_d_PMDEC(
 def compute_pulsar_unit_vector(
     psr_ra: float,
     psr_dec: float,
-    toas_mjd: np.ndarray = None,
+    toas_mjd: jnp.ndarray = None,
     posepoch_mjd: float = None,
     pmra_rad_yr: float = 0.0,
     pmdec_rad_yr: float = 0.0,
@@ -263,7 +263,7 @@ def compute_pulsar_unit_vector(
         Pulsar right ascension at POSEPOCH in radians
     psr_dec : float
         Pulsar declination at POSEPOCH in radians
-    toas_mjd : np.ndarray, optional
+    toas_mjd : jnp.ndarray, optional
         TOA times in MJD for proper motion correction
     posepoch_mjd : float, optional
         Position epoch in MJD
@@ -274,7 +274,7 @@ def compute_pulsar_unit_vector(
         
     Returns
     -------
-    n_x, n_y, n_z : np.ndarray or float
+    n_x, n_y, n_z : jnp.ndarray or float
         Components of unit vector pointing to pulsar
     """
     if toas_mjd is not None and posepoch_mjd is not None and (pmra_rad_yr != 0 or pmdec_rad_yr != 0):
@@ -283,25 +283,25 @@ def compute_pulsar_unit_vector(
         
         # Update RA and DEC for proper motion
         # Note: PMRA is μ_α* = dα/dt × cos(δ), so we divide by cos(dec) to get dα/dt
-        cos_dec = np.cos(psr_dec)
+        cos_dec = jnp.cos(psr_dec)
         ra_corrected = psr_ra + (pmra_rad_yr / cos_dec) * dt_years
         dec_corrected = psr_dec + pmdec_rad_yr * dt_years
         
         # Compute time-varying unit vector
-        cos_dec_t = np.cos(dec_corrected)
-        sin_dec_t = np.sin(dec_corrected)
-        cos_ra_t = np.cos(ra_corrected)
-        sin_ra_t = np.sin(ra_corrected)
+        cos_dec_t = jnp.cos(dec_corrected)
+        sin_dec_t = jnp.sin(dec_corrected)
+        cos_ra_t = jnp.cos(ra_corrected)
+        sin_ra_t = jnp.sin(ra_corrected)
         
         n_x = cos_dec_t * cos_ra_t
         n_y = cos_dec_t * sin_ra_t
         n_z = sin_dec_t
     else:
         # Fixed position (no proper motion correction)
-        cos_dec = np.cos(psr_dec)
-        sin_dec = np.sin(psr_dec)
-        cos_ra = np.cos(psr_ra)
-        sin_ra = np.sin(psr_ra)
+        cos_dec = jnp.cos(psr_dec)
+        sin_dec = jnp.sin(psr_dec)
+        cos_ra = jnp.cos(psr_ra)
+        sin_ra = jnp.sin(psr_ra)
         
         n_x = cos_dec * cos_ra
         n_y = cos_dec * sin_ra
@@ -313,12 +313,12 @@ def compute_pulsar_unit_vector(
 def d_delay_d_PX(
     psr_ra: float,
     psr_dec: float,
-    ssb_obs_pos: np.ndarray,
-    toas_mjd: np.ndarray = None,
+    ssb_obs_pos: jnp.ndarray,
+    toas_mjd: jnp.ndarray = None,
     posepoch_mjd: float = None,
     pmra_rad_yr: float = 0.0,
     pmdec_rad_yr: float = 0.0,
-) -> np.ndarray:
+) -> jnp.ndarray:
     """Compute derivative of delay with respect to PX (parallax).
     
     The parallax delay is approximately:
@@ -336,9 +336,9 @@ def d_delay_d_PX(
         Pulsar right ascension at POSEPOCH in radians
     psr_dec : float
         Pulsar declination at POSEPOCH in radians
-    ssb_obs_pos : np.ndarray
+    ssb_obs_pos : jnp.ndarray
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
-    toas_mjd : np.ndarray, optional
+    toas_mjd : jnp.ndarray, optional
         TOA times in MJD for proper motion correction
     posepoch_mjd : float, optional
         Position epoch in MJD
@@ -349,7 +349,7 @@ def d_delay_d_PX(
         
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         ∂(delay)/∂(PX) in units of seconds/radian
         Shape (n_toas,)
         
@@ -383,10 +383,10 @@ def d_delay_d_PX(
 
 def compute_astrometry_derivatives(
     params: Dict,
-    toas_mjd: np.ndarray,
-    ssb_obs_pos: np.ndarray,
+    toas_mjd: jnp.ndarray,
+    ssb_obs_pos: jnp.ndarray,
     fit_params: List[str],
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, jnp.ndarray]:
     """Compute astrometry parameter derivatives for the design matrix.
     
     The design matrix contains d(delay)/d(param) in par-file units.
@@ -399,32 +399,52 @@ def compute_astrometry_derivatives(
         - RAJ, DECJ (radians) - required
         - POSEPOCH (MJD) - optional, defaults to mean TOA time
         - PMRA, PMDEC (rad/yr) - optional, for proper motion correction in PX
-    toas_mjd : np.ndarray
+    toas_mjd : jnp.ndarray
         TOA times in MJD (TDB), shape (n_toas,)
-    ssb_obs_pos : np.ndarray
+    ssb_obs_pos : jnp.ndarray
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
     fit_params : List[str]
         List of parameters to compute derivatives for
         
     Returns
     -------
-    derivatives : Dict[str, np.ndarray]
+    derivatives : Dict[str, jnp.ndarray]
         Dictionary mapping parameter names to derivative arrays.
         Each array has shape (n_toas,).
         Units: d(delay)/d(param) in seconds per par-file unit
         - RAJ: seconds/hourangle
         - DECJ: seconds/degree
-        - PMRA/PMDEC: seconds/(mas/year) = year/mas * seconds
-        - PX: seconds/mas
+        - PMRA/PMDEC: seconds/(mas/year)
+        - PX: seconds/arcsec (NOTE: PX stored in mas in par files, but derivative uses arcsec)
     """
+    from jug.io.par_reader import parse_ra, parse_dec
+    
+    # Ensure inputs are JAX arrays (force float64 for JAX compatibility)
+    ssb_obs_pos = jnp.asarray(ssb_obs_pos, dtype=jnp.float64)
+    toas_mjd = jnp.asarray(toas_mjd, dtype=jnp.float64)
+    
     # Extract pulsar position (in radians)
-    psr_ra = params['RAJ']  # radians
-    psr_dec = params['DECJ']  # radians
-    posepoch = params.get('POSEPOCH', toas_mjd.mean())
+    # RAJ/DECJ might be strings in HH:MM:SS format, need to parse
+    raj_value = params['RAJ']
+    if isinstance(raj_value, str):
+        psr_ra = parse_ra(raj_value)
+    else:
+        psr_ra = float(raj_value)
+    
+    decj_value = params['DECJ']
+    if isinstance(decj_value, str):
+        psr_dec = parse_dec(decj_value)
+    else:
+        psr_dec = float(decj_value)
+    
+    posepoch = float(params.get('POSEPOCH', float(toas_mjd.mean())))
     
     # Get proper motion for PX correction (convert from mas/yr to rad/yr if present)
-    pmra_rad_yr = params.get('PMRA', 0.0)  # Should be in rad/yr internally
-    pmdec_rad_yr = params.get('PMDEC', 0.0)  # Should be in rad/yr internally
+    # PMRA/PMDEC are in mas/yr in par files
+    pmra_mas_yr = params.get('PMRA', 0.0)
+    pmdec_mas_yr = params.get('PMDEC', 0.0)
+    pmra_rad_yr = float(pmra_mas_yr) * (jnp.pi / 180 / 3600000) if pmra_mas_yr else 0.0
+    pmdec_rad_yr = float(pmdec_mas_yr) * (jnp.pi / 180 / 3600000) if pmdec_mas_yr else 0.0
     
     derivatives = {}
     
@@ -471,8 +491,10 @@ def compute_astrometry_derivatives(
                 pmra_rad_yr=pmra_rad_yr,
                 pmdec_rad_yr=pmdec_rad_yr,
             )
-            # Convert to seconds/mas
-            deriv_mas = deriv_rad / MAS_PER_RAD  # seconds/mas
-            derivatives[param] = deriv_mas
+            # Convert to seconds/arcsec (PINT convention)
+            # Note: PX is stored in mas in par files, but derivatives are in arcsec
+            ARCSEC_PER_RAD = MAS_PER_RAD / 1000.0
+            deriv_arcsec = deriv_rad / ARCSEC_PER_RAD  # seconds/arcsec
+            derivatives[param] = deriv_arcsec
     
     return derivatives

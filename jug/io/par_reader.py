@@ -162,3 +162,52 @@ def parse_dec(dec_str: str) -> float:
     d, m, s = abs(float(parts[0])), float(parts[1]), float(parts[2])
     dec_deg = sign * (d + m/60.0 + s/3600.0)
     return dec_deg * np.pi / 180.0
+
+
+def format_ra(ra_rad: float) -> str:
+    """Format RA in radians to HMS string.
+
+    Parameters
+    ----------
+    ra_rad : float
+        Right ascension in radians
+
+    Returns
+    -------
+    str
+        RA in format "HH:MM:SS.sssssss"
+    """
+    ra_deg = ra_rad * 180.0 / np.pi
+    ra_hours = ra_deg / 15.0
+    
+    h = int(ra_hours)
+    m_frac = (ra_hours - h) * 60.0
+    m = int(m_frac)
+    s = (m_frac - m) * 60.0
+    
+    return f"{h:02d}:{m:02d}:{s:011.8f}"
+
+
+def format_dec(dec_rad: float) -> str:
+    """Format DEC in radians to DMS string.
+
+    Parameters
+    ----------
+    dec_rad : float
+        Declination in radians
+
+    Returns
+    -------
+    str
+        DEC in format "DD:MM:SS.ssssss"
+    """
+    dec_deg = dec_rad * 180.0 / np.pi
+    sign = '-' if dec_deg < 0 else ''
+    dec_deg = abs(dec_deg)
+    
+    d = int(dec_deg)
+    m_frac = (dec_deg - d) * 60.0
+    m = int(m_frac)
+    s = (m_frac - m) * 60.0
+    
+    return f"{sign}{d:02d}:{m:02d}:{s:010.7f}"

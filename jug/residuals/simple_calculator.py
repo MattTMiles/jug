@@ -672,6 +672,10 @@ def compute_residuals_simple(
     if verbose: print(f"  N_TOAs: {len(residuals_us)}")
     if verbose: print("=" * 60)
 
+    # Convert ssb_obs_pos from km to light-seconds for astrometry derivatives
+    SPEED_OF_LIGHT_KM_S = 299792.458
+    ssb_obs_pos_ls = ssb_obs_pos_km / SPEED_OF_LIGHT_KM_S
+    
     return {
         'residuals_us': residuals_us,
         'rms_us': float(weighted_rms),  # Use weighted RMS as primary
@@ -689,4 +693,6 @@ def compute_residuals_simple(
         'dt_sec': np.array(dt_sec, dtype=np.float64),
         # Roemer+Shapiro delay for computing barycentric times (needed for binary fitting)
         'roemer_shapiro_sec': np.array(roemer_shapiro, dtype=np.float64),
+        # SSB to observatory position in light-seconds (needed for astrometry derivatives)
+        'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),
     }

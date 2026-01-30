@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QFileDialog, QLabel, QPushButton, QStatusBar,
     QCheckBox, QGroupBox, QMessageBox, QProgressDialog,
-    QFrame, QScrollArea, QSizePolicy, QApplication, QMenu
+    QFrame, QScrollArea, QSizePolicy, QApplication, QMenu,
+    QDialog, QTextBrowser
 )
 from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer
 from PySide6.QtGui import QFont, QCursor
@@ -961,14 +962,50 @@ class MainWindow(QMainWindow):
         converged_text = "Yes" if result['converged'] else "No"
 
         # Build parameter rows
+        from jug.io.par_reader import parse_ra, parse_dec, format_ra, format_dec
+        
         param_rows = ""
-        for param, new_value in result['final_params'].items():
+        # Use available_params order (which is par file order) if available
+        param_order = getattr(self, 'available_params', list(result['final_params'].keys()))
+        # Only show params that were actually fit
+        ordered_params = [p for p in param_order if p in result['final_params']]
+        # Add any params not in our order list (shouldn't happen, but be safe)
+        for p in result['final_params'].keys():
+            if p not in ordered_params:
+                ordered_params.append(p)
+        
+        for param in ordered_params:
+            new_value = result['final_params'][param]
             uncertainty = result['uncertainties'][param]
             prev_value = self.initial_params.get(param, 0.0)
-            change = new_value - prev_value
-
-            # Format based on parameter type
-            if param.startswith('F'):
+            
+            # Handle RAJ/DECJ specially - they're strings in par file but radians in fit result
+            if param == 'RAJ':
+                # Convert string to radians for comparison
+                if isinstance(prev_value, str):
+                    prev_value_rad = parse_ra(prev_value)
+                else:
+                    prev_value_rad = prev_value
+                change = new_value - prev_value_rad
+                # Format as HMS string for display
+                new_val_str = format_ra(new_value)
+                prev_val_str = format_ra(prev_value_rad) if isinstance(prev_value, str) else prev_value
+                change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"  # Change in arcsec
+                unit = "Δ arcsec"
+            elif param == 'DECJ':
+                # Convert string to radians for comparison
+                if isinstance(prev_value, str):
+                    prev_value_rad = parse_dec(prev_value)
+                else:
+                    prev_value_rad = prev_value
+                change = new_value - prev_value_rad
+                # Format as DMS string for display
+                new_val_str = format_dec(new_value)
+                prev_val_str = format_dec(prev_value_rad) if isinstance(prev_value, str) else prev_value
+                change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"  # Change in arcsec
+                unit = "Δ arcsec"
+            elif param.startswith('F'):
+                change = new_value - prev_value
                 if param == 'F0':
                     new_val_str = f"{new_value:.15f}"
                     prev_val_str = f"{prev_value:.15f}"
@@ -980,11 +1017,73 @@ class MainWindow(QMainWindow):
                     change_str = f"{change:+.6e}"
                     unit = "Hz/s"
             elif param.startswith('DM'):
+                change = new_value - prev_value
                 new_val_str = f"{new_value:.10f}"
                 prev_val_str = f"{prev_value:.10f}"
                 change_str = f"{change:+.10f}"
                 unit = "pc/cm³"
+            elif param in ['PMRA', 'PMDEC']:
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.6f}"
+                prev_val_str = f"{prev_value:.6f}"
+                change_str = f"{change:+.6f}"
+                unit = "mas/yr"
+            elif param == 'PX':
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.6f}"
+                prev_val_str = f"{prev_value:.6f}"
+                change_str = f"{change:+.6f}"
+                unit = "mas"
+            elif param == 'PB':
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.15f}"
+                prev_val_str = f"{prev_value:.15f}"
+                change_str = f"{change:+.6e}"
+                unit = "days"
+            elif param == 'PBDOT':
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.6e}"
+                prev_val_str = f"{prev_value:.6e}"
+                change_str = f"{change:+.6e}"
+                unit = "s/s"
+            elif param == 'A1':
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.12f}"
+                prev_val_str = f"{prev_value:.12f}"
+                change_str = f"{change:+.6e}"
+                unit = "lt-s"
+            elif param in ['T0', 'TASC']:
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.12f}"
+                prev_val_str = f"{prev_value:.12f}"
+                change_str = f"{change:+.6e}"
+                unit = "MJD"
+            elif param in ['ECC', 'EPS1', 'EPS2']:
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.12e}"
+                prev_val_str = f"{prev_value:.12e}"
+                change_str = f"{change:+.6e}"
+                unit = ""
+            elif param == 'OM':
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.10f}"
+                prev_val_str = f"{prev_value:.10f}"
+                change_str = f"{change:+.6e}"
+                unit = "deg"
+            elif param == 'M2':
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.12f}"
+                prev_val_str = f"{prev_value:.12f}"
+                change_str = f"{change:+.6e}"
+                unit = "M☉"
+            elif param == 'SINI':
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.12f}"
+                prev_val_str = f"{prev_value:.12f}"
+                change_str = f"{change:+.6e}"
+                unit = ""
             else:
+                change = new_value - prev_value
                 new_val_str = f"{new_value:.6e}"
                 prev_val_str = f"{prev_value:.6e}"
                 change_str = f"{change:+.6e}"
@@ -1046,19 +1145,43 @@ class MainWindow(QMainWindow):
         </table>
         """
 
-        msgbox = QMessageBox(self)
-        msgbox.setWindowTitle(title)
-        msgbox.setTextFormat(Qt.RichText)
-        msgbox.setText(msg)
-
-        # Set dialog size
-        screen = QApplication.primaryScreen().geometry()
-        dialog_height = int(screen.height() * 0.6)
-        dialog_width = 950
-
-        msgbox.show()
-        msgbox.setFixedSize(dialog_width, dialog_height)
-        msgbox.exec()
+        # Create a proper QDialog with scrollable content
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        
+        # Set dialog size - slightly smaller than the main window
+        main_window_height = self.height()
+        main_window_width = self.width()
+        dialog_height = min(int(main_window_height * 0.85), 650)
+        dialog_width = min(int(main_window_width * 0.75), 900)
+        dialog.setFixedSize(dialog_width, dialog_height)
+        
+        # Create layout
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create scrollable text browser for the HTML content
+        text_browser = QTextBrowser()
+        text_browser.setOpenExternalLinks(False)
+        text_browser.setHtml(msg)
+        text_browser.setStyleSheet(f"background-color: {Colors.BG_PRIMARY}; border: none;")
+        
+        layout.addWidget(text_browser)
+        
+        # Add close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        close_btn.setStyleSheet(get_primary_button_style())
+        close_btn.setFixedWidth(100)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        btn_layout.addStretch()
+        btn_layout.setContentsMargins(10, 10, 10, 10)
+        layout.addLayout(btn_layout)
+        
+        dialog.exec()
 
     def on_restart_clicked(self):
         """Handle Restart button click - restore original data including deleted TOAs."""
@@ -1440,22 +1563,12 @@ class MainWindow(QMainWindow):
         # Load initial parameter values from par file
         self._load_initial_parameter_values()
 
-        # Add command-line fit parameters
-        all_params = list(set(params_in_file + self.cmdline_fit_params))
-
-        # Sort parameters by type and order
-        def param_sort_key(p):
-            # Sort order: F params, DM params, astrometry, binary
-            if p.startswith('F'):
-                return (0, int(p[1:]) if p[1:].isdigit() else 99)
-            elif p.startswith('DM'):
-                return (1, int(p[2:]) if len(p) > 2 and p[2:].isdigit() else 0)
-            elif p in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']:
-                return (2, ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX'].index(p))
-            else:
-                return (3, 0)
-
-        all_params.sort(key=param_sort_key)
+        # Add command-line fit parameters (append any not already in par file)
+        # Preserve par file order, then append any extra cmdline params at the end
+        all_params = list(params_in_file)
+        for p in self.cmdline_fit_params:
+            if p not in all_params:
+                all_params.append(p)
 
         # Clear existing checkboxes and layout
         for checkbox in self.param_checkboxes.values():

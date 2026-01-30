@@ -104,7 +104,93 @@ class TimingSession:
         if self.verbose:
             print(f"  Loaded {len(self.toas_data)} TOAs")
             print(f"  Session ready")
-    
+
+    def _compute_residuals_with_params(
+        self,
+        params: Dict[str, Any],
+        subtract_tzr: bool
+    ) -> Dict[str, Any]:
+        """
+        Compute residuals using specified parameters (creates temp par file).
+
+        This is an internal helper for computing residuals with arbitrary params.
+        Used when self.params differs from the original par file.
+        """
+        import tempfile
+
+        def format_param_value(param_name: str, value: Any) -> str:
+            """Format parameter value for par file."""
+            # String values (like BINARY, EPHEM, etc.) - keep as-is
+            if isinstance(value, str):
+                return f"{param_name:<12} {value}"
+            # Numeric values - format appropriately
+            if param_name == 'F0':
+                return f"{param_name:<12} {value:.15f}"
+            elif param_name.startswith('F') and param_name[1:].isdigit():
+                return f"{param_name:<12} {value:.15e}"
+            elif param_name.startswith('DM'):
+                return f"{param_name:<12} {value:.15f}"
+            elif isinstance(value, float):
+                return f"{param_name:<12} {value:.15e}"
+            else:
+                return f"{param_name:<12} {value}"
+
+        # Build temp par file with updated params
+        with open(self.par_file, 'r') as f:
+            original_lines = f.readlines()
+
+        updated_lines = []
+        updated_params = set()
+
+        for line in original_lines:
+            line_stripped = line.strip()
+            if line_stripped.startswith('#') or not line_stripped:
+                updated_lines.append(line)
+                continue
+
+            parts = line_stripped.split()
+            if parts:
+                param_name = parts[0]
+                if param_name in params:
+                    new_value = params[param_name]
+                    new_line = format_param_value(param_name, new_value)
+
+                    # Preserve flags if present (for numeric params with fit flags)
+                    if len(parts) > 2 and not isinstance(new_value, str):
+                        flags = ' '.join(parts[2:])
+                        new_line += f" {flags}"
+
+                    updated_lines.append(new_line + '\n')
+                    updated_params.add(param_name)
+                else:
+                    updated_lines.append(line)
+            else:
+                updated_lines.append(line)
+
+        # Add any new parameters not in original file
+        for param_name, value in params.items():
+            if param_name not in updated_params:
+                new_line = format_param_value(param_name, value) + '\n'
+                updated_lines.append(new_line)
+
+        # Write to temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.par', delete=False) as tmp:
+            tmp.writelines(updated_lines)
+            tmp_par_path = Path(tmp.name)
+
+        try:
+            result = compute_residuals_simple(
+                par_file=tmp_par_path,
+                tim_file=self.tim_file,
+                clock_dir=self.clock_dir,
+                subtract_tzr=subtract_tzr,
+                verbose=False
+            )
+        finally:
+            tmp_par_path.unlink()
+
+        return result
+
     def compute_residuals(
         self,
         params: Optional[Dict[str, float]] = None,
@@ -272,17 +358,28 @@ class TimingSession:
             
             return result
         
-        # No params override - use original par file
+        # No params override - use current self.params (not original par file!)
+        # This is CRITICAL: after fitting, self.params has fitted values.
+        # If we use the original par file, the cache would have stale DM delays
+        # causing incorrect gradients in subsequent fits.
         if self.verbose:
             print("  Computing residuals...")
-        
-        result = compute_residuals_simple(
-            par_file=self.par_file,
-            tim_file=self.tim_file,
-            clock_dir=self.clock_dir,
-            subtract_tzr=subtract_tzr,
-            verbose=False
-        )
+
+        # Check if self.params differs from initial - if so, use self.params
+        params_changed = (self.params != self._initial_params)
+
+        if params_changed:
+            # Use current self.params (creates temp file internally)
+            result = self._compute_residuals_with_params(self.params, subtract_tzr)
+        else:
+            # Use original par file (faster, no temp file needed)
+            result = compute_residuals_simple(
+                par_file=self.par_file,
+                tim_file=self.tim_file,
+                clock_dir=self.clock_dir,
+                subtract_tzr=subtract_tzr,
+                verbose=False
+            )
         
         # Cache the result (only for original params), keyed by subtract_tzr
         self._cached_result_by_mode[subtract_tzr] = result
@@ -436,9 +533,14 @@ class TimingSession:
                 verbose=verbose
             )
         
+        # Update session params with fitted values (CRITICAL for iterative fitting!)
+        # Without this, subsequent fits would use old params and diverge.
+        if result.get('success', True) and 'final_params' in result:
+            self.params.update(result['final_params'])
+
         # Invalidate residuals cache since parameters changed
         self._cached_result_by_mode.clear()
-        
+
         return result
     
     def get_initial_params(self) -> Dict[str, float]:

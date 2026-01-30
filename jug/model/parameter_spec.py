@@ -363,6 +363,45 @@ _BINARY_PARAMS = [
         par_unit_str="",
         component_name="BinaryComponent",
     ),
+    # Post-Keplerian / Shapiro parameters
+    ParameterSpec(
+        name="SINI",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="M2",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="Msun",
+        par_unit_str="Msun",
+        component_name="BinaryComponent",
+    ),
+    # Time derivatives
+    ParameterSpec(
+        name="PBDOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="XDOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="lt-s/s",
+        par_unit_str="lt-s/s",
+        aliases=("A1DOT",),
+        component_name="BinaryComponent",
+    ),
 ]
 
 # Build the registry
@@ -639,3 +678,20 @@ def get_dm_params_from_list(params: List[str]) -> List[str]:
         Only the DM parameters
     """
     return [p for p in params if is_dm_param(p)]
+
+
+def get_binary_params_from_list(params: List[str]) -> List[str]:
+    """
+    Filter a list to only binary parameters.
+
+    Parameters
+    ----------
+    params : list of str
+        Parameter names to filter
+
+    Returns
+    -------
+    list of str
+        Only the binary parameters (ELL1: PB, A1, TASC, EPS1, EPS2, PBDOT, SINI, M2, etc.)
+    """
+    return [p for p in params if is_binary_param(p)]

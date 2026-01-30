@@ -17,10 +17,6 @@ import numpy as np
 
 from jug.gui.theme import (
     get_main_stylesheet,
-    get_plot_title_style,
-    get_stats_card_style,
-    get_stat_label_style,
-    get_stat_value_style,
     get_placeholder_style,
     get_added_param_style,
     get_section_title_style,
@@ -36,8 +32,6 @@ from jug.gui.theme import (
     create_zero_line,
     get_scatter_colors,
     Colors,
-    Typography,
-    Spacing,
     LightTheme,
     SynthwaveTheme,
     set_theme,
@@ -45,7 +39,6 @@ from jug.gui.theme import (
     PlotTheme,
     get_synthwave_variant,
     toggle_synthwave_variant,
-    get_synthwave_rms_color,
     get_dynamic_accent_primary,
     get_light_variant,
     toggle_light_variant,
@@ -122,6 +115,10 @@ class MainWindow(QMainWindow):
         # Error bar beam update throttling (for smooth pan/zoom over X11)
         self._beam_update_timer = None
         self._pending_beam = None
+        
+        # Interaction mode tracking (reduces work during continuous pan/zoom)
+        self._interaction_active = False
+        self._interaction_end_timer = None
 
         # Cached boolean mask for deleted TOAs (avoids O(N) Python loop)
         self._keep_mask = None  # Will be initialized when data loads
@@ -153,14 +150,14 @@ class MainWindow(QMainWindow):
 
         # Left side: Plot area with title
         self.plot_container = QWidget()
-        self.plot_container.setStyleSheet(f"background-color: {Colors.BG_PRIMARY};")
+        self.plot_container.setObjectName("plotContainer")
         plot_layout = QVBoxLayout(self.plot_container)
         plot_layout.setContentsMargins(24, 16, 16, 16)
         plot_layout.setSpacing(12)
 
         # Title label above plot (pulsar name and RMS) - card style
         self.plot_title_label = QLabel("")
-        self.plot_title_label.setStyleSheet(get_plot_title_style())
+        self.plot_title_label.setObjectName("plotTitleLabel")
         self.plot_title_label.setAlignment(Qt.AlignCenter)
         plot_layout.addWidget(self.plot_title_label)
 
@@ -171,15 +168,15 @@ class MainWindow(QMainWindow):
         # Connect to view range changes to scale error bar caps
         self.plot_widget.getPlotItem().getViewBox().sigRangeChanged.connect(self._on_view_range_changed)
 
+        # Optimize QGraphicsView for smoother pan/zoom (especially over X11/SSH)
+        # PlotWidget inherits from QGraphicsView, so we can call these directly
+        from PySide6.QtWidgets import QGraphicsView
+        self.plot_widget.setViewportUpdateMode(QGraphicsView.BoundingRectViewportUpdate)
+        self.plot_widget.setCacheMode(QGraphicsView.CacheBackground)
+
         # Add subtle rounded corners effect via container
         self.plot_frame = QFrame()
-        self.plot_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Colors.PLOT_BG};
-                border: 1px solid {get_border_strong()};
-                border-radius: 12px;
-            }}
-        """)
+        self.plot_frame.setObjectName("plotFrame")
         plot_frame_layout = QVBoxLayout(self.plot_frame)
         plot_frame_layout.setContentsMargins(8, 8, 8, 8)
         plot_frame_layout.addWidget(self.plot_widget)
@@ -235,36 +232,12 @@ class MainWindow(QMainWindow):
         solver_layout.setContentsMargins(0, 0, 0, 0)
         solver_layout.setSpacing(8)
         self.solver_label = QLabel("Solver:")
-        self.solver_label.setStyleSheet(f"""
-            font-size: 13px;
-            font-weight: bold;
-            color: {Colors.TEXT_PRIMARY};
-            border: none;
-            margin: 0;
-            padding: 0;
-        """)
+        self.solver_label.setObjectName("solverLabel")
         solver_layout.addWidget(self.solver_label)
 
         # Solver button with dropdown menu
         self.solver_button = QPushButton("  Exact ▾")
-        self.solver_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Colors.BG_SECONDARY};
-                color: {Colors.TEXT_PRIMARY};
-                border: 1px solid {get_border_subtle()};
-                border-radius: 4px;
-                padding: 2px 10px;
-                font-size: 12px;
-                text-align: left;
-            }}
-            QPushButton:hover {{
-                border-color: {get_dynamic_accent_primary()};
-                background-color: {Colors.SURFACE_HOVER};
-            }}
-            QPushButton::menu-indicator {{
-                width: 0px;
-            }}
-        """)
+        self.solver_button.setObjectName("solverButton")
         self.solver_button.setToolTip(
             "Exact: SVD-based, bit-for-bit reproducible\n"
             "Fast: QR-based, faster but may differ slightly"
@@ -272,26 +245,7 @@ class MainWindow(QMainWindow):
 
         # Create dropdown menu
         self.solver_menu = QMenu(self)
-        self.solver_menu.setStyleSheet(f"""
-            QMenu {{
-                background-color: {Colors.SURFACE};
-                color: {Colors.TEXT_PRIMARY};
-                border: 1px solid {get_border_subtle()};
-                border-radius: 4px;
-                padding: 2px;
-            }}
-            QMenu::item {{
-                padding: 5px 12px;
-                border-radius: 3px;
-            }}
-            QMenu::item:hover {{
-                background-color: {Colors.SURFACE_HOVER};
-            }}
-            QMenu::item:selected {{
-                background-color: {get_dynamic_accent_primary()};
-                color: {Colors.BTN_PRIMARY_TEXT};
-            }}
-        """)
+        self.solver_menu.setObjectName("solverMenu")
 
         # Add menu items
         exact_action = self.solver_menu.addAction("Exact (reproducible)")
@@ -335,51 +289,26 @@ class MainWindow(QMainWindow):
         layout.addSpacing(8)
 
         # Statistics card
-        stats_card = QWidget()
-        stats_card.setStyleSheet(f"""
-            QWidget {{
-                background-color: {Colors.SURFACE};
-                border: 1px solid {get_border_subtle()};
-                border-radius: 12px;
-            }}
-            QLabel {{
-                background: transparent;
-                border: none;
-            }}
-        """)
-        stats_card.setMinimumHeight(160)
-        stats_layout = QVBoxLayout(stats_card)
+        self.stats_card = QWidget()
+        self.stats_card.setObjectName("statsCard")
+        self.stats_card.setMinimumHeight(160)
+        stats_layout = QVBoxLayout(self.stats_card)
         stats_layout.setSpacing(8)
         stats_layout.setContentsMargins(16, 16, 16, 16)
 
         self.stats_title = QLabel("Statistics")
-        self.stats_title.setStyleSheet(f"""
-            font-size: 14px;
-            font-weight: 600;
-            color: {Colors.TEXT_PRIMARY};
-            background: transparent;
-            border: none;
-            padding-bottom: 8px;
-        """)
+        self.stats_title.setObjectName("statsTitle")
         stats_layout.addWidget(self.stats_title)
 
         # Create stat rows with label + value (store both for theme updates)
         self.rms_label_text, self.rms_label = self._create_stat_row(stats_layout, "RMS", "--")
-        # Highlight RMS value with teal (emphasis color) - uses theme-aware accent
-        rms_color = get_rms_emphasis_color()
-        self.rms_label.setStyleSheet(f"""
-            font-family: monospace;
-            font-size: 14px;
-            font-weight: 600;
-            color: {rms_color};
-            background: transparent;
-            border: none;
-        """)
+        # Set objectName for RMS value (special emphasis styling)
+        self.rms_label.setObjectName("rmsValue")
         self.iter_label_text, self.iter_label = self._create_stat_row(stats_layout, "Iterations", "--")
         self.ntoa_label_text, self.ntoa_label = self._create_stat_row(stats_layout, "TOAs", "--")
         self.chi2_label_text, self.chi2_label = self._create_stat_row(stats_layout, "χ²/dof", "--")
 
-        layout.addWidget(stats_card)
+        layout.addWidget(self.stats_card)
 
         # Stretch to push everything to top
         layout.addStretch()
@@ -393,12 +322,7 @@ class MainWindow(QMainWindow):
     def _create_params_drawer(self):
         """Create the slide-out parameter drawer."""
         self.params_drawer = QFrame()
-        self.params_drawer.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Colors.SURFACE};
-                border-left: 1px solid {get_border_subtle()};
-            }}
-        """)
+        self.params_drawer.setObjectName("paramsDrawer")
         self.params_drawer.setFixedWidth(200)
         self.params_drawer.setVisible(False)  # Hidden by default
         self.params_drawer_open = False
@@ -482,21 +406,10 @@ class MainWindow(QMainWindow):
         row.setSpacing(8)
 
         label = QLabel(label_text)
-        label.setStyleSheet(f"""
-            font-size: 12px;
-            color: {Colors.TEXT_SECONDARY};
-            background: transparent;
-            border: none;
-        """)
+        label.setProperty("class", "statLabel")
 
         value = QLabel(initial_value)
-        value.setStyleSheet(f"""
-            font-family: monospace;
-            font-size: 14px;
-            color: {Colors.TEXT_PRIMARY};
-            background: transparent;
-            border: none;
-        """)
+        value.setProperty("class", "statValue")
         value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         row.addWidget(label)
@@ -1244,32 +1157,22 @@ class MainWindow(QMainWindow):
         self._apply_theme()
 
     def _apply_theme(self):
-        """Apply the current theme to all UI elements."""
-        # Update main stylesheet
+        """Apply the current theme to all UI elements.
+        
+        OPTIMIZED: Uses ONE top-level stylesheet for all QSS styling.
+        Only pyqtgraph plot elements need direct updates (they don't use QSS).
+        This eliminates per-widget setStyleSheet() calls that cause repolish/flicker.
+        """
+        # ONE stylesheet update for all widgets (objectName selectors handle specifics)
         self.setStyleSheet(get_main_stylesheet())
 
-        # Update plot widget
+        # Update pyqtgraph plot widget (doesn't use QSS)
         configure_plot_widget(self.plot_widget)
 
-        # Update plot container background
-        self.plot_container.setStyleSheet(f"background-color: {Colors.BG_PRIMARY};")
-
-        # Update plot title
-        self.plot_title_label.setStyleSheet(get_plot_title_style())
-
-        # Update plot frame
-        self.plot_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Colors.PLOT_BG};
-                border: 1px solid {get_border_strong()};
-                border-radius: 12px;
-            }}
-        """)
-
-        # Update control panel
+        # Update control panel (needs get_control_panel_style for the panel widget)
         self.control_container.findChild(QWidget).setStyleSheet(get_control_panel_style())
 
-        # Update buttons
+        # Update primary/secondary buttons (need special gradient styling in dark mode)
         self.fit_button.setStyleSheet(get_primary_button_style())
         secondary_style = get_secondary_button_style()
         self.fit_report_button.setStyleSheet(secondary_style)
@@ -1277,91 +1180,24 @@ class MainWindow(QMainWindow):
         self.fit_window_button.setStyleSheet(secondary_style)
         self.params_drawer_btn.setStyleSheet(secondary_style)
 
-        # Update params drawer
-        self.params_drawer.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Colors.SURFACE};
-                border-left: 1px solid {get_border_subtle()};
-            }}
-        """)
-
-        # Update stats card styling
-        # Find the stats card and update it
-        for widget in self.control_container.findChildren(QWidget):
-            if hasattr(widget, 'minimumHeight') and widget.minimumHeight() == 160:
-                widget.setStyleSheet(f"""
-                    QWidget {{
-                        background-color: {Colors.SURFACE};
-                        border: 1px solid {get_border_subtle()};
-                        border-radius: 12px;
-                    }}
-                    QLabel {{
-                        background: transparent;
-                        border: none;
-                    }}
-                """)
-
-        # Update section titles
-        self.stats_title.setStyleSheet(f"""
-            font-size: 14px;
-            font-weight: 600;
-            color: {Colors.TEXT_PRIMARY};
-            background: transparent;
-            border: none;
-            padding-bottom: 8px;
-        """)
+        # Update params header (section title style)
         self.params_header_label.setStyleSheet(get_section_title_style())
 
-        # Update stat labels (not values)
-        stat_label_style = f"""
-            font-size: 12px;
-            color: {Colors.TEXT_SECONDARY};
-            background: transparent;
-            border: none;
-        """
-        self.rms_label_text.setStyleSheet(stat_label_style)
-        self.iter_label_text.setStyleSheet(stat_label_style)
-        self.ntoa_label_text.setStyleSheet(stat_label_style)
-        self.chi2_label_text.setStyleSheet(stat_label_style)
-
-        # Update stat values (except RMS which has special styling)
-        stat_value_style = f"""
-            font-family: monospace;
-            font-size: 14px;
-            color: {Colors.TEXT_PRIMARY};
-            background: transparent;
-            border: none;
-        """
-        self.iter_label.setStyleSheet(stat_value_style)
-        self.ntoa_label.setStyleSheet(stat_value_style)
-        self.chi2_label.setStyleSheet(stat_value_style)
-
-        # Update scatter plot colors (always use primary - variant controls what "primary" means)
+        # Update scatter plot colors (pyqtgraph, not QSS)
         colors = get_scatter_colors()
         if self.scatter_item is not None:
             self.scatter_item.setBrush(pg.mkBrush(*colors['primary']))
 
-        # Update error bar colors (always visible, muted)
+        # Update error bar colors (pyqtgraph)
+        # Use setOpts instead of setData for styling-only changes (avoids data re-upload)
         if self.error_bar_item is not None:
             error_color = PlotTheme.get_error_bar_color()
-            self.error_bar_item.setData(pen=pg.mkPen(color=error_color, width=2.0))
+            self.error_bar_item.setOpts(pen=pg.mkPen(color=error_color, width=2.0))
 
-        # Update zero line if visible
+        # Update zero line if visible (pyqtgraph)
         if self.zero_line is not None:
             self.plot_widget.removeItem(self.zero_line)
             self.zero_line = create_zero_line(self.plot_widget)
-
-        # Update RMS label color (teal in light mode, variant-aware in dark mode)
-        rms_color = get_rms_emphasis_color()
-
-        self.rms_label.setStyleSheet(f"""
-            font-family: monospace;
-            font-size: 14px;
-            font-weight: 600;
-            color: {rms_color};
-            background: transparent;
-            border: none;
-        """)
 
     def on_zoom_fit(self):
         """Zoom plot to fit data."""
@@ -1379,9 +1215,15 @@ class MainWindow(QMainWindow):
         OPTIMIZED: Uses throttling to coalesce rapid updates during pan/zoom.
         Only updates beam width, NOT the x/y/height arrays (O(1) vs O(N)).
         This makes panning/zooming smooth, especially over X11.
+        
+        Implements "interaction mode": during continuous drag/zoom, only the
+        beam update runs (throttled). A final cleanup runs when interaction ends.
         """
         if self.error_bar_item is None or self.mjd is None:
             return
+
+        # Mark interaction as active (will be cleared after idle period)
+        self._interaction_active = True
 
         # Get the x-axis range
         x_range = ranges[0]
@@ -1412,6 +1254,36 @@ class MainWindow(QMainWindow):
         # Restart timer on each range change (coalesces updates)
         if not self._beam_update_timer.isActive():
             self._beam_update_timer.start(33)  # ~30 FPS, safe for X11
+
+        # Schedule interaction end check (runs final cleanup when drag stops)
+        self._schedule_interaction_end()
+
+    def _schedule_interaction_end(self):
+        """Schedule a check to detect when interaction (pan/zoom) has ended.
+        
+        When no range changes occur for 150ms, we consider interaction complete
+        and run any deferred cleanup (e.g., precise beam calculation).
+        """
+        if self._interaction_end_timer is None:
+            self._interaction_end_timer = QTimer()
+            self._interaction_end_timer.setSingleShot(True)
+            self._interaction_end_timer.timeout.connect(self._on_interaction_end)
+
+        # Restart the timer on each range change (extends deadline)
+        self._interaction_end_timer.stop()
+        self._interaction_end_timer.start(150)  # 150ms idle = interaction ended
+
+    def _on_interaction_end(self):
+        """Called when pan/zoom interaction has ended (no events for 150ms).
+        
+        Runs final cleanup: apply any pending beam update with exact value.
+        """
+        self._interaction_active = False
+        
+        # Apply any final pending beam update immediately
+        if self._pending_beam is not None and self.error_bar_item is not None:
+            self.error_bar_item.setOpts(beam=self._pending_beam)
+            self._pending_beam = None
 
     def _apply_pending_beam(self):
         """Apply the pending beam width update to error bars.

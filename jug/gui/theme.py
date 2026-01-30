@@ -800,6 +800,139 @@ def get_main_stylesheet():
         background-color: {accent_primary};
         border-radius: {BorderRadius.SM};
     }}
+
+    /* ===== OBJECTNAME-BASED STYLES (for consolidated theme switching) ===== */
+
+    /* Plot container */
+    #plotContainer {{
+        background-color: {Colors.BG_PRIMARY};
+    }}
+
+    /* Plot frame (border around plot widget) */
+    #plotFrame {{
+        background-color: {Colors.PLOT_BG};
+        border: 1px solid {border_strong};
+        border-radius: 12px;
+    }}
+
+    /* Plot title label */
+    #plotTitleLabel {{
+        font-size: {Typography.SIZE_LG};
+        font-weight: {Typography.WEIGHT_SEMIBOLD};
+        color: {Colors.TEXT_PRIMARY};
+        background: {Colors.SURFACE};
+        border: 1px solid {border_subtle};
+        border-radius: {BorderRadius.MD};
+        padding: {Spacing.MD} {Spacing.LG};
+        margin: {Spacing.SM};
+    }}
+
+    /* Parameters drawer */
+    #paramsDrawer {{
+        background-color: {Colors.SURFACE};
+    }}
+
+    /* Stats card */
+    #statsCard {{
+        background-color: {Colors.SURFACE};
+        border: 1px solid {border_subtle};
+        border-radius: 12px;
+    }}
+
+    #statsCard QLabel {{
+        background: transparent;
+        border: none;
+    }}
+
+    /* Stats title */
+    #statsTitle {{
+        font-size: 14px;
+        font-weight: 600;
+        color: {Colors.TEXT_PRIMARY};
+        background: transparent;
+        border: none;
+        padding-bottom: 8px;
+    }}
+
+    /* Stat labels (descriptions) */
+    QLabel[class="statLabel"] {{
+        font-size: 12px;
+        color: {Colors.TEXT_SECONDARY};
+        background: transparent;
+        border: none;
+    }}
+
+    /* Stat values (numbers) */
+    QLabel[class="statValue"] {{
+        font-family: monospace;
+        font-size: 14px;
+        color: {Colors.TEXT_PRIMARY};
+        background: transparent;
+        border: none;
+    }}
+
+    /* RMS value (special emphasis) */
+    #rmsValue {{
+        font-family: monospace;
+        font-size: 14px;
+        font-weight: 600;
+        color: {get_rms_emphasis_color()};
+        background: transparent;
+        border: none;
+    }}
+
+    /* Solver label */
+    #solverLabel {{
+        font-size: 13px;
+        font-weight: bold;
+        color: {Colors.TEXT_PRIMARY};
+        border: none;
+        margin: 0;
+        padding: 0;
+    }}
+
+    /* Solver dropdown button */
+    #solverButton {{
+        background-color: {Colors.BG_SECONDARY};
+        color: {Colors.TEXT_PRIMARY};
+        border: 1px solid {border_subtle};
+        border-radius: 4px;
+        padding: 2px 10px 2px 12px;
+        font-size: 12px;
+        text-align: left;
+    }}
+
+    #solverButton:hover {{
+        border-color: {accent_primary};
+        background-color: {Colors.SURFACE_HOVER};
+    }}
+
+    #solverButton::menu-indicator {{
+        width: 0px;
+    }}
+
+    /* Solver menu */
+    #solverMenu {{
+        background-color: {Colors.SURFACE};
+        color: {Colors.TEXT_PRIMARY};
+        border: 1px solid {border_subtle};
+        border-radius: 4px;
+        padding: 2px;
+    }}
+
+    #solverMenu::item {{
+        padding: 5px 12px;
+        border-radius: 3px;
+    }}
+
+    #solverMenu::item:hover {{
+        background-color: {Colors.SURFACE_HOVER};
+    }}
+
+    #solverMenu::item:selected {{
+        background-color: {accent_primary};
+        color: {Colors.BTN_PRIMARY_TEXT};
+    }}
     """
 
 
@@ -879,10 +1012,8 @@ def get_section_title_style():
 
 def get_control_panel_style():
     """Style for the control panel container."""
-    border_subtle = get_border_subtle()
     return f"""
         background-color: {Colors.BG_SECONDARY};
-        border-left: 1px solid {border_subtle};
     """
 
 

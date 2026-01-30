@@ -772,6 +772,106 @@ def d_shapiro_d_Phi(
 
 
 # =============================================================================
+# ELL1 Binary Delay Computation (for iterative fitting)
+# =============================================================================
+
+def compute_ell1_binary_delay(
+    toas_bary_mjd: jnp.ndarray,
+    params: Dict,
+) -> jnp.ndarray:
+    """Compute ELL1 binary delay for given parameters.
+
+    This function computes the total binary delay including:
+    - Roemer delay (with inverse delay corrections)
+    - Shapiro delay (if M2 and SINI are present)
+
+    Used for updating dt_sec during iterative binary fitting.
+
+    Parameters
+    ----------
+    toas_bary_mjd : jnp.ndarray
+        BARYCENTRIC TOA times in MJD
+    params : Dict
+        Binary parameters (A1, PB, TASC, EPS1, EPS2, PBDOT, XDOT, M2, SINI, etc.)
+
+    Returns
+    -------
+    binary_delay_sec : jnp.ndarray
+        Total binary delay in seconds
+    """
+    # Extract numeric parameters with defaults (avoid passing strings to JAX)
+    a1 = float(params.get('A1', 0.0))
+    pb = float(params.get('PB', 1.0))
+    tasc = float(params.get('TASC', 0.0))
+    eps1 = float(params.get('EPS1', 0.0))
+    eps2 = float(params.get('EPS2', 0.0))
+    pbdot = float(params.get('PBDOT', 0.0))
+    a1dot = float(params.get('A1DOT', params.get('XDOT', 0.0)))
+    sini = float(params.get('SINI', 0.0))
+    m2 = float(params.get('M2', 0.0))
+    gamma = float(params.get('GAMMA', 0.0))
+
+    # Call JIT-compiled inner function with extracted numeric values
+    return _compute_ell1_binary_delay_jit(
+        jnp.asarray(toas_bary_mjd),
+        a1, pb, tasc, eps1, eps2, pbdot, a1dot, sini, m2, gamma
+    )
+
+
+@jax.jit
+def _compute_ell1_binary_delay_jit(
+    toas_bary_mjd: jnp.ndarray,
+    a1: float, pb: float, tasc: float, eps1: float, eps2: float,
+    pbdot: float, a1dot: float, sini: float, m2: float, gamma: float
+) -> jnp.ndarray:
+    """JIT-compiled ELL1 binary delay computation."""
+    # Time since TASC
+    ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY
+    pb_sec = pb * SECS_PER_DAY
+
+    # Effective a1 with time evolution
+    a1_eff = a1 + a1dot * ttasc_sec
+
+    # Orbital phase
+    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot)
+
+    # nhat = 2π / PB (mean angular velocity in rad/s)
+    nhat = 2 * jnp.pi / pb_sec
+
+    # Compute Dre, Drep, Drepp using existing functions
+    d_R_da1 = d_delayR_da1(phi, eps1, eps2)
+    d_dR_dPhi_da1 = d_d_delayR_dPhi_da1(phi, eps1, eps2)
+    d_ddR_dPhi2_da1 = d_dd_delayR_dPhi2_da1(phi, eps1, eps2)
+
+    Dre = a1_eff * d_R_da1
+    Drep = a1_eff * d_dR_dPhi_da1
+    Drepp = a1_eff * d_ddR_dPhi2_da1
+
+    # Roemer delay with inverse delay corrections (PINT formula)
+    # Handle Dre=0 case to avoid division by zero
+    nhat_Drep = nhat * Drep
+    roemer_delay = jnp.where(
+        jnp.abs(Dre) > 1e-20,
+        Dre * (1 - nhat_Drep + nhat_Drep**2 + 0.5 * (nhat * Dre)**2 * Drepp / Dre),
+        Dre * (1 - nhat_Drep + nhat_Drep**2)
+    )
+
+    # Einstein delay (gamma term)
+    einstein_delay = gamma * jnp.sin(phi)
+
+    # Shapiro delay (if M2 and SINI are present)
+    TM2 = T_SUN * m2
+    sin_phi = jnp.sin(phi)
+    shapiro_delay = jnp.where(
+        (sini > 0) & (m2 > 0),
+        -2 * TM2 * jnp.log(jnp.maximum(1 - sini * sin_phi, 1e-10)),
+        0.0
+    )
+
+    return roemer_delay + einstein_delay + shapiro_delay
+
+
+# =============================================================================
 # Main Derivative Computation (PINT-compatible)
 # =============================================================================
 

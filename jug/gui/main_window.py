@@ -45,6 +45,7 @@ from jug.gui.theme import (
     get_dynamic_accent_primary,
     get_light_variant,
     toggle_light_variant,
+    get_plot_title_style,
 )
 
 # Import canonical stats function (engine is source of truth)
@@ -452,33 +453,33 @@ class MainWindow(QMainWindow):
         muted_style = f"border: none; color: {Colors.TEXT_MUTED}; font-weight: normal; font-size: 13px;"
         
         # Title
-        lbl_title = QLabel("Lights On:")
-        lbl_title.setStyleSheet(text_style)
+        self.lbl_lights = QLabel("Lights On:")
+        self.lbl_lights.setStyleSheet(text_style)
         
         # Off/On Labels
-        lbl_off = QLabel("Off")
-        lbl_off.setStyleSheet(text_style) 
+        self.lbl_off = QLabel("Off")
+        self.lbl_off.setStyleSheet(text_style) 
         
         self.lights_on_switch = ToggleSwitch()
         
-        lbl_on = QLabel("On")
-        lbl_on.setStyleSheet(muted_style)
+        self.lbl_on = QLabel("On")
+        self.lbl_on.setStyleSheet(muted_style)
         
         self._saved_param_state = set()
 
         # Update labels visual state
         def on_switch_toggle(checked):
-            lbl_off.setStyleSheet(f"border: none; color: {Colors.TEXT_MUTED if checked else Colors.TEXT_PRIMARY}; font-weight: {'normal' if checked else 'bold'}; font-size: 13px;")
-            lbl_on.setStyleSheet(f"border: none; color: {Colors.TEXT_PRIMARY if checked else Colors.TEXT_MUTED}; font-weight: {'bold' if checked else 'normal'}; font-size: 13px;")
+            self.lbl_off.setStyleSheet(f"border: none; color: {Colors.TEXT_MUTED if checked else Colors.TEXT_PRIMARY}; font-weight: {'normal' if checked else 'bold'}; font-size: 13px;")
+            self.lbl_on.setStyleSheet(f"border: none; color: {Colors.TEXT_PRIMARY if checked else Colors.TEXT_MUTED}; font-weight: {'bold' if checked else 'normal'}; font-size: 13px;")
             self._on_lights_on_toggled(checked)
 
         self.lights_on_switch.toggled.connect(on_switch_toggle)
         
-        switch_layout.addWidget(lbl_title)
+        switch_layout.addWidget(self.lbl_lights)
         switch_layout.addStretch() 
-        switch_layout.addWidget(lbl_off)
+        switch_layout.addWidget(self.lbl_off)
         switch_layout.addWidget(self.lights_on_switch)
-        switch_layout.addWidget(lbl_on)
+        switch_layout.addWidget(self.lbl_on)
         
         header_layout.addWidget(switch_container)
         header_layout.addStretch()
@@ -502,30 +503,38 @@ class MainWindow(QMainWindow):
 
         drawer_layout.addLayout(header_layout)
 
-        # Scroll area for parameters
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        # Explicit dark background for scroll area AND its viewport to prevent white flash
-        dark_bg = f"background-color: {Colors.BG_SECONDARY}; border: none;"
-        scroll.setStyleSheet(f"QScrollArea {{ {dark_bg} }} QWidget {{ {dark_bg} }}")
+        # QTableWidget for parameter list (optimized for performance)
+        self.param_table = QTableWidget()
+        self.param_table.setColumnCount(1)
+        self.param_table.horizontalHeader().setVisible(False)
+        self.param_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.param_table.verticalHeader().setVisible(False)
+        self.param_table.setShowGrid(False)
+        self.param_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.param_table.setFocusPolicy(Qt.NoFocus)
+        self.param_table.setAlternatingRowColors(False)
+        
+        self.param_table.verticalHeader().setDefaultSectionSize(36)
+        self.param_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        # Style matches the drawer background
+        self.param_table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {Colors.BG_SECONDARY};
+                border: none;
+            }}
+            QTableWidget::item {{
+                padding: 0px;
+                border: none;
+            }}
+        """)
 
-        # Container for checkboxes
-        self.param_container = QWidget()
-        self.param_container.setAttribute(Qt.WA_StyledBackground, True)
-        self.param_container.setStyleSheet(dark_bg)
-        self.param_layout = QVBoxLayout(self.param_container)
-        self.param_layout.setSpacing(4)
-        self.param_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Placeholder
-        self.param_placeholder = QLabel("Load .par file to see parameters")
-        self.param_placeholder.setStyleSheet(get_placeholder_style())
-        self.param_placeholder.setWordWrap(True)
-        self.param_layout.addWidget(self.param_placeholder)
-        self.param_layout.addStretch()
-
-        scroll.setWidget(self.param_container)
-        drawer_layout.addWidget(scroll)
+        # Connect itemChanged signal for manual toggles - REMOVED (using QCheckBox signals)
+        
+        drawer_layout.addWidget(self.param_table)
+        
+        # Initialize dictionary to map param name to QCheckBox (for fit logic)
+        self.param_checkboxes = {}
 
     def on_toggle_params_drawer(self):
         """Toggle the parameter drawer. Overlay for remote, animated for local."""
@@ -610,10 +619,10 @@ class MainWindow(QMainWindow):
 
     def _execute_lights_on_toggle(self, checked):
         """Execute the actual parameter toggling logic."""
-        # Disable updates only on the container to prevent flicker but keep window responsive
-        # Use param_container if available, else window
-        target = self.param_container if hasattr(self, 'param_container') else self
-        target.setUpdatesEnabled(False)
+        # Use param_table if available
+        target = self.param_table if hasattr(self, 'param_table') else self
+        if hasattr(target, 'setUpdatesEnabled'):
+            target.setUpdatesEnabled(False)
         
         try:
             if checked:
@@ -622,22 +631,28 @@ class MainWindow(QMainWindow):
                 for param, cb in self.param_checkboxes.items():
                     if cb.isChecked():
                         self._saved_param_state.add(param)
+                    cb.blockSignals(True)
                     cb.setChecked(True)
+                    cb.blockSignals(False)
                 self.statusBar().showMessage("All parameters enabled", 3000)
             else:
                 # Lights OFF: Restore previous state
                 for param, cb in self.param_checkboxes.items():
-                    cb.setChecked(param in self._saved_param_state)
+                    should_check = param in self._saved_param_state
+                    cb.blockSignals(True)
+                    cb.setChecked(should_check)
+                    cb.blockSignals(False)
                 self._saved_param_state.clear()
                 self.statusBar().showMessage("Restored parameter selection", 3000)
         finally:
-            target.setUpdatesEnabled(True)
+            if hasattr(target, 'setUpdatesEnabled'):
+                target.setUpdatesEnabled(True)
 
     def _on_param_manual_toggle(self, checked):
         """Handle individual parameter toggle to sync with master switch."""
         # If user manually unchecks a box while "Lights On" is active,
         # we must turn off the master switch to reflect state is no longer "All On".
-        # We do this silently without triggering the restore logic.
+        
         if not checked and hasattr(self, 'lights_on_switch') and self.lights_on_switch.isChecked():
             # Block signals to prevent recursive restore logic
             self.lights_on_switch.blockSignals(True)
@@ -1564,17 +1579,28 @@ class MainWindow(QMainWindow):
         """Apply the current theme to all UI elements.
         
         OPTIMIZED: Uses ONE top-level stylesheet for all QSS styling.
-        Only pyqtgraph plot elements need direct updates (they don't use QSS).
-        This eliminates per-widget setStyleSheet() calls that cause repolish/flicker.
+        Only pyqtgraph plot elements and inline-styled widgets need direct updates.
         """
         # ONE stylesheet update for all widgets (objectName selectors handle specifics)
         self.setStyleSheet(get_main_stylesheet())
 
         # Update pyqtgraph plot widget (doesn't use QSS)
         configure_plot_widget(self.plot_widget)
+        
+        # Explicitly style plot containers (force theme application)
+        if hasattr(self, 'plot_container'):
+             self.plot_container.setStyleSheet(f"background-color: {Colors.BG_PRIMARY};")
+             
+        if hasattr(self, 'plot_frame'):
+             self.plot_frame.setStyleSheet(f"background-color: {Colors.PLOT_BG}; border: 1px solid {get_border_strong()}; border-radius: 12px;")
+             
+        if hasattr(self, 'plot_title_label'):
+             self.plot_title_label.setStyleSheet(get_plot_title_style())
 
         # Update control panel (needs get_control_panel_style for the panel widget)
-        self.control_container.findChild(QWidget).setStyleSheet(get_control_panel_style())
+        if hasattr(self, 'control_container'):
+             panel = self.control_container.findChild(QWidget)
+             if panel: panel.setStyleSheet(get_control_panel_style())
 
         # Update primary/secondary buttons (need special gradient styling in dark mode)
         self.fit_button.setStyleSheet(get_primary_button_style())
@@ -1585,19 +1611,60 @@ class MainWindow(QMainWindow):
         self.params_drawer_btn.setStyleSheet(secondary_style)
 
         # Update params header (section title style)
-        self.params_header_label.setStyleSheet(get_section_title_style())
+        if hasattr(self, 'params_header_label'):
+             self.params_header_label.setStyleSheet(get_section_title_style())
+
+        # Update Parameter Drawer Background & Table
+        if hasattr(self, 'params_drawer'):
+            self.params_drawer.setStyleSheet(f"background-color: {Colors.BG_SECONDARY}; border-left: 1px solid {get_border_subtle()};")
+            
+        if hasattr(self, 'param_table'):
+             self.param_table.setStyleSheet(f"""
+                QTableWidget {{
+                    background-color: {Colors.BG_SECONDARY};
+                    border: none;
+                }}
+                QTableWidget::item {{
+                    padding: 0px;
+                    border: none;
+                }}
+            """)
+             # Update styling of all checkboxes in the table
+             for row in range(self.param_table.rowCount()):
+                 widget = self.param_table.cellWidget(row, 0)
+                 if widget:
+                     # Re-apply text color
+                     widget.setStyleSheet(f"""
+                        QCheckBox {{
+                            color: {Colors.TEXT_PRIMARY};
+                            padding: 4px 8px;
+                            spacing: 8px;
+                            font-size: 13px;
+                        }}
+                        QCheckBox::indicator {{
+                            width: 16px; height: 16px;
+                        }}
+                     """)
+        
+        # Update Lights On Switch Labels
+        if hasattr(self, 'lbl_lights'):
+            text_style = f"border: none; color: {Colors.TEXT_PRIMARY}; font-weight: {Typography.WEIGHT_BOLD}; font-size: 13px;"
+            self.lbl_lights.setStyleSheet(text_style)
+            
+            is_on = self.lights_on_switch.isChecked()
+            self.lbl_off.setStyleSheet(f"border: none; color: {Colors.TEXT_MUTED if is_on else Colors.TEXT_PRIMARY}; font-weight: {'normal' if is_on else 'bold'}; font-size: 13px;")
+            self.lbl_on.setStyleSheet(f"border: none; color: {Colors.TEXT_PRIMARY if is_on else Colors.TEXT_MUTED}; font-weight: {'bold' if is_on else 'normal'}; font-size: 13px;")
 
         # Update scatter plot colors (pyqtgraph, not QSS)
         colors = get_scatter_colors()
         if self.scatter_item is not None:
             self.scatter_item.setBrush(pg.mkBrush(*colors['primary']))
-
+            
         # Update error bar colors (pyqtgraph)
-        # Use setOpts instead of setData for styling-only changes (avoids data re-upload)
         if self.error_bar_item is not None:
-            error_color = PlotTheme.get_error_bar_color()
-            self.error_bar_item.setOpts(pen=pg.mkPen(color=error_color, width=2.0))
-
+             error_color = PlotTheme.get_error_bar_color()
+             self.error_bar_item.setOpts(pen=pg.mkPen(color=error_color, width=2.0))
+             
         # Update zero line if visible (pyqtgraph)
         if self.zero_line is not None:
             self.plot_widget.removeItem(self.zero_line)
@@ -1852,42 +1919,55 @@ class MainWindow(QMainWindow):
                 all_params.append(p)
 
         # Clear existing checkboxes and layout
-        for checkbox in self.param_checkboxes.values():
-            checkbox.deleteLater()
+        # Clear existing table content
+        self.param_table.setRowCount(0)
         self.param_checkboxes.clear()
-
-        if self.param_placeholder:
-            self.param_placeholder.deleteLater()
-            self.param_placeholder = None
-
-        # Clear any remaining items from layout (like stretch)
-        while self.param_layout.count():
-            item = self.param_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        # Create new checkboxes
-        for param in all_params:
+        # param_items is no longer needed
+        if hasattr(self, 'param_items'): self.param_items.clear()
+        
+        # Set new row count
+        self.param_table.setRowCount(len(all_params))
+        
+        # Populate table with QCheckBox widgets (restores desired look & feel)
+        for row, param in enumerate(all_params):
             checkbox = QCheckBox(param)
-
-            # Pre-select if in command-line fit params
+            
+            # Determine initial check state
+            should_check = False
             if param in self.cmdline_fit_params:
-                checkbox.setChecked(True)
-            # Default to F0, F1 if no command-line params specified
+                should_check = True
             elif not self.cmdline_fit_params and param in ['F0', 'F1']:
-                checkbox.setChecked(True)
+                should_check = True
+            
+            checkbox.setChecked(should_check)
 
-            # Add note if parameter not in original par file
+            # Apply styling
+            style_base = f"""
+                QCheckBox {{
+                    padding: 4px 8px;
+                    spacing: 8px;
+                    font-size: 13px;
+                }}
+                QCheckBox::indicator {{
+                    width: 16px;
+                    height: 16px;
+                }}
+            """
+            
             if param not in params_in_file:
-                checkbox.setStyleSheet(get_added_param_style())
+                # Highlight added parameters
                 checkbox.setToolTip(f"{param} not in original .par file (will be fitted from scratch)")
+                checkbox.setStyleSheet(style_base + f"QCheckBox {{ color: {Colors.ACCENT_WARNING}; }}")
+            else:
+                checkbox.setStyleSheet(style_base + f"QCheckBox {{ color: {Colors.TEXT_PRIMARY}; }}")
 
-            self.param_checkboxes[param] = checkbox
+            # Connect signal
             checkbox.toggled.connect(self._on_param_manual_toggle)
-            self.param_layout.addWidget(checkbox)
-
-        # Add stretch at end
-        self.param_layout.addStretch()
+            
+            self.param_table.setCellWidget(row, 0, checkbox)
+            self.param_checkboxes[param] = checkbox
+            
+        # No need to block/unblock signals on table itself since widgets handle signals
 
         self.available_params = all_params
 

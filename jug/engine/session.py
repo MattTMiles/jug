@@ -426,7 +426,7 @@ class TimingSession:
     def fit_parameters(
         self,
         fit_params: List[str],
-        max_iter: int = 25,
+        max_iter: int = 100,
         convergence_threshold: float = 1e-14,
         device: Optional[str] = None,
         verbose: Optional[bool] = None,
@@ -440,7 +440,7 @@ class TimingSession:
         ----------
         fit_params : list of str
             Parameters to fit (e.g., ['F0', 'F1', 'DM'])
-        max_iter : int, default 25
+        max_iter : int, default 100
             Maximum iterations
         convergence_threshold : float, default 1e-14
             Convergence threshold

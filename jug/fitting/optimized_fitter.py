@@ -63,6 +63,7 @@ from jug.utils.device import get_device
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.fitting.wls_fitter import wls_solve_svd
+from jug.fitting.binary_registry import compute_binary_delay, compute_binary_derivatives
 
 # Import ParameterSpec system for spec-driven routing
 from jug.model.parameter_spec import (
@@ -1183,9 +1184,9 @@ def _build_general_fit_setup_from_files(
                 "Please update compute_residuals_simple to return 'roemer_shapiro_sec'."
             )
         # Compute initial binary delay for iterative fitting
+        # Route to correct binary model (DD vs ELL1)
         toas_bary = tdb_mjd - roemer_shapiro_sec / SECS_PER_DAY
-        from jug.fitting.derivatives_binary import compute_ell1_binary_delay
-        initial_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params))
+        initial_binary_delay = np.array(compute_binary_delay(toas_bary, params))
 
     # If fitting astrometry params, extract ssb_obs_pos_ls and compute initial delay
     ssb_obs_pos_ls = None
@@ -1272,12 +1273,11 @@ def _compute_full_model_residuals(
         dm_delay_change = new_dm_delay - setup.initial_dm_delay
         dt_sec_np = dt_sec_np - dm_delay_change
     
-    # Apply binary delay correction
+    # Apply binary delay correction (route to correct binary model)
     binary_params = setup.binary_params
     if binary_params and setup.initial_binary_delay is not None:
-        from jug.fitting.derivatives_binary import compute_ell1_binary_delay
         toas_bary = tdb_mjd - setup.roemer_shapiro_sec / SECS_PER_DAY
-        new_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params))
+        new_binary_delay = np.array(compute_binary_delay(toas_bary, params))
         binary_delay_change = new_binary_delay - setup.initial_binary_delay
         dt_sec_np = dt_sec_np - binary_delay_change
     
@@ -1434,9 +1434,9 @@ def _run_general_fit_iterations(
             dt_sec_np = dt_sec_np - dm_delay_change
 
         # If fitting binary parameters, update dt_sec with new binary delay
+        # (route to correct binary model - DD vs ELL1)
         if binary_params and initial_binary_delay is not None:
-            from jug.fitting.derivatives_binary import compute_ell1_binary_delay
-            new_binary_delay = np.array(compute_ell1_binary_delay(toas_bary_for_binary, params))
+            new_binary_delay = np.array(compute_binary_delay(toas_bary_for_binary, params))
             binary_delay_change = new_binary_delay - initial_binary_delay
             dt_sec_np = dt_sec_np - binary_delay_change
 
@@ -1477,7 +1477,7 @@ def _run_general_fit_iterations(
         if dm_params_list:
             dm_derivs = compute_dm_derivatives(params, toas_mjd, freq_mhz, dm_params_list)
 
-        # Batch binary parameters (spec-driven routing via component)
+        # Batch binary parameters (routed via binary_registry)
         binary_params_list = get_binary_params_from_list(fit_params)
         binary_derivs = {}
         if binary_params_list:
@@ -1487,18 +1487,7 @@ def _run_general_fit_iterations(
                     "Ensure compute_residuals_simple returns 'roemer_shapiro_sec'."
                 )
             toas_bary_mjd = toas_mjd - setup.roemer_shapiro_sec / SECS_PER_DAY
-            
-            # Detect binary model type and route to appropriate derivative function
-            binary_model = params.get('BINARY', '').upper()
-            
-            if binary_model in ('DD', 'DDK', 'DDS', 'DDH', 'DDGR', 'BT', 'BTX'):
-                # Keplerian binary models (use T0, ECC, OM)
-                from jug.fitting.derivatives_dd import compute_binary_derivatives_dd
-                binary_derivs = compute_binary_derivatives_dd(params, toas_bary_mjd, binary_params_list)
-            else:
-                # ELL1 model (use TASC, EPS1, EPS2)
-                from jug.fitting.derivatives_binary import compute_binary_derivatives_ell1
-                binary_derivs = compute_binary_derivatives_ell1(params, toas_bary_mjd, binary_params_list)
+            binary_derivs = compute_binary_derivatives(params, toas_bary_mjd, binary_params_list)
 
         # Batch astrometry parameters (spec-driven routing via component)
         astrometry_params_list = get_astrometry_params_from_list(fit_params)
@@ -1800,10 +1789,10 @@ def _build_general_fit_setup_from_cache(
             roemer_shapiro_sec = roemer_shapiro_sec[toa_mask]
 
         # Compute initial binary delay for iterative fitting
+        # Route to correct binary model (DD vs ELL1)
         # Barycentric times = TDB - (Roemer + Shapiro)
         toas_bary = tdb_mjd - roemer_shapiro_sec / SECS_PER_DAY
-        from jug.fitting.derivatives_binary import compute_ell1_binary_delay
-        initial_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params_dict))
+        initial_binary_delay = np.array(compute_binary_delay(toas_bary, params_dict))
 
     # If fitting astrometry params, extract ssb_obs_pos_ls and compute initial delay
     ssb_obs_pos_ls = None

@@ -1487,8 +1487,18 @@ def _run_general_fit_iterations(
                     "Ensure compute_residuals_simple returns 'roemer_shapiro_sec'."
                 )
             toas_bary_mjd = toas_mjd - setup.roemer_shapiro_sec / SECS_PER_DAY
-            from jug.fitting.derivatives_binary import compute_binary_derivatives_ell1
-            binary_derivs = compute_binary_derivatives_ell1(params, toas_bary_mjd, binary_params_list)
+            
+            # Detect binary model type and route to appropriate derivative function
+            binary_model = params.get('BINARY', '').upper()
+            
+            if binary_model in ('DD', 'DDK', 'DDS', 'DDH', 'DDGR', 'BT', 'BTX'):
+                # Keplerian binary models (use T0, ECC, OM)
+                from jug.fitting.derivatives_dd import compute_binary_derivatives_dd
+                binary_derivs = compute_binary_derivatives_dd(params, toas_bary_mjd, binary_params_list)
+            else:
+                # ELL1 model (use TASC, EPS1, EPS2)
+                from jug.fitting.derivatives_binary import compute_binary_derivatives_ell1
+                binary_derivs = compute_binary_derivatives_ell1(params, toas_bary_mjd, binary_params_list)
 
         # Batch astrometry parameters (spec-driven routing via component)
         astrometry_params_list = get_astrometry_params_from_list(fit_params)

@@ -27,15 +27,25 @@ Added a helper function that computes TRUE residuals using the full nonlinear mo
 ### 2. PINT-style iteration loop with damping
 
 Modified `_run_general_fit_iterations()` to:
-1. Compute current full-model chi² via `_compute_full_model_residuals()`
+1. Compute current full-model χ² via `_compute_full_model_residuals()`
 2. Build design matrix and compute `dpars` via WLS
-3. Try step with λ = 1.0, 0.5, 0.25, ... until full-model chi² improves
-4. Only accept steps that improve (or don't significantly worsen) chi²
+3. Try step with λ = 1.0, 0.5, 0.25, ... until full-model χ² improves
+4. Only accept steps that improve (or don't significantly worsen) χ²
 5. Track best state and use it for final output
 
 ### 3. Fixed `final_rms` to return true full-model RMS
 
 The returned `final_rms` now comes from `_compute_full_model_residuals()` called with the final accepted parameters.
+
+### 4. Proper convergence detection
+
+Convergence is now detected when:
+- **Parameter convergence**: δ-norm ≤ xtol × (param-norm + xtol)
+- **Chi² convergence**: Full step taken but χ² improvement is minimal
+- **RMS convergence**: RMS change < 1e-6 μs (1 ns) between iterations
+- **Step rejection**: Cannot improve χ² even with very small steps (λ → min_lambda)
+
+The last criterion is key: when we can't improve even with tiny steps, we've reached the minimum and should report `converged=True`, not `converged=False`.
 
 ## JAX-First Audit
 
@@ -76,11 +86,11 @@ Fit 3: DIVERGED (NaN)
 
 After fix:
 ```
-Fit 1: initial=0.404 us, reported=0.404 us, TRUE final=0.404 us
-Fit 2: initial=0.404 us, reported=0.404 us, TRUE final=0.404 us
-Fit 3: initial=0.404 us, reported=0.403 us, TRUE final=0.404 us
-Fit 4: initial=0.404 us, reported=0.403 us, TRUE final=0.404 us
-Fit 5: initial=0.404 us, reported=0.403 us, TRUE final=0.404 us
+Fit 1: Converged=True, RMS=0.404 μs (4 iterations)
+Fit 2: Converged=True, RMS=0.404 μs (stable)
+Fit 3: Converged=True, RMS=0.404 μs (stable)
+Fit 4: Converged=True, RMS=0.404 μs (stable)
+Fit 5: Converged=True, RMS=0.404 μs (stable)
 ```
 
 ## Files Modified
@@ -89,11 +99,14 @@ Fit 5: initial=0.404 us, reported=0.403 us, TRUE final=0.404 us
   - Added `_compute_full_model_residuals()` function
   - Rewrote `_run_general_fit_iterations()` with PINT-style damping
   - Fixed `final_rms` to use true full-model RMS
+  - Added RMS-based convergence criterion
+  - Set `converged=True` when steps are rejected (at minimum)
 
 ## Definition of Done
 
 ✅ The reproduction snippet produces stable results (5 fits, no divergence)
-✅ Reported RMS matches TRUE final RMS (within 0.01 μs tolerance)
+✅ Reported RMS matches TRUE final RMS
 ✅ Residual computation remains bit-for-bit identical for fixed params
 ✅ Existing tests pass
 ✅ JAX-first rule followed with explicit justification where NumPy used
+✅ Convergence correctly reported as True when fit stabilizes

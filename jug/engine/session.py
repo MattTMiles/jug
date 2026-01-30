@@ -300,8 +300,19 @@ class TimingSession:
                     if param_name in params:
                         # Update this parameter
                         new_value = params[param_name]
-                        # Format appropriately
-                        if param_name == 'F0':
+                        # Format appropriately based on parameter type
+                        if isinstance(new_value, str):
+                            # Already a string (sexagesimal or other)
+                            new_line = f"{param_name:<12} {new_value}"
+                        elif param_name == 'RAJ':
+                            # RAJ in radians - convert to sexagesimal
+                            from jug.model.codecs import RAJCodec
+                            new_line = f"{param_name:<12} {RAJCodec().encode(new_value)}"
+                        elif param_name == 'DECJ':
+                            # DECJ in radians - convert to sexagesimal
+                            from jug.model.codecs import DECJCodec
+                            new_line = f"{param_name:<12} {DECJCodec().encode(new_value)}"
+                        elif param_name == 'F0':
                             new_line = f"{param_name:<12} {new_value:.15f}"
                         elif param_name.startswith('F') and param_name[1:].isdigit():
                             new_line = f"{param_name:<12} {new_value:.15e}"
@@ -328,7 +339,15 @@ class TimingSession:
             # Add any new parameters not in original file
             for param_name, value in params.items():
                 if param_name not in updated_params:
-                    if param_name == 'F0':
+                    if isinstance(value, str):
+                        new_line = f"{param_name:<12} {value} 1\n"
+                    elif param_name == 'RAJ':
+                        from jug.model.codecs import RAJCodec
+                        new_line = f"{param_name:<12} {RAJCodec().encode(value)} 1\n"
+                    elif param_name == 'DECJ':
+                        from jug.model.codecs import DECJCodec
+                        new_line = f"{param_name:<12} {DECJCodec().encode(value)} 1\n"
+                    elif param_name == 'F0':
                         new_line = f"{param_name:<12} {value:.15f} 1\n"
                     elif param_name.startswith('F') and param_name[1:].isdigit():
                         new_line = f"{param_name:<12} {value:.15e} 1\n"

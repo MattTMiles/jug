@@ -402,13 +402,160 @@ _BINARY_PARAMS = [
         aliases=("A1DOT",),
         component_name="BinaryComponent",
     ),
+    # Periastron advance (DD model)
+    ParameterSpec(
+        name="OMDOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="deg/yr",
+        par_unit_str="deg/yr",
+        component_name="BinaryComponent",
+    ),
+    # Time dilation + gravitational redshift (DD model)
+    ParameterSpec(
+        name="GAMMA",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="BinaryComponent",
+    ),
+    # Eccentricity derivative (T2 model)
+    ParameterSpec(
+        name="EDOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="1/s",
+        par_unit_str="",
+        component_name="BinaryComponent",
+    ),
+    # Orthometric Shapiro parameters (ELL1H model)
+    ParameterSpec(
+        name="H3",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="H4",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="STIG",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        aliases=("STIGMA",),
+        component_name="BinaryComponent",
+    ),
+    # DD model relativistic deformation parameters
+    ParameterSpec(
+        name="DR",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="DTH",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        aliases=("DTHETA",),
+        component_name="BinaryComponent",
+    ),
+    # Aberration parameters (DD model)
+    ParameterSpec(
+        name="A0",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="B0",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="BinaryComponent",
+    ),
+]
+
+# FD (frequency-dependent) parameters
+_FD_PARAMS = [
+    ParameterSpec(
+        name="FD1",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
+    ParameterSpec(
+        name="FD2",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
+    ParameterSpec(
+        name="FD3",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
+    ParameterSpec(
+        name="FD4",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
+    ParameterSpec(
+        name="FD5",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
 ]
 
 # Build the registry
 PARAMETER_REGISTRY: Dict[str, ParameterSpec] = {}
 _ALIAS_MAP: Dict[str, str] = {}  # alias -> canonical name
 
-for spec in _SPIN_PARAMS + _DM_PARAMS + _ASTROMETRY_PARAMS + _BINARY_PARAMS:
+for spec in _SPIN_PARAMS + _DM_PARAMS + _ASTROMETRY_PARAMS + _BINARY_PARAMS + _FD_PARAMS:
     PARAMETER_REGISTRY[spec.name] = spec
     for alias in spec.aliases:
         _ALIAS_MAP[alias] = spec.name
@@ -640,6 +787,105 @@ def is_binary_param(name: str) -> bool:
     """
     spec = get_spec(name)
     return spec is not None and spec.derivative_group == DerivativeGroup.BINARY
+
+
+def is_fd_param(name: str) -> bool:
+    """
+    Check if a parameter is an FD (frequency-dependent) parameter.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name
+
+    Returns
+    -------
+    bool
+        True if FD parameter, False otherwise
+    """
+    spec = get_spec(name)
+    return spec is not None and spec.derivative_group == DerivativeGroup.FD
+
+
+def is_jump_param(name: str) -> bool:
+    """
+    Check if a parameter is a JUMP parameter.
+
+    JUMP parameters are dynamically named (JUMP1, JUMP2, JUMP_-sys_..., etc.)
+    so we use pattern matching rather than static registry lookup.
+
+    Patterns recognized:
+    - JUMP followed by a number: JUMP1, JUMP2, JUMP10
+    - JUMP followed by underscore and identifier: JUMP_MJD, JUMP_-sys_...
+    - Plain JUMP (legacy format)
+
+    Parameters
+    ----------
+    name : str
+        Parameter name
+
+    Returns
+    -------
+    bool
+        True if JUMP parameter, False otherwise
+
+    Examples
+    --------
+    >>> is_jump_param('JUMP1')
+    True
+    >>> is_jump_param('JUMP_MJD_58000_59000')
+    True
+    >>> is_jump_param('JUMP')
+    True
+    >>> is_jump_param('F0')
+    False
+    """
+    if not name.startswith('JUMP'):
+        return False
+    # Accept: JUMP, JUMP1, JUMP_foo, etc.
+    suffix = name[4:]  # Everything after 'JUMP'
+    if suffix == '':
+        return True  # Plain 'JUMP'
+    if suffix[0].isdigit():
+        return True  # JUMP1, JUMP2, JUMP10, etc.
+    if suffix[0] == '_':
+        return True  # JUMP_MJD, JUMP_-sys_..., etc.
+    return False
+
+
+def create_jump_spec(name: str) -> ParameterSpec:
+    """
+    Create a ParameterSpec for a dynamically-named JUMP parameter.
+
+    Use this when you encounter a JUMP parameter not in the registry.
+
+    Parameters
+    ----------
+    name : str
+        JUMP parameter name (e.g., 'JUMP1', 'JUMP_MJD_58000_59000')
+
+    Returns
+    -------
+    ParameterSpec
+        A spec for this JUMP parameter
+
+    Raises
+    ------
+    ValueError
+        If name is not a valid JUMP parameter
+    """
+    if not is_jump_param(name):
+        raise ValueError(f"'{name}' is not a valid JUMP parameter")
+    
+    return ParameterSpec(
+        name=name,
+        group="jump",
+        derivative_group=DerivativeGroup.JUMP,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="JumpComponent",
+    )
 
 
 def get_spin_params_from_list(params: List[str]) -> List[str]:

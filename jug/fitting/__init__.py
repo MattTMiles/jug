@@ -63,11 +63,13 @@ Status
 """
 
 from jug.fitting.derivatives_spin import compute_spin_derivatives
+from jug.fitting.derivatives_jump import compute_jump_derivatives
 from jug.fitting.wls_fitter import wls_solve_svd
 from jug.fitting.optimized_fitter import fit_parameters_optimized
 
 __all__ = [
     'compute_spin_derivatives',
+    'compute_jump_derivatives',
     'wls_solve_svd',
     'fit_parameters_optimized'
 ]

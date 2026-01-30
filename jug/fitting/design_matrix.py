@@ -195,6 +195,18 @@ def compute_derivative(
         # Parallax
         return np.zeros_like(dt_sec)  # Placeholder
     
+    # JUMP parameters (selector columns)
+    elif param_name.startswith('JUMP'):
+        # JUMP derivatives are 1 for matching TOAs, 0 otherwise
+        # Without mask info, assume JUMP applies to all TOAs
+        # The actual masking should be done by the caller
+        # For now, return 1s (will be masked externally)
+        from jug.model.parameter_spec import is_jump_param
+        if is_jump_param(param_name):
+            return np.ones_like(dt_sec)  # Placeholder: actual mask applied externally
+        else:
+            raise ValueError(f"Invalid JUMP parameter: {param_name}")
+    
     else:
         raise ValueError(f"Unknown parameter for design matrix: {param_name}")
 

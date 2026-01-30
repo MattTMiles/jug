@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
     QFrame, QScrollArea, QSizePolicy, QApplication, QMenu,
     QDialog, QTextBrowser
 )
-from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer
-from PySide6.QtGui import QFont, QCursor
+from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer, QSize, QRect, QVariantAnimation, QEasingCurve
+from PySide6.QtGui import QFont, QCursor, QPainter, QBrush, QColor
 import pyqtgraph as pg
 import numpy as np
 
@@ -33,6 +33,7 @@ from jug.gui.theme import (
     create_zero_line,
     get_scatter_colors,
     Colors,
+    Typography,
     LightTheme,
     SynthwaveTheme,
     set_theme,
@@ -49,6 +50,69 @@ from jug.gui.theme import (
 from jug.engine.stats import compute_residual_stats
 
 
+# =============================================================================
+# CUSTOM WIDGETS
+# =============================================================================
+
+class ToggleSwitch(QCheckBox):
+    """Custom paint-based sliding toggle switch."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self._handle_pos = 0.0
+        
+        # Animation
+        self._anim = QVariantAnimation()
+        self._anim.setDuration(150)
+        self._anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self._anim.valueChanged.connect(self._on_anim_update)
+        self.stateChanged.connect(self._start_anim)
+        
+    def _start_anim(self):
+        start = self._handle_pos
+        end = 1.0 if self.isChecked() else 0.0
+        self._anim.stop()
+        self._anim.setStartValue(start)
+        self._anim.setEndValue(end)
+        self._anim.start()
+        
+    def _on_anim_update(self, val):
+        self._handle_pos = val
+        self.update()
+    
+    def sizeHint(self):
+        return QSize(44, 24)
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Use simple color lookup
+        if self.isChecked():
+            bg_col = QColor(Colors.ACCENT_PRIMARY)
+        else:
+            bg_col = QColor(Colors.SURFACE_BORDER)
+            
+        # Draw Track
+        rect = self.rect()
+        radius = rect.height() / 2
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(bg_col))
+        painter.drawRoundedRect(rect, radius, radius)
+        
+        # Draw Handle
+        handle_dia = self.height() - 6
+        # Calculate X based on handle_pos (0.0 to 1.0)
+        min_x = 3
+        max_x = self.width() - 3 - handle_dia
+        x = min_x + (max_x - min_x) * self._handle_pos
+        
+        painter.setBrush(QBrush(QColor("#FFFFFF")))
+        painter.drawEllipse(int(x), 3, int(handle_dia), int(handle_dia))
+        
+        painter.end()
+
+
 class MainWindow(QMainWindow):
     """Main window for JUG timing analysis GUI."""
 
@@ -59,8 +123,22 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1152, 768)
         self.setMaximumSize(2304, 1536)
 
+        # Detect remote environment
+        import os
+        self.is_remote = 'SSH_CLIENT' in os.environ or 'SSH_TTY' in os.environ or os.environ.get('JUG_REMOTE_UI', '').lower() in ('1', 'true', 'yes')
+
         # Apply modern theme stylesheet
         self.setStyleSheet(get_main_stylesheet())
+
+        # Enforce dark palette for X11 background clearing (prevents white flash)
+        from PySide6.QtGui import QPalette, QColor
+        from jug.gui.theme import Colors
+        palette = self.palette()
+        dark_bg = QColor(Colors.BG_PRIMARY)
+        palette.setColor(QPalette.Window, dark_bg)
+        palette.setColor(QPalette.Base, dark_bg)
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
 
         # Timing session (engine with caching)
         self.session = None
@@ -139,9 +217,33 @@ class MainWindow(QMainWindow):
         # Install event filter for key handling
         self.installEventFilter(self)
     
+        self.installEventFilter(self)
+
+    def resizeEvent(self, event):
+        """Handle window resize events to maintain overlay position."""
+        super().resizeEvent(event)
+        
+        # Update overlay drawer position in remote mode
+        if getattr(self, 'is_remote', False) and getattr(self, 'params_drawer_open', False):
+            from PySide6.QtCore import QPoint
+            
+            # Keep pinned to drop-down position below button
+            panel_width = 240 # Matches control panel
+            w = self.centralWidget().width()
+            
+            # Map button position
+            btn_bottom_global = self.params_drawer_btn.mapTo(self.centralWidget(), QPoint(0, self.params_drawer_btn.height()))
+            y_pos = btn_bottom_global.y()
+            x_pos = w - panel_width
+            h_available = self.centralWidget().height() - y_pos
+            
+            self.params_drawer.setGeometry(x_pos, y_pos, panel_width, h_available)
+    
     def _setup_ui(self):
         """Setup the main user interface with modern styling."""
         central_widget = QWidget()
+        from jug.gui.theme import Colors
+        central_widget.setStyleSheet(f"background-color: {Colors.BG_PRIMARY};")
         self.setCentralWidget(central_widget)
 
         # Main layout: Plot on left, controls on right
@@ -195,38 +297,39 @@ class MainWindow(QMainWindow):
         """Create the control panel widget with modern card-based layout."""
         # Main container that holds both control panel and parameter drawer
         self.control_container = QWidget()
+        from jug.gui.theme import Colors
+        self.control_container.setStyleSheet(f"background-color: {Colors.BG_PRIMARY};")
         container_layout = QHBoxLayout(self.control_container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
+        # Import AnimatedButton
+        from jug.gui.theme import AnimatedButton
+
         # Main control panel
         panel = QWidget()
         panel.setStyleSheet(get_control_panel_style())
+        panel.setFixedWidth(240)  # Fixed width to prevent resizing glitches
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 20, 16, 20)
         layout.setSpacing(16)
 
-        # Parameters button (opens drawer)
-        self.params_drawer_btn = QPushButton("Parameters  ▶")
-        self.params_drawer_btn.setStyleSheet(get_secondary_button_style())
-        self.params_drawer_btn.setCursor(Qt.PointingHandCursor)
-        self.params_drawer_btn.clicked.connect(self.on_toggle_params_drawer)
-        layout.addWidget(self.params_drawer_btn)
-
-        layout.addSpacing(8)
-
-        # Create the parameter drawer (hidden by default)
-        self._create_params_drawer()
-
-        self.param_checkboxes = {}
-
-        # Primary action: Run Fit (special styling)
-        self.fit_button = QPushButton("▶  Run Fit")
-        self.fit_button.setStyleSheet(get_primary_button_style())
-        self.fit_button.setCursor(Qt.PointingHandCursor)
+        # Primary action: Run Fit (special styling) - Animated (primary)
+        self.fit_button = AnimatedButton("▶  Run Fit", role="primary")
         self.fit_button.clicked.connect(self.on_fit_clicked)
         self.fit_button.setEnabled(False)
         layout.addWidget(self.fit_button)
+
+        layout.addSpacing(8)
+
+        # Parameters button (opens drawer) - Animated (secondary)
+        self.params_drawer_btn = AnimatedButton("Parameters to Fit  ▾", role="secondary")
+        self.params_drawer_btn.clicked.connect(self.on_toggle_params_drawer)
+        layout.addWidget(self.params_drawer_btn)
+
+        # Create the parameter drawer (hidden by default)
+        self._create_params_drawer()
+        self.param_checkboxes = {}
 
         # Solver mode dropdown (using QPushButton + QMenu for proper styling)
         solver_layout = QHBoxLayout()
@@ -264,25 +367,17 @@ class MainWindow(QMainWindow):
         layout.addLayout(solver_layout)
 
         # Secondary buttons with consistent styling
-        secondary_style = get_secondary_button_style()
-
-        self.fit_report_button = QPushButton("📊  Fit Report")
-        self.fit_report_button.setStyleSheet(secondary_style)
-        self.fit_report_button.setCursor(Qt.PointingHandCursor)
+        self.fit_report_button = AnimatedButton("📊  Fit Report", role="secondary")
         self.fit_report_button.clicked.connect(self.on_show_fit_report)
         self.fit_report_button.setEnabled(False)
         layout.addWidget(self.fit_report_button)
 
-        self.reset_button = QPushButton("↺  Restart")
-        self.reset_button.setStyleSheet(secondary_style)
-        self.reset_button.setCursor(Qt.PointingHandCursor)
+        self.reset_button = AnimatedButton("↺  Restart", role="secondary")
         self.reset_button.clicked.connect(self.on_restart_clicked)
         self.reset_button.setEnabled(False)
         layout.addWidget(self.reset_button)
 
-        self.fit_window_button = QPushButton("⤢  Fit Window to Data")
-        self.fit_window_button.setStyleSheet(secondary_style)
-        self.fit_window_button.setCursor(Qt.PointingHandCursor)
+        self.fit_window_button = AnimatedButton("⤢  Fit Window to Data", role="secondary")
         self.fit_window_button.clicked.connect(self.on_zoom_fit)
         self.fit_window_button.setEnabled(False)
         layout.addWidget(self.fit_window_button)
@@ -316,7 +411,13 @@ class MainWindow(QMainWindow):
 
         # Add panel to container
         container_layout.addWidget(panel)
-        container_layout.addWidget(self.params_drawer)
+        
+        if not self.is_remote:
+            container_layout.addWidget(self.params_drawer)
+        else:
+            # OVERLAY MODE: Drawer floats over content (Remote Only)
+            self.params_drawer.setParent(self.centralWidget())
+            self.params_drawer.raise_()
 
         return self.control_container
 
@@ -324,19 +425,61 @@ class MainWindow(QMainWindow):
         """Create the slide-out parameter drawer."""
         self.params_drawer = QFrame()
         self.params_drawer.setObjectName("paramsDrawer")
-        self.params_drawer.setFixedWidth(200)
-        self.params_drawer.setVisible(False)  # Hidden by default
+        self.params_drawer.setFixedWidth(0) # Hidden by width (pre-rendered)
+        # Explicit background to prevent white flash on X11
+        # Use a safe dark default if Colors isn't updated yet, but Colors.BG_SECONDARY should work
+        self.params_drawer.setStyleSheet(f"background-color: {Colors.BG_SECONDARY}; border-left: 1px solid {get_border_subtle()};")
+        self.params_drawer.setVisible(True)  # Always visible to prevent flash
         self.params_drawer_open = False
 
         drawer_layout = QVBoxLayout(self.params_drawer)
-        drawer_layout.setContentsMargins(12, 16, 12, 16)
+        drawer_layout.setContentsMargins(12, 8, 12, 12)
         drawer_layout.setSpacing(8)
 
         # Header with close button
         header_layout = QHBoxLayout()
-        self.params_header_label = QLabel("Parameters to Fit")
-        self.params_header_label.setStyleSheet(get_section_title_style())
-        header_layout.addWidget(self.params_header_label)
+        # "Lights On" Toggle Switch Cluster
+        
+        switch_container = QWidget()
+        switch_container.setStyleSheet("background: transparent; border: none;")
+        switch_layout = QHBoxLayout(switch_container)
+        switch_layout.setContentsMargins(0, 0, 0, 0)
+        switch_layout.setSpacing(6)
+        
+        # Styles
+        text_style = f"border: none; color: {Colors.TEXT_PRIMARY}; font-weight: {Typography.WEIGHT_BOLD}; font-size: 13px;"
+        muted_style = f"border: none; color: {Colors.TEXT_MUTED}; font-weight: normal; font-size: 13px;"
+        
+        # Title
+        lbl_title = QLabel("Lights On:")
+        lbl_title.setStyleSheet(text_style)
+        
+        # Off/On Labels
+        lbl_off = QLabel("Off")
+        lbl_off.setStyleSheet(text_style) 
+        
+        self.lights_on_switch = ToggleSwitch()
+        
+        lbl_on = QLabel("On")
+        lbl_on.setStyleSheet(muted_style)
+        
+        self._saved_param_state = set()
+
+        # Update labels visual state
+        def on_switch_toggle(checked):
+            lbl_off.setStyleSheet(f"border: none; color: {Colors.TEXT_MUTED if checked else Colors.TEXT_PRIMARY}; font-weight: {'normal' if checked else 'bold'}; font-size: 13px;")
+            lbl_on.setStyleSheet(f"border: none; color: {Colors.TEXT_PRIMARY if checked else Colors.TEXT_MUTED}; font-weight: {'bold' if checked else 'normal'}; font-size: 13px;")
+            self._on_lights_on_toggled(checked)
+
+        self.lights_on_switch.toggled.connect(on_switch_toggle)
+        
+        switch_layout.addWidget(lbl_title)
+        switch_layout.addStretch() 
+        switch_layout.addWidget(lbl_off)
+        switch_layout.addWidget(self.lights_on_switch)
+        switch_layout.addWidget(lbl_on)
+        
+        header_layout.addWidget(switch_container)
         header_layout.addStretch()
 
         close_btn = QPushButton("✕")
@@ -361,10 +504,14 @@ class MainWindow(QMainWindow):
         # Scroll area for parameters
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        # Explicit dark background for scroll area AND its viewport to prevent white flash
+        dark_bg = f"background-color: {Colors.BG_SECONDARY}; border: none;"
+        scroll.setStyleSheet(f"QScrollArea {{ {dark_bg} }} QWidget {{ {dark_bg} }}")
 
         # Container for checkboxes
         self.param_container = QWidget()
+        self.param_container.setAttribute(Qt.WA_StyledBackground, True)
+        self.param_container.setStyleSheet(dark_bg)
         self.param_layout = QVBoxLayout(self.param_container)
         self.param_layout.setSpacing(4)
         self.param_layout.setContentsMargins(0, 0, 0, 0)
@@ -380,26 +527,108 @@ class MainWindow(QMainWindow):
         drawer_layout.addWidget(scroll)
 
     def on_toggle_params_drawer(self):
-        """Toggle the parameter drawer open/closed, expanding window to fit."""
+        """Toggle the parameter drawer. Overlay for remote, animated for local."""
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QPoint
+        
+        drawer_width = 250
+        
+        if self.is_remote:
+             # OVERLAY MODE: Drop-down over control panel
+             self.params_drawer_open = not self.params_drawer_open
+             
+             if self.params_drawer_open:
+                 # Align to Control Panel (Fixed 240)
+                 panel_width = 240
+                 w_total = self.centralWidget().width()
+                 
+                 # Calculate Y position: Bottom of the button
+                 # Map button's bottom-left (0, height) to central widget coords
+                 btn_bottom_global = self.params_drawer_btn.mapTo(self.centralWidget(), QPoint(0, self.params_drawer_btn.height()))
+                 y_pos = btn_bottom_global.y()
+                 x_pos = w_total - panel_width # Right aligned
+                 
+                 h_available = self.centralWidget().height() - y_pos
+                 
+                 self.params_drawer.setFixedWidth(panel_width)
+                 self.params_drawer.setGeometry(x_pos, y_pos, panel_width, h_available)
+                 self.params_drawer.raise_()
+                 self.params_drawer.setVisible(True)
+                 
+                 self.params_drawer_btn.setText("Parameters to Fit  ▴")
+             else:
+                 self.params_drawer.setVisible(False)
+                 self.params_drawer_btn.setText("Parameters to Fit  ▾")
+             return
+
+        # LOCAL MODE: Smooth Animation
         self.params_drawer_open = not self.params_drawer_open
-        drawer_width = 200  # Fixed drawer width
+        
+        # Unlock fixed width constraints for animation
+        self.params_drawer.setMinimumWidth(0)
+        self.params_drawer.setMaximumWidth(drawer_width if self.params_drawer_open else 0)
+
+        # Initialize animation if needed
+        if not hasattr(self, '_drawer_anim'):
+            self._drawer_anim = QPropertyAnimation(self.params_drawer, b"maximumWidth")
+            self._drawer_anim.setDuration(300)
+            self._drawer_anim.setEasingCurve(QEasingCurve.OutQuart)
+            
+        # Clear previous connections
+        try: self._drawer_anim.finished.disconnect()
+        except: pass
 
         if self.params_drawer_open:
-            # Expand window to accommodate drawer
+             # OPENING
             current_size = self.size()
             self.resize(current_size.width() + drawer_width, current_size.height())
-            self.params_drawer.setVisible(True)
-            self.params_drawer_btn.setText("Parameters  ◀")
+            
+            self._drawer_anim.setStartValue(0)
+            self._drawer_anim.setEndValue(drawer_width)
+            self.params_drawer_btn.setText("Parameters to Fit  ▴")
+            self._drawer_anim.start()
         else:
-            # Set drawer width to 0 first to prevent layout redistribution
-            self.params_drawer.setFixedWidth(0)
-            self.params_drawer.setVisible(False)
-            # Shrink window
-            current_size = self.size()
-            self.resize(current_size.width() - drawer_width, current_size.height())
-            # Restore drawer width for next open
-            self.params_drawer.setFixedWidth(drawer_width)
-            self.params_drawer_btn.setText("Parameters  ▶")
+            # CLOSING
+            self._drawer_anim.setStartValue(drawer_width)
+            self._drawer_anim.setEndValue(0)
+            self.params_drawer_btn.setText("Parameters to Fit  ▾")
+            
+            def on_close_finished():
+                # Shrink window back
+                curr = self.size()
+                self.resize(curr.width() - drawer_width, curr.height())
+                
+            self._drawer_anim.finished.connect(on_close_finished)
+            self._drawer_anim.start()
+
+    def _on_lights_on_toggled(self, checked):
+        """Toggle all parameters on/off, restoring previous state.
+        Defer execution slightly to allow UI (switch animation) to start smoothly.
+        """
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(20, lambda: self._execute_lights_on_toggle(checked))
+
+    def _execute_lights_on_toggle(self, checked):
+        """Execute the actual parameter toggling logic."""
+        # Disable updates only on the container to prevent flicker but keep window responsive
+        # Use param_container if available, else window
+        target = self.param_container if hasattr(self, 'param_container') else self
+        target.setUpdatesEnabled(False)
+        
+        try:
+            if checked:
+                # Lights ON: Save state and enable all
+                self._saved_param_state.clear()
+                for param, cb in self.param_checkboxes.items():
+                    if cb.isChecked():
+                        self._saved_param_state.add(param)
+                    cb.setChecked(True)
+            else:
+                # Lights OFF: Restore previous state
+                for param, cb in self.param_checkboxes.items():
+                    cb.setChecked(param in self._saved_param_state)
+                self._saved_param_state.clear()
+        finally:
+            target.setUpdatesEnabled(True)
 
     def _create_stat_row(self, parent_layout, label_text, initial_value):
         """Create a styled statistic row with label and value. Returns (label, value) tuple."""

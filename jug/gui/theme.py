@@ -10,6 +10,13 @@ Design Philosophy:
 """
 
 # =============================================================================
+# IMPORTS
+# =============================================================================
+from PySide6.QtWidgets import QPushButton
+from PySide6.QtCore import Qt, QVariantAnimation, QEasingCurve
+from PySide6.QtGui import QColor, QPalette
+
+# =============================================================================
 # COLOR PALETTE
 # =============================================================================
 
@@ -1254,6 +1261,10 @@ def configure_plot_widget(plot_widget):
         pg.mkPen(PlotTheme.get_axis_pen_color(), width=1)
     )
 
+    # Performance optimizations
+    plot_widget.setDownsampling(mode='peak')  # Use peak downsampling
+    plot_widget.setClipToView(True)           # Don't draw points outside view
+
 
 def create_scatter_item():
     """Create a styled scatter plot item."""
@@ -1262,7 +1273,10 @@ def create_scatter_item():
     return pg.ScatterPlotItem(
         size=PlotTheme.SCATTER_SIZE,
         pen=pg.mkPen(None),
-        brush=pg.mkBrush(*PlotTheme.get_scatter_color())
+        brush=pg.mkBrush(*PlotTheme.get_scatter_color()),
+        pxMode=True,      # Critical for performance (draws points as pixels, not polygons)
+        useCache=True,    # Cache the symbol image
+        hoverable=True,   # Enable hover events
     )
 
 
@@ -1272,8 +1286,111 @@ def create_error_bar_item():
 
     return pg.ErrorBarItem(
         beam=PlotTheme.ERROR_BAR_BEAM,
-        pen=pg.mkPen(color=PlotTheme.get_error_bar_color(), width=PlotTheme.ERROR_BAR_WIDTH)
+        pen=pg.mkPen(color=PlotTheme.get_error_bar_color_alt() if is_dark_mode() else PlotTheme.get_error_bar_color(), width=PlotTheme.ERROR_BAR_WIDTH)
     )
+
+class AnimatedButton(QPushButton):
+    """
+    A QPushButton with smooth background color transitions.
+    Remote mode: Uses standard CSS :hover (zero overhead).
+    Local mode: Uses QVariantAnimation (smooth fade).
+    """
+    def __init__(self, text="", parent=None, role="primary"):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self._role = role
+        
+        # Detect remote environment
+        import os
+        self._is_remote = (
+            'SSH_CLIENT' in os.environ or 
+            'SSH_TTY' in os.environ or 
+            os.environ.get('JUG_REMOTE_UI', '').lower() in ('1', 'true', 'yes')
+        )
+        
+        # Define colors
+        if role == "primary":
+            self._bg_normal = Colors.BTN_PRIMARY_BG
+            self._bg_hover = Colors.BTN_PRIMARY_HOVER
+            self._bg_pressed = Colors.BTN_PRIMARY_PRESSED
+            self._text_color = Colors.BTN_PRIMARY_TEXT
+            border = 'none'
+        else: # secondary
+            self._bg_normal = Colors.BTN_SECONDARY_BG
+            self._bg_hover = Colors.BTN_SECONDARY_HOVER
+            self._bg_pressed = Colors.BTN_SECONDARY_PRESSED
+            self._text_color = Colors.BTN_SECONDARY_TEXT
+            border = f'1px solid {get_border_subtle()}'
+
+        # Base properties (layout/font)
+        self._base_style = f"""
+            QPushButton {{
+                color: {self._text_color};
+                border: {border};
+                border-radius: {BorderRadius.MD};
+                padding: {Spacing.MD} {Spacing.LG};
+                font-size: {Typography.SIZE_BASE};
+                font-weight: {Typography.WEIGHT_MEDIUM};
+                min-height: 44px;
+            }}
+            QPushButton:disabled {{
+                background-color: {Colors.DISABLED_BG};
+                color: {Colors.DISABLED_TEXT};
+                border: 1px solid {get_border_subtle()};
+            }}
+        """
+
+        if self._is_remote:
+            # REMOTE MODE: Standard Qt CSS with :hover (Reliable, Efficient)
+            # We append the background pseudo-states to the base style
+            remote_style = self._base_style + f"""
+            QPushButton {{
+                background-color: {self._bg_normal};
+            }}
+            QPushButton:hover {{
+                background-color: {self._bg_hover};
+            }}
+            QPushButton:pressed {{
+                background-color: {self._bg_pressed};
+            }}
+            """
+            self.setStyleSheet(remote_style)
+            
+        else:
+            # LOCAL MODE: Animated background
+            # Initial state
+            self.setStyleSheet(self._base_style + f"QPushButton {{ background-color: {self._bg_normal}; }}")
+            
+            # Setup animation
+            self._anim = QVariantAnimation()
+            self._anim.setDuration(200) 
+            self._anim.setEasingCurve(QEasingCurve.InOutQuad)
+            self._anim.valueChanged.connect(self._update_bg)
+            self._current_bg = self._bg_normal
+
+    def _update_bg(self, color):
+        """Update background color via stylesheet (Local only)."""
+        # Note: setStyleSheet is heavy, but looks correct compared to manual painting.
+        # locally it should be acceptable.
+        self.setStyleSheet(self._base_style + f"QPushButton {{ background-color: {color}; }}")
+        self._current_bg = color
+
+    def enterEvent(self, event):
+        if not self._is_remote:
+            self._anim.stop()
+            self._anim.setStartValue(self._current_bg)
+            self._anim.setEndValue(self._bg_hover)
+            self._anim.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if not self._is_remote:
+            self._anim.stop()
+            self._anim.setStartValue(self._bg_hover) # or current
+            self._anim.setEndValue(self._bg_normal)
+            self._anim.start()
+        super().leaveEvent(event)
+
 
 
 def get_error_bar_color_for_data(data_point_color, use_alt=False):

@@ -9,7 +9,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QLabel, QPushButton, QStatusBar,
     QCheckBox, QGroupBox, QMessageBox, QProgressDialog,
     QFrame, QScrollArea, QSizePolicy, QApplication, QMenu,
-    QDialog, QTextBrowser
+    QDialog, QTextBrowser, QTableWidget, QTableWidgetItem,
+    QHeaderView, QAbstractItemView
 )
 from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer, QSize, QRect, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QCursor, QPainter, QBrush, QColor
@@ -622,13 +623,35 @@ class MainWindow(QMainWindow):
                     if cb.isChecked():
                         self._saved_param_state.add(param)
                     cb.setChecked(True)
+                self.statusBar().showMessage("All parameters enabled", 3000)
             else:
                 # Lights OFF: Restore previous state
                 for param, cb in self.param_checkboxes.items():
                     cb.setChecked(param in self._saved_param_state)
                 self._saved_param_state.clear()
+                self.statusBar().showMessage("Restored parameter selection", 3000)
         finally:
             target.setUpdatesEnabled(True)
+
+    def _on_param_manual_toggle(self, checked):
+        """Handle individual parameter toggle to sync with master switch."""
+        # If user manually unchecks a box while "Lights On" is active,
+        # we must turn off the master switch to reflect state is no longer "All On".
+        # We do this silently without triggering the restore logic.
+        if not checked and hasattr(self, 'lights_on_switch') and self.lights_on_switch.isChecked():
+            # Block signals to prevent recursive restore logic
+            self.lights_on_switch.blockSignals(True)
+            self.lights_on_switch.setChecked(False)
+            
+            # Manually reset animation state for custom widget to match checked state
+            if hasattr(self.lights_on_switch, '_handle_pos'):
+                self.lights_on_switch._handle_pos = 0.0
+                self.lights_on_switch.update()
+                
+            self.lights_on_switch.blockSignals(False)
+            
+            # Clear saved state as we've exited the clean mode
+            self._saved_param_state.clear()
 
     def _create_stat_row(self, parent_layout, label_text, initial_value):
         """Create a styled statistic row with label and value. Returns (label, value) tuple."""
@@ -1169,69 +1192,124 @@ class MainWindow(QMainWindow):
     
     def _show_fit_results(self, result):
         """
-        Show fit results in a styled dialog.
+        Show fit results in a styled dialog using QTableWidget for performance.
 
         Parameters
         ----------
         result : dict
             Fit results
         """
-        # Build title with pulsar name and RMS
-        pulsar_str = self.pulsar_name if self.pulsar_name else 'Unknown'
-        title = f"{pulsar_str} - Fit Results"
-
-        # Colors for styling (use theme-aware colors for dark/light mode compatibility)
-        text_neutral = Colors.TEXT_PRIMARY  # Main text color
-        text_muted = Colors.TEXT_SECONDARY  # Secondary/muted text
+        # Styling constants
+        text_neutral = Colors.TEXT_PRIMARY
+        text_muted = Colors.TEXT_SECONDARY
         accent = get_dynamic_accent_primary()
-        border = Colors.SURFACE_BORDER
         bg_surface = Colors.SURFACE
         bg_secondary = Colors.BG_SECONDARY
-        converged_color = Colors.ACCENT_SUCCESS if result['converged'] else Colors.ACCENT_WARNING
-        converged_text = "Yes" if result['converged'] else "No"
-
-        # Build parameter rows
+        border_col = Colors.SURFACE_BORDER
+        
+        # Dialog Setup
+        dialog = QDialog(self)
+        pulsar_str = self.pulsar_name if self.pulsar_name else 'Unknown'
+        dialog.setWindowTitle(f"{pulsar_str} - Fit Results")
+        
+        # Size
+        main_height = self.height()
+        main_width = self.width()
+        dialog.setFixedSize(min(int(main_width * 0.8), 1000), min(int(main_height * 0.85), 700))
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        
+        # 1. Header (Title)
+        title_lbl = QLabel(f"{pulsar_str} - Fit Results")
+        title_lbl.setStyleSheet(f"color: {accent}; font-size: 20px; font-weight: bold;")
+        layout.addWidget(title_lbl)
+        
+        # 2. Summary Stats (Grid/HBox)
+        stats_frame = QFrame()
+        stats_frame.setStyleSheet(f"background-color: {bg_secondary}; border-radius: 8px;")
+        stats_layout = QHBoxLayout(stats_frame)
+        stats_layout.setContentsMargins(16, 16, 16, 16)
+        
+        def add_stat(label, value, color=text_neutral, bold=False):
+            container = QWidget()
+            vbox = QVBoxLayout(container)
+            vbox.setContentsMargins(0, 0, 0, 0)
+            vbox.setSpacing(4)
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {text_muted}; font-size: 12px;")
+            lbl.setAlignment(Qt.AlignCenter)
+            val = QLabel(str(value))
+            weight = "bold" if bold else "normal"
+            val.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: {weight}; font-family: monospace;")
+            val.setAlignment(Qt.AlignCenter)
+            vbox.addWidget(lbl)
+            vbox.addWidget(val)
+            stats_layout.addWidget(container)
+            
+        add_stat("Final RMS", f"{result['final_rms']:.6f} μs", color=accent, bold=True)
+        add_stat("Iterations", result['iterations'])
+        conv_text = "Yes" if result['converged'] else "No"
+        conv_color = Colors.ACCENT_SUCCESS if result['converged'] else Colors.ACCENT_WARNING
+        add_stat("Converged", conv_text, color=conv_color, bold=True)
+        add_stat("Time", f"{result['total_time']:.2f}s")
+        
+        layout.addWidget(stats_frame)
+        
+        # 3. Parameters Table
+        table = QTableWidget()
+        table.setColumnCount(6)
+        table.setHorizontalHeaderLabels(["Parameter", "New Value", "Previous", "Change", "Uncertainty", "Unit"])
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setShowGrid(False)
+        
+        # Header Styling
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True) 
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        
+        # Prepare Data
         from jug.io.par_reader import parse_ra, parse_dec, format_ra, format_dec
         
-        param_rows = ""
-        # Use available_params order (which is par file order) if available
         param_order = getattr(self, 'available_params', list(result['final_params'].keys()))
-        # Only show params that were actually fit
         ordered_params = [p for p in param_order if p in result['final_params']]
-        # Add any params not in our order list (shouldn't happen, but be safe)
         for p in result['final_params'].keys():
             if p not in ordered_params:
                 ordered_params.append(p)
+                
+        table.setRowCount(len(ordered_params))
         
-        for param in ordered_params:
+        for row, param in enumerate(ordered_params):
             new_value = result['final_params'][param]
             uncertainty = result['uncertainties'][param]
             prev_value = self.initial_params.get(param, 0.0)
             
-            # Handle RAJ/DECJ specially - they're strings in par file but radians in fit result
+            # Logic copied from original HTML generator
+            new_val_str = ""
+            prev_val_str = ""
+            change_str = ""
+            unit = ""
+            
             if param == 'RAJ':
-                # Convert string to radians for comparison
-                if isinstance(prev_value, str):
-                    prev_value_rad = parse_ra(prev_value)
-                else:
-                    prev_value_rad = prev_value
+                if isinstance(prev_value, str): prev_value_rad = parse_ra(prev_value)
+                else: prev_value_rad = prev_value
                 change = new_value - prev_value_rad
-                # Format as HMS string for display
                 new_val_str = format_ra(new_value)
                 prev_val_str = format_ra(prev_value_rad) if isinstance(prev_value, str) else prev_value
-                change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"  # Change in arcsec
+                change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
                 unit = "Δ arcsec"
             elif param == 'DECJ':
-                # Convert string to radians for comparison
-                if isinstance(prev_value, str):
-                    prev_value_rad = parse_dec(prev_value)
-                else:
-                    prev_value_rad = prev_value
+                if isinstance(prev_value, str): prev_value_rad = parse_dec(prev_value)
+                else: prev_value_rad = prev_value
                 change = new_value - prev_value_rad
-                # Format as DMS string for display
                 new_val_str = format_dec(new_value)
                 prev_val_str = format_dec(prev_value_rad) if isinstance(prev_value, str) else prev_value
-                change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"  # Change in arcsec
+                change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
                 unit = "Δ arcsec"
             elif param.startswith('F'):
                 change = new_value - prev_value
@@ -1277,9 +1355,9 @@ class MainWindow(QMainWindow):
                 unit = "s/s"
             elif param == 'A1':
                 change = new_value - prev_value
-                new_val_str = f"{new_value:.12f}"
-                prev_val_str = f"{prev_value:.12f}"
-                change_str = f"{change:+.6e}"
+                new_val_str = f"{new_value:.10f}"
+                prev_val_str = f"{prev_value:.10f}"
+                change_str = f"{change:+.10f}"
                 unit = "lt-s"
             elif param in ['T0', 'TASC']:
                 change = new_value - prev_value
@@ -1312,102 +1390,76 @@ class MainWindow(QMainWindow):
                 change_str = f"{change:+.6e}"
                 unit = ""
             else:
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.6e}"
-                prev_val_str = f"{prev_value:.6e}"
-                change_str = f"{change:+.6e}"
+                change = new_value - float(prev_value) if isinstance(prev_value, (int, float)) else 0.0
+                new_val_str = f"{new_value:.6g}"
+                prev_val_str = f"{prev_value}"
+                change_str = f"{change:+.6g}"
                 unit = ""
 
             unc_str = f"±{uncertainty:.2e}"
+            
+            # Populate Row
+            def create_item(text, color=text_neutral, font_mono=False):
+                item = QTableWidgetItem(text)
+                item.setForeground(QBrush(QColor(color)))
+                if font_mono:
+                    font = QFont("Monospace")
+                    font.setStyleHint(QFont.Monospace)
+                    item.setFont(font)
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                return item
 
-            param_rows += f"""
-            <tr>
-                <td style='padding: 8px; border-bottom: 1px solid {border};'><b style='color: {accent};'>{param}</b></td>
-                <td style='padding: 8px; border-bottom: 1px solid {border}; font-family: monospace;'>{new_val_str}</td>
-                <td style='padding: 8px; border-bottom: 1px solid {border}; font-family: monospace; color: {text_muted};'>{prev_val_str}</td>
-                <td style='padding: 8px; border-bottom: 1px solid {border}; font-family: monospace;'>{change_str}</td>
-                <td style='padding: 8px; border-bottom: 1px solid {border}; font-family: monospace; color: {text_muted};'>{unc_str}</td>
-                <td style='padding: 8px; border-bottom: 1px solid {border}; color: {text_muted}; white-space: nowrap;'>{unit}</td>
-            </tr>
-            """
+            # Parameter
+            item_p = create_item(param, color=accent) # Parameter name accent color
+            font_p = item_p.font()
+            font_p.setBold(True)
+            item_p.setFont(font_p)
+            table.setItem(row, 0, item_p)
+            
+            table.setItem(row, 1, create_item(new_val_str, font_mono=True))
+            table.setItem(row, 2, create_item(prev_val_str, color=text_muted, font_mono=True))
+            table.setItem(row, 3, create_item(change_str, color=text_muted, font_mono=True))
+            table.setItem(row, 4, create_item(unc_str, color=text_muted, font_mono=True))
+            table.setItem(row, 5, create_item(unit, color=text_muted))
 
-        msg = f"""
-        <h2 style='color: {accent}; margin-bottom: 16px;'>Fit Results</h2>
-
-        <table style='border-collapse: collapse; width: 100%;'>
-            <thead>
-                <tr style='background-color: {Colors.BG_SECONDARY};'>
-                    <th style='padding: 10px 8px; text-align: left; border-bottom: 2px solid {accent};'>Parameter</th>
-                    <th style='padding: 10px 8px; text-align: left; border-bottom: 2px solid {accent};'>New Value</th>
-                    <th style='padding: 10px 8px; text-align: left; border-bottom: 2px solid {accent};'>Previous</th>
-                    <th style='padding: 10px 8px; text-align: left; border-bottom: 2px solid {accent};'>Change</th>
-                    <th style='padding: 10px 8px; text-align: left; border-bottom: 2px solid {accent};'>Uncertainty</th>
-                    <th style='padding: 10px 8px; text-align: left; border-bottom: 2px solid {accent}; white-space: nowrap;'>Unit</th>
-                </tr>
-            </thead>
-            <tbody>
-                {param_rows}
-            </tbody>
-        </table>
-
-        <br><br>
-
-        <table style='width: 100%; background-color: {Colors.BG_SECONDARY}; border-radius: 8px;'>
-            <tr>
-                <td style='padding: 16px; text-align: center;'>
-                    <span style='color: {text_muted}; font-size: 12px;'>Final RMS</span><br>
-                    <span style='font-family: monospace; font-size: 18px; color: {accent}; font-weight: bold;'>{result['final_rms']:.6f} μs</span>
-                </td>
-                <td style='padding: 16px; text-align: center;'>
-                    <span style='color: {text_muted}; font-size: 12px;'>Iterations</span><br>
-                    <span style='font-family: monospace; font-size: 18px; color: {text_neutral};'>{result['iterations']}</span>
-                </td>
-                <td style='padding: 16px; text-align: center;'>
-                    <span style='color: {text_muted}; font-size: 12px;'>Converged</span><br>
-                    <span style='font-size: 18px; color: {converged_color}; font-weight: bold;'>{converged_text}</span>
-                </td>
-                <td style='padding: 16px; text-align: center;'>
-                    <span style='color: {text_muted}; font-size: 12px;'>Time</span><br>
-                    <span style='font-family: monospace; font-size: 18px; color: {text_neutral};'>{result['total_time']:.2f}s</span>
-                </td>
-            </tr>
-        </table>
-        """
-
-        # Create a proper QDialog with scrollable content
-        dialog = QDialog(self)
-        dialog.setWindowTitle(title)
+        # Table Styling
+        table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {Colors.BG_PRIMARY};
+                border: 1px solid {border_col};
+                border-radius: 4px;
+                gridline-color: transparent;
+            }}
+            QHeaderView::section {{
+                background-color: {Colors.BG_SECONDARY};
+                padding: 8px;
+                border: none;
+                border-bottom: 2px solid {accent};
+                color: {text_neutral};
+                font-weight: bold;
+            }}
+            QTableWidget::item {{
+                padding: 4px;
+                border-bottom: 1px solid {Colors.SURFACE_BORDER};
+            }}
+            QTableWidget::item:selected {{
+                background-color: {Colors.SURFACE_HOVER};
+            }}
+        """)
         
-        # Set dialog size - slightly smaller than the main window
-        main_window_height = self.height()
-        main_window_width = self.width()
-        dialog_height = min(int(main_window_height * 0.85), 650)
-        dialog_width = min(int(main_window_width * 0.75), 900)
-        dialog.setFixedSize(dialog_width, dialog_height)
+        layout.addWidget(table)
         
-        # Create layout
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Create scrollable text browser for the HTML content
-        text_browser = QTextBrowser()
-        text_browser.setOpenExternalLinks(False)
-        text_browser.setHtml(msg)
-        text_browser.setStyleSheet(f"background-color: {Colors.BG_PRIMARY}; border: none;")
-        
-        layout.addWidget(text_browser)
-        
-        # Add close button
+        # 4. Close Button
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dialog.accept)
         close_btn.setStyleSheet(get_primary_button_style())
-        close_btn.setFixedWidth(100)
+        close_btn.setFixedWidth(120)
+        close_btn.setCursor(Qt.PointingHandCursor)
         
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         btn_layout.addWidget(close_btn)
         btn_layout.addStretch()
-        btn_layout.setContentsMargins(10, 10, 10, 10)
         layout.addLayout(btn_layout)
         
         dialog.exec()
@@ -1831,6 +1883,7 @@ class MainWindow(QMainWindow):
                 checkbox.setToolTip(f"{param} not in original .par file (will be fitted from scratch)")
 
             self.param_checkboxes[param] = checkbox
+            checkbox.toggled.connect(self._on_param_manual_toggle)
             self.param_layout.addWidget(checkbox)
 
         # Add stretch at end

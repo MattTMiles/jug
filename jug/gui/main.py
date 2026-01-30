@@ -76,19 +76,36 @@ Note: CPU is faster for typical pulsar timing (<100k TOAs).
     is_remote = os.environ.get('JUG_REMOTE_UI', '').lower() in ('1', 'true', 'yes')
     is_ssh = 'SSH_CLIENT' in os.environ or 'SSH_TTY' in os.environ
 
-    pg_opts = {'useOpenGL': False}  # Default: no OpenGL (more stable)
-
-    if is_remote or is_ssh:
-        # Remote mode: disable antialiasing for faster rendering over X11
-        pg_opts['antialias'] = False
-        print("JUG GUI: Remote mode detected, optimizing for X11")
+    # Performance tuning: OpenGL is crucial for >1k points
+    # Default to True unless explicitly disabled
+    env_opengl = os.environ.get('JUG_PG_USE_OPENGL', '').lower()
+    
+    if env_opengl == 'true':
+        use_opengl = True
+    elif env_opengl == 'false':
+        use_opengl = False
     else:
-        pg_opts['antialias'] = True
+        # Auto-detect: Enable locally, disable remotely (causes white screen/hangs)
+        use_opengl = not (is_remote or is_ssh)
 
-    # Opt-in OpenGL via environment variable
-    if os.environ.get('JUG_PG_USE_OPENGL', '').lower() in ('1', 'true'):
-        pg_opts['useOpenGL'] = True
-        print("JUG GUI: OpenGL enabled")
+    # Antialiasing looks better but costs performance
+    use_antialias = True
+    if is_remote or is_ssh:
+        # Remote mode: disable AA and OpenGL defaults
+        use_antialias = False
+        if use_opengl:
+             print("JUG GUI: Warning - OpenGL enabled over SSH/Remote. This may cause hangs.")
+        else:
+             print("JUG GUI: Remote mode detected - OpenGL disabled for stability")
+
+    pg_opts = {
+        'useOpenGL': use_opengl, 
+        'antialias': use_antialias,
+        'enableExperimental': True
+    }
+    
+    if use_opengl:
+        print("JUG GUI: OpenGL acceleration enabled")
 
     pg.setConfigOptions(**pg_opts)
 

@@ -68,8 +68,10 @@ from jug.fitting.wls_fitter import wls_solve_svd
 from jug.model.parameter_spec import (
     is_spin_param,
     is_dm_param,
+    is_binary_param,
     get_spin_params_from_list,
     get_dm_params_from_list,
+    get_binary_params_from_list,
     DerivativeGroup,
     get_derivative_group,
 )
@@ -113,6 +115,10 @@ class GeneralFitSetup:
         DM parameters being fit (empty if none)
     spin_params : list of str
         Spin parameters being fit
+    binary_params : list of str
+        Binary parameters being fit (empty if none)
+    roemer_shapiro_sec : np.ndarray or None
+        Roemer + Shapiro delays in seconds (for binary fitting)
     """
     params: Dict[str, float]
     fit_param_list: List[str]
@@ -127,6 +133,9 @@ class GeneralFitSetup:
     initial_dm_delay: Optional[np.ndarray]
     dm_params: List[str]
     spin_params: List[str]
+    binary_params: List[str]
+    roemer_shapiro_sec: Optional[np.ndarray]
+    initial_binary_delay: Optional[np.ndarray]  # For binary fitting iteration
 
 
 # =============================================================================
@@ -1121,6 +1130,7 @@ def _build_general_fit_setup_from_files(
     # Classify parameters (spec-driven)
     spin_params = get_spin_params_from_list(fit_params)
     dm_params = get_dm_params_from_list(fit_params)
+    binary_params = get_binary_params_from_list(fit_params)
     
     # Cache expensive delays (subtract_tzr=False for fitting)
     if verbose:
@@ -1145,6 +1155,21 @@ def _build_general_fit_setup_from_files(
         initial_dm_params = {p: params[p] for p in dm_params if p in params}
         initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
 
+    # If fitting binary params, extract roemer_shapiro_sec and compute initial binary delay
+    roemer_shapiro_sec = None
+    initial_binary_delay = None
+    if binary_params:
+        roemer_shapiro_sec = result.get('roemer_shapiro_sec')
+        if roemer_shapiro_sec is None:
+            raise ValueError(
+                "Binary fitting requires roemer_shapiro_sec in compute_residuals_simple output. "
+                "Please update compute_residuals_simple to return 'roemer_shapiro_sec'."
+            )
+        # Compute initial binary delay for iterative fitting
+        toas_bary = tdb_mjd - roemer_shapiro_sec / SECS_PER_DAY
+        from jug.fitting.derivatives_binary import compute_ell1_binary_delay
+        initial_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params))
+
     return GeneralFitSetup(
         params=params,
         fit_param_list=fit_params,
@@ -1158,7 +1183,10 @@ def _build_general_fit_setup_from_files(
         tdb_mjd=np.array(tdb_mjd),
         initial_dm_delay=initial_dm_delay,
         dm_params=dm_params,
-        spin_params=spin_params
+        spin_params=spin_params,
+        binary_params=binary_params,
+        roemer_shapiro_sec=roemer_shapiro_sec,
+        initial_binary_delay=initial_binary_delay
     )
 
 
@@ -1212,6 +1240,14 @@ def _run_general_fit_iterations(
     initial_dm_delay = setup.initial_dm_delay
     dm_params = setup.dm_params
     spin_params = setup.spin_params
+    binary_params = setup.binary_params
+    initial_binary_delay = setup.initial_binary_delay
+    roemer_shapiro_sec = setup.roemer_shapiro_sec
+
+    # Precompute barycentric TOAs for binary fitting (only if needed)
+    toas_bary_for_binary = None
+    if binary_params and roemer_shapiro_sec is not None:
+        toas_bary_for_binary = tdb_mjd - roemer_shapiro_sec / SECS_PER_DAY
     
     # Initialize iteration
     param_values_curr = param_values_start.copy()
@@ -1238,63 +1274,44 @@ def _run_general_fit_iterations(
         for i, param in enumerate(fit_params):
             params[param] = param_values_curr[i]
         
+        # Start with cached dt_sec and apply corrections for DM and binary changes
+        dt_sec_np = dt_sec_cached.copy()
+
         # If fitting DM parameters, update dt_sec with new DM delay
         if dm_params:
-            # OPTIMIZED: Fast DM delay update without file I/O
             dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
             current_dm_params = {p: params[p] for p in dm_params}
             new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
+            dm_delay_change = new_dm_delay - initial_dm_delay
+            dt_sec_np = dt_sec_np - dm_delay_change
 
-            # Update dt_sec
-            dt_delay_change_sec = new_dm_delay - initial_dm_delay
-            dt_sec_np = dt_sec_cached - dt_delay_change_sec
+        # If fitting binary parameters, update dt_sec with new binary delay
+        if binary_params and initial_binary_delay is not None:
+            from jug.fitting.derivatives_binary import compute_ell1_binary_delay
+            new_binary_delay = np.array(compute_ell1_binary_delay(toas_bary_for_binary, params))
+            binary_delay_change = new_binary_delay - initial_binary_delay
+            dt_sec_np = dt_sec_np - binary_delay_change
 
-            # Compute phase residuals from updated dt_sec
-            f0 = params['F0']
-            f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
-            f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
+        # Compute phase residuals from updated dt_sec
+        f0 = params['F0']
+        f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
+        f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
 
-            phase = np.zeros_like(dt_sec_np)
-            factorial = 1.0
-            for n, f_val in enumerate(f_values):
-                factorial *= (n + 1) if n > 0 else 1.0
-                phase += f_val * (dt_sec_np ** (n + 1)) / factorial
+        phase = np.zeros_like(dt_sec_np)
+        factorial = 1.0
+        for n, f_val in enumerate(f_values):
+            factorial *= (n + 1) if n > 0 else 1.0
+            phase += f_val * (dt_sec_np ** (n + 1)) / factorial
 
-            phase_wrapped = phase - np.round(phase)
-            residuals = phase_wrapped / f0
+        phase_wrapped = phase - np.round(phase)
+        residuals = phase_wrapped / f0
 
-            # Subtract weighted mean (use pre-computed sum_weights)
-            weighted_mean = np.sum(residuals * weights) / sum_weights
-            residuals = residuals - weighted_mean
+        # Subtract weighted mean (use pre-computed sum_weights)
+        weighted_mean = np.sum(residuals * weights) / sum_weights
+        residuals = residuals - weighted_mean
 
-            # Compute RMS (use pre-computed sum_weights)
-            rms_us = np.sqrt(np.sum(residuals**2 * weights) / sum_weights) * 1e6
-        else:
-            # Spin-only fitting: fast computation from cached dt_sec
-            dt_sec_np = dt_sec_cached
-            f0 = params['F0']
-            f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
-            f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
-            
-            # Compute phase
-            phase = np.zeros_like(dt_sec_np)
-            factorial = 1.0
-            for n, f_val in enumerate(f_values):
-                factorial *= (n + 1) if n > 0 else 1.0
-                phase += f_val * (dt_sec_np ** (n + 1)) / factorial
-            
-            # Wrap phase
-            phase_wrapped = phase - np.round(phase)
-            
-            # Convert to time residuals
-            residuals = phase_wrapped / f0
-            
-            # Subtract weighted mean (use pre-computed sum_weights)
-            weighted_mean = np.sum(residuals * weights) / sum_weights
-            residuals = residuals - weighted_mean
-
-            # Compute RMS (use pre-computed sum_weights)
-            rms_us = np.sqrt(np.sum(residuals**2 * weights) / sum_weights) * 1e6
+        # Compute RMS (use pre-computed sum_weights)
+        rms_us = np.sqrt(np.sum(residuals**2 * weights) / sum_weights) * 1e6
 
         # Build design matrix - BATCHED derivative computation
         # Compute all spin derivatives in one call, all DM derivatives in one call
@@ -1314,12 +1331,32 @@ def _run_general_fit_iterations(
         if dm_params_list:
             dm_derivs = compute_dm_derivatives(params, toas_mjd, freq_mhz, dm_params_list)
 
+        # Batch binary parameters (spec-driven routing via component)
+        binary_params_list = get_binary_params_from_list(fit_params)
+        binary_derivs = {}
+        if binary_params_list:
+            # Binary derivatives require barycentric TOAs
+            if setup.roemer_shapiro_sec is None:
+                raise ValueError(
+                    "Binary fitting requires roemer_shapiro_sec in setup. "
+                    "Ensure compute_residuals_simple returns 'roemer_shapiro_sec'."
+                )
+            
+            # Compute barycentric TOAs (TOAs corrected for Solar System delays)
+            # Subtract roemer_shapiro to get barycentric time
+            toas_bary_mjd = toas_mjd - setup.roemer_shapiro_sec / SECS_PER_DAY
+            
+            from jug.fitting.derivatives_binary import compute_binary_derivatives_ell1
+            binary_derivs = compute_binary_derivatives_ell1(params, toas_bary_mjd, binary_params_list)
+
         # Assemble columns in original fit_params order (preserves exact behavior)
         for param in fit_params:
             if is_spin_param(param):
                 M_columns.append(spin_derivs[param])
             elif is_dm_param(param):
                 M_columns.append(dm_derivs[param])
+            elif is_binary_param(param):
+                M_columns.append(binary_derivs[param])
             else:
                 raise ValueError(f"Unknown parameter type: {param}")
         
@@ -1593,6 +1630,7 @@ def _build_general_fit_setup_from_cache(
     # Classify parameters (spec-driven)
     spin_params = get_spin_params_from_list(fit_params)
     dm_params = get_dm_params_from_list(fit_params)
+    binary_params = get_binary_params_from_list(fit_params)
     
     # If fitting DM params, cache initial DM delay (same as file path)
     initial_dm_delay = None
@@ -1600,6 +1638,25 @@ def _build_general_fit_setup_from_cache(
         dm_epoch = params_dict.get('DMEPOCH', params_dict.get('PEPOCH', 55000.0))
         initial_dm_params = {p: params_dict[p] for p in dm_params if p in params_dict}
         initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
+
+    # If fitting binary params, extract roemer_shapiro_sec and compute initial binary delay
+    roemer_shapiro_sec = None
+    initial_binary_delay = None
+    if binary_params:
+        roemer_shapiro_sec = session_cached_data.get('roemer_shapiro_sec')
+        if roemer_shapiro_sec is None:
+            raise ValueError(
+                "Binary fitting requires roemer_shapiro_sec in setup. "
+                "Ensure compute_residuals_simple returns 'roemer_shapiro_sec'."
+            )
+        if toa_mask is not None:
+            roemer_shapiro_sec = roemer_shapiro_sec[toa_mask]
+
+        # Compute initial binary delay for iterative fitting
+        # Barycentric times = TDB - (Roemer + Shapiro)
+        toas_bary = tdb_mjd - roemer_shapiro_sec / SECS_PER_DAY
+        from jug.fitting.derivatives_binary import compute_ell1_binary_delay
+        initial_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params_dict))
 
     return GeneralFitSetup(
         params=dict(params_dict),  # Copy
@@ -1614,7 +1671,10 @@ def _build_general_fit_setup_from_cache(
         tdb_mjd=np.array(tdb_mjd),
         initial_dm_delay=initial_dm_delay,
         dm_params=dm_params,
-        spin_params=spin_params
+        spin_params=spin_params,
+        binary_params=binary_params,
+        roemer_shapiro_sec=roemer_shapiro_sec,
+        initial_binary_delay=initial_binary_delay
     )
 
 
@@ -1690,19 +1750,16 @@ def _fit_parameters_general(
     
     # Check for unsupported parameters
     astrometry_params = [p for p in fit_params if p in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']]
-    binary_params = [p for p in fit_params if p in ['PB', 'A1', 'ECC', 'OM', 'T0', 'PBDOT', 'OMDOT', 'XDOT', 'EDOT', 'GAMMA', 'M2', 'SINI']]
     
     not_implemented = []
     if astrometry_params:
         not_implemented.append(f"Astrometry: {astrometry_params}")
-    if binary_params:
-        not_implemented.append(f"Binary: {binary_params}")
     
     if not_implemented:
         raise NotImplementedError(
             f"The following parameter types are not yet implemented:\n" +
             "\n".join(f"  - {item}" for item in not_implemented) +
-            f"\n\nCurrently supported: Spin (F0, F1, F2, ...) and DM (DM, DM1, DM2, ...)"
+            f"\n\nCurrently supported: Spin (F0, F1, F2, ...), DM (DM, DM1, DM2, ...), and Binary (PB, A1, TASC, EPS1, EPS2, ...)"
         )
     
     # STEP 1: Build setup from files (expensive)
@@ -1715,11 +1772,14 @@ def _fit_parameters_general(
     if verbose:
         spin_params = setup.spin_params
         dm_params = setup.dm_params
+        binary_params = setup.binary_params
         param_summary = []
         if spin_params:
             param_summary.append(f"{len(spin_params)} spin")
         if dm_params:
             param_summary.append(f"{len(dm_params)} DM")
+        if binary_params:
+            param_summary.append(f"{len(binary_params)} binary")
         print(f"\nFitting {' + '.join(param_summary)} parameters")
         for param, val in zip(fit_params, setup.param_values_start):
             print(_format_param_value_for_print(param, val))

@@ -391,6 +391,7 @@ class TimingSession:
                 'tdb_mjd': result['tdb_mjd'],
                 'errors_us': result.get('errors_us'),
                 'freq_mhz': result.get('freq_bary_mhz'),  # Need for DM delay recalculation
+                'roemer_shapiro_sec': result.get('roemer_shapiro_sec'),  # Need for binary fitting
                 'original_dm_params': {  # Cache original DM params for fast DM fitting
                     'DM': self.params.get('DM', 0.0),
                     'DM1': self.params.get('DM1', 0.0),
@@ -498,7 +499,8 @@ class TimingSession:
                 'tdb_mjd': cached_result['tdb_mjd'],
                 'freq_bary_mhz': cached_result['freq_bary_mhz'],
                 'toas_mjd': toas_mjd,
-                'errors_us': errors_us
+                'errors_us': errors_us,
+                'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec')
             }
             
             # Build setup from cache (with optional TOA mask)

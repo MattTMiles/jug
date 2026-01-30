@@ -48,6 +48,21 @@ def wls_solve_svd(
         Sigma: Parameter covariance matrix
         Adiag: Design matrix normalization factors
     """
+    # Move data to CPU for stability. SVD on GPU (cuSolver) can be flaky with dense matrices
+    # or under thread contention, causing "gpusolverDnCreate" errors.
+    # We attempt to move to CPU only if running eagerly (not tracing).
+    try:
+        # Simple heuristic: concrete arrays usually have a 'device' attribute or buffer interface
+        # Tracers might not, or we just rely on try-except.
+        # jax.device_put works on Tracers too (inserts valid primitive), so we just try it.
+        cpu = jax.devices("cpu")[0]
+        residuals = jax.device_put(residuals, cpu)
+        sigma = jax.device_put(sigma, cpu)
+        M = jax.device_put(M, cpu)
+    except Exception:
+        # Ignore errors (e.g. no CPU device, or tracing issues) and proceed with default device
+        pass
+
     # Step 1: Weight residuals by uncertainties
     # r1 = N^{-0.5} r
     r1 = residuals / sigma
@@ -78,22 +93,6 @@ def wls_solve_svd(
     # Step 7: Compute parameter updates
     # dpars = V S^{-1} U^T r1
     # Then unnormalize: dpars_final = A^{-1} dpars
-    #
-    # PINT convention (as of 2025-12-01):
-    # Design matrix M = -d(phase)/d(param) / F0 (NEGATIVE derivatives)
-    # Residuals = data - model (positive when data > model)
-    # If F0 is too low, residuals are positive
-    # M_F0 is negative, so M^T r is negative
-    # Solution dpars is negative → F0 decreases (WRONG!)
-    # Therefore we DON'T negate (negate_dpars=False by default)
-    #
-    # Wait... that's still wrong. Let me reconsider...
-    # Actually: M Δp = r means if residual is positive and M is negative,
-    # then Δp must be negative, which LOWERS F0, making model slower,
-    # making residuals MORE positive! That's divergence!
-    #
-    # The correct interpretation: residuals in phase space, not time!
-    # Never mind, just follow PINT exactly and it works.
     dpars = (VT.T @ ((U.T @ r1) / Sdiag)) / Adiag
     if negate_dpars:
         dpars = -dpars

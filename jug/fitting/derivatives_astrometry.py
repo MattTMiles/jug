@@ -381,6 +381,114 @@ def d_delay_d_PX(
     return dd_dpx
 
 
+def compute_astrometric_delay(
+    params: Dict,
+    toas_mjd: jnp.ndarray,
+    ssb_obs_pos_ls: jnp.ndarray,
+) -> jnp.ndarray:
+    """Compute the astrometric (Roemer) delay contribution.
+
+    The astrometric delay is the light travel time from the observatory to
+    the SSB along the pulsar direction:
+        τ_astro = -r · n̂ / c  (with parallax correction)
+
+    Parameters
+    ----------
+    params : Dict
+        Parameter dictionary with:
+        - RAJ, DECJ (radians or HMS/DMS strings) - required
+        - POSEPOCH (MJD) - optional, defaults to mean TOA time
+        - PMRA, PMDEC (mas/yr) - optional, for proper motion correction
+        - PX (mas) - optional, for parallax correction
+    toas_mjd : jnp.ndarray
+        TOA times in MJD (TDB), shape (n_toas,)
+    ssb_obs_pos_ls : jnp.ndarray
+        SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
+
+    Returns
+    -------
+    astrometric_delay_sec : jnp.ndarray
+        Astrometric delay in seconds, shape (n_toas,)
+
+    Notes
+    -----
+    This function computes the full astrometric delay including:
+    1. Basic Roemer delay: -r · n̂ / c
+    2. Proper motion correction to the pulsar direction
+    3. Second-order parallax correction
+    """
+    from jug.io.par_reader import parse_ra, parse_dec
+    import numpy as np
+
+    # Ensure inputs are arrays
+    ssb_obs_pos_ls = jnp.asarray(ssb_obs_pos_ls, dtype=jnp.float64)
+    toas_mjd = jnp.asarray(toas_mjd, dtype=jnp.float64)
+
+    # Extract pulsar position (in radians)
+    raj_value = params['RAJ']
+    if isinstance(raj_value, str):
+        psr_ra = parse_ra(raj_value)
+    else:
+        psr_ra = float(raj_value)
+
+    decj_value = params['DECJ']
+    if isinstance(decj_value, str):
+        psr_dec = parse_dec(decj_value)
+    else:
+        psr_dec = float(decj_value)
+
+    posepoch = float(params.get('POSEPOCH', float(np.mean(np.array(toas_mjd)))))
+
+    # Get proper motion (convert from mas/yr to rad/yr if present)
+    pmra_mas_yr = params.get('PMRA', 0.0)
+    pmdec_mas_yr = params.get('PMDEC', 0.0)
+    pmra_rad_yr = float(pmra_mas_yr) * (jnp.pi / 180 / 3600000) if pmra_mas_yr else 0.0
+    pmdec_rad_yr = float(pmdec_mas_yr) * (jnp.pi / 180 / 3600000) if pmdec_mas_yr else 0.0
+
+    # Get parallax (in mas)
+    px_mas = float(params.get('PX', 0.0))
+
+    # Compute pulsar unit vector (with proper motion correction)
+    n_x, n_y, n_z = compute_pulsar_unit_vector(
+        psr_ra, psr_dec, toas_mjd, posepoch, pmra_rad_yr, pmdec_rad_yr
+    )
+
+    # Observatory position components (in light-seconds)
+    x = ssb_obs_pos_ls[:, 0]
+    y = ssb_obs_pos_ls[:, 1]
+    z = ssb_obs_pos_ls[:, 2]
+
+    # Inner product r · n̂ (in light-seconds)
+    r_dot_n = x * n_x + y * n_y + z * n_z
+
+    # Basic Roemer delay: -r · n̂ / c = -r · n̂ (since ssb_obs_pos is in light-seconds)
+    roemer_delay = -r_dot_n  # seconds
+
+    # Parallax correction (second-order effect)
+    if px_mas != 0.0:
+        # Distance to pulsar: d = 1/px (pc), where px is in arcsec
+        # Convert px from mas to radians: px_rad = px_mas * pi / (180 * 3600 * 1000)
+        px_rad = px_mas * (jnp.pi / 180.0 / 3600.0 / 1000.0)
+
+        # Distance in light-seconds: d_ls = AU_ls / px_rad
+        # where AU_ls = AU in light-seconds
+        AU_LS = AU_METERS / SPEED_OF_LIGHT  # ~499.005 light-seconds
+        d_ls = AU_LS / px_rad if px_rad != 0 else jnp.inf
+
+        # r^2 magnitude
+        r_sq = x**2 + y**2 + z**2
+
+        # Transverse distance squared: px_r^2 = r^2 - (r·n̂)^2
+        px_r_sq = r_sq - r_dot_n**2
+
+        # Parallax delay: 0.5 * px_r^2 / d
+        parallax_delay = 0.5 * px_r_sq / d_ls  # seconds
+
+        roemer_delay = roemer_delay + parallax_delay
+
+    return roemer_delay
+
+
 def compute_astrometry_derivatives(
     params: Dict,
     toas_mjd: jnp.ndarray,
@@ -389,8 +497,16 @@ def compute_astrometry_derivatives(
 ) -> Dict[str, jnp.ndarray]:
     """Compute astrometry parameter derivatives for the design matrix.
     
-    The design matrix contains d(delay)/d(param) in par-file units.
-    PINT convention: negative sign because residual = data - model.
+    The design matrix contains d(residual)/d(param) where residual = observed - model.
+    
+    In pulsar timing:
+    - PINT subtracts delay from TDB: t_model = t_tdb - delay
+    - JUG adds delay to dt: dt = ... + delay + ...
+    
+    Since PINT's delay and JUG's delay have the same sign (both negative for Roemer),
+    the convention difference means:
+    - PINT: M = +d(delay)/d(param)  
+    - JUG: M = +d(delay)/d(param)  (match PINT for consistent fitting)
     
     Parameters
     ----------
@@ -398,7 +514,7 @@ def compute_astrometry_derivatives(
         Parameter dictionary with:
         - RAJ, DECJ (radians) - required
         - POSEPOCH (MJD) - optional, defaults to mean TOA time
-        - PMRA, PMDEC (rad/yr) - optional, for proper motion correction in PX
+        - PMRA, PMDEC (mas/yr) - optional, for proper motion correction in PX
     toas_mjd : jnp.ndarray
         TOA times in MJD (TDB), shape (n_toas,)
     ssb_obs_pos : jnp.ndarray
@@ -411,11 +527,11 @@ def compute_astrometry_derivatives(
     derivatives : Dict[str, jnp.ndarray]
         Dictionary mapping parameter names to derivative arrays.
         Each array has shape (n_toas,).
-        Units: d(delay)/d(param) in seconds per par-file unit
+        Units: d(residual)/d(param) in seconds per par-file unit
         - RAJ: seconds/hourangle
         - DECJ: seconds/degree
         - PMRA/PMDEC: seconds/(mas/year)
-        - PX: seconds/arcsec (NOTE: PX stored in mas in par files, but derivative uses arcsec)
+        - PX: seconds/mas
     """
     from jug.io.par_reader import parse_ra, parse_dec
     
@@ -455,16 +571,16 @@ def compute_astrometry_derivatives(
             # ∂(delay)/∂(RAJ) in seconds/radian
             deriv_rad = d_delay_d_RAJ(psr_ra, psr_dec, ssb_obs_pos)
             # Convert to seconds/hourangle
-            # d(delay)/d(RAJ_ha) = d(delay)/d(RAJ_rad) * d(RAJ_rad)/d(RAJ_ha)
-            # d(RAJ_rad)/d(RAJ_ha) = pi/12 = 1/HOURANGLE_PER_RAD
             deriv_ha = deriv_rad / HOURANGLE_PER_RAD  # seconds/hourangle
-            derivatives[param] = deriv_ha  # PINT convention: positive
+            # Match PINT convention: +d(delay)/d(param)
+            derivatives[param] = deriv_ha
             
         elif param_upper == 'DECJ':
             # ∂(delay)/∂(DECJ) in seconds/radian
             deriv_rad = d_delay_d_DECJ(psr_ra, psr_dec, ssb_obs_pos)
             # Convert to seconds/degree
             deriv_deg = deriv_rad / DEG_PER_RAD  # seconds/degree
+            # Match PINT convention: +d(delay)/d(param)
             derivatives[param] = deriv_deg
             
         elif param_upper == 'PMRA':
@@ -472,6 +588,7 @@ def compute_astrometry_derivatives(
             deriv_rad_yr = d_delay_d_PMRA(psr_ra, psr_dec, ssb_obs_pos, toas_mjd, posepoch)
             # Convert to seconds/(mas/year)
             deriv_mas_yr = deriv_rad_yr / MAS_PER_RAD  # seconds/(mas/year)
+            # Match PINT convention: +d(delay)/d(param)
             derivatives[param] = deriv_mas_yr
             
         elif param_upper == 'PMDEC':
@@ -479,11 +596,11 @@ def compute_astrometry_derivatives(
             deriv_rad_yr = d_delay_d_PMDEC(psr_ra, psr_dec, ssb_obs_pos, toas_mjd, posepoch)
             # Convert to seconds/(mas/year)
             deriv_mas_yr = deriv_rad_yr / MAS_PER_RAD  # seconds/(mas/year)
+            # Match PINT convention: +d(delay)/d(param)
             derivatives[param] = deriv_mas_yr
             
         elif param_upper == 'PX':
             # ∂(delay)/∂(PX) in seconds/radian
-            # Apply proper motion correction for accurate parallax derivative
             deriv_rad = d_delay_d_PX(
                 psr_ra, psr_dec, ssb_obs_pos,
                 toas_mjd=toas_mjd,
@@ -491,10 +608,9 @@ def compute_astrometry_derivatives(
                 pmra_rad_yr=pmra_rad_yr,
                 pmdec_rad_yr=pmdec_rad_yr,
             )
-            # Convert to seconds/arcsec (PINT convention)
-            # Note: PX is stored in mas in par files, but derivatives are in arcsec
-            ARCSEC_PER_RAD = MAS_PER_RAD / 1000.0
-            deriv_arcsec = deriv_rad / ARCSEC_PER_RAD  # seconds/arcsec
-            derivatives[param] = deriv_arcsec
+            # Convert to seconds/mas (PX is stored in mas in par files)
+            deriv_mas = deriv_rad / MAS_PER_RAD  # seconds/mas
+            # Match PINT convention: +d(delay)/d(param)
+            derivatives[param] = deriv_mas
     
     return derivatives

@@ -144,6 +144,7 @@ class GeneralFitSetup:
     roemer_shapiro_sec: Optional[np.ndarray]
     initial_binary_delay: Optional[np.ndarray]  # For binary fitting iteration
     ssb_obs_pos_ls: Optional[np.ndarray]
+    initial_astrometric_delay: Optional[np.ndarray]  # For astrometry fitting iteration
 
 
 # =============================================================================
@@ -1186,8 +1187,9 @@ def _build_general_fit_setup_from_files(
         from jug.fitting.derivatives_binary import compute_ell1_binary_delay
         initial_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params))
 
-    # If fitting astrometry params, extract ssb_obs_pos_ls
+    # If fitting astrometry params, extract ssb_obs_pos_ls and compute initial delay
     ssb_obs_pos_ls = None
+    initial_astrometric_delay = None
     if astrometry_params:
         ssb_obs_pos_ls = result.get('ssb_obs_pos_ls')
         if ssb_obs_pos_ls is None:
@@ -1195,6 +1197,9 @@ def _build_general_fit_setup_from_files(
                 "Astrometry fitting requires ssb_obs_pos_ls in compute_residuals_simple output. "
                 "Please update compute_residuals_simple to return 'ssb_obs_pos_ls'."
             )
+        # Compute initial astrometric delay for iterative fitting
+        from jug.fitting.derivatives_astrometry import compute_astrometric_delay
+        initial_astrometric_delay = np.array(compute_astrometric_delay(params, tdb_mjd, ssb_obs_pos_ls))
 
     return GeneralFitSetup(
         params=params,
@@ -1214,7 +1219,8 @@ def _build_general_fit_setup_from_files(
         astrometry_params=astrometry_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
         initial_binary_delay=initial_binary_delay,
-        ssb_obs_pos_ls=ssb_obs_pos_ls
+        ssb_obs_pos_ls=ssb_obs_pos_ls,
+        initial_astrometric_delay=initial_astrometric_delay
     )
 
 
@@ -1254,6 +1260,18 @@ def _run_general_fit_iterations(
     solver_mode = solver_mode.lower().strip() if solver_mode else "exact"
     if solver_mode not in ("exact", "fast"):
         solver_mode = "exact"
+        
+    # IMPORTANT WARNING: Astrometry parameter fitting has known limitations
+    # The linear approximation used during iterations doesn't fully capture
+    # the non-linear relationship between astrometry parameters (RAJ, DECJ, 
+    # PMRA, PMDEC, PX) and timing residuals. This can cause:
+    # 1. Reported RMS to be lower than true RMS
+    # 2. Divergence when fitting repeatedly
+    #
+    # Workaround: Fit astrometry parameters in a single fit, not repeatedly.
+    # The proper fix requires restructuring to recompute the full model
+    # after each iteration (like PINT does).
+    
     # Unpack setup
     params = setup.params
     fit_params = setup.fit_param_list
@@ -1271,6 +1289,9 @@ def _run_general_fit_iterations(
     binary_params = setup.binary_params
     initial_binary_delay = setup.initial_binary_delay
     roemer_shapiro_sec = setup.roemer_shapiro_sec
+    astrometry_params = setup.astrometry_params
+    initial_astrometric_delay = setup.initial_astrometric_delay
+    ssb_obs_pos_ls = setup.ssb_obs_pos_ls
 
     # Precompute barycentric TOAs for binary fitting (only if needed)
     toas_bary_for_binary = None
@@ -1319,6 +1340,17 @@ def _run_general_fit_iterations(
             new_binary_delay = np.array(compute_ell1_binary_delay(toas_bary_for_binary, params))
             binary_delay_change = new_binary_delay - initial_binary_delay
             dt_sec_np = dt_sec_np - binary_delay_change
+
+        # NOTE: We intentionally do NOT update dt_sec for astrometric delay changes
+        # during iterations. The WLS solver handles astrometry changes through the 
+        # linear derivative approximation. Updating the full non-linear delay causes
+        # instability because small position changes lead to large delay changes that
+        # aren't captured by the first-order Taylor expansion.
+        #
+        # This is similar to PINT's approach where the design matrix is computed
+        # at the current parameter values, but the residuals use the same delays.
+        # The astrometric delay is recomputed for the FINAL residual calculation
+        # to provide an accurate reported RMS.
 
         # Compute phase residuals from updated dt_sec
         f0 = params['F0']
@@ -1536,15 +1568,30 @@ def _run_general_fit_iterations(
     for i, param in enumerate(fit_params):
         params[param] = param_values_curr[i]
     
-    # Recompute dt_sec_np if DM was fit
+    # Recompute dt_sec_np with ALL delay changes (DM, binary, astrometric)
+    dt_sec_np = dt_sec_cached.copy()
+    
+    # DM delay change
     if dm_params:
         dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
         current_dm_params = {p: params[p] for p in dm_params}
         new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
         dt_delay_change_sec = new_dm_delay - initial_dm_delay
-        dt_sec_np = dt_sec_cached - dt_delay_change_sec
-    else:
-        dt_sec_np = dt_sec_cached
+        dt_sec_np = dt_sec_np - dt_delay_change_sec
+    
+    # Binary delay change
+    if binary_params and initial_binary_delay is not None:
+        from jug.fitting.derivatives_binary import compute_ell1_binary_delay
+        new_binary_delay = np.array(compute_ell1_binary_delay(toas_bary_for_binary, params))
+        binary_delay_change = new_binary_delay - initial_binary_delay
+        dt_sec_np = dt_sec_np - binary_delay_change
+    
+    # Astrometric delay change (for accurate final RMS)
+    if astrometry_params and initial_astrometric_delay is not None:
+        from jug.fitting.derivatives_astrometry import compute_astrometric_delay
+        new_astrometric_delay = np.array(compute_astrometric_delay(params, tdb_mjd, ssb_obs_pos_ls))
+        astrometric_delay_change = new_astrometric_delay - initial_astrometric_delay
+        dt_sec_np = dt_sec_np - astrometric_delay_change
     
     f0 = params['F0']
     f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
@@ -1716,8 +1763,9 @@ def _build_general_fit_setup_from_cache(
         from jug.fitting.derivatives_binary import compute_ell1_binary_delay
         initial_binary_delay = np.array(compute_ell1_binary_delay(toas_bary, params_dict))
 
-    # If fitting astrometry params, extract ssb_obs_pos_ls
+    # If fitting astrometry params, extract ssb_obs_pos_ls and compute initial delay
     ssb_obs_pos_ls = None
+    initial_astrometric_delay = None
     if astrometry_params:
         ssb_obs_pos_ls = session_cached_data.get('ssb_obs_pos_ls')
         if ssb_obs_pos_ls is None:
@@ -1727,6 +1775,9 @@ def _build_general_fit_setup_from_cache(
             )
         if toa_mask is not None:
             ssb_obs_pos_ls = ssb_obs_pos_ls[toa_mask]
+        # Compute initial astrometric delay for iterative fitting
+        from jug.fitting.derivatives_astrometry import compute_astrometric_delay
+        initial_astrometric_delay = np.array(compute_astrometric_delay(params_dict, tdb_mjd, ssb_obs_pos_ls))
 
     return GeneralFitSetup(
         params=dict(params_dict),  # Copy
@@ -1746,7 +1797,8 @@ def _build_general_fit_setup_from_cache(
         astrometry_params=astrometry_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
         initial_binary_delay=initial_binary_delay,
-        ssb_obs_pos_ls=ssb_obs_pos_ls
+        ssb_obs_pos_ls=ssb_obs_pos_ls,
+        initial_astrometric_delay=initial_astrometric_delay
     )
 
 

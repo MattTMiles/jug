@@ -21,7 +21,7 @@ Usage Example
 >>>     par_file=par_file,
 >>>     tim_file=tim_file,
 >>>     fit_params=['F0', 'F1'],
->>>     max_iter=25
+>>>     max_iter=100
 >>> )
 >>>
 >>> print(f"Fitted F0: {result['final_params']['F0']:.15f} Hz")
@@ -515,7 +515,7 @@ def fit_parameters_optimized(
     par_file: Path,
     tim_file: Path,
     fit_params: List[str],
-    max_iter: int = 25,
+    max_iter: int = 100,
     convergence_threshold: float = 1e-14,
     clock_dir: str | None = None,
     verbose: bool = True,
@@ -780,8 +780,8 @@ def _fit_parameters_jax_incremental(
     
     # Convergence criteria (match production fitter)
     xtol = 1e-12
-    gtol = 1e-3  # μs
-    min_iterations = 3
+    gtol = 1e-5  # μs (0.01 ns change)
+    min_iterations = 5
     
     iter_start = time.time()
     history = []
@@ -1398,7 +1398,7 @@ def _run_general_fit_iterations(
     required_chi2_decrease = 1e-2  # Minimum chi2 decrease to continue
     max_chi2_increase = 1e-2  # Maximum allowed chi2 increase before rejecting step
     min_lambda = 1e-3  # Minimum step scaling factor
-    min_iterations = 3
+    min_iterations = 5
     
     # Compute initial full-model chi2 for comparison
     for i, param in enumerate(fit_params):
@@ -1603,11 +1603,17 @@ def _run_general_fit_iterations(
                 break
         
         if not step_accepted:
-            # Couldn't improve even with very small steps - we've converged
-            if verbose:
-                print(f"         (step rejected at λ={lambda_:.4f}, converged at minimum)")
-            converged = True
-            break
+            # Couldn't improve even with very small steps
+            # But don't exit until we've done minimum iterations
+            if iteration >= min_iterations:
+                if verbose:
+                    print(f"         (step rejected at λ={lambda_:.4f}, converged at minimum)")
+                converged = True
+                break
+            else:
+                # Continue anyway to let linearization settle
+                if verbose:
+                    print(f"         (step rejected at λ={lambda_:.4f}, continuing...)")
         
         # Track RMS history (full-model RMS)
         rms_history.append(current_rms_us)
@@ -1626,7 +1632,7 @@ def _run_general_fit_iterations(
         rms_converged = False
         if len(rms_history) >= 2:
             rms_change = abs(rms_history[-1] - rms_history[-2])
-            rms_converged = rms_change < 1e-6  # Less than 1 ns change
+            rms_converged = rms_change < 1e-8  # Less than 0.01 ns change
         
         converged = iteration >= min_iterations and (param_converged or chi2_converged or rms_converged)
 
@@ -1835,7 +1841,7 @@ def _build_general_fit_setup_from_cache(
 
 def fit_parameters_optimized_cached(
     setup: GeneralFitSetup,
-    max_iter: int = 25,
+    max_iter: int = 100,
     convergence_threshold: float = 1e-14,
     verbose: bool = False,
     solver_mode: str = "exact"
@@ -1867,7 +1873,7 @@ def fit_parameters_optimized_cached(
     """
     total_start = time.time()
 
-    # Run iterations (identical logic to file-based path)
+    # Run iterations (single pass with improved convergence criteria)
     result = _run_general_fit_iterations(
         setup, max_iter, convergence_threshold, verbose, solver_mode=solver_mode
     )
@@ -2094,14 +2100,16 @@ def _fit_spin_params_general(
         param_converged = max_delta < convergence_threshold
         
         # Criterion 2: RMS change below threshold (more physically meaningful)
+        # Require at least 5 iterations before checking RMS convergence
+        # to allow the linearization to stabilize
         rms_converged = False
-        if prev_rms is not None:
+        if prev_rms is not None and iteration >= 4:  # At least 5 iterations
             rms_change = abs(rms_us - prev_rms) / prev_rms if prev_rms > 0 else 0
-            rms_converged = rms_change < 1e-6  # 0.0001% change
+            rms_converged = rms_change < 1e-8  # 0.00001% change (very tight)
         
         # Criterion 3: Stagnation (parameter change stopped)
         stagnated = False
-        if prev_delta_max is not None:
+        if prev_delta_max is not None and iteration >= 2:
             stagnated = abs(max_delta - prev_delta_max) < 1e-20
         
         if verbose and (iteration < 3 or iteration >= max_iter - 1):
@@ -2109,7 +2117,7 @@ def _fit_spin_params_general(
         elif verbose and iteration == 3:
             print(f"  ...")
         
-        # Check convergence (any criterion)
+        # Check convergence (any criterion, but with minimum iteration guards)
         if stagnated:
             if verbose:
                 print(f"  Iteration {iteration+1}: RMS={rms_us:.6f} μs (converged - stagnation)")

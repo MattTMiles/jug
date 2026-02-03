@@ -75,37 +75,134 @@ def compute_orbital_phase_ell1(
     pb: float,
     tasc: float,
     pbdot: float = 0.0,
+    fb_coeffs: jnp.ndarray = None,
 ) -> jnp.ndarray:
-    """Compute orbital phase Phi for ELL1 model.
+    """Compute orbital phase Phi for ELL1 model (supports FB parameters).
     
-    orbits = ttasc / PB - 0.5 * PBDOT * (ttasc / PB)²
-    Phi = 2π * orbits
+    Standard:
+        orbits = ttasc / PB - 0.5 * PBDOT * (ttasc / PB)²
     
-    This matches PINT's orbits_ELL1() and Phi() methods.
+    FB Mode (if fb_coeffs provided):
+        F_orb(t) = sum(FB_i * t^i / i!)
+        Phi = 2π * integral(F_orb * dt) = 2π * sum(FB_i * t^(i+1) / (i+1)!)
     
     Parameters
     ----------
     toas_bary_mjd : jnp.ndarray
-        BARYCENTRIC TOA times in MJD (NOT raw TDB!)
+        BARYCENTRIC TOA times in MJD
     pb : float
-        Orbital period in days
+        Orbital period in days (used if FB not used)
     tasc : float
         Time of ascending node in MJD
     pbdot : float, optional
-        Orbital period derivative (dimensionless)
+        Orbital period derivative
+    fb_coeffs : jnp.ndarray, optional
+        FB coefficients (FB0, FB1, ...). If present/not empty, uses FB model.
         
     Returns
     -------
     phi : jnp.ndarray
-        Orbital phase in radians (not wrapped to [0, 2π))
+        Orbital phase in radians
     """
     ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY  # seconds
-    pb_sec = pb * SECS_PER_DAY
     
-    # Orbits with PBDOT correction (matches PINT/Tempo2)
-    orbits = ttasc_sec / pb_sec - 0.5 * pbdot * (ttasc_sec / pb_sec) ** 2
+    # Check if using FB
+    use_fb = (fb_coeffs is not None) & (len(fb_coeffs) > 0)
     
-    return 2 * jnp.pi * orbits
+    def compute_phi_standard():
+        pb_sec = pb * SECS_PER_DAY
+        orbits = ttasc_sec / pb_sec - 0.5 * pbdot * (ttasc_sec / pb_sec) ** 2
+        return 2 * jnp.pi * orbits
+
+    def compute_phi_fb():
+        # FB Taylor series integration
+        # Phase = 2π * sum(FB_i * t^(i+1) / (i+1)!)
+        # Note: (i+1)! = fb_factorials[i] * (i+1)
+        # We need to construct factorials here or pass them. 
+        # Constructing small factorials on the fly is cheap in JIT.
+        n_coeffs = len(fb_coeffs)
+        
+        # JAX loop or vectorized sum
+        # t^(i+1)
+        # We need to broadcast ttasc_sec against powers
+        # ttasc_sec shape: (N,)
+        # coeffs shape: (M,)
+        
+        # Use vmap over toas? No, outer product is better.
+        # ttasc_sec: (N, 1)
+        # powers: (1, M)
+        
+        indices = jnp.arange(n_coeffs)
+        powers = indices + 1
+        
+        # Factorials: (i+1)!
+        # Can compute robustly via gamma or simple product loop
+        # Since M is small (~18), we can precompute a constant array inside JIT
+        # Factorials up to 20:
+        facts = jnp.array([1.0, 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 
+                           362880.0, 3628800.0, 39916800.0, 479001600.0, 
+                           6227020800.0, 87178291200.0, 1307674368000.0, 
+                           20922789888000.0, 355687428096000.0, 6402373705728000.0,
+                           121645100408832000.0]) # 0! to 19!
+        # We need (i+1)! -> facts[1] to facts[n+1]
+        # But indices starts at 0 -> we need facts[indices+1]
+        denom = facts[indices + 1] 
+        
+        # Expand time: t^(i+1)
+        # shape (N, M)
+        t_pow = jnp.power(ttasc_sec[:, None], powers[None, :])
+        
+        # Terms: FB_i * t^(i+1) / (i+1)!
+        terms = fb_coeffs[None, :] * t_pow / denom[None, :]
+        
+        phase_integral = jnp.sum(terms, axis=1)
+        return 2 * jnp.pi * phase_integral
+
+    # Use lax.cond to handle None/empty check inside JIT if needed
+    # But fb_coeffs shape is static. Python branch is fine if shape is static.
+    # If fb_coeffs is passed as None, len() fails.
+    # We'll use a python check.
+    if fb_coeffs is not None and len(fb_coeffs) > 0:
+        return compute_phi_fb()
+    else:
+        return compute_phi_standard()
+
+
+from functools import partial
+
+@partial(jax.jit, static_argnums=(1,))
+def d_Phi_d_FBi(
+    ttasc_sec: jnp.ndarray,
+    fb_index: int,
+) -> jnp.ndarray:
+    """Derivative of orbital phase w.r.t. FB coefficient i.
+    
+    Phi = 2π * sum(FB_k * t^(k+1) / (k+1)!)
+    dPhi/dFB_i = 2π * t^(i+1) / (i+1)!
+    
+    Parameters
+    ----------
+    ttasc_sec : jnp.ndarray
+        Time since TASC in seconds
+    fb_index : int
+        Index i of the FB coefficient (FB0, FB1...)
+        
+    Returns
+    -------
+    dPhi : jnp.ndarray
+        Derivative in rad/Hz (or equivalent unit)
+    """
+    power = fb_index + 1
+    
+    # Factorial (i+1)!
+    # Compute robustly
+    fact = 1.0
+    for k in range(1, power + 1):
+        fact *= k
+        
+    return 2 * jnp.pi * (ttasc_sec**power) / fact
+
+
 
 
 @jax.jit
@@ -811,10 +908,27 @@ def compute_ell1_binary_delay(
     m2 = float(params.get('M2', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
 
+    # Extract FB parameters (FB0, FB1, ...)
+    fb_coeffs_list = []
+    i = 0
+    while True:
+        key = f'FB{i}'
+        if key in params:
+            fb_coeffs_list.append(float(params[key]))
+            i += 1
+        else:
+            break
+    
+    if fb_coeffs_list:
+        fb_coeffs = jnp.array(fb_coeffs_list, dtype=jnp.float64)
+    else:
+        fb_coeffs = jnp.array([], dtype=jnp.float64)
+
     # Call JIT-compiled inner function with extracted numeric values
     return _compute_ell1_binary_delay_jit(
         jnp.asarray(toas_bary_mjd),
-        a1, pb, tasc, eps1, eps2, pbdot, a1dot, sini, m2, gamma
+        a1, pb, tasc, eps1, eps2, pbdot, a1dot, sini, m2, gamma,
+        fb_coeffs
     )
 
 
@@ -822,7 +936,8 @@ def compute_ell1_binary_delay(
 def _compute_ell1_binary_delay_jit(
     toas_bary_mjd: jnp.ndarray,
     a1: float, pb: float, tasc: float, eps1: float, eps2: float,
-    pbdot: float, a1dot: float, sini: float, m2: float, gamma: float
+    pbdot: float, a1dot: float, sini: float, m2: float, gamma: float,
+    fb_coeffs: jnp.ndarray
 ) -> jnp.ndarray:
     """JIT-compiled ELL1 binary delay computation."""
     # Time since TASC
@@ -833,7 +948,7 @@ def _compute_ell1_binary_delay_jit(
     a1_eff = a1 + a1dot * ttasc_sec
 
     # Orbital phase
-    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot)
+    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
 
     # nhat = 2π / PB (mean angular velocity in rad/s)
     nhat = 2 * jnp.pi / pb_sec
@@ -947,8 +1062,24 @@ def compute_binary_derivatives_ell1(
     # eps2(t) = EPS2 + EPS2DOT * ttasc
     eps2_eff = eps2 + eps2dot * ttasc_sec
     
+    # Extract FB parameters (FB0, FB1, ...)
+    fb_coeffs_list = []
+    i = 0
+    while True:
+        key = f'FB{i}'
+        if key in params:
+            fb_coeffs_list.append(float(params[key]))
+            i += 1
+        else:
+            break
+            
+    if fb_coeffs_list:
+        fb_coeffs = jnp.array(fb_coeffs_list, dtype=jnp.float64)
+    else:
+        fb_coeffs = jnp.array([], dtype=jnp.float64)
+    
     # Compute orbital phase
-    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot)
+    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
     
     # nhat = 2π / PB (mean angular velocity in rad/s)
     nhat = 2 * jnp.pi / pb_sec
@@ -1171,7 +1302,43 @@ def compute_binary_derivatives_ell1(
                 + d_delayI_d_Drepp * d_Drepp_d_a1dot
             )
             
+            d_delayI_d_a1dot = (
+                d_delayI_d_Dre * d_Dre_d_a1dot
+                + d_delayI_d_Drep * d_Drep_d_a1dot
+                + d_delayI_d_Drepp * d_Drepp_d_a1dot
+            )
+            
             derivatives[param] = d_delayI_d_a1dot
+
+        # =================================================================
+        # FB derivative (Orbital Frequency coefficients)
+        # =================================================================
+        elif param_upper.startswith('FB'):
+            try:
+                fb_idx = int(param_upper[2:])
+            except ValueError:
+                continue # Skip invalid FB params
+            
+            # d(Phi)/d(FB_i)
+            d_Phi_d_fb = d_Phi_d_FBi(ttasc_sec, fb_idx)
+            
+            # d(Dre)/d(FB) = Drep * d_Phi_d_fb
+            d_Dre_d_fb = Drep * d_Phi_d_fb
+            d_Drep_d_fb = Drepp * d_Phi_d_fb
+            d_Drepp_d_fb = Dreppp * d_Phi_d_fb
+            
+            # Inverse delay derivative chain
+            d_delayI_d_fb = (
+                d_delayI_d_Dre * d_Dre_d_fb
+                + d_delayI_d_Drep * d_Drep_d_fb
+                + d_delayI_d_Drepp * d_Drepp_d_fb
+            )
+            
+            # Shapiro delay depends on Phi
+            d_delayS_d_fb = d_shapiro_d_Phi(phi, sini, m2) * d_Phi_d_fb
+            
+            # Combined derivative
+            derivatives[param] = d_delayI_d_fb + d_delayS_d_fb
         
         # =================================================================
         # SINI derivative
@@ -1186,6 +1353,51 @@ def compute_binary_derivatives_ell1(
         elif param_upper == 'M2':
             # Only Shapiro delay depends on M2
             derivatives[param] = d_shapiro_d_M2(phi, sini)
+        
+        # =================================================================
+        # H3 derivative (orthometric Shapiro - ELL1H model)
+        # =================================================================
+        elif param_upper == 'H3':
+            # Orthometric parameterization: M2 = H3 / (STIG^3 * T_SUN)
+            # d(delay)/d(H3) = d(delay)/d(M2) * d(M2)/d(H3)
+            #                = d(delay)/d(M2) / (STIG^3 * T_SUN)
+            h3_val = float(params.get('H3', 0.0))
+            stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
+            
+            if stig_val != 0:
+                # Compute SINI from STIG for the Shapiro delay
+                sini_from_stig = 2 * stig_val / (1 + stig_val**2)
+                dM2_dH3 = 1.0 / (stig_val**3 * T_SUN)
+                derivatives[param] = d_shapiro_d_M2(phi, sini_from_stig) * dM2_dH3
+            else:
+                derivatives[param] = jnp.zeros(n_toas)
+        
+        # =================================================================
+        # STIG derivative (orthometric Shapiro - ELL1H model)
+        # =================================================================
+        elif param_upper in ('STIG', 'STIGMA'):
+            # Orthometric parameterization:
+            #   SINI = 2 * STIG / (1 + STIG^2)
+            #   M2 = H3 / (STIG^3 * T_SUN)
+            # d(delay)/d(STIG) = d(delay)/d(M2) * d(M2)/d(STIG) 
+            #                  + d(delay)/d(SINI) * d(SINI)/d(STIG)
+            h3_val = float(params.get('H3', 0.0))
+            stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
+            
+            if stig_val != 0 and h3_val != 0:
+                stig2 = stig_val**2
+                sini_from_stig = 2 * stig_val / (1 + stig2)
+                m2_from_h3 = h3_val / (stig_val**3 * T_SUN)
+                
+                # Chain rule terms
+                dM2_dSTIG = -3 * m2_from_h3 / stig_val
+                dSINI_dSTIG = 2 * (1 - stig2) / (1 + stig2)**2
+                
+                deriv = (d_shapiro_d_M2(phi, sini_from_stig) * dM2_dSTIG + 
+                        d_shapiro_d_SINI(phi, sini_from_stig, m2_from_h3) * dSINI_dSTIG)
+                derivatives[param] = deriv
+            else:
+                derivatives[param] = jnp.zeros(n_toas)
         
         # =================================================================
         # EPS1DOT derivative

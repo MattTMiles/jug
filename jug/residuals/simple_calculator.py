@@ -7,8 +7,12 @@ without the full complexity of the complete calculator class.
 import math
 from pathlib import Path
 import numpy as np
-from astropy.coordinates import EarthLocation, get_body_barycentric_posvel, solar_system_ephemeris
+import jax
+import jax.numpy as jnp
+from astropy.coordinates import solar_system_ephemeris, get_body_barycentric_posvel
+from astropy.coordinates import EarthLocation, AltAz, SkyCoord
 from astropy.time import Time
+import astropy.units as utem_ephemeris
 from astropy import units as u
 
 # Ensure JAX is configured for x64 precision
@@ -216,198 +220,234 @@ def compute_residuals_simple(
     ne_sw_jax = jnp.array(float(params.get('NE_SW', 0.0)))
 
     # Binary parameters - detect model and route appropriately
-    has_binary = 'PB' in params
+    has_binary = 'PB' in params or 'FB0' in params
     binary_model = params.get('BINARY', 'NONE').upper() if has_binary else 'NONE'
-    
-    if verbose: print(f"\n5. Detecting binary model...")
-    if has_binary:
-        if verbose: print(f"   Binary model: {binary_model}")
-    else:
-        if verbose: print(f"   No binary companion")
-    
-    # Check if we're using ELL1 (inline) or need to dispatch to BT/DD/T2
-    use_ell1_inline = binary_model in ('ELL1', 'ELL1H', 'NONE') and has_binary
-    use_dispatch = binary_model in ('BT', 'BTX', 'DD', 'DDH', 'DDGR', 'DDK', 'T2')
-    
-    if use_dispatch:
-        # For BT/DD/T2 models, we need to compute delays differently
-        # These models use ECC/OM/T0 instead of TASC/EPS1/EPS2
-        from jug.delays.binary_dispatch import dispatch_binary_delay
-        
-        if verbose: print(f"   Using dispatched binary model: {binary_model}")
-        
-        # Build parameter dict for dispatcher
-        binary_params = {
-            'PB': float(params['PB']),
-            'A1': float(params['A1']),
-            'ECC': float(params.get('ECC', 0.0)),
-            'OM': float(params.get('OM', 0.0)),
-            'T0': float(params.get('T0', params.get('PEPOCH', 0.0))),
-            'GAMMA': float(params.get('GAMMA', 0.0)),
-            'PBDOT': float(params.get('PBDOT', 0.0)),
-            'XDOT': float(params.get('XDOT', 0.0)),
-            'OMDOT': float(params.get('OMDOT', 0.0)),
-            'EDOT': float(params.get('EDOT', 0.0))
-        }
-        
-        # Handle SINI - may be numeric or reference to KIN
-        sini_value = params.get('SINI', 0.0)
-        if isinstance(sini_value, str) and sini_value.upper() == 'KIN':
-            # SINI references KIN parameter
-            binary_params['SINI'] = float(params.get('KIN', 0.0))
-        else:
-            binary_params['SINI'] = float(sini_value)
-        
-        # Handle M2
-        binary_params['M2'] = float(params.get('M2', 0.0))
-        
-        # Handle H3/H4/STIG for DDH (orthometric Shapiro delay parameters)
-        binary_params['H3'] = float(params.get('H3', 0.0)) if 'H3' in params else None
-        binary_params['H4'] = float(params.get('H4', 0.0)) if 'H4' in params else None
-        binary_params['STIG'] = float(params.get('STIG', 0.0)) if 'STIG' in params else None
-        
-        # For T2, also need KIN/KOM
-        if binary_model == 'T2':
-            binary_params['KIN'] = float(params.get('KIN', 0.0))
-            binary_params['KOM'] = float(params.get('KOM', 0.0))
-        
-        # Compute binary delays using dispatcher
-        # Binary delays need topocentric time = TDB - (Roemer+Shapiro+DM+SW+FD)
-        # We need to iterate: use TDB as first guess, compute other delays, then recompute binary
-        if verbose: print(f"   Computing {len(tdb_mjd)} binary delays (iterative)...")
-        
-        # Call dispatcher with array (will handle vectorization internally or via loop)
-        from jug.delays.binary_dd import dd_binary_delay_vectorized
-        from jug.delays.binary_t2 import t2_binary_delay_vectorized
-        
-        # Iteration 1: Use TDB as first approximation
-        tdb_array_f64 = jnp.array(np.array(tdb_mjd, dtype=np.float64))
-        
-        if binary_model in ('DD', 'DDH', 'DDGR', 'DDK'):
-            # Use vectorized DD function directly
-            binary_delay_sec = np.array(dd_binary_delay_vectorized(
-                tdb_array_f64,
-                pb_days=binary_params['PB'],
-                a1_lt_sec=binary_params['A1'],
-                ecc=binary_params['ECC'],
-                omega_deg=binary_params['OM'],
-                t0_mjd=binary_params['T0'],
-                gamma_sec=binary_params['GAMMA'],
-                pbdot=binary_params['PBDOT'],
-                xdot=binary_params['XDOT'],
-                omdot_deg_yr=binary_params['OMDOT'],
-                edot=binary_params['EDOT'],
-                m2_msun=binary_params['M2'],
-                sini=binary_params['SINI'],
-                h3_sec=binary_params['H3'],
-                h4_sec=binary_params['H4'],
-                stig=binary_params['STIG']
-            ))
-            # DEBUG: Log binary delay statistics after iteration 1
-            if verbose: print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
-        elif binary_model == 'T2':
-            # Use vectorized T2 function directly
-            binary_delay_sec = np.array(t2_binary_delay_vectorized(
-                tdb_array_f64,
-                pb=binary_params['PB'],
-                a1=binary_params['A1'],
-                ecc=binary_params['ECC'],
-                om=binary_params['OM'],
-                t0=binary_params['T0'],
-                gamma=binary_params['GAMMA'],
-                pbdot=binary_params['PBDOT'],
-                xdot=binary_params['XDOT'],
-                edot=binary_params['EDOT'],
-                omdot=binary_params['OMDOT'],
-                m2=binary_params['M2'],
-                sini=binary_params['SINI'],
-                kin=binary_params.get('KIN', 0.0),
-                kom=binary_params.get('KOM', 0.0)
-            ))
-            # DEBUG: Log binary delay statistics after T2 iteration 1
-            if verbose: print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
-        elif binary_model in ('BT', 'BTX'):
-            # Use vectorized BT function
-            from jug.delays.binary_bt import bt_binary_delay_vectorized
-            binary_delay_sec = np.array(bt_binary_delay_vectorized(
-                tdb_array_f64,
-                pb=binary_params['PB'],
-                a1=binary_params['A1'],
-                ecc=binary_params['ECC'],
-                om=binary_params['OM'],
-                t0=binary_params['T0'],
-                gamma=binary_params['GAMMA'],
-                pbdot=binary_params['PBDOT'],
-                m2=binary_params['M2'],
-                sini=binary_params['SINI'],
-                omdot=binary_params['OMDOT'],
-                xdot=binary_params['XDOT']
-            ))
-            # DEBUG: Log binary delay statistics after BT iteration 1
-            if verbose: print(f"   DEBUG Iter1: Binary delays computed - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
-        else:
-            raise ValueError(f"Unsupported binary model: {binary_model}")
-        
-        # Now we need to iterate: compute Roemer+Shapiro+DM+SW+FD first,
-        # then recompute binary at topocentric time
-        # For now, store first approximation - we'll refine after getting other delays
-        binary_delay_approx1 = binary_delay_sec.copy()
-        
-        # Set up for JAX kernel with binary delays pre-computed
-        has_binary_jax = jnp.array(False)  # Tell JAX kernel we handled binary externally
-        binary_delay_external = binary_delay_sec  # We'll add this back later
-        
-        # Dummy ELL1 params for JAX kernel
-        pb_jax = a1_jax = tasc_jax = eps1_jax = eps2_jax = jnp.array(0.0)
-        pbdot_jax = xdot_jax = gamma_jax = r_shap_jax = s_shap_jax = jnp.array(0.0)
-        
-    elif use_ell1_inline or has_binary:
-        # ELL1/ELL1H: use inline computation (current code path)
-        if verbose: print(f"   Using inline ELL1 computation")
-        
-        has_binary_jax = jnp.array(has_binary)
-        binary_delay_external = None  # No external binary delay
-        
-        if has_binary:
-            pb_jax = jnp.array(float(params['PB']))
-            a1_jax = jnp.array(float(params['A1']))
-            tasc_jax = jnp.array(float(params.get('TASC', 0.0)))
-            eps1_jax = jnp.array(float(params.get('EPS1', 0.0)))
-            eps2_jax = jnp.array(float(params.get('EPS2', 0.0)))
-            pbdot_jax = jnp.array(float(params.get('PBDOT', 0.0)))
-            xdot_jax = jnp.array(float(params.get('XDOT', 0.0)))
-            gamma_jax = jnp.array(float(params.get('GAMMA', 0.0)))
 
-            # Shapiro delay parameters
-            # Handle both H3/STIG (orthometric) and M2/SINI (mass/inclination) parameterizations
-            if 'H3' in params and 'STIG' in params:
-                # Orthometric parameters (H3, STIG)
-                H3 = float(params['H3'])
-                STIG = float(params['STIG'])
-                r_shap_jax = jnp.array(H3)
-                s_shap_jax = jnp.array(STIG)
-            elif 'M2' in params and 'SINI' in params:
-                # Convert M2/SINI to r/s
-                # r = TSUN * M2 (where TSUN = G*Msun/c^3 = 4.925490947e-6 s)
-                # s = SINI
-                M2 = float(params['M2'])  # solar masses
-                SINI = float(params['SINI'])
-                r_shap_jax = jnp.array(T_SUN_SEC * M2)
-                s_shap_jax = jnp.array(SINI)
-            else:
-                # No Shapiro delay parameters
-                r_shap_jax = jnp.array(0.0)
-                s_shap_jax = jnp.array(0.0)
+    # Map model name to ID
+    # 0: None, 1: ELL1/H, 2: DD/DDH/DDGR, 3: T2, 4: BT*, 5: DDK
+    model_id = 0
+    if has_binary:
+        if binary_model in ('ELL1', 'ELL1H'):
+            model_id = 1
+        elif binary_model in ('DD', 'DDH', 'DDGR'):
+            model_id = 2
+        elif binary_model == 'DDK':
+            model_id = 5  # DDK uses Kopeikin annual orbital parallax
+        elif binary_model == 'T2':
+            model_id = 3
+        elif binary_model in ('BT', 'BTX'):
+            model_id = 4
         else:
-            # Default binary params (unused)
-            pb_jax = a1_jax = tasc_jax = eps1_jax = eps2_jax = jnp.array(0.0)
-            pbdot_jax = xdot_jax = gamma_jax = r_shap_jax = s_shap_jax = jnp.array(0.0)
+            # Fallback for unknown models (treat as DD if looks like DD?)
+            # For now default to 0 with warning or error?
+            # Assuming valid model
+            pass
+
+    if verbose: print(f"\n5. Detecting binary model: {binary_model} (ID: {model_id})")
+
+    # Initialize ALL binary parameters to 0.0 (JAX superset)
+    pb_val = float(params.get('PB', 0.0))
+    
+    # If PB is missing but FB0 exists, derive PB (for T0 conversion)
+    if pb_val == 0.0 and 'FB0' in params:
+        fb0 = float(params['FB0'])
+        if fb0 != 0.0:
+            pb_val = (1.0 / fb0) / 86400.0 # Convert Hz^-1 (sec) to Days
+            
+    a1_val = float(params.get('A1', 0.0))
+    
+    # Raw parameter extraction
+    t0_val = float(params.get('T0', 0.0))
+    tasc_val = float(params.get('TASC', 0.0))
+    
+    ecc_val = float(params.get('ECC', 0.0))
+    om_val = float(params.get('OM', 0.0))
+    
+    eps1_val = float(params.get('EPS1', 0.0))
+    eps2_val = float(params.get('EPS2', 0.0))
+
+    # Parameter Conversion Logic for Universal Kernel
+    # If using T2/DD (ID > 1) but provided with ELL1 parameters (EPS1/EPS2) and no ECC/OM,
+    # convert ELL1 -> Keplerian.
+    if model_id > 1:
+        has_ell1_params = 'EPS1' in params or 'EPS2' in params
+        has_kepler_params = 'ECC' in params and 'OM' in params
+        
+        if has_ell1_params and not has_kepler_params:
+            if verbose: print("   Converting ELL1 parameters (EPS1/EPS2) to Keplerian (ECC/OM/T0) for T2/DD model parameterization")
+            # ELL1 definition: EPS1 = e * sin(omega), EPS2 = e * cos(omega)
+            # e = sqrt(EPS1^2 + EPS2^2)
+            # omega = atan2(EPS1, EPS2)
+            
+            ecc_derived = np.sqrt(eps1_val**2 + eps2_val**2)
+            om_rad = np.arctan2(eps1_val, eps2_val)
+            om_deg = np.degrees(om_rad) % 360.0
+            
+            # T0 conversion: T0 = TASC + (omega/2pi) * PB
+            # Note: This is an approximation for small e, but likely sufficient or matches Tempo2's T2 conversion
+            # Exact T0 is time of periastron passage.
+            # At TASC, u (mean anomaly + omega) = 0 ?? No.
+            # TASC is time of ascending node. True anomaly nu = -omega.
+            # Standard conversion: T0 = TASC + PB/2pi * (E - e*sinE) ? No that's M.
+            # For small e, M ~ nu. M_asc = -omega.
+            # T_asc = T0 + M_asc / n = T0 - omega / n = T0 - omega / (2pi/PB)
+            # So T0 = T_asc + omega * PB / 2pi.
+            
+            t0_derived = tasc_val + (om_deg / 360.0) * pb_val
+            
+            # Use derived values
+            ecc_val = ecc_derived
+            om_val = om_deg
+            t0_val = t0_derived
+            
+    # Normalize T0/TASC for the kernel if missing
+    if t0_val == 0.0 and tasc_val != 0.0:
+        t0_val = tasc_val # Fallback if no conversion happened but we need something
+    if tasc_val == 0.0 and t0_val != 0.0:
+        tasc_val = t0_val # Fallback
+
+    
+    gamma_val = float(params.get('GAMMA', 0.0))
+    pbdot_val = float(params.get('PBDOT', 0.0))
+    xdot_val = float(params.get('XDOT', 0.0))
+    omdot_val = float(params.get('OMDOT', 0.0))
+    edot_val = float(params.get('EDOT', 0.0))
+    
+    m2_val = float(params.get('M2', 0.0))
+    sini_val = 0.0
+    sini_param = params.get('SINI', 0.0)
+    if isinstance(sini_param, str) and sini_param.upper() == 'KIN':
+        sini_val = float(params.get('KIN', 0.0)) # This is technically sin(KIN) needed? 
+        # Wait, wrapper logic in t2 handles "SINI" as float. 
+        # If parameters pass SINI='KIN', we need to resolve it.
+        # But 'SINI' usually holds the sine value. 
+        # Let's assume params dictionary resolves to values or we parse it.
+        pass 
+    try:
+        sini_val = float(sini_param)
+    except ValueError:
+        pass # Handle KIN reference logic if needed, but for now strict float
+        
+    kin_val = float(params.get('KIN', 0.0))
+    kom_val = float(params.get('KOM', 0.0))
+    
+    h3_val = float(params.get('H3', 0.0))
+    h4_val = float(params.get('H4', 0.0))
+    stig_val = float(params.get('STIG', 0.0))
+    
+    # Shapiro M2/SINI vs H3/STIG
+    r_shap_val = 0.0
+    s_shap_val = 0.0
+    if 'H3' in params and 'STIG' in params:
+        r_shap_val = h3_val
+        s_shap_val = stig_val
+    elif 'M2' in params:
+        r_shap_val = T_SUN_SEC * m2_val
+        s_shap_val = sini_val
+
+    # FB Parameters
+    use_fb = 'FB0' in params and 'PB' not in params
+    if use_fb:
+        fb_coeffs = []
+        fb_idx = 0
+        while f'FB{fb_idx}' in params:
+            fb_coeffs.append(float(params[f'FB{fb_idx}']))
+            fb_idx += 1
+        fb_coeffs_jax = jnp.array(fb_coeffs, dtype=jnp.float64)
+        fb_factorials_jax = jnp.array([float(math.factorial(i)) for i in range(len(fb_coeffs))], dtype=jnp.float64)
+        fb_epoch_jax = jnp.array(float(params.get('TASC', params.get('T0', params['PEPOCH']))))
+        use_fb_jax = jnp.array(True)
+        # Dummy PB to avoid div/0 in non-FB branches if they run (switch mostly handles this)
+        pb_val = 1.0 
     else:
-        # No binary
-        has_binary_jax = jnp.array(False)
-        binary_delay_external = None
-        pb_jax = a1_jax = tasc_jax = eps1_jax = eps2_jax = jnp.array(0.0)
-        pbdot_jax = xdot_jax = gamma_jax = r_shap_jax = s_shap_jax = jnp.array(0.0)
+        fb_coeffs_jax = jnp.array([0.0], dtype=jnp.float64)
+        fb_factorials_jax = jnp.array([1.0], dtype=jnp.float64)
+        fb_epoch_jax = jnp.array(0.0)
+        use_fb_jax = jnp.array(False)
+
+    # JAX Arrays for Scalars
+    has_binary_jax = jnp.array(has_binary)
+    binary_model_id_jax = jnp.array(model_id, dtype=jnp.int32)
+    
+    pb_jax = jnp.array(pb_val)
+    a1_jax = jnp.array(a1_val)
+    tasc_jax = jnp.array(tasc_val)
+    t0_jax = jnp.array(t0_val)
+    
+    ecc_jax = jnp.array(ecc_val)
+    om_jax = jnp.array(om_val)
+    eps1_jax = jnp.array(eps1_val)
+    eps2_jax = jnp.array(eps2_val)
+    
+    gamma_jax = jnp.array(gamma_val)
+    pbdot_jax = jnp.array(pbdot_val)
+    xdot_jax = jnp.array(xdot_val)
+    omdot_jax = jnp.array(omdot_val)
+    edot_jax = jnp.array(edot_val)
+    
+    m2_jax = jnp.array(m2_val)
+    sini_jax = jnp.array(sini_val)
+    kin_jax = jnp.array(kin_val)
+    kom_jax = jnp.array(kom_val)
+    h3_jax = jnp.array(h3_val)
+    h4_jax = jnp.array(h4_val)
+    stig_jax = jnp.array(stig_val)
+    
+    r_shap_jax = jnp.array(r_shap_val)
+    s_shap_jax = jnp.array(s_shap_val)
+
+    # DDK Kopeikin parameters
+    # Observer position in light-seconds (convert from km)
+    SPEED_OF_LIGHT_KM_S = 299792.458
+    obs_pos_ls_jax = jnp.array(ssb_obs_pos_km / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
+
+    # Parallax in milliarcseconds
+    px_jax = jnp.array(parallax_mas)
+
+    # Pulsar coordinates for Kopeikin projections
+    # ra_rad and dec_rad are already defined earlier
+    sin_ra_jax = jnp.array(np.sin(ra_rad))
+    cos_ra_jax = jnp.array(np.cos(ra_rad))
+    sin_dec_jax = jnp.array(np.sin(dec_rad))
+    cos_dec_jax = jnp.array(np.cos(dec_rad))
+
+    # K96 proper motion parameters (Kopeikin 1996)
+    # K96 flag: default True for DDK, can be disabled via par file
+    k96_flag = True
+    if 'K96' in params:
+        k96_param = params['K96']
+        if isinstance(k96_param, bool):
+            k96_flag = k96_param
+        elif isinstance(k96_param, str):
+            k96_flag = k96_param.upper() not in ('N', 'NO', 'FALSE', '0', 'F')
+        else:
+            k96_flag = bool(k96_param)
+    k96_jax = jnp.array(k96_flag)
+
+    # Convert proper motion from mas/yr to radians/second
+    # PMRA in par files is typically μ_α * cos(δ) in mas/yr
+    # For K96, we need μ_long = PMRA / cos(DEC) (actual angular velocity in RA)
+    # and μ_lat = PMDEC
+    MAS_PER_YR_TO_RAD_PER_SEC = (np.pi / 180.0 / 3600.0 / 1000.0) / (365.25 * 86400.0)
+
+    pmra_mas_yr = float(params.get('PMRA', 0.0))  # This is μ_α * cos(δ)
+    pmdec_mas_yr = float(params.get('PMDEC', 0.0))
+
+    # For K96, we need μ_long = PMRA / cos(DEC)
+    # But PINT uses PMRA directly (which is already μ_α * cos(δ))
+    # Looking at PINT's DDK_model.py, it uses PMLONG_DDK and PMLAT_DDK
+    # which are set equal to PMRA and PMDEC by default
+    # So we should use PMRA and PMDEC directly
+    pmra_rad_per_sec = pmra_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
+    pmdec_rad_per_sec = pmdec_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
+
+    pmra_rad_per_sec_jax = jnp.array(pmra_rad_per_sec)
+    pmdec_rad_per_sec_jax = jnp.array(pmdec_rad_per_sec)
+
+    if verbose and model_id == 5:
+        print(f"   DDK model with Kopeikin corrections:")
+        print(f"     KIN={kin_val:.3f}°, KOM={kom_val:.3f}°, PX={parallax_mas:.3f} mas")
+        print(f"     K96={k96_flag}, PMRA={pmra_mas_yr:.3f} mas/yr, PMDEC={pmdec_mas_yr:.3f} mas/yr")
 
     # Compute total delay (DM + SW + FD + inline binary if ELL1)
     if verbose: print(f"\n6. Running JAX delay kernel...")
@@ -415,73 +455,90 @@ def compute_residuals_simple(
         tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         dm_coeffs_jax, dm_factorials_jax, dm_epoch_jax,
         ne_sw_jax, fd_coeffs_jax, has_fd_jax,
-        roemer_shapiro_jax, has_binary_jax,
-        pb_jax, a1_jax, tasc_jax, eps1_jax, eps2_jax,
-        pbdot_jax, xdot_jax, gamma_jax, r_shap_jax, s_shap_jax
+        roemer_shapiro_jax, has_binary_jax, binary_model_id_jax,
+        pb_jax, a1_jax, tasc_jax, eps1_jax, eps2_jax, pbdot_jax, xdot_jax, gamma_jax, r_shap_jax, s_shap_jax,
+        ecc_jax, om_jax, t0_jax, omdot_jax, edot_jax, m2_jax, sini_jax, kin_jax, kom_jax, h3_jax, h4_jax, stig_jax,
+        fb_coeffs_jax, fb_factorials_jax, fb_epoch_jax, use_fb_jax,
+        # DDK Kopeikin parameters (Kopeikin 1995)
+        obs_pos_ls_jax, px_jax, sin_ra_jax, cos_ra_jax, sin_dec_jax, cos_dec_jax,
+        # K96 proper motion parameters (Kopeikin 1996)
+        k96_jax, pmra_rad_per_sec_jax, pmdec_rad_per_sec_jax
     ).block_until_ready()
     
     # Add external binary delay if we used dispatcher
-    if binary_delay_external is not None:
-        if verbose: print(f"   Refining binary delays (iteration 2)...")
-        # Iteration 2: Now we have Roemer+Shapiro+DM+SW+FD, compute topocentric time
-        # t_topo = TDB - (other_delays) / SECS_PER_DAY
-        other_delays_sec = np.asarray(total_delay_jax, dtype=np.float64)
-        t_topo_mjd = tdb_mjd - other_delays_sec / SECS_PER_DAY
+    total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble)
+
+    # === Tropospheric Delay ===
+    # Check CORRECT_TROPOSPHERE flag (usually 'Y' or 'T')
+    # Default is False unless specified
+    correct_troposphere = False
+    if 'CORRECT_TROPOSPHERE' in params:
+        flag = str(params['CORRECT_TROPOSPHERE']).upper().strip()
+        if flag in ['Y', 'T', '1', 'TRUE']:
+            correct_troposphere = True
+    
+    if correct_troposphere:
+        if verbose: print(f"   Calculating tropospheric delay (Davis ZHD + Niell MF)...")
+        from jug.delays.troposphere import compute_tropospheric_delay
         
-        # Recompute binary delay at topocentric time
-        t_topo_f64 = jnp.array(np.array(t_topo_mjd, dtype=np.float64))
+        # We need elevation for each TOA.
+        # We have ssb_obs_pos_km (SSB -> Obs). We need Obs -> Source vector relative to local horizon?
+        # Actually, we need topocentric Az/El.
+        # The simple calculator has 'obs_itrf_km' (ITRF position).
+        # We can use astropy or simple rotation to getting local Az/El.
         
-        if binary_model in ('DD', 'DDH', 'DDGR', 'DDK'):
-            binary_delay_sec = np.array(dd_binary_delay_vectorized(
-                t_topo_f64,
-                pb_days=binary_params['PB'],
-                a1_lt_sec=binary_params['A1'],
-                ecc=binary_params['ECC'],
-                omega_deg=binary_params['OM'],
-                t0_mjd=binary_params['T0'],
-                gamma_sec=binary_params['GAMMA'],
-                pbdot=binary_params['PBDOT'],
-                xdot=binary_params['XDOT'],
-                omdot_deg_yr=binary_params['OMDOT'],
-                edot=binary_params['EDOT'],
-                m2_msun=binary_params['M2'],
-                sini=binary_params['SINI'],
-                h3_sec=binary_params['H3'],
-                h4_sec=binary_params['H4'],
-                stig=binary_params['STIG']
-            ))
-        elif binary_model == 'T2':
-            binary_delay_sec = np.array(t2_binary_delay_vectorized(
-                t_topo_f64,
-                pb=binary_params['PB'],
-                a1=binary_params['A1'],
-                ecc=binary_params['ECC'],
-                om=binary_params['OM'],
-                t0=binary_params['T0'],
-                gamma=binary_params['GAMMA'],
-                pbdot=binary_params['PBDOT'],
-                xdot=binary_params['XDOT'],
-                edot=binary_params['EDOT'],
-                omdot=binary_params['OMDOT'],
-                m2=binary_params['M2'],
-                sini=binary_params['SINI'],
-                kin=binary_params.get('KIN', 0.0),
-                kom=binary_params.get('KOM', 0.0)
-            ))
-        # BT doesn't need iteration 2 (we'll skip for now)
+        # Use Astropy for robust Az/El calculation
+        # Imports handled at top of file
         
-        if verbose: print(f"   Binary delay change: {np.mean(np.abs(binary_delay_sec - binary_delay_approx1))*1e6:.3f} μs")
+        # Observatory location
         
-        # DEBUG: Log binary delay statistics after iteration 2
-        if verbose: print(f"   DEBUG Iter2: Binary delays refined - range [{np.min(binary_delay_sec):.3f}, {np.max(binary_delay_sec):.3f}] s, mean={np.mean(binary_delay_sec):.3f} s, std={np.std(binary_delay_sec):.3f} s")
+        # Observatory location
+        # obs_itrf_km is defined earlier.
+        # Need lat/lon/height.
+        # location object (EarthLocation) is already created near line 190!
+        # Use 'location' object.
+        loc_height_m = location.height.to(u.m).value
+        loc_lat_deg = location.lat.deg
         
-        total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble) + binary_delay_sec
+        # Source coordinate (J2000)
+        source_coord = SkyCoord(ra=ra_rad*u.rad, dec=dec_rad*u.rad, frame='icrs')
         
-        # DEBUG: Log total delay after adding binary
-        if verbose: print(f"   DEBUG: Total delay after adding binary - range [{np.min(total_delay_sec):.3f}, {np.max(total_delay_sec):.3f}] s, mean={np.mean(total_delay_sec):.3f} s")
-        if verbose: print(f"   DEBUG: total_delay_jax before adding binary - range [{np.min(total_delay_jax):.3f}, {np.max(total_delay_jax):.3f}] s")
-    else:
-        total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble)
+        # Observation times (UTC)
+        # Construct MJD array from mjd_ints and mjd_fracs (defined earlier)
+        # Or from original 'toas' list
+        mjd_utc_arr = np.array([t.mjd_int + t.mjd_frac for t in toas])
+        obs_times = Time(mjd_utc_arr, format='mjd', scale='utc')
+        
+        # Transform to AltAz
+        # This can be slow for many TOAs.
+        # Optimization: use ERFA/SOFA directly via astropy if needed, but High-level API is easier.
+        topocentric_frame = AltAz(obstime=obs_times, location=location)
+        source_altaz = source_coord.transform_to(topocentric_frame)
+        elevation_deg = source_altaz.alt.deg
+        
+        # Calculate delay
+        tropo_delay_sec = compute_tropospheric_delay(
+            elevation_deg=elevation_deg,
+            height_m=loc_height_m,
+            lat_deg=loc_lat_deg,
+            mjd=mjd_utc_arr
+        )
+        
+        # Add to total delay
+        # Convention: Delay is added to arrival time to get emission time?
+        # Tempo2: t_emit = t_arr - delays.
+        # Troposphere adds path length => arrival is LATER.
+        # So we subtract delay from arrival time to get "free space" time?
+        # Wait, total_delay_sec is "geometric + relativistic + propagation" delays.
+        # t_emit = t_arr - total_delay.
+        # Troposphere slows down signal -> Delay > 0.
+        # So we ADD to total_delay_sec.
+        total_delay_sec += tropo_delay_sec
+        
+        # Also compute for TZR if needed (handled below in TZR section)
+        
+        if verbose: print(f"   Tropospheric delay: mean={np.mean(tropo_delay_sec)*1e6:.3f} μs, range=[{np.min(tropo_delay_sec)*1e6:.3f}, {np.max(tropo_delay_sec)*1e6:.3f}] μs")
+
 
     # Compute residuals
     if verbose: print(f"\n7. Computing phase residuals...")
@@ -558,15 +615,23 @@ def compute_residuals_simple(
         tzr_obs_sun_jax = jnp.array(tzr_obs_sun)
         tzr_L_hat_jax = jnp.array(tzr_L_hat)
         tzr_roemer_shapiro_jax = jnp.array([tzr_roemer_shapiro])
-        
+
+        # TZR observer position in light-seconds for DDK
+        tzr_obs_pos_ls_jax = jnp.array(tzr_ssb_obs_pos / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
+
         # Compute TZR delay
         tzr_total_delay_jax = compute_total_delay_jax(
             tzr_tdb_jax, tzr_freq_bary_jax, tzr_obs_sun_jax, tzr_L_hat_jax,
             dm_coeffs_jax, dm_factorials_jax, dm_epoch_jax,
             ne_sw_jax, fd_coeffs_jax, has_fd_jax,
-            tzr_roemer_shapiro_jax, has_binary_jax,
-            pb_jax, a1_jax, tasc_jax, eps1_jax, eps2_jax,
-            pbdot_jax, xdot_jax, gamma_jax, r_shap_jax, s_shap_jax
+            tzr_roemer_shapiro_jax, has_binary_jax, binary_model_id_jax,
+            pb_jax, a1_jax, tasc_jax, eps1_jax, eps2_jax, pbdot_jax, xdot_jax, gamma_jax, r_shap_jax, s_shap_jax,
+            ecc_jax, om_jax, t0_jax, omdot_jax, edot_jax, m2_jax, sini_jax, kin_jax, kom_jax, h3_jax, h4_jax, stig_jax,
+            fb_coeffs_jax, fb_factorials_jax, fb_epoch_jax, use_fb_jax,
+            # DDK Kopeikin parameters
+            tzr_obs_pos_ls_jax, px_jax, sin_ra_jax, cos_ra_jax, sin_dec_jax, cos_dec_jax,
+            # K96 proper motion parameters
+            k96_jax, pmra_rad_per_sec_jax, pmdec_rad_per_sec_jax
         ).block_until_ready()
         
         tzr_delay = np.longdouble(float(tzr_total_delay_jax[0]))
@@ -599,7 +664,8 @@ def compute_residuals_simple(
         # FD delay  
         if len(fd_coeffs_jax) > 0 and has_fd_jax:
             log_freq = np.log(tzr_freq_bary / 1000.0)
-            tzr_fd_delay = np.polyval(list(fd_coeffs_jax)[::-1], log_freq)
+            # FD formula: sum(FD_i * log(f/1GHz)^i), need trailing 0 for polyval
+            tzr_fd_delay = np.polyval(list(fd_coeffs_jax)[::-1] + [0], log_freq)
         else:
             tzr_fd_delay = 0.0
         

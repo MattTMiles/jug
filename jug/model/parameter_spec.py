@@ -500,7 +500,40 @@ _BINARY_PARAMS = [
         par_unit_str="s",
         component_name="BinaryComponent",
     ),
+    # Kopeikin annual orbital parallax parameters (DDK model)
+    ParameterSpec(
+        name="KIN",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="deg",
+        par_unit_str="deg",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="KOM",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="deg",
+        par_unit_str="deg",
+        component_name="BinaryComponent",
+    ),
 ]
+
+# Add FB parameters (FB0 to FB20)
+for i in range(21):
+    _BINARY_PARAMS.append(
+        ParameterSpec(
+            name=f"FB{i}",
+            group="binary",
+            derivative_group=DerivativeGroup.BINARY,
+            dtype="float64",
+            internal_unit=f"Hz/s^{i}" if i > 0 else "Hz",
+            par_unit_str="",
+            component_name="BinaryComponent",
+        )
+    )
 
 # FD (frequency-dependent) parameters
 _FD_PARAMS = [
@@ -542,6 +575,42 @@ _FD_PARAMS = [
     ),
     ParameterSpec(
         name="FD5",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
+    ParameterSpec(
+        name="FD6",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
+    ParameterSpec(
+        name="FD7",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
+    ParameterSpec(
+        name="FD8",
+        group="fd",
+        derivative_group=DerivativeGroup.FD,
+        dtype="float64",
+        internal_unit="s",
+        par_unit_str="s",
+        component_name="FDComponent",
+    ),
+    ParameterSpec(
+        name="FD9",
         group="fd",
         derivative_group=DerivativeGroup.FD,
         dtype="float64",
@@ -793,6 +862,12 @@ def is_fd_param(name: str) -> bool:
     """
     Check if a parameter is an FD (frequency-dependent) parameter.
 
+    FD parameters are dynamically named (FD1, FD2, ..., FD15, etc.)
+    so we use pattern matching rather than static registry lookup.
+
+    Patterns recognized:
+    - FD followed by a number: FD1, FD2, FD10, FD15
+
     Parameters
     ----------
     name : str
@@ -803,8 +878,9 @@ def is_fd_param(name: str) -> bool:
     bool
         True if FD parameter, False otherwise
     """
-    spec = get_spec(name)
-    return spec is not None and spec.derivative_group == DerivativeGroup.FD
+    import re
+    # Match FD followed by one or more digits
+    return bool(re.match(r'^FD\d+$', name))
 
 
 def is_jump_param(name: str) -> bool:
@@ -958,3 +1034,20 @@ def get_astrometry_params_from_list(params: List[str]) -> List[str]:
         Only the astrometry parameters (RAJ, DECJ, PMRA, PMDEC, PX)
     """
     return [p for p in params if is_astrometry_param(p)]
+
+
+def get_fd_params_from_list(params: List[str]) -> List[str]:
+    """
+    Filter a list to only FD (frequency-dependent) parameters.
+
+    Parameters
+    ----------
+    params : list of str
+        Parameter names to filter
+
+    Returns
+    -------
+    list of str
+        Only the FD parameters (FD1, FD2, FD3, ...)
+    """
+    return [p for p in params if is_fd_param(p)]

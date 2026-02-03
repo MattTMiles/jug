@@ -230,36 +230,35 @@ def dd_binary_delay(
     T_SUN = 4.925490947e-6  # Solar mass in seconds (G*Msun/c^3)
 
     # Convert H3/STIG (DDH) or H3/H4 to SINI/M2 if needed
-    if h3_sec is not None and stig is not None:
-        # DDH uses H3/STIGMA parameterization
-        # SINI = 2 * STIGMA / (1 + STIGMA^2)
-        # M2 = H3 / (STIGMA^3 * T_sun)
-        sini_calc = 2.0 * stig / (1.0 + stig**2)
-        m2_msun_calc = h3_sec / (stig**3 * T_SUN)
-        
-        sini_use = sini_calc
-        m2_msun_use = m2_msun_calc
-    elif h3_sec is not None and h4_sec is not None:
-        # h3 = r * sin(i) where r = T_sun * m2
-        # h4 = r^3 * [1 - (5/6)*sin(i)^2]
-        # Solve iteratively for sini and m2
-        r_cubed = h4_sec / T_SUN**3
-        r = jnp.cbrt(r_cubed)
-        sini_calc = h3_sec / (r * T_SUN)
+    # Use JAX-compatible conditionals for JIT compatibility
 
-        # Refine using h4 equation
-        r = h3_sec / (sini_calc * T_SUN)
-        sini_calc = jnp.sqrt(6.0 * (1.0 - h4_sec / (r**3 * T_SUN**3)) / 5.0)
+    # Default values
+    sini_default = sini if sini is not None else 0.0
+    m2_default = m2_msun if m2_msun is not None else 0.0
 
-        # Clamp to valid range
-        sini_calc = jnp.clip(sini_calc, 0.0, 1.0)
-        m2_msun_calc = r / T_SUN
+    # H3/STIG calculation (safe division with small epsilon)
+    h3_val = h3_sec if h3_sec is not None else 0.0
+    stig_val = stig if stig is not None else 0.0
+    stig_safe = jnp.maximum(jnp.abs(stig_val), 1e-30)
+    sini_h3stig = 2.0 * stig_val / (1.0 + stig_val**2)
+    m2_h3stig = h3_val / (stig_safe**3 * T_SUN)
 
-        sini_use = sini_calc
-        m2_msun_use = m2_msun_calc
-    else:
-        sini_use = sini if sini is not None else 0.0
-        m2_msun_use = m2_msun if m2_msun is not None else 0.0
+    # H3/H4 calculation (safe division)
+    h4_val = h4_sec if h4_sec is not None else 0.0
+    h4_safe = jnp.maximum(jnp.abs(h4_val), 1e-30)
+    r_cubed = h4_safe / T_SUN**3
+    r_h4 = jnp.cbrt(r_cubed)
+    sini_h3h4 = jnp.clip(h3_val / (jnp.maximum(r_h4 * T_SUN, 1e-30)), 0.0, 1.0)
+    m2_h3h4 = r_h4 / T_SUN
+
+    # Select based on which parameters are provided (use JAX where)
+    use_h3stig = (h3_val != 0.0) & (stig_val != 0.0)
+    use_h3h4 = (h3_val != 0.0) & (h4_val != 0.0) & ~use_h3stig
+
+    sini_use = jnp.where(use_h3stig, sini_h3stig,
+                         jnp.where(use_h3h4, sini_h3h4, sini_default))
+    m2_msun_use = jnp.where(use_h3stig, m2_h3stig,
+                            jnp.where(use_h3h4, m2_h3h4, m2_default))
 
     # DD Shapiro delay uses full orbital geometry
     # delayS = -2*r*log(1 - e*cos(E) - SINI*[sin(omega)*(cos(E)-e) +

@@ -16,14 +16,9 @@ from jug.delays.binary_bt import bt_binary_delay
 from jug.delays.binary_dd import (
     dd_binary_delay,
     ddk_binary_delay,
-    compute_kopeikin_projections,
-    compute_delta_a1_parallax,
-    compute_delta_omega_parallax,
-    # K96 proper motion corrections
-    compute_delta_kin_proper_motion,
-    compute_delta_a1_proper_motion,
-    compute_delta_omega_proper_motion,
 )
+# Note: Kopeikin corrections (K96 proper motion, annual orbital parallax) are
+# implemented inline in branch_ddk() below, not as separate importable functions.
 from jug.delays.binary_t2 import t2_binary_delay
 
 
@@ -88,14 +83,17 @@ def combined_delays(
 
     # === Universal Binary Delay Dispatch ===
     def compute_binary_universal(args):
-        (tdbld_val, roemer_shapiro_val, dm_sec_val, sw_sec_val, fd_sec_val, obs_pos_ls_val) = args
+        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val) = args
 
-        # Topocentric emission time (removing non-binary delays)
-        # NOTE: FD is applied AFTER binary in PINT/Tempo2, but we include it here
-        # for backwards compatibility. Testing shows this does not affect results
-        # because the FD-induced time shift (~2 μs) causes negligible change in
-        # orbital phase for typical pulsar binary periods.
-        t_topo_tdb = tdbld_val - (roemer_shapiro_val + dm_sec_val + sw_sec_val + fd_sec_val) / SECS_PER_DAY
+        # Binary evaluation time: TDB at SSB minus Roemer+Shapiro delay to pulsar system
+        #
+        # IMPORTANT: Only subtract roemer_shapiro_val, NOT dm/sw/fd delays.
+        # The frequency-dependent delays (DM, SW, FD) are observational corrections
+        # that affect the measured TOA but NOT the coordinate time at the pulsar.
+        # PINT computes binary delay at: toas.table['tdbld'] - all_delays_before_binary
+        # where all_delays_before_binary = Roemer + Einstein + Shapiro (solar system)
+        # but NOT DM/SW/FD which are in the signal propagation path, not the time coordinate.
+        t_ssb = tdbld_val - roemer_shapiro_val / SECS_PER_DAY
 
         # Branch 0: None
         def branch_none(t): return 0.0
@@ -323,7 +321,7 @@ def combined_delays(
         return jax.lax.switch(
             binary_model_id,
             [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt, branch_ddk],
-            t_topo_tdb
+            t_ssb
         )
 
     # Prepare observer position - use zeros if not provided (for non-DDK models)
@@ -335,7 +333,7 @@ def combined_delays(
 
     binary_sec = jnp.where(
         has_binary,
-        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, dm_sec, sw_sec, fd_sec, obs_pos_ls_arr)),
+        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr)),
         0.0
     )
 

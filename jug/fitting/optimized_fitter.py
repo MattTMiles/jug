@@ -71,10 +71,12 @@ from jug.model.parameter_spec import (
     is_dm_param,
     is_binary_param,
     is_astrometry_param,
+    is_fd_param,
     get_spin_params_from_list,
     get_dm_params_from_list,
     get_binary_params_from_list,
     get_astrometry_params_from_list,
+    get_fd_params_from_list,
     DerivativeGroup,
     get_derivative_group,
 )
@@ -142,10 +144,12 @@ class GeneralFitSetup:
     spin_params: List[str]
     binary_params: List[str]
     astrometry_params: List[str]
+    fd_params: List[str]  # FD parameters being fit
     roemer_shapiro_sec: Optional[np.ndarray]
     initial_binary_delay: Optional[np.ndarray]  # For binary fitting iteration
     ssb_obs_pos_ls: Optional[np.ndarray]
     initial_astrometric_delay: Optional[np.ndarray]  # For astrometry fitting iteration
+    initial_fd_delay: Optional[np.ndarray]  # For FD fitting iteration
 
 
 # =============================================================================
@@ -1149,6 +1153,7 @@ def _build_general_fit_setup_from_files(
     dm_params = get_dm_params_from_list(fit_params)
     binary_params = get_binary_params_from_list(fit_params)
     astrometry_params = get_astrometry_params_from_list(fit_params)
+    fd_params = get_fd_params_from_list(fit_params)
     
     # Cache expensive delays (subtract_tzr=False for fitting)
     if verbose:
@@ -1202,6 +1207,13 @@ def _build_general_fit_setup_from_files(
         from jug.fitting.derivatives_astrometry import compute_astrometric_delay
         initial_astrometric_delay = np.array(compute_astrometric_delay(params, tdb_mjd, ssb_obs_pos_ls))
 
+    # If fitting FD params, compute initial FD delay
+    initial_fd_delay = None
+    if fd_params:
+        from jug.fitting.derivatives_fd import compute_fd_delay
+        initial_fd_params = {p: params[p] for p in fd_params if p in params}
+        initial_fd_delay = compute_fd_delay(freq_mhz_bary, initial_fd_params)
+
     return GeneralFitSetup(
         params=params,
         fit_param_list=fit_params,
@@ -1218,10 +1230,12 @@ def _build_general_fit_setup_from_files(
         spin_params=spin_params,
         binary_params=binary_params,
         astrometry_params=astrometry_params,
+        fd_params=fd_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
         initial_binary_delay=initial_binary_delay,
         ssb_obs_pos_ls=ssb_obs_pos_ls,
-        initial_astrometric_delay=initial_astrometric_delay
+        initial_astrometric_delay=initial_astrometric_delay,
+        initial_fd_delay=initial_fd_delay
     )
 
 
@@ -1290,6 +1304,15 @@ def _compute_full_model_residuals(
         ))
         astrometric_delay_change = new_astrometric_delay - setup.initial_astrometric_delay
         dt_sec_np = dt_sec_np - astrometric_delay_change
+    
+    # Apply FD delay correction (frequency-dependent delay)
+    fd_params = setup.fd_params
+    if fd_params and setup.initial_fd_delay is not None:
+        from jug.fitting.derivatives_fd import compute_fd_delay
+        current_fd_params = {p: params[p] for p in fd_params if p in params}
+        new_fd_delay = compute_fd_delay(freq_mhz, current_fd_params)
+        fd_delay_change = new_fd_delay - setup.initial_fd_delay
+        dt_sec_np = dt_sec_np - fd_delay_change
     
     # Compute phase from dt_sec
     f0 = params['F0']
@@ -1503,6 +1526,13 @@ def _run_general_fit_iterations(
                 params, toas_mjd, setup.ssb_obs_pos_ls, astrometry_params_list
             )
 
+        # Batch FD parameters (frequency-dependent delay derivatives)
+        fd_params_list = get_fd_params_from_list(fit_params)
+        fd_derivs = {}
+        if fd_params_list:
+            from jug.fitting.derivatives_fd import compute_fd_derivatives
+            fd_derivs = compute_fd_derivatives(params, freq_mhz, fd_params_list)
+
         # Assemble columns in original fit_params order (preserves exact behavior)
         for param in fit_params:
             if is_spin_param(param):
@@ -1513,6 +1543,11 @@ def _run_general_fit_iterations(
                 M_columns.append(binary_derivs[param])
             elif is_astrometry_param(param):
                 M_columns.append(astrometry_derivs[param])
+            elif is_fd_param(param):
+                M_columns.append(fd_derivs[param])
+            elif param.startswith('FB'):
+                # FB parameters are now handled by compute_binary_derivatives
+                M_columns.append(binary_derivs[param])
             else:
                 raise ValueError(f"Unknown parameter type: {param}")
         
@@ -1773,6 +1808,7 @@ def _build_general_fit_setup_from_cache(
     dm_params = get_dm_params_from_list(fit_params)
     binary_params = get_binary_params_from_list(fit_params)
     astrometry_params = get_astrometry_params_from_list(fit_params)
+    fd_params = get_fd_params_from_list(fit_params)
     
     # If fitting DM params, cache initial DM delay (same as file path)
     initial_dm_delay = None
@@ -1816,6 +1852,13 @@ def _build_general_fit_setup_from_cache(
         from jug.fitting.derivatives_astrometry import compute_astrometric_delay
         initial_astrometric_delay = np.array(compute_astrometric_delay(params_dict, tdb_mjd, ssb_obs_pos_ls))
 
+    # If fitting FD params, compute initial FD delay
+    initial_fd_delay = None
+    if fd_params:
+        from jug.fitting.derivatives_fd import compute_fd_delay
+        initial_fd_params = {p: params_dict[p] for p in fd_params if p in params_dict}
+        initial_fd_delay = compute_fd_delay(freq_mhz_bary, initial_fd_params)
+
     return GeneralFitSetup(
         params=dict(params_dict),  # Copy
         fit_param_list=fit_params,
@@ -1832,10 +1875,12 @@ def _build_general_fit_setup_from_cache(
         spin_params=spin_params,
         binary_params=binary_params,
         astrometry_params=astrometry_params,
+        fd_params=fd_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
         initial_binary_delay=initial_binary_delay,
         ssb_obs_pos_ls=ssb_obs_pos_ls,
-        initial_astrometric_delay=initial_astrometric_delay
+        initial_astrometric_delay=initial_astrometric_delay,
+        initial_fd_delay=initial_fd_delay
     )
 
 

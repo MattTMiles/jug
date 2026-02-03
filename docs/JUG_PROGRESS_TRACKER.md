@@ -1,8 +1,8 @@
 # JUG Implementation Progress Tracker
 
-**Last Updated**: 2026-01-30 (M6 Complete - Full Parameter Fitting)
+**Last Updated**: 2026-02-02 (DDK Model Testing)
 **Current Version**: M6 Complete - Full Astrometry + Binary Fitting with PINT-style Damping ✅
-**Active Milestone**: M6A remaining (GUI angle tests), then M7
+**Active Milestone**: DDK Bug Fix Required, then M7
 
 This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
 
@@ -44,7 +44,7 @@ This document tracks the implementation progress of JUG from notebook to product
   - ✅ Astrometry: RAJ, DECJ, PMRA, PMDEC, PX (PINT-style damped fitting)
   - ✅ Binary: PB, A1, ECC, OM, T0, TASC, EPS1, EPS2, M2, SINI, PBDOT, etc.
   - ⏸️ JUMP parameters (not yet)
-- **Binary Models**: ELL1, ELL1H, DD, DDH, DDK, DDGR, BT, T2
+- **Binary Models**: ELL1, ELL1H, DD, DDH, DDK (⚠️ bug), DDGR, BT, T2
 - **Multi-Backend Support**: MeerKAT, Parkes, GBT, VLA, etc.
 - **Clock Corrections**: Automatic clock file loading and caching
 
@@ -1790,6 +1790,8 @@ _Use this section to track open questions or blockers_
 | 2026-01-29 | Claude | M6A 85% complete: Golden tests, ParameterSpec, Codecs, Component graph, Fitter routing |
 | 2026-01-29 | Claude | M6B 40% complete: Download script, Astropy config, cache locations |
 | 2026-01-29 | Claude | Added MODEL_ARCHITECTURE.md for adding new parameters |
+| 2026-02-02 | Claude | DDK model testing: Found ~1.8 μs discrepancy vs PINT/Tempo2 on J0437-4715 |
+| 2026-02-02 | Claude | Created DDK_TESTING_STATUS.md and CONTINUATION_PROMPT_DDK_FIX.md |
 
 ---
 

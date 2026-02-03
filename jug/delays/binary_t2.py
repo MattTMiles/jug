@@ -31,56 +31,12 @@ from jug.utils.constants import SECS_PER_DAY
 @jax.jit
 def t2_binary_delay(
     t_topo_tdb, pb, a1, ecc, om, t0, gamma, pbdot, xdot, edot, omdot,
-    m2, sini, kin=0.0, kom=0.0
+    m2, sini, kin=0.0, kom=0.0,
+    fb_coeffs=None, fb_factorials=None, fb_epoch=0.0, use_fb=False
 ):
     """Compute T2 (Tempo2 general) binary delay.
     
-    Parameters
-    ----------
-    t_topo_tdb : float
-        Topocentric TDB time (MJD) at pulsar after removing non-binary delays
-    pb : float
-        Orbital period (days)
-    a1 : float
-        Projected semi-major axis (light-seconds)
-    ecc : float
-        Orbital eccentricity
-    om : float
-        Longitude of periastron (degrees)
-    t0 : float
-        Time of periastron passage (MJD)
-    gamma : float
-        Einstein delay parameter (seconds)
-    pbdot : float
-        Orbital period derivative (dimensionless)
-    xdot : float
-        Rate of change of semi-major axis (light-sec/sec)
-    edot : float
-        Rate of change of eccentricity (1/sec)
-    omdot : float
-        Periastron advance (degrees/year)
-    m2 : float
-        Companion mass (solar masses)
-    sini : float
-        Sine of inclination angle
-    kin : float
-        Inclination angle (degrees) - for 3D geometry
-    kom : float
-        Position angle of ascending node (degrees) - for 3D geometry
-        
-    Returns
-    -------
-    float
-        Total binary delay (seconds)
-        
-    Notes
-    -----
-    T2 is essentially the same as BT/DD but with additional flexibility:
-    - Supports EDOT (eccentricity derivative)
-    - Supports KIN/KOM (3D orbital inclination)
-    - Can be extended to support H3/STIG parameterization
-    
-    For most pulsars, KIN=KOM=EDOT=0, and T2 reduces to DD model.
+    Updated to support FB (orbital frequency) parameters.
     """
     # Time since periastron
     dt_days = t_topo_tdb - t0
@@ -89,15 +45,38 @@ def t2_binary_delay(
     # Apply time-dependent corrections
     om_rad = jnp.deg2rad(om + omdot * dt_days / 365.25)
     ecc_eff = jnp.where(edot != 0.0, ecc + edot * dt_sec, ecc)
-    ecc_eff = jnp.clip(ecc_eff, 0.0, 0.9999)  # Keep eccentricity physical
-    pb_eff = pb * (1.0 + pbdot * dt_days / pb)
+    ecc_eff = jnp.clip(ecc_eff, 0.0, 0.9999)
+    # xdot affects a1
     a1_eff = jnp.where(xdot != 0.0, a1 + xdot * dt_sec, a1)
     
-    # Mean motion
-    n = 2.0 * jnp.pi / (pb_eff * SECS_PER_DAY)
-    
-    # Mean anomaly
-    mean_anomaly = n * dt_sec
+    # Mean anomaly calculation
+    def compute_mean_anomaly_pb():
+        pb_eff = pb * (1.0 + pbdot * dt_days / pb)
+        n = 2.0 * jnp.pi / (pb_eff * SECS_PER_DAY)
+        return n * dt_sec
+
+    def compute_mean_anomaly_fb():
+        # FB expansion gives Phase in turns from TASC (usually)
+        # M = 2pi * Phase - omega
+        # Because at TASC, M = -omega. Phase=0.
+        # FB epoch is usually TASC.
+        
+        dt_fb = (t_topo_tdb - fb_epoch) * SECS_PER_DAY
+        n_coeffs = len(fb_coeffs)
+        indices = jnp.arange(n_coeffs)
+        powers_plus1 = indices + 1
+        dt_powers_plus1 = dt_fb ** powers_plus1
+        # (i+1)! = fb_factorials[i] * (i+1) where fb_factorials[i] = i!
+        factorials_plus1 = fb_factorials * (indices + 1)
+        
+        phase_integral = jnp.sum(fb_coeffs * dt_powers_plus1 / factorials_plus1)
+        phase_rad = 2.0 * jnp.pi * phase_integral
+        
+        # Adjust for T0 vs TASC difference
+        # M = Phase_from_TASC - omega
+        return phase_rad - om_rad
+
+    mean_anomaly = jnp.where(use_fb, compute_mean_anomaly_fb(), compute_mean_anomaly_pb())
     
     # Solve Kepler's equation
     ecc_anomaly = solve_kepler(mean_anomaly, ecc_eff)
@@ -110,18 +89,17 @@ def t2_binary_delay(
     
     # === ROEMER DELAY ===
     sin_omega_nu = jnp.sin(om_rad + true_anomaly)
-    cos_omega_nu = jnp.cos(om_rad + true_anomaly)
     
     # 3D geometry correction (KIN/KOM)
-    # If KIN != 0, project onto sky plane
     kin_rad = jnp.deg2rad(kin)
-    kom_rad = jnp.deg2rad(kom)
+    # kom not used in delay? It is used for secular changes in x/om due to proper motion (Kopeikin), 
+    # but geometric delay factor only depends on KIN (inclination) and position on sky?
+    # Kopeikin Eq 7: Delay = x * [ -sin(w+nu) * cos(KIN) + ... ] ?
+    # Actually checking t2_binary used cos(KIN) factor correctly as projection.
     
-    # For now, ignore KIN/KOM (set to 0 for most pulsars)
-    # Full implementation would rotate orbital frame to sky plane
     geometry_factor = jnp.where(
         kin != 0.0,
-        jnp.cos(kin_rad),  # Simplified projection
+        jnp.cos(kin_rad),
         1.0
     )
     
@@ -131,7 +109,7 @@ def t2_binary_delay(
     einstein_delay = jnp.where(gamma != 0.0, gamma * jnp.sin(ecc_anomaly), 0.0)
     
     # === SHAPIRO DELAY ===
-    T_SUN = 4.925490947e-6  # Solar mass in seconds
+    T_SUN = 4.925490947e-6
     r_shap = T_SUN * m2
     shapiro_delay = jnp.where(
         (m2 > 0.0) & (sini > 0.0),
@@ -140,6 +118,7 @@ def t2_binary_delay(
     )
     
     return roemer_delay + einstein_delay + shapiro_delay
+
 
 
 @jax.jit

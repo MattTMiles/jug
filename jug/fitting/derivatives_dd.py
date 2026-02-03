@@ -271,6 +271,19 @@ def compute_dd_binary_delay(
     gamma = float(params.get('GAMMA', 0.0))
     sini = float(params.get('SINI', 0.0))
     m2 = float(params.get('M2', 0.0))
+    
+    # Check for DDH parameters if SINI/M2 not set
+    # Orthometric parameterization:
+    #   SINI = 2 * STIG / (1 + STIG^2)
+    #   M2 = H3 / (STIG^3 * T_SUN)
+    if sini == 0.0 or m2 == 0.0:
+        h3 = float(params.get('H3', 0.0))
+        stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
+        
+        if h3 != 0.0 and stig != 0.0:
+            sini = 2 * stig / (1 + stig**2)
+            m2 = h3 / (stig**3 * T_SUN)
+            
     omdot = float(params.get('OMDOT', 0.0))  # deg/yr
     
     # Apply periastron advance
@@ -400,6 +413,20 @@ def compute_binary_derivatives_dd(
             
         elif param_upper == 'M2':
             deriv = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'H3':
+            # Orthometric Shapiro parameter (DDH model)
+            h3 = float(params.get('H3', 0.0))
+            stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
+            deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, stig_val)
+            derivatives[param] = deriv
+            
+        elif param_upper in ('STIG', 'STIGMA'):
+            # Orthometric Shapiro parameter (DDH model)
+            h3 = float(params.get('H3', 0.0))
+            stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
+            deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3, stig_val)
             derivatives[param] = deriv
             
         elif param_upper == 'OMDOT':
@@ -682,6 +709,80 @@ def _d_delay_d_OMDOT(
     
     # Convert: OMDOT is deg/yr, so d(omega_rad)/d(OMDOT) = dt_yr * DEG_TO_RAD
     return d_om_rad * dt_yr * DEG_TO_RAD
+
+
+# =============================================================================
+# H3/STIG Orthometric Shapiro Delay Derivatives
+# =============================================================================
+# DDH uses orthometric parameterization instead of SINI/M2:
+#   SINI = 2 * STIG / (1 + STIG^2)
+#   M2 = H3 / (STIG^3 * T_SUN)
+#
+# We use chain rule:
+#   d(delay)/d(H3) = d(delay)/d(M2) * d(M2)/d(H3)
+#   d(delay)/d(STIG) = d(delay)/d(M2) * d(M2)/d(STIG) + d(delay)/d(SINI) * d(SINI)/d(STIG)
+
+
+@jax.jit
+def _d_delay_d_H3(
+    toas_bary_mjd: jnp.ndarray,
+    pb: float, t0: float, ecc: float, om_rad: jnp.ndarray,
+    pbdot: float, stig: float
+) -> jnp.ndarray:
+    """d(Shapiro delay)/d(H3) for DDH orthometric parameterization.
+    
+    From M2 = H3 / (STIG^3 * T_SUN):
+        d(M2)/d(H3) = 1 / (STIG^3 * T_SUN)
+    
+    So:
+        d(delay)/d(H3) = d(delay)/d(M2) * d(M2)/d(H3)
+                       = d_delay_d_M2 / (STIG^3 * T_SUN)
+    """
+    # Compute SINI and M2 from H3/STIG for the Shapiro delay calculation
+    sini = 2 * stig / (1 + stig**2)
+    
+    # d(delay)/d(M2) = -2 * T_SUN * log(1 - sini * sin(omega + theta))
+    d_M2 = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini)
+    
+    # d(M2)/d(H3) = 1 / (STIG^3 * T_SUN)
+    dM2_dH3 = 1.0 / (stig**3 * T_SUN)
+    
+    return d_M2 * dM2_dH3
+
+
+@jax.jit
+def _d_delay_d_STIG(
+    toas_bary_mjd: jnp.ndarray,
+    pb: float, t0: float, ecc: float, om_rad: jnp.ndarray,
+    pbdot: float, h3: float, stig: float
+) -> jnp.ndarray:
+    """d(Shapiro delay)/d(STIG) for DDH orthometric parameterization.
+    
+    From:
+        SINI = 2 * STIG / (1 + STIG^2)
+        M2 = H3 / (STIG^3 * T_SUN)
+    
+    Derivatives:
+        d(SINI)/d(STIG) = 2 * (1 - STIG^2) / (1 + STIG^2)^2
+        d(M2)/d(STIG) = -3 * H3 / (STIG^4 * T_SUN) = -3 * M2 / STIG
+    
+    Chain rule:
+        d(delay)/d(STIG) = d(delay)/d(M2) * d(M2)/d(STIG) + d(delay)/d(SINI) * d(SINI)/d(STIG)
+    """
+    # Compute derived quantities
+    stig2 = stig**2
+    sini = 2 * stig / (1 + stig2)
+    m2 = h3 / (stig**3 * T_SUN)
+    
+    # Get individual derivatives
+    d_M2 = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini)
+    d_SINI = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini, m2)
+    
+    # Compute Jacobian terms
+    dM2_dSTIG = -3 * m2 / stig  # = -3 * H3 / (STIG^4 * T_SUN)
+    dSINI_dSTIG = 2 * (1 - stig2) / (1 + stig2)**2
+    
+    return d_M2 * dM2_dSTIG + d_SINI * dSINI_dSTIG
 
 
 if __name__ == '__main__':

@@ -4,16 +4,23 @@ JUG Test Runner - One-command test execution.
 
 Run from repo root:
     python tests/run_all.py           # Run all tests
-    python tests/run_all.py --quick   # Run quick tests only (skip slow)
+    python tests/run_all.py --quick   # Run quick tests only (skip slow, no external data)
+    python tests/run_all.py --full    # Run all tests including optional PINT validation
+    python tests/run_all.py --no-gui  # Skip GUI tests (for headless CI)
     python tests/run_all.py -v        # Verbose output
 
 This runner executes script-style tests in a sensible order and provides
 a concise PASS/FAIL summary. It exits nonzero on any failure.
 
-Tests are categorized as:
+Test categories:
 - CRITICAL: Must pass (failures are hard errors)
 - STANDARD: Should pass (failures are reported)
 - SLOW: Take longer to run (skipped with --quick)
+- CLI: Command-line interface smoke tests
+- API: Python API workflow tests
+- GUI: GUI tests (require Qt, skip with --no-gui)
+- CORRECTNESS: Golden reference validation
+- DATA_REQUIRED: Need external data files (skipped with --quick)
 
 Environment variables for CI:
     JUG_TEST_DATA_DIR=/path/to/data   # Base directory for test data
@@ -40,9 +47,11 @@ class TestSpec:
     """Specification for a single test."""
     name: str
     script: str
-    category: str = "standard"  # critical, standard, slow
+    category: str = "standard"  # critical, standard, slow, cli, api, gui, correctness
     description: str = ""
     timeout: int = 120  # seconds
+    requires_data: bool = False  # True if needs external data files
+    requires_gui: bool = False   # True if needs Qt/display
 
 
 # Tests in execution order
@@ -61,24 +70,76 @@ TESTS = [
         description="Regression: prebinary_delay_sec in cache path",
     ),
     
-    # Standard tests
+    # CLI smoke tests
+    TestSpec(
+        name="cli_smoke",
+        script="test_cli_smoke.py",
+        category="cli",
+        description="CLI entry points respond to --help",
+    ),
+    
+    # CLI integration tests (uses bundled mini data)
+    TestSpec(
+        name="cli_integration",
+        script="test_cli_integration.py",
+        category="cli",
+        description="CLI compute/fit end-to-end with mini data",
+    ),
+    
+    # API tests (use bundled mini data, no external deps)
+    TestSpec(
+        name="api_workflow",
+        script="test_api_workflow.py",
+        category="api",
+        description="Python API workflow with bundled data",
+    ),
+    
+    # Correctness tests (use bundled mini data)
+    TestSpec(
+        name="correctness",
+        script="test_correctness.py",
+        category="correctness",
+        description="Residuals match golden reference",
+    ),
+    
+    # Fit correctness tests (use bundled mini data)
+    TestSpec(
+        name="fit_correctness",
+        script="test_fit_correctness_mini.py",
+        category="correctness",
+        description="Fit reduces RMS, deterministic, finite params",
+    ),
+    
+    # GUI tests (need Qt)
+    TestSpec(
+        name="gui_smoke",
+        script="test_gui_smoke.py",
+        category="gui",
+        description="GUI initializes, computes, fits headless",
+        requires_gui=True,
+    ),
+    
+    # Standard tests (need external data)
     TestSpec(
         name="timescale_validation",
         script="test_timescale_validation.py",
         category="standard",
         description="Par file timescale (TDB/TCB) handling",
+        requires_data=True,
     ),
     TestSpec(
         name="binary_patch",
         script="test_binary_patch.py",
         category="standard",
         description="Binary delay patch vs PINT",
+        requires_data=True,
     ),
     TestSpec(
         name="astrometry_fitting",
         script="test_astrometry_fitting.py",
         category="standard",
         description="Astrometry parameter fitting",
+        requires_data=True,
     ),
     
     # Slow tests
@@ -88,6 +149,7 @@ TESTS = [
         category="slow",
         description="J2241-5236 FB parameter fitting",
         timeout=180,
+        requires_data=True,
     ),
 ]
 
@@ -285,7 +347,27 @@ def main():
     parser.add_argument(
         "--quick", "-q",
         action="store_true",
-        help="Skip slow tests"
+        help="Skip slow tests and tests requiring external data"
+    )
+    parser.add_argument(
+        "--full", "-f",
+        action="store_true",
+        help="Run all tests including slow and optional PINT validation"
+    )
+    parser.add_argument(
+        "--no-gui",
+        action="store_true",
+        help="Skip GUI tests (for headless CI)"
+    )
+    parser.add_argument(
+        "--data-required",
+        action="store_true",
+        help="Only run tests that require external data files"
+    )
+    parser.add_argument(
+        "--pint",
+        action="store_true",
+        help="Include PINT cross-validation in correctness tests"
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -298,6 +380,11 @@ def main():
         help="List available tests and exit"
     )
     parser.add_argument(
+        "--category", "-c",
+        choices=["critical", "standard", "slow", "cli", "api", "gui", "correctness"],
+        help="Run only tests in this category"
+    )
+    parser.add_argument(
         "tests",
         nargs="*",
         help="Specific tests to run (by name)"
@@ -308,28 +395,63 @@ def main():
     if args.list:
         print("Available tests:")
         for spec in TESTS:
-            skip_marker = " [slow]" if spec.category == "slow" else ""
-            crit_marker = " [critical]" if spec.category == "critical" else ""
-            print(f"  {spec.name}{crit_marker}{skip_marker}: {spec.description}")
+            markers = []
+            if spec.category == "slow":
+                markers.append("slow")
+            if spec.category == "critical":
+                markers.append("critical")
+            if spec.requires_data:
+                markers.append("data-required")
+            if spec.requires_gui:
+                markers.append("gui")
+            marker_str = f" [{', '.join(markers)}]" if markers else ""
+            print(f"  {spec.name} ({spec.category}){marker_str}: {spec.description}")
         return 0
     
     # Filter tests
+    tests_to_run = TESTS.copy()
+    
+    # Filter by specific test names
     if args.tests:
         test_names = set(args.tests)
-        tests_to_run = [t for t in TESTS if t.name in test_names]
+        tests_to_run = [t for t in tests_to_run if t.name in test_names]
         if not tests_to_run:
             print(f"ERROR: No matching tests found for: {args.tests}")
             return 1
-    elif args.quick:
-        tests_to_run = [t for t in TESTS if t.category != "slow"]
-    else:
-        tests_to_run = TESTS
+    
+    # Filter by category
+    if args.category:
+        tests_to_run = [t for t in tests_to_run if t.category == args.category]
+    
+    # Quick mode: skip slow and data-requiring tests
+    if args.quick:
+        tests_to_run = [t for t in tests_to_run if t.category != "slow" and not t.requires_data]
+    
+    # Skip GUI tests if requested
+    if args.no_gui:
+        tests_to_run = [t for t in tests_to_run if not t.requires_gui]
+    
+    # Only data-required tests
+    if args.data_required:
+        tests_to_run = [t for t in tests_to_run if t.requires_data]
+    
+    # Set PINT flag for correctness tests
+    if args.pint:
+        os.environ['JUG_TEST_PINT'] = '1'
     
     # Run tests
     print("=" * 60)
     print("JUG Test Runner")
     print("=" * 60)
-    print(f"\nRunning {len(tests_to_run)} tests...")
+    mode_info = []
+    if args.quick:
+        mode_info.append("quick")
+    if args.no_gui:
+        mode_info.append("no-gui")
+    if args.pint:
+        mode_info.append("+pint")
+    mode_str = f" ({', '.join(mode_info)})" if mode_info else ""
+    print(f"\nRunning {len(tests_to_run)} tests{mode_str}...")
     
     results: List[TestResult] = []
     start_time = time.time()

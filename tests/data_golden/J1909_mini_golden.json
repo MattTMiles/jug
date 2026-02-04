@@ -1,0 +1,30 @@
+{
+  "_comment": "Golden reference values for J1909_mini test dataset",
+  "_generated": "2025-01-XX - regenerate with tests/generate_golden.py",
+  "_purpose": "CI validation - verify JUG produces consistent results",
+  
+  "n_toas": 20,
+  "weighted_rms_us": 877.3382862010073,
+  "unweighted_rms_us": 826.4823540391359,
+  "mean_residual_us": -24.234258214784415,
+  
+  "first_5_residuals_ns": [
+    -844076.269,
+    -843063.911,
+    -843127.297,
+    -843251.561,
+    -843193.126
+  ],
+  
+  "tolerances": {
+    "_comment": "Tolerances for cross-platform validation",
+    "rms_rel_tol": 1e-5,
+    "residual_abs_tol_ns": 1.0
+  },
+  
+  "residual_checksum": {
+    "_comment": "Hash of residuals rounded to 10ns for determinism check",
+    "round_to_ns": 10,
+    "first_10_rounded_ns": [-844080, -843060, -843130, -843250, -843190, -843130, -842680, -311890, 588470, 1324960]
+  }
+}

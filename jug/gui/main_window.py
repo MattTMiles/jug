@@ -1552,6 +1552,10 @@ class MainWindow(QMainWindow):
             rms_type = "weighted"
             label_text = "wRMS"
         else:
+            # If unweighted_rms_us is missing/None, compute it on-the-fly
+            if self.unweighted_rms_us is None or self.unweighted_rms_us == 0.0:
+                if self.residuals_us is not None and len(self.residuals_us) > 0:
+                    self.unweighted_rms_us = float(np.std(self.residuals_us))
             self.rms_us = self.unweighted_rms_us
             rms_type = "unweighted"
             label_text = "RMS"

@@ -57,7 +57,7 @@ import math
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.io.par_reader import parse_par_file
+from jug.io.par_reader import parse_par_file, validate_par_timescale
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.utils.device import get_device
 from jug.fitting.derivatives_dm import compute_dm_derivatives
@@ -659,6 +659,10 @@ def _fit_parameters_jax_incremental(
     
     # Load parameters and TOAs
     params = parse_par_file(par_file)
+    
+    # Validate par file timescale (fail fast on TCB)
+    validate_par_timescale(params, context="fit_jax_incremental")
+    
     toas_data = parse_tim_file_mjds(tim_file)
     
     # Extract TOA data
@@ -1120,6 +1124,10 @@ def _build_general_fit_setup_from_files(
     """
     # Parse files
     params = parse_par_file(par_file)
+    
+    # Validate par file timescale (fail fast on TCB)
+    validate_par_timescale(params, context="create_general_fit_setup")
+    
     toas_data = parse_tim_file_mjds(tim_file)
     
     # Convert RAJ/DECJ from strings to radians (needed for fitting)
@@ -2043,6 +2051,10 @@ def _fit_spin_params_general(
     
     # Parse files
     params = parse_par_file(par_file)
+    
+    # Validate par file timescale (fail fast on TCB)
+    validate_par_timescale(params, context="general_fit")
+    
     toas_data = parse_tim_file_mjds(tim_file)
     
     # Extract TOA data
@@ -2295,6 +2307,10 @@ def _fit_f0_f1_level2(
     
     # Parse files
     params = parse_par_file(par_file)
+    
+    # Validate par file timescale (fail fast on TCB)
+    validate_par_timescale(params, context="fit_f0_f1")
+    
     toas_data = parse_tim_file_mjds(tim_file)
     
     # Extract TOA data

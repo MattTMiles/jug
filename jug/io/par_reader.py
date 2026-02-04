@@ -157,7 +157,7 @@ def validate_par_timescale(params: Dict[str, Any], context: str = "JUG") -> str:
         raise ValueError(f"{context}: Unknown par file timescale '{timescale}'")
 
 
-# List of all epoch-like parameters that are in par file timescale
+# List of epoch-like parameters that are in the par file timescale (non-exhaustive)
 EPOCH_PARAMETERS = {
     'PEPOCH',    # Spin epoch
     'POSEPOCH',  # Position epoch  
@@ -172,9 +172,20 @@ EPOCH_PARAMETERS = {
 }
 """Parameters that represent absolute epochs in the par file timescale.
 
+NOTE: This set is for documentation only and may not be exhaustive.
+Other epoch-like parameters may exist (e.g., DMX epochs, noise model epochs).
+
 These parameters are stored as MJD values in whatever timescale the par file
-uses (TDB or TCB). JUG treats them as already being in the model timescale
-and does NOT apply UTC->TDB clock corrections to them.
+uses (TDB or TCB, as indicated by the UNITS keyword). JUG treats them as
+already being in the model timescale and does NOT apply UTC->TDB clock
+corrections to them.
+
+The par file timescale is determined by:
+1. The UNITS keyword (TDB or TCB) if present
+2. Default to TDB if UNITS is not specified
+
+IMPORTANT: JUG currently only supports TDB par files. TCB par files will
+trigger a NotImplementedError via validate_par_timescale().
 """
 
 

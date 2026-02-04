@@ -153,6 +153,11 @@ class MainWindow(QMainWindow):
         self.errors_us = None
         self.rms_us = None
         
+        # RMS display mode (weighted vs unweighted)
+        self.use_weighted_rms = True  # Default to weighted RMS
+        self.weighted_rms_us = None
+        self.unweighted_rms_us = None
+        
         # Original data (for full restart, before any deletions)
         self.original_mjd = None
         self.original_residuals_us = None
@@ -399,7 +404,7 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(self.stats_title)
 
         # Create stat rows with label + value (store both for theme updates)
-        self.rms_label_text, self.rms_label = self._create_stat_row(stats_layout, "RMS", "--")
+        self.rms_label_text, self.rms_label = self._create_stat_row(stats_layout, "wRMS", "--")
         # Set objectName for RMS value (special emphasis styling)
         self.rms_label.setObjectName("rmsValue")
         self.iter_label_text, self.iter_label = self._create_stat_row(stats_layout, "Iterations", "--")
@@ -889,7 +894,7 @@ class MainWindow(QMainWindow):
         self.residuals_us = result['residuals_us']
         self.prefit_residuals_us = result['residuals_us'].copy()
         self.errors_us = result.get('errors_us', None)
-        self.rms_us = result['rms_us']
+        self._update_rms_from_result(result)
         self.is_fitted = False
         self.fit_results = None
         
@@ -917,8 +922,9 @@ class MainWindow(QMainWindow):
         self.ntoa_label.setText(f"{len(self.mjd)}")
         
         # Update status
+        rms_label = "wRMS" if self.use_weighted_rms else "RMS"
         self.status_bar.showMessage(
-            f"Loaded {len(self.mjd)} TOAs, Prefit RMS = {self.rms_us:.6f} μs"
+            f"Loaded {len(self.mjd)} TOAs, Prefit {rms_label} = {self.rms_us:.6f} μs"
         )
 
         # Schedule JAX warmup in background (avoids first-fit lag)
@@ -1010,8 +1016,9 @@ class MainWindow(QMainWindow):
         """Update the plot title with pulsar name and RMS."""
         pulsar_str = self.pulsar_name if self.pulsar_name else "Unknown Pulsar"
         rms_str = f"{self.rms_us:.6f} μs" if self.rms_us is not None else "--"
+        rms_label = "wRMS" if self.use_weighted_rms else "RMS"
         # Use styled separator
-        self.plot_title_label.setText(f"✦  {pulsar_str}  ·  RMS: {rms_str}")
+        self.plot_title_label.setText(f"✦  {pulsar_str}  ·  {rms_label}: {rms_str}")
     
     def on_fit_clicked(self):
         """Handle Fit button click."""
@@ -1133,14 +1140,14 @@ class MainWindow(QMainWindow):
                 self.errors_us = None
             # Recalculate RMS for filtered data using canonical engine stats
             stats = compute_residual_stats(self.residuals_us, self.errors_us)
-            self.rms_us = stats['weighted_rms_us']
+            self._update_rms_from_stats(stats)
         else:
             # No deletions - use all data
             self.mjd = full_mjd
             self.residuals_us = full_residuals
             self.postfit_residuals_us = full_residuals.copy()
             self.errors_us = full_errors
-            self.rms_us = result['rms_us']
+            self._update_rms_from_result(result)
         
         # DEBUG
         print(f"[DEBUG] Updated GUI RMS: {self.rms_us:.6f} μs (after filtering {len(self.deleted_indices)} deleted TOAs)")
@@ -1172,9 +1179,10 @@ class MainWindow(QMainWindow):
 
             # Update status
             param_str = ', '.join(fit_result['final_params'].keys())
+            rms_label = "wRMS" if self.use_weighted_rms else "RMS"
             self.status_bar.showMessage(
                 f"Fit complete: {param_str} | "
-                f"RMS = {self.rms_us:.6f} μs | "
+                f"{rms_label} = {self.rms_us:.6f} μs | "
                 f"{fit_result['iterations']} iterations | "
                 f"{'converged' if fit_result['converged'] else 'not converged'}"
             )
@@ -1263,7 +1271,10 @@ class MainWindow(QMainWindow):
             vbox.addWidget(val)
             stats_layout.addWidget(container)
             
-        add_stat("Final RMS", f"{result['final_rms']:.6f} μs", color=accent, bold=True)
+        # Use current RMS value (weighted or unweighted based on mode)
+        rms_label = "Final wRMS" if self.use_weighted_rms else "Final RMS"
+        rms_value = self.rms_us if self.rms_us is not None else result['final_rms']
+        add_stat(rms_label, f"{rms_value:.6f} μs", color=accent, bold=True)
         add_stat("Iterations", result['iterations'])
         conv_text = "Yes" if result['converged'] else "No"
         conv_color = Colors.ACCENT_SUCCESS if result['converged'] else Colors.ACCENT_WARNING
@@ -1493,7 +1504,7 @@ class MainWindow(QMainWindow):
             
             # Recalculate RMS using canonical engine stats
             stats = compute_residual_stats(self.residuals_us, self.errors_us)
-            self.rms_us = stats['weighted_rms_us']
+            self._update_rms_from_stats(stats)
             
             # Reset fit state
             self.is_fitted = False
@@ -1530,6 +1541,63 @@ class MainWindow(QMainWindow):
             if self.zero_line is not None:
                 self.plot_widget.removeItem(self.zero_line)
                 self.zero_line = None
+
+    def _toggle_rms_mode(self):
+        """Toggle between weighted and unweighted RMS display (shortcut: W)."""
+        self.use_weighted_rms = not self.use_weighted_rms
+        
+        # Update the displayed RMS value based on mode
+        if self.use_weighted_rms:
+            self.rms_us = self.weighted_rms_us
+            rms_type = "weighted"
+            label_text = "wRMS"
+        else:
+            self.rms_us = self.unweighted_rms_us
+            rms_type = "unweighted"
+            label_text = "RMS"
+        
+        # Update label text in statistics panel
+        self.rms_label_text.setText(label_text)
+        
+        # Update displayed value
+        if self.rms_us is not None:
+            self.rms_label.setText(f"{self.rms_us:.6f} μs")
+        
+        # Update plot title
+        self._update_plot_title()
+        
+        # Show status message
+        if self.rms_us is not None:
+            self.status_bar.showMessage(f"Switched to {rms_type} RMS: {self.rms_us:.6f} μs (press W to toggle)")
+        else:
+            self.status_bar.showMessage(f"Switched to {rms_type} RMS (press W to toggle)")
+
+    def _update_rms_from_stats(self, stats: dict):
+        """Update all RMS values from a stats dictionary.
+        
+        Parameters
+        ----------
+        stats : dict
+            Dictionary containing 'weighted_rms_us' and 'unweighted_rms_us' keys.
+        """
+        self.weighted_rms_us = stats['weighted_rms_us']
+        self.unweighted_rms_us = stats['unweighted_rms_us']
+        # Set displayed RMS based on current mode
+        self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
+
+    def _update_rms_from_result(self, result: dict):
+        """Update all RMS values from a compute_residuals result dictionary.
+        
+        Parameters
+        ----------
+        result : dict
+            Dictionary from compute_residuals_simple containing RMS values.
+        """
+        # compute_residuals_simple returns 'weighted_rms_us' and 'unweighted_rms_us'
+        self.weighted_rms_us = result.get('weighted_rms_us', result.get('rms_us', 0.0))
+        self.unweighted_rms_us = result.get('unweighted_rms_us', 0.0)
+        # Set displayed RMS based on current mode
+        self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
 
     def on_toggle_color_variant(self):
         """Toggle data color variant (navy/burgundy in light, classic/scilab in dark)."""
@@ -2001,6 +2069,9 @@ class MainWindow(QMainWindow):
             elif key == Qt.Key_U:
                 self.on_zoom_fit()
                 return True
+            elif key == Qt.Key_W:
+                self._toggle_rms_mode()
+                return True
         return super().eventFilter(obj, event)
 
     def _handle_box_zoom_key(self):
@@ -2323,7 +2394,7 @@ class MainWindow(QMainWindow):
         
         # Recalculate RMS using canonical engine stats
         stats = compute_residual_stats(self.residuals_us, self.errors_us)
-        self.rms_us = stats['weighted_rms_us']
+        self._update_rms_from_stats(stats)
         
         # Update plot
         self._update_plot()

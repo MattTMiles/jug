@@ -1838,24 +1838,32 @@ def _build_general_fit_setup_from_cache(
         initial_dm_params = {p: params_dict[p] for p in dm_params if p in params_dict}
         initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
 
-    # If fitting binary params, extract roemer_shapiro_sec and compute initial binary delay
+    # If fitting binary params, extract prebinary_delay_sec and compute initial binary delay
     roemer_shapiro_sec = None
+    prebinary_delay_sec = None
     initial_binary_delay = None
     if binary_params:
+        # Prefer prebinary_delay_sec (PINT-compatible: roemer_shapiro + DM + SW + tropo)
+        prebinary_delay_sec = session_cached_data.get('prebinary_delay_sec')
         roemer_shapiro_sec = session_cached_data.get('roemer_shapiro_sec')
-        if roemer_shapiro_sec is None:
-            raise ValueError(
-                "Binary fitting requires roemer_shapiro_sec in setup. "
-                "Ensure compute_residuals_simple returns 'roemer_shapiro_sec'."
-            )
+        
+        if prebinary_delay_sec is None:
+            # Fallback to roemer_shapiro_sec for backward compatibility
+            if roemer_shapiro_sec is None:
+                raise ValueError(
+                    "Binary fitting requires prebinary_delay_sec or roemer_shapiro_sec in setup. "
+                    "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
+                )
+            prebinary_delay_sec = roemer_shapiro_sec  # Fallback (not fully PINT-compatible)
+        
         if toa_mask is not None:
-            roemer_shapiro_sec = roemer_shapiro_sec[toa_mask]
+            prebinary_delay_sec = prebinary_delay_sec[toa_mask]
+            if roemer_shapiro_sec is not None:
+                roemer_shapiro_sec = roemer_shapiro_sec[toa_mask]
 
-        # Compute initial binary delay for iterative fitting
-        # Route to correct binary model (DD vs ELL1)
-        # Barycentric times = TDB - (Roemer + Shapiro)
-        toas_bary = tdb_mjd - roemer_shapiro_sec / SECS_PER_DAY
-        initial_binary_delay = np.array(compute_binary_delay(toas_bary, params_dict))
+        # Compute initial binary delay for iterative fitting using PINT-compatible time
+        toas_prebinary = tdb_mjd - prebinary_delay_sec / SECS_PER_DAY
+        initial_binary_delay = np.array(compute_binary_delay(toas_prebinary, params_dict))
 
     # If fitting astrometry params, extract ssb_obs_pos_ls and compute initial delay
     ssb_obs_pos_ls = None
@@ -1898,6 +1906,7 @@ def _build_general_fit_setup_from_cache(
         astrometry_params=astrometry_params,
         fd_params=fd_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
+        prebinary_delay_sec=prebinary_delay_sec,
         initial_binary_delay=initial_binary_delay,
         ssb_obs_pos_ls=ssb_obs_pos_ls,
         initial_astrometric_delay=initial_astrometric_delay,

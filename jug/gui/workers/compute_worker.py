@@ -60,6 +60,8 @@ class ComputeWorker(QRunnable):
             result_safe = {
                 'residuals_us': np.array(result['residuals_us']),
                 'rms_us': float(result['rms_us']),
+                'weighted_rms_us': float(result.get('weighted_rms_us', result['rms_us'])),
+                'unweighted_rms_us': float(result.get('unweighted_rms_us', 0.0)),
                 'tdb_mjd': np.array(result['tdb_mjd']),
                 'errors_us': np.array(result.get('errors_us', [])) if result.get('errors_us') is not None else None,
                 'dt_sec': np.array(result.get('dt_sec', [])),

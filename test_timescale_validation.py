@@ -145,6 +145,73 @@ except Exception as e:
 # Cleanup
 Path(no_units_par_file).unlink()
 
+# Test 6: Test tzrmjd_scale="UTC" contradiction warning with UNITS=TDB
+print("\n6. Testing tzrmjd_scale='UTC' contradiction with UNITS=TDB...")
+print("   (Should print loud warning about contradiction)")
+
+import io
+from contextlib import redirect_stdout
+
+# Capture stdout to check for warning
+f_capture = io.StringIO()
+with redirect_stdout(f_capture):
+    result = compute_residuals_simple(
+        TDB_PAR_FILE, TIM_FILE, 
+        verbose=True, 
+        tzrmjd_scale="UTC"
+    )
+
+output = f_capture.getvalue()
+
+# Check for contradiction warning
+if "contradicts par file UNITS=TDB" in output:
+    print("   ✓ Contradiction warning printed")
+else:
+    print("   ✗ Missing contradiction warning!")
+    print(f"   Output snippet: {output[:500]}...")
+    sys.exit(1)
+
+# Check for large delta warning
+if "Large TZRMJD shift" in output or "delta" in output.lower():
+    print("   ✓ Large shift warning/info printed")
+
+# Check delta_tzr value (should be ~69 seconds)
+import re
+delta_match = re.search(r'delta.*?=\s*([\d.]+)\s*s', output)
+if delta_match:
+    delta_val = float(delta_match.group(1))
+    if delta_val > 60:  # Should be ~69 seconds
+        print(f"   ✓ Delta TZRMJD = {delta_val:.1f} s (confirms UTC->TDB conversion applied)")
+    else:
+        print(f"   ⚠ Delta TZRMJD = {delta_val:.1f} s (unexpectedly small)")
+else:
+    print("   ⚠ Could not extract delta_tzr value from output")
+
+# Test 7: Test tzrmjd_scale="AUTO" (default behavior)
+print("\n7. Testing tzrmjd_scale='AUTO' (default, should derive from par UNITS)...")
+
+f_capture2 = io.StringIO()
+with redirect_stdout(f_capture2):
+    result2 = compute_residuals_simple(
+        TDB_PAR_FILE, TIM_FILE, 
+        verbose=True, 
+        tzrmjd_scale="AUTO"  # This is the default
+    )
+
+output2 = f_capture2.getvalue()
+
+# Check that AUTO resolved to TDB
+if "AUTO -> TDB" in output2:
+    print("   ✓ AUTO correctly resolved to TDB (from par UNITS)")
+else:
+    print(f"   ⚠ Could not confirm AUTO->TDB resolution")
+    
+# Check delta is 0
+if "delta_tzr:     0.000000 s" in output2:
+    print("   ✓ delta_tzr = 0 (no conversion applied)")
+else:
+    print("   ⚠ Could not confirm zero delta")
+
 print("\n" + "=" * 80)
 print("All tests passed!")
 print("=" * 80)

@@ -1854,6 +1854,17 @@ def _build_general_fit_setup_from_cache(
                     "Binary fitting requires prebinary_delay_sec or roemer_shapiro_sec in setup. "
                     "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
                 )
+            import warnings
+            warnings.warn(
+                "Cache missing 'prebinary_delay_sec' - falling back to roemer_shapiro_sec only.\n"
+                "  IMPACT: Binary timing model will NOT be PINT-compatible (missing DM+SW+tropo corrections).\n"
+                "  CAUSE:  Cached TOA data was likely produced by an older JUG version.\n"
+                "  FIX:    1) Close the GUI and restart with fresh data, OR\n"
+                "          2) In Python: session.compute_residuals(force_recompute=True)\n"
+                "          3) If using TimingSession, delete session._cached_result_by_mode and recompute.",
+                UserWarning,
+                stacklevel=2
+            )
             prebinary_delay_sec = roemer_shapiro_sec  # Fallback (not fully PINT-compatible)
         
         if toa_mask is not None:

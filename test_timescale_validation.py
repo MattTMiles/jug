@@ -177,7 +177,8 @@ if "Large TZRMJD shift" in output or "delta" in output.lower():
 
 # Check delta_tzr value (should be ~69 seconds)
 import re
-delta_match = re.search(r'delta.*?=\s*([\d.]+)\s*s', output)
+# Match format: "delta_tzr:     69.185849 s" or "delta = 69.186 s"
+delta_match = re.search(r'delta[_a-z]*[:\s]+\s*([\d.]+)\s*s', output, re.IGNORECASE)
 if delta_match:
     delta_val = float(delta_match.group(1))
     if delta_val > 60:  # Should be ~69 seconds

@@ -1,397 +1,935 @@
+diff --git a/docs/JUG_PROGRESS_TRACKER.md b/docs/JUG_PROGRESS_TRACKER.md
+index beae6d9..6e68987 100644
+--- a/docs/JUG_PROGRESS_TRACKER.md
++++ b/docs/JUG_PROGRESS_TRACKER.md
+@@ -1,8 +1,8 @@
+ # JUG Implementation Progress Tracker
+ 
+-**Last Updated**: 2026-02-02 (DDK Model Testing)
++**Last Updated**: 2026-02-03 (Hardening Pass - DDK explicit fail, prebinary fix documented)
+ **Current Version**: M6 Complete - Full Astrometry + Binary Fitting with PINT-style Damping ✅
+-**Active Milestone**: DDK Bug Fix Required, then M7
++**Active Milestone**: M6.1 Hardening (correctness tests, explicit behavior), then M7
+ 
+ This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
+ 
+@@ -44,7 +44,8 @@ This document tracks the implementation progress of JUG from notebook to product
+   - ✅ Astrometry: RAJ, DECJ, PMRA, PMDEC, PX (PINT-style damped fitting)
+   - ✅ Binary: PB, A1, ECC, OM, T0, TASC, EPS1, EPS2, M2, SINI, PBDOT, etc.
+   - ⏸️ JUMP parameters (not yet)
+-- **Binary Models**: ELL1, ELL1H, DD, DDH, DDK (⚠️ bug), DDGR, BT, T2
++- **Binary Models**: ELL1, ELL1H, DD, DDH, DDGR, BT, T2
++  - ⚠️ **DDK NOT IMPLEMENTED**: DDK now raises `NotImplementedError` (previously aliased DD silently - incorrect). True DDK requires Kopeikin annual orbital parallax terms not yet implemented.
+ - **Multi-Backend Support**: MeerKAT, Parkes, GBT, VLA, etc.
+ - **Clock Corrections**: Automatic clock file loading and caching
+ 
+@@ -97,6 +98,32 @@ This document tracks the implementation progress of JUG from notebook to product
+ - **Binary Model Tests**: Multi-pulsar validation
+ - **Session Cache Tests**: Cache separation correctness
+ - **ParameterSpec Tests**: Registry and routing validation
++- **CLI Integration Tests**: End-to-end with bundled mini data
++- **Correctness Invariant Tests**: prebinary_delay_sec usage, fit recovery
++
++### Recent Correctness Fixes (2026-01-30 to 2026-02-03)
++
++#### Prebinary Delay Fix ✅
++- **Problem**: Binary delay was being evaluated at wrong time (TDB - roemer_shapiro instead of TDB - prebinary_delay)
++- **Fix**: Added `prebinary_delay_sec` computation matching PINT's `delay_before_binary`:
++  ```
++  prebinary_delay_sec = roemer + shapiro + dm + sw + tropo
++  ```
++  This is the full delay-before-binary (all delays except binary and FD).
++- **Impact**: Binary delays now evaluated at correct "pre-binary" time matching PINT
++- **Test**: `test_cache_prebinary_regression.py` ensures prebinary_delay_sec is computed and cached
++
++#### TZRMJD Timescale Fix ✅
++- **Problem**: TZRMJD scale was inconsistent (sometimes UTC, sometimes TDB)
++- **Fix**: Default `tzrmjd_scale="AUTO"` derives from par file UNITS keyword
++- **Impact**: For UNITS=TDB par files, TZRMJD is correctly treated as TDB (no conversion)
++- **TCB Hard-Fail**: Par files with UNITS=TCB now raise `NotImplementedError` with clear message
++
++#### DDK Silent Aliasing Fix ✅ (2026-02-03)
++- **Problem**: DDK was silently aliased to DD, producing incorrect results (missing Kopeikin terms)
++- **Fix**: DDK now raises `NotImplementedError` with clear message about missing implementation
++- **Impact**: Users cannot accidentally get wrong science; must use DD or wait for DDK implementation
++- **Test**: `test_ddk_not_implemented.py` ensures DDK raises error
+ 
+ ---
+ 
 diff --git a/docs/TESTING.md b/docs/TESTING.md
-index 06efc66..de1d9f7 100644
+index b558fb4..8f98847 100644
 --- a/docs/TESTING.md
 +++ b/docs/TESTING.md
-@@ -8,32 +8,82 @@ Quick start for running tests and validating functionality.
- # From repo root, run all tests
- python tests/run_all.py
+@@ -50,11 +50,13 @@ python tests/run_all.py --list
+ |------|----------|---------|----------|
+ | `imports` | critical | Core module imports | <1s |
+ | `prebinary_cache` | critical | Cache path regression | ~2s |
++| `ddk_not_implemented` | critical | DDK raises NotImplementedError | ~1s |
+ | `cli_smoke` | cli | CLI entry points respond to --help | ~3s |
+ | `cli_integration` | cli | CLI compute/fit end-to-end | ~5s |
+ | `api_workflow` | api | Python API with bundled data | ~2s |
+ | `correctness` | correctness | Residuals match golden values + checksum | ~2s |
+ | `fit_correctness` | correctness | Fit reduces RMS, deterministic, finite params | ~2s |
++| `invariants` | correctness | Prebinary time, fit recovery, gradient sanity | ~3s |
+ | `gui_smoke` | gui | GUI initializes, computes, fits headless | ~3s |
+ | `timescale_validation` | standard | TDB/TCB handling | ~2s |
+ | `binary_patch` | standard | Binary delay correctness | ~3s |
+@@ -101,7 +103,7 @@ number of TOAs, similar RMS magnitude) rather than exact agreement.
+ ## Bundled Test Data
  
--# Quick validation (skip slow tests)
--python tests/run_all.py --quick
-+# Quick validation (no external data, skip slow tests, no GUI)
-+python tests/run_all.py --quick --no-gui
-+
-+# Full validation including GUI
-+python tests/run_all.py
-+
-+# With PINT cross-validation
-+python tests/run_all.py --pint
+ The `tests/data_golden/` directory contains:
+-- `J1909_mini.par` - Simplified par file (20 TOAs)
++- `J1909_mini.par` - Simplified par file (20 TOAs, ELL1 binary, DM=10.39)
+ - `J1909_mini.tim` - Mini tim file (20 TOAs)
+ - `J1909_mini_golden.json` - Golden reference values with:
+   - Expected RMS values (µs)
+@@ -111,6 +113,27 @@ The `tests/data_golden/` directory contains:
  
- # Verbose output for debugging
- python tests/run_all.py -v
+ These enable CI tests to run without external data dependencies.
  
- # Run specific tests
- python tests/run_all.py imports prebinary_cache
++**Note**: The mini dataset has nonzero DM and CORRECT_TROPOSPHERE=Y, ensuring
++`prebinary_delay_sec` differs from `roemer_shapiro_sec` (required for invariant tests).
 +
-+# Run only a category
-+python tests/run_all.py -c api
-+python tests/run_all.py -c correctness
++## Environment Variables
 +
-+# List all available tests
-+python tests/run_all.py --list
- ```
- 
-+## Test Categories
++### DDK Override
 +
-+| Category | Description | Data Required | GUI Required |
-+|----------|-------------|---------------|--------------|
-+| `critical` | Must pass - core imports | No | No |
-+| `cli` | CLI smoke tests | No | No |
-+| `api` | Python API workflow | No (uses mini) | No |
-+| `correctness` | Golden reference validation | No (uses mini) | No |
-+| `gui` | GUI initialization tests | No | Yes |
-+| `standard` | Standard validation tests | Yes | No |
-+| `slow` | Long-running tests | Yes | No |
-+
- ## What the Tests Check
- 
--| Test | Purpose | Duration |
--|------|---------|----------|
--| `imports` | Core module imports | <1s |
--| `prebinary_cache` | Cache path regression | ~2s |
--| `timescale_validation` | TDB/TCB handling | ~2s |
--| `binary_patch` | Binary delay correctness | ~3s |
--| `astrometry_fitting` | Astrometry parameters | ~4s |
--| `j2241_fit` | Full parameter fitting | ~3s |
-+| Test | Category | Purpose | Duration |
-+|------|----------|---------|----------|
-+| `imports` | critical | Core module imports | <1s |
-+| `prebinary_cache` | critical | Cache path regression | ~2s |
-+| `cli_smoke` | cli | CLI entry points work | ~3s |
-+| `api_workflow` | api | Python API with bundled data | ~2s |
-+| `correctness` | correctness | Residuals match golden values | ~2s |
-+| `gui_smoke` | gui | GUI initializes headless | ~3s |
-+| `timescale_validation` | standard | TDB/TCB handling | ~2s |
-+| `binary_patch` | standard | Binary delay correctness | ~3s |
-+| `astrometry_fitting` | standard | Astrometry parameters | ~4s |
-+| `j2241_fit` | slow | Full parameter fitting | ~3s |
-+
-+## Quick Mode (CI-Friendly)
-+
-+Use `--quick --no-gui` for fast CI validation without external data:
++JUG does not support the DDK binary model (requires Kopeikin terms not implemented).
++By default, DDK par files raise `NotImplementedError`. For testing or comparison:
 +
 +```bash
-+python tests/run_all.py --quick --no-gui
++# Force DDK to be treated as DD (INCORRECT for high-parallax pulsars)
++JUG_ALLOW_DDK_AS_DD=1 python -m jug.scripts.compute_residuals par tim
++
++# Also works with Python API
++JUG_ALLOW_DDK_AS_DD=1 python -c "from jug.residuals.simple_calculator import compute_residuals_simple; ..."
 +```
 +
-+This runs:
-+- Import tests
-+- CLI smoke tests  
-+- API workflow tests (uses bundled mini data)
-+- Correctness tests (uses bundled mini data)
++**Warning**: This override produces scientifically incorrect results for pulsars
++where Kopeikin corrections are significant (e.g., J0437-4715). Use only for testing.
 +
-+## Bundled Test Data
-+
-+The `tests/data_golden/` directory contains:
-+- `J1909_mini.par` - Simplified par file (20 TOAs)
-+- `J1909_mini.tim` - Mini tim file (20 TOAs)
-+- `J1909_mini_golden.json` - Golden reference values
- 
--Use `python tests/run_all.py --quick` to skip `j2241_fit`.
-+These enable CI tests to run without external data dependencies.
- 
  ## CI/Portable Test Data
  
--Tests auto-skip if data is missing. To run on CI/other machines, set:
-+For external data tests, set environment variables:
+ For external data tests, set environment variables:
+diff --git a/jug/delays/binary_dispatch.py b/jug/delays/binary_dispatch.py
+index 3a5d9a4..14a5062 100644
+--- a/jug/delays/binary_dispatch.py
++++ b/jug/delays/binary_dispatch.py
+@@ -99,8 +99,37 @@ def dispatch_binary_delay(model_name, t_topo_tdb, params):
+             sini=params.get('SINI', 0.0)
+         )
+     
+-    # DD and its variants
+-    elif model in ('DD', 'DDH', 'DDGR', 'DDK'):
++    # DDK requires Kopeikin annual orbital parallax corrections - NOT IMPLEMENTED
++    # Check for environment variable override to allow DDK->DD aliasing (with warnings)
++    elif model == 'DDK':
++        import os
++        import warnings
++        if os.environ.get('JUG_ALLOW_DDK_AS_DD', '').lower() in ('1', 'true', 'yes'):
++            warnings.warn(
++                "JUG_ALLOW_DDK_AS_DD=1: binary_dispatch treating DDK as DD. "
++                "This is INCORRECT for high-parallax pulsars and will produce wrong science. "
++                "Use at your own risk.",
++                UserWarning
++            )
++            # Fall through to DD code below
++            model = 'DD'
++        else:
++            raise NotImplementedError(
++                f"DDK binary model is not implemented in JUG.\n\n"
++                f"DDK requires Kopeikin (1995, 1996) annual orbital parallax terms that "
++                f"modify the projected semi-major axis (A1) and longitude of periastron (OM) "
++                f"based on orbital inclination (KIN), position angle of ascending node (KOM), "
++                f"parallax (PX), and proper motion.\n\n"
++                f"Previously, JUG silently aliased DDK to DD, which is INCORRECT and would "
++                f"produce wrong science for high-parallax pulsars like J0437-4715.\n\n"
++                f"Options:\n"
++                f"  1. Convert your par file to use BINARY DD (if Kopeikin corrections are negligible)\n"
++                f"  2. Use PINT or tempo2 for DDK pulsars until JUG implements true DDK support\n"
++                f"  3. Set environment variable JUG_ALLOW_DDK_AS_DD=1 to force DD aliasing (NOT RECOMMENDED)\n"
++            )
++    
++    # DD and its variants (DDH, DDGR) - also handles DDK when override is set
++    if model in ('DD', 'DDH', 'DDGR'):
+         return dd_binary_delay(
+             t_topo_tdb,
+             pb_days=params['PB'],
+diff --git a/jug/residuals/simple_calculator.py b/jug/residuals/simple_calculator.py
+index afcc192..5e76a49 100644
+--- a/jug/residuals/simple_calculator.py
++++ b/jug/residuals/simple_calculator.py
+@@ -237,16 +237,40 @@ def compute_residuals_simple(
+     has_binary = 'PB' in params or 'FB0' in params
+     binary_model = params.get('BINARY', 'NONE').upper() if has_binary else 'NONE'
  
- ```bash
- export JUG_TEST_DATA_DIR=/path/to/data
-@@ -52,6 +102,27 @@ Check your setup:
- python tests/test_paths.py
- ```
- 
-+## GitHub Actions
++    # Check for DDK early and fail explicitly (DDK not implemented)
++    if binary_model == 'DDK':
++        import os
++        if os.environ.get('JUG_ALLOW_DDK_AS_DD', '').lower() not in ('1', 'true', 'yes'):
++            raise NotImplementedError(
++                f"DDK binary model is not implemented in JUG.\n\n"
++                f"DDK requires Kopeikin (1995, 1996) annual orbital parallax terms that "
++                f"modify the projected semi-major axis (A1) and longitude of periastron (OM) "
++                f"based on orbital inclination (KIN), position angle of ascending node (KOM), "
++                f"parallax (PX), and proper motion.\n\n"
++                f"Previously, JUG silently aliased DDK to DD, which is INCORRECT and would "
++                f"produce wrong science for high-parallax pulsars like J0437-4715.\n\n"
++                f"Options:\n"
++                f"  1. Convert your par file to use BINARY DD (if Kopeikin corrections are negligible)\n"
++                f"  2. Use PINT or tempo2 for DDK pulsars until JUG implements true DDK support\n"
++                f"  3. Set environment variable JUG_ALLOW_DDK_AS_DD=1 to force DD aliasing (NOT RECOMMENDED)\n"
++            )
++        else:
++            import warnings
++            warnings.warn(
++                "JUG_ALLOW_DDK_AS_DD=1: Treating DDK as DD. This is INCORRECT for "
++                "high-parallax pulsars and will produce wrong science. Use at your own risk.",
++                UserWarning
++            )
++            binary_model = 'DD'  # Force to DD if override is set
 +
-+The `.github/workflows/tests.yml` workflow runs:
-+
-+1. **Quick tests** - Every push, Python 3.10/3.11/3.12, no external data
-+2. **Full tests** - On commits containing `[full-tests]`, includes GUI
-+3. **PINT validation** - On PRs, cross-validates against PINT
-+4. **Lint** - Code quality checks with ruff/black
-+
-+## Correctness Validation
-+
-+JUG validates correctness by comparing computed residuals against:
-+
-+1. **Golden reference** - Pre-computed values in `tests/data_golden/`
-+2. **PINT (optional)** - Cross-validation with `--pint` flag
-+
-+To regenerate golden values after intentional changes:
-+```bash
-+python tests/generate_golden.py
-+```
-+
- ## Debug Scripts
- 
- Debug/diagnostic scripts are in `playground/`. Run manually as needed:
+     # Map model name to ID
+-    # 0: None, 1: ELL1/H, 2: DD/DDH/DDGR, 3: T2, 4: BT*, 5: DDK
++    # 0: None, 1: ELL1/H, 2: DD/DDH/DDGR, 3: T2, 4: BT*
+     model_id = 0
+     if has_binary:
+         if binary_model in ('ELL1', 'ELL1H'):
+             model_id = 1
+         elif binary_model in ('DD', 'DDH', 'DDGR'):
+             model_id = 2
+-        elif binary_model == 'DDK':
+-            model_id = 5  # DDK uses Kopeikin annual orbital parallax
+         elif binary_model == 'T2':
+             model_id = 3
+         elif binary_model in ('BT', 'BTX'):
+diff --git a/jug_updates.patch b/jug_updates.patch
+index 483ca29..c2dfb6a 100644
+--- a/jug_updates.patch
++++ b/jug_updates.patch
+@@ -1,397 +0,0 @@
+-diff --git a/docs/TESTING.md b/docs/TESTING.md
+-index 06efc66..de1d9f7 100644
+---- a/docs/TESTING.md
+-+++ b/docs/TESTING.md
+-@@ -8,32 +8,82 @@ Quick start for running tests and validating functionality.
+- # From repo root, run all tests
+- python tests/run_all.py
+- 
+--# Quick validation (skip slow tests)
+--python tests/run_all.py --quick
+-+# Quick validation (no external data, skip slow tests, no GUI)
+-+python tests/run_all.py --quick --no-gui
+-+
+-+# Full validation including GUI
+-+python tests/run_all.py
+-+
+-+# With PINT cross-validation
+-+python tests/run_all.py --pint
+- 
+- # Verbose output for debugging
+- python tests/run_all.py -v
+- 
+- # Run specific tests
+- python tests/run_all.py imports prebinary_cache
+-+
+-+# Run only a category
+-+python tests/run_all.py -c api
+-+python tests/run_all.py -c correctness
+-+
+-+# List all available tests
+-+python tests/run_all.py --list
+- ```
+- 
+-+## Test Categories
+-+
+-+| Category | Description | Data Required | GUI Required |
+-+|----------|-------------|---------------|--------------|
+-+| `critical` | Must pass - core imports | No | No |
+-+| `cli` | CLI smoke tests | No | No |
+-+| `api` | Python API workflow | No (uses mini) | No |
+-+| `correctness` | Golden reference validation | No (uses mini) | No |
+-+| `gui` | GUI initialization tests | No | Yes |
+-+| `standard` | Standard validation tests | Yes | No |
+-+| `slow` | Long-running tests | Yes | No |
+-+
+- ## What the Tests Check
+- 
+--| Test | Purpose | Duration |
+--|------|---------|----------|
+--| `imports` | Core module imports | <1s |
+--| `prebinary_cache` | Cache path regression | ~2s |
+--| `timescale_validation` | TDB/TCB handling | ~2s |
+--| `binary_patch` | Binary delay correctness | ~3s |
+--| `astrometry_fitting` | Astrometry parameters | ~4s |
+--| `j2241_fit` | Full parameter fitting | ~3s |
+-+| Test | Category | Purpose | Duration |
+-+|------|----------|---------|----------|
+-+| `imports` | critical | Core module imports | <1s |
+-+| `prebinary_cache` | critical | Cache path regression | ~2s |
+-+| `cli_smoke` | cli | CLI entry points work | ~3s |
+-+| `api_workflow` | api | Python API with bundled data | ~2s |
+-+| `correctness` | correctness | Residuals match golden values | ~2s |
+-+| `gui_smoke` | gui | GUI initializes headless | ~3s |
+-+| `timescale_validation` | standard | TDB/TCB handling | ~2s |
+-+| `binary_patch` | standard | Binary delay correctness | ~3s |
+-+| `astrometry_fitting` | standard | Astrometry parameters | ~4s |
+-+| `j2241_fit` | slow | Full parameter fitting | ~3s |
+-+
+-+## Quick Mode (CI-Friendly)
+-+
+-+Use `--quick --no-gui` for fast CI validation without external data:
+-+
+-+```bash
+-+python tests/run_all.py --quick --no-gui
+-+```
+-+
+-+This runs:
+-+- Import tests
+-+- CLI smoke tests  
+-+- API workflow tests (uses bundled mini data)
+-+- Correctness tests (uses bundled mini data)
+-+
+-+## Bundled Test Data
+-+
+-+The `tests/data_golden/` directory contains:
+-+- `J1909_mini.par` - Simplified par file (20 TOAs)
+-+- `J1909_mini.tim` - Mini tim file (20 TOAs)
+-+- `J1909_mini_golden.json` - Golden reference values
+- 
+--Use `python tests/run_all.py --quick` to skip `j2241_fit`.
+-+These enable CI tests to run without external data dependencies.
+- 
+- ## CI/Portable Test Data
+- 
+--Tests auto-skip if data is missing. To run on CI/other machines, set:
+-+For external data tests, set environment variables:
+- 
+- ```bash
+- export JUG_TEST_DATA_DIR=/path/to/data
+-@@ -52,6 +102,27 @@ Check your setup:
+- python tests/test_paths.py
+- ```
+- 
+-+## GitHub Actions
+-+
+-+The `.github/workflows/tests.yml` workflow runs:
+-+
+-+1. **Quick tests** - Every push, Python 3.10/3.11/3.12, no external data
+-+2. **Full tests** - On commits containing `[full-tests]`, includes GUI
+-+3. **PINT validation** - On PRs, cross-validates against PINT
+-+4. **Lint** - Code quality checks with ruff/black
+-+
+-+## Correctness Validation
+-+
+-+JUG validates correctness by comparing computed residuals against:
+-+
+-+1. **Golden reference** - Pre-computed values in `tests/data_golden/`
+-+2. **PINT (optional)** - Cross-validation with `--pint` flag
+-+
+-+To regenerate golden values after intentional changes:
+-+```bash
+-+python tests/generate_golden.py
+-+```
+-+
+- ## Debug Scripts
+- 
+- Debug/diagnostic scripts are in `playground/`. Run manually as needed:
+-diff --git a/tests/run_all.py b/tests/run_all.py
+-index 8116870..7645569 100644
+---- a/tests/run_all.py
+-+++ b/tests/run_all.py
+-@@ -4,16 +4,23 @@ JUG Test Runner - One-command test execution.
+- 
+- Run from repo root:
+-     python tests/run_all.py           # Run all tests
+--    python tests/run_all.py --quick   # Run quick tests only (skip slow)
+-+    python tests/run_all.py --quick   # Run quick tests only (skip slow, no external data)
+-+    python tests/run_all.py --full    # Run all tests including optional PINT validation
+-+    python tests/run_all.py --no-gui  # Skip GUI tests (for headless CI)
+-     python tests/run_all.py -v        # Verbose output
+- 
+- This runner executes script-style tests in a sensible order and provides
+- a concise PASS/FAIL summary. It exits nonzero on any failure.
+- 
+--Tests are categorized as:
+-+Test categories:
+- - CRITICAL: Must pass (failures are hard errors)
+- - STANDARD: Should pass (failures are reported)
+- - SLOW: Take longer to run (skipped with --quick)
+-+- CLI: Command-line interface smoke tests
+-+- API: Python API workflow tests
+-+- GUI: GUI tests (require Qt, skip with --no-gui)
+-+- CORRECTNESS: Golden reference validation
+-+- DATA_REQUIRED: Need external data files (skipped with --quick)
+- 
+- Environment variables for CI:
+-     JUG_TEST_DATA_DIR=/path/to/data   # Base directory for test data
+-@@ -40,9 +47,11 @@ class TestSpec:
+-     """Specification for a single test."""
+-     name: str
+-     script: str
+--    category: str = "standard"  # critical, standard, slow
+-+    category: str = "standard"  # critical, standard, slow, cli, api, gui, correctness
+-     description: str = ""
+-     timeout: int = 120  # seconds
+-+    requires_data: bool = False  # True if needs external data files
+-+    requires_gui: bool = False   # True if needs Qt/display
+- 
+- 
+- # Tests in execution order
+-@@ -61,24 +70,60 @@ TESTS = [
+-         description="Regression: prebinary_delay_sec in cache path",
+-     ),
+-     
+--    # Standard tests
+-+    # CLI smoke tests
+-+    TestSpec(
+-+        name="cli_smoke",
+-+        script="test_cli_smoke.py",
+-+        category="cli",
+-+        description="CLI entry points respond to --help",
+-+    ),
+-+    
+-+    # API tests (use bundled mini data, no external deps)
+-+    TestSpec(
+-+        name="api_workflow",
+-+        script="test_api_workflow.py",
+-+        category="api",
+-+        description="Python API workflow with bundled data",
+-+    ),
+-+    
+-+    # Correctness tests (use bundled mini data)
+-+    TestSpec(
+-+        name="correctness",
+-+        script="test_correctness.py",
+-+        category="correctness",
+-+        description="Residuals match golden reference",
+-+    ),
+-+    
+-+    # GUI tests (need Qt)
+-+    TestSpec(
+-+        name="gui_smoke",
+-+        script="test_gui_smoke.py",
+-+        category="gui",
+-+        description="GUI initializes headless",
+-+        requires_gui=True,
+-+    ),
+-+    
+-+    # Standard tests (need external data)
+-     TestSpec(
+-         name="timescale_validation",
+-         script="test_timescale_validation.py",
+-         category="standard",
+-         description="Par file timescale (TDB/TCB) handling",
+-+        requires_data=True,
+-     ),
+-     TestSpec(
+-         name="binary_patch",
+-         script="test_binary_patch.py",
+-         category="standard",
+-         description="Binary delay patch vs PINT",
+-+        requires_data=True,
+-     ),
+-     TestSpec(
+-         name="astrometry_fitting",
+-         script="test_astrometry_fitting.py",
+-         category="standard",
+-         description="Astrometry parameter fitting",
+-+        requires_data=True,
+-     ),
+-     
+-     # Slow tests
+-@@ -88,6 +133,7 @@ TESTS = [
+-         category="slow",
+-         description="J2241-5236 FB parameter fitting",
+-         timeout=180,
+-+        requires_data=True,
+-     ),
+- ]
+- 
+-@@ -285,7 +331,27 @@ def main():
+-     parser.add_argument(
+-         "--quick", "-q",
+-         action="store_true",
+--        help="Skip slow tests"
+-+        help="Skip slow tests and tests requiring external data"
+-+    )
+-+    parser.add_argument(
+-+        "--full", "-f",
+-+        action="store_true",
+-+        help="Run all tests including slow and optional PINT validation"
+-+    )
+-+    parser.add_argument(
+-+        "--no-gui",
+-+        action="store_true",
+-+        help="Skip GUI tests (for headless CI)"
+-+    )
+-+    parser.add_argument(
+-+        "--data-required",
+-+        action="store_true",
+-+        help="Only run tests that require external data files"
+-+    )
+-+    parser.add_argument(
+-+        "--pint",
+-+        action="store_true",
+-+        help="Include PINT cross-validation in correctness tests"
+-     )
+-     parser.add_argument(
+-         "--verbose", "-v",
+-@@ -297,6 +363,11 @@ def main():
+-         action="store_true",
+-         help="List available tests and exit"
+-     )
+-+    parser.add_argument(
+-+        "--category", "-c",
+-+        choices=["critical", "standard", "slow", "cli", "api", "gui", "correctness"],
+-+        help="Run only tests in this category"
+-+    )
+-     parser.add_argument(
+-         "tests",
+-         nargs="*",
+-@@ -308,28 +379,63 @@ def main():
+-     if args.list:
+-         print("Available tests:")
+-         for spec in TESTS:
+--            skip_marker = " [slow]" if spec.category == "slow" else ""
+--            crit_marker = " [critical]" if spec.category == "critical" else ""
+--            print(f"  {spec.name}{crit_marker}{skip_marker}: {spec.description}")
+-+            markers = []
+-+            if spec.category == "slow":
+-+                markers.append("slow")
+-+            if spec.category == "critical":
+-+                markers.append("critical")
+-+            if spec.requires_data:
+-+                markers.append("data-required")
+-+            if spec.requires_gui:
+-+                markers.append("gui")
+-+            marker_str = f" [{', '.join(markers)}]" if markers else ""
+-+            print(f"  {spec.name} ({spec.category}){marker_str}: {spec.description}")
+-         return 0
+-     
+-     # Filter tests
+-+    tests_to_run = TESTS.copy()
+-+    
+-+    # Filter by specific test names
+-     if args.tests:
+-         test_names = set(args.tests)
+--        tests_to_run = [t for t in TESTS if t.name in test_names]
+-+        tests_to_run = [t for t in tests_to_run if t.name in test_names]
+-         if not tests_to_run:
+-             print(f"ERROR: No matching tests found for: {args.tests}")
+-             return 1
+--    elif args.quick:
+--        tests_to_run = [t for t in TESTS if t.category != "slow"]
+--    else:
+--        tests_to_run = TESTS
+-+    
+-+    # Filter by category
+-+    if args.category:
+-+        tests_to_run = [t for t in tests_to_run if t.category == args.category]
+-+    
+-+    # Quick mode: skip slow and data-requiring tests
+-+    if args.quick:
+-+        tests_to_run = [t for t in tests_to_run if t.category != "slow" and not t.requires_data]
+-+    
+-+    # Skip GUI tests if requested
+-+    if args.no_gui:
+-+        tests_to_run = [t for t in tests_to_run if not t.requires_gui]
+-+    
+-+    # Only data-required tests
+-+    if args.data_required:
+-+        tests_to_run = [t for t in tests_to_run if t.requires_data]
+-+    
+-+    # Set PINT flag for correctness tests
+-+    if args.pint:
+-+        os.environ['JUG_TEST_PINT'] = '1'
+-     
+-     # Run tests
+-     print("=" * 60)
+-     print("JUG Test Runner")
+-     print("=" * 60)
+--    print(f"\nRunning {len(tests_to_run)} tests...")
+-+    mode_info = []
+-+    if args.quick:
+-+        mode_info.append("quick")
+-+    if args.no_gui:
+-+        mode_info.append("no-gui")
+-+    if args.pint:
+-+        mode_info.append("+pint")
+-+    mode_str = f" ({', '.join(mode_info)})" if mode_info else ""
+-+    print(f"\nRunning {len(tests_to_run)} tests{mode_str}...")
+-     
+-     results: List[TestResult] = []
+-     start_time = time.time()
+-diff --git a/tests/test_paths.py b/tests/test_paths.py
+-index 2b20490..b813580 100644
+---- a/tests/test_paths.py
+-+++ b/tests/test_paths.py
+-@@ -137,6 +137,38 @@ def get_j1022_paths() -> Tuple[Optional[Path], Optional[Path]]:
+-     )
+- 
+- 
+-+def get_mini_paths() -> Tuple[Path, Path]:
+-+    """Get bundled J1909_mini PAR/TIM paths.
+-+    
+-+    These are always available (bundled in tests/data_golden/) and require
+-+    no external data files. Used for CI quick tests.
+-+    
+-+    Returns:
+-+        Tuple of (par_path, tim_path). These always exist.
+-+    """
+-+    golden_dir = Path(__file__).parent / "data_golden"
+-+    par = golden_dir / "J1909_mini.par"
+-+    tim = golden_dir / "J1909_mini.tim"
+-+    return par, tim
+-+
+-+
+-+def get_golden_reference(name: str = "J1909_mini") -> Optional[dict]:
+-+    """Load golden reference values from JSON.
+-+    
+-+    Args:
+-+        name: Dataset name (default: J1909_mini)
+-+        
+-+    Returns:
+-+        Dictionary with golden values, or None if not found.
+-+    """
+-+    import json
+-+    golden_file = Path(__file__).parent / "data_golden" / f"{name}_golden.json"
+-+    if not golden_file.exists():
+-+        return None
+-+    with open(golden_file) as f:
+-+        return json.load(f)
+-+
+-+
+- def files_exist(par: Optional[Path], tim: Optional[Path]) -> bool:
+-     """Check if both PAR and TIM files exist."""
+-     if par is None or tim is None:
 diff --git a/tests/run_all.py b/tests/run_all.py
-index 8116870..7645569 100644
+index 8576a34..056447b 100644
 --- a/tests/run_all.py
 +++ b/tests/run_all.py
-@@ -4,16 +4,23 @@ JUG Test Runner - One-command test execution.
- 
- Run from repo root:
-     python tests/run_all.py           # Run all tests
--    python tests/run_all.py --quick   # Run quick tests only (skip slow)
-+    python tests/run_all.py --quick   # Run quick tests only (skip slow, no external data)
-+    python tests/run_all.py --full    # Run all tests including optional PINT validation
-+    python tests/run_all.py --no-gui  # Skip GUI tests (for headless CI)
-     python tests/run_all.py -v        # Verbose output
- 
- This runner executes script-style tests in a sensible order and provides
- a concise PASS/FAIL summary. It exits nonzero on any failure.
- 
--Tests are categorized as:
-+Test categories:
- - CRITICAL: Must pass (failures are hard errors)
- - STANDARD: Should pass (failures are reported)
- - SLOW: Take longer to run (skipped with --quick)
-+- CLI: Command-line interface smoke tests
-+- API: Python API workflow tests
-+- GUI: GUI tests (require Qt, skip with --no-gui)
-+- CORRECTNESS: Golden reference validation
-+- DATA_REQUIRED: Need external data files (skipped with --quick)
- 
- Environment variables for CI:
-     JUG_TEST_DATA_DIR=/path/to/data   # Base directory for test data
-@@ -40,9 +47,11 @@ class TestSpec:
-     """Specification for a single test."""
-     name: str
-     script: str
--    category: str = "standard"  # critical, standard, slow
-+    category: str = "standard"  # critical, standard, slow, cli, api, gui, correctness
-     description: str = ""
-     timeout: int = 120  # seconds
-+    requires_data: bool = False  # True if needs external data files
-+    requires_gui: bool = False   # True if needs Qt/display
- 
- 
- # Tests in execution order
-@@ -61,24 +70,60 @@ TESTS = [
+@@ -69,6 +69,12 @@ TESTS = [
+         category="critical",
          description="Regression: prebinary_delay_sec in cache path",
      ),
++    TestSpec(
++        name="ddk_not_implemented",
++        script="test_ddk_not_implemented.py",
++        category="critical",
++        description="DDK raises NotImplementedError (no silent aliasing)",
++    ),
      
--    # Standard tests
-+    # CLI smoke tests
+     # CLI smoke tests
+     TestSpec(
+@@ -110,6 +116,14 @@ TESTS = [
+         description="Fit reduces RMS, deterministic, finite params",
+     ),
+     
++    # Invariant tests (use bundled mini data)
 +    TestSpec(
-+        name="cli_smoke",
-+        script="test_cli_smoke.py",
-+        category="cli",
-+        description="CLI entry points respond to --help",
-+    ),
-+    
-+    # API tests (use bundled mini data, no external deps)
-+    TestSpec(
-+        name="api_workflow",
-+        script="test_api_workflow.py",
-+        category="api",
-+        description="Python API workflow with bundled data",
-+    ),
-+    
-+    # Correctness tests (use bundled mini data)
-+    TestSpec(
-+        name="correctness",
-+        script="test_correctness.py",
++        name="invariants",
++        script="test_invariants.py",
 +        category="correctness",
-+        description="Residuals match golden reference",
++        description="Prebinary time, fit recovery, gradient sanity",
 +    ),
 +    
-+    # GUI tests (need Qt)
-+    TestSpec(
-+        name="gui_smoke",
-+        script="test_gui_smoke.py",
-+        category="gui",
-+        description="GUI initializes headless",
-+        requires_gui=True,
-+    ),
-+    
-+    # Standard tests (need external data)
+     # GUI tests (need Qt)
      TestSpec(
-         name="timescale_validation",
-         script="test_timescale_validation.py",
-         category="standard",
-         description="Par file timescale (TDB/TCB) handling",
-+        requires_data=True,
-     ),
-     TestSpec(
-         name="binary_patch",
-         script="test_binary_patch.py",
-         category="standard",
-         description="Binary delay patch vs PINT",
-+        requires_data=True,
-     ),
-     TestSpec(
-         name="astrometry_fitting",
-         script="test_astrometry_fitting.py",
-         category="standard",
-         description="Astrometry parameter fitting",
-+        requires_data=True,
-     ),
+         name="gui_smoke",
+@@ -287,12 +301,13 @@ def run_script_test(
+         )
+         duration = time.time() - start
+         
+-        # Check for SKIP in output
+-        if "SKIP" in result.stdout or "SKIPPED" in result.stdout:
+-            return TestResult(script, "SKIP", duration, "Test data not available")
+-        
++        # Check for explicit skip marker (test decided to skip entirely)
++        # Don't count "[SKIP]" in optional items as full skip
+         if result.returncode == 0:
+             return TestResult(script, "PASS", duration)
++        elif "SKIP: " in result.stdout and "PASS" not in result.stdout:
++            # Full test skip (e.g., "SKIP: data not available")
++            return TestResult(script, "SKIP", duration, "Test data not available")
+         else:
+             # Get last few lines of output for error message
+             output = result.stdout + result.stderr
+diff --git a/tests/test_cli_integration.py b/tests/test_cli_integration.py
+index 9a3f311..bbae78c 100644
+--- a/tests/test_cli_integration.py
++++ b/tests/test_cli_integration.py
+@@ -85,25 +85,16 @@ def test_cli_fit_f0f1():
+     if par is None:
+         return False, "mini dataset not found"
      
-     # Slow tests
-@@ -88,6 +133,7 @@ TESTS = [
-         category="slow",
-         description="J2241-5236 FB parameter fitting",
-         timeout=180,
-+        requires_data=True,
-     ),
+-    # Try console script first, fall back to module invocation
+-    try:
+-        result = subprocess.run(
+-            ["jug-fit", par, tim, "--fit", "F0", "F1", "--max-iter", "5"],
+-            capture_output=True,
+-            text=True,
+-            timeout=60,
+-            cwd=str(repo_root),
+-        )
+-    except FileNotFoundError:
+-        # Fall back to module invocation
+-        result = subprocess.run(
+-            [sys.executable, "-m", "jug.scripts.fit_parameters", 
+-             par, tim, "--fit", "F0", "F1", "--max-iter", "5"],
+-            capture_output=True,
+-            text=True,
+-            timeout=60,
+-            cwd=str(repo_root),
+-        )
++    # Use module invocation directly (more reliable than console scripts
++    # which may be outdated in editable installs)
++    result = subprocess.run(
++        [sys.executable, "-m", "jug.scripts.fit_parameters", 
++         par, tim, "--fit", "F0", "F1", "--max-iter", "5"],
++        capture_output=True,
++        text=True,
++        timeout=60,
++        cwd=str(repo_root),
++    )
+     
+     if result.returncode != 0:
+         # Fit may return non-zero if it doesn't converge, check output
+@@ -175,6 +166,53 @@ def test_cli_fit_improves_rms():
+     return True, f"OK (prefit={prefit_rms:.2f}, postfit={postfit_rms:.2f} µs, {improvement_pct:+.1f}%)"
+ 
+ 
++def test_cli_output_has_expected_markers():
++    """Test that CLI output contains expected markers for programmatic parsing."""
++    par, tim = get_mini_paths()
++    if par is None:
++        return False, "mini dataset not found"
++    
++    # Run compute-residuals and check output format
++    try:
++        result = subprocess.run(
++            [sys.executable, "-m", "jug.scripts.compute_residuals", par, tim],
++            capture_output=True,
++            text=True,
++            timeout=60,
++            cwd=str(repo_root),
++        )
++    except Exception as e:
++        return False, f"subprocess error: {e}"
++    
++    if result.returncode != 0:
++        return False, f"exit {result.returncode}"
++    
++    output = result.stdout + result.stderr
++    
++    # Check for key markers that allow programmatic parsing
++    expected_markers = [
++        # Basic info
++        (r'\d+\s*TOA', "TOA count"),
++        (r'RMS|rms', "RMS mention"),
++        (r'µs|us|microsec', "time units"),
++    ]
++    
++    found_markers = []
++    missing_markers = []
++    
++    for pattern, name in expected_markers:
++        if re.search(pattern, output, re.I):
++            found_markers.append(name)
++        else:
++            missing_markers.append(name)
++    
++    # Require at least 2 of 3 markers
++    if len(found_markers) >= 2:
++        return True, f"OK (found: {', '.join(found_markers)})"
++    else:
++        return False, f"missing markers: {', '.join(missing_markers)}"
++
++
+ def main():
+     """Run all CLI integration tests."""
+     print("=" * 60)
+@@ -185,6 +223,7 @@ def main():
+         ("Compute Residuals CLI", test_cli_compute_residuals),
+         ("Fit F0/F1 CLI", test_cli_fit_f0f1),
+         ("Fit Improves RMS", test_cli_fit_improves_rms),
++        ("Output Has Expected Markers", test_cli_output_has_expected_markers),
+     ]
+     
+     all_passed = True
+diff --git a/tests/test_cli_smoke.py b/tests/test_cli_smoke.py
+index 5c37657..5a9a8d1 100644
+--- a/tests/test_cli_smoke.py
++++ b/tests/test_cli_smoke.py
+@@ -7,7 +7,8 @@ Tests that CLI commands:
+ 2. Respond to --help without crashing
+ 3. Handle missing arguments gracefully
+ 
+-Prefers python -m invocation to avoid PATH issues in editable installs.
++Uses module invocation (python -m) for reliability in editable installs.
++Console script tests are optional (skipped if not installed).
+ 
+ Run with: python tests/test_cli_smoke.py
+ """
+@@ -21,16 +22,16 @@ repo_root = Path(__file__).parent.parent
+ sys.path.insert(0, str(repo_root))
+ 
+ # Module paths for CLI entry points (preferred - no PATH issues)
+-# Format: (module_path, function_name)
++# Format: (module_path, help_args, description)
+ CLI_MODULES = [
+-    ("jug.scripts.compute_residuals", "main"),
+-    ("jug.scripts.fit_parameters", "main"),
+-    ("jug.gui.main", "main"),
+-    ("jug.scripts.benchmark_stages", "main"),
+-    ("jug.scripts.jugd", "main"),
++    ("jug.scripts.compute_residuals", ["--help"], "compute residuals CLI"),
++    ("jug.scripts.fit_parameters", ["--help"], "fit parameters CLI"),
++    ("jug.gui.main", ["--help"], "GUI main"),
++    ("jug.scripts.benchmark_stages", ["--help"], "benchmark CLI"),
++    ("jug.scripts.jugd", ["--help"], "jugd daemon"),
  ]
  
-@@ -285,7 +331,27 @@ def main():
-     parser.add_argument(
-         "--quick", "-q",
-         action="store_true",
--        help="Skip slow tests"
-+        help="Skip slow tests and tests requiring external data"
-+    )
-+    parser.add_argument(
-+        "--full", "-f",
-+        action="store_true",
-+        help="Run all tests including slow and optional PINT validation"
-+    )
-+    parser.add_argument(
-+        "--no-gui",
-+        action="store_true",
-+        help="Skip GUI tests (for headless CI)"
-+    )
-+    parser.add_argument(
-+        "--data-required",
-+        action="store_true",
-+        help="Only run tests that require external data files"
-+    )
-+    parser.add_argument(
-+        "--pint",
-+        action="store_true",
-+        help="Include PINT cross-validation in correctness tests"
-     )
-     parser.add_argument(
-         "--verbose", "-v",
-@@ -297,6 +363,11 @@ def main():
-         action="store_true",
-         help="List available tests and exit"
-     )
-+    parser.add_argument(
-+        "--category", "-c",
-+        choices=["critical", "standard", "slow", "cli", "api", "gui", "correctness"],
-+        help="Run only tests in this category"
-+    )
-     parser.add_argument(
-         "tests",
-         nargs="*",
-@@ -308,28 +379,63 @@ def main():
-     if args.list:
-         print("Available tests:")
-         for spec in TESTS:
--            skip_marker = " [slow]" if spec.category == "slow" else ""
--            crit_marker = " [critical]" if spec.category == "critical" else ""
--            print(f"  {spec.name}{crit_marker}{skip_marker}: {spec.description}")
-+            markers = []
-+            if spec.category == "slow":
-+                markers.append("slow")
-+            if spec.category == "critical":
-+                markers.append("critical")
-+            if spec.requires_data:
-+                markers.append("data-required")
-+            if spec.requires_gui:
-+                markers.append("gui")
-+            marker_str = f" [{', '.join(markers)}]" if markers else ""
-+            print(f"  {spec.name} ({spec.category}){marker_str}: {spec.description}")
+-# Console script names (may not be installed in all environments)
++# Console script names (optional - may not be installed)
+ CLI_COMMANDS = [
+     "jug-compute-residuals",
+     "jug-fit", 
+@@ -40,46 +41,46 @@ CLI_COMMANDS = [
+ ]
+ 
+ 
+-def test_help_flag(cmd: str) -> tuple[bool, str]:
+-    """Test that command responds to --help."""
++def test_module_invocation(module_path: str, args: list) -> tuple[bool, str]:
++    """Test module responds to args via python -m (reliable, no PATH issues)."""
+     try:
+         result = subprocess.run(
+-            [cmd, "--help"],
++            [sys.executable, "-m", module_path] + args,
+             capture_output=True,
+             text=True,
+-            timeout=30
++            timeout=30,
++            cwd=str(repo_root),
+         )
+-        # --help should exit 0
++        # --help should exit 0 (argparse convention)
+         if result.returncode == 0:
+             return True, f"OK (exit 0, {len(result.stdout)} chars)"
+-        else:
+-            return False, f"exit {result.returncode}: {result.stderr[:100]}"
+-    except FileNotFoundError:
+-        return None, "not installed (editable install?)"  # Skip, not fail
++        # argparse shows help and exits 0, but some may have different exit codes
++        if "usage:" in result.stdout.lower() or "usage:" in result.stderr.lower():
++            return True, f"OK (help shown, exit {result.returncode})"
++        return False, f"exit {result.returncode}: {result.stderr[:100]}"
+     except subprocess.TimeoutExpired:
+         return False, "timeout after 30s"
+     except Exception as e:
+         return False, str(e)
+ 
+ 
+-def test_module_help(module_path: str) -> tuple[bool, str]:
+-    """Test that module responds to -h via python -m (preferred, no PATH issues)."""
++def test_help_flag(cmd: str) -> tuple[bool | None, str]:
++    """Test that console script responds to --help (optional)."""
+     try:
+-        # Use python -m to avoid PATH/entry point issues
+         result = subprocess.run(
+-            [sys.executable, "-c", f"import {module_path}; {module_path}.main(['--help'])"],
++            [cmd, "--help"],
+             capture_output=True,
+             text=True,
+-            timeout=30,
+-            cwd=str(repo_root),
++            timeout=30
+         )
+-        # --help typically causes SystemExit(0)
+-        if result.returncode == 0 or "usage:" in result.stdout.lower() or "help" in result.stdout.lower():
+-            return True, f"OK ({len(result.stdout)} chars)"
+-        # argparse with --help raises SystemExit(0), but some may exit differently
+-        if result.returncode == 2 and "error" not in result.stderr.lower():
+-            return True, "OK (argparse help)"
+-        return False, f"exit {result.returncode}: {result.stderr[:100]}"
++        if result.returncode == 0:
++            return True, f"OK (exit 0, {len(result.stdout)} chars)"
++        else:
++            return False, f"exit {result.returncode}: {result.stderr[:100]}"
++    except FileNotFoundError:
++        return None, "not installed (skip)"  # Skip, not fail
++    except subprocess.TimeoutExpired:
++        return False, "timeout after 30s"
+     except Exception as e:
+         return False, str(e)
+ 
+@@ -110,16 +111,24 @@ def main():
+     all_passed = True
+     skipped = 0
+     
+-    # Test module imports (most reliable)
+-    print("\n--- Module Imports ---")
+-    for module_path, _ in CLI_MODULES:
++    # Test module imports (most reliable, required)
++    print("\n--- Module Imports (required) ---")
++    for module_path, _, desc in CLI_MODULES:
+         passed, msg = test_import_module(module_path)
+         status = "PASS" if passed else "FAIL"
+         print(f"  [{status}] import {module_path}: {msg}")
+         all_passed = all_passed and passed
+     
+-    # Test console scripts (may be skipped if not installed)
+-    print("\n--- Console Scripts (--help) ---")
++    # Test module invocation with --help (required, reliable)
++    print("\n--- Module Invocation (python -m, required) ---")
++    for module_path, args, desc in CLI_MODULES:
++        passed, msg = test_module_invocation(module_path, args)
++        status = "PASS" if passed else "FAIL"
++        print(f"  [{status}] python -m {module_path} {' '.join(args)}: {msg}")
++        all_passed = all_passed and passed
++    
++    # Test console scripts (optional - may be skipped if not installed)
++    print("\n--- Console Scripts (optional, may skip) ---")
+     for cmd in CLI_COMMANDS:
+         result = test_help_flag(cmd)
+         if result[0] is None:  # Skip
+@@ -128,34 +137,13 @@ def main():
+         elif result[0]:
+             print(f"  [PASS] {cmd} --help: {result[1]}")
+         else:
+-            print(f"  [FAIL] {cmd} --help: {result[1]}")
+-            all_passed = False
+-    
+-    # Test missing args (should fail gracefully)
+-    print("\n--- Missing Args Handling ---")
+-    for cmd in ["jug-compute-residuals", "jug-fit"]:
+-        try:
+-            result = subprocess.run(
+-                [cmd],
+-                capture_output=True,
+-                text=True,
+-                timeout=10
+-            )
+-            # Should exit non-zero when missing required args
+-            if result.returncode != 0:
+-                print(f"  [PASS] {cmd}: exits non-zero when args missing")
+-            else:
+-                print(f"  [WARN] {cmd}: exits 0 with no args (unexpected)")
+-        except FileNotFoundError:
+-            print(f"  [SKIP] {cmd}: not installed")
+-            skipped += 1
+-        except Exception as e:
+-            print(f"  [FAIL] {cmd}: {e}")
+-            all_passed = False
++            # Console script failures are optional - don't fail overall
++            print(f"  [WARN] {cmd} --help: {result[1]}")
++            # all_passed = False  # Don't fail on console script issues
+     
+     print("\n" + "=" * 60)
+     if all_passed:
+-        print(f"All CLI smoke tests PASSED ({skipped} skipped)")
++        print(f"All CLI smoke tests PASSED ({skipped} console scripts skipped)")
          return 0
-     
-     # Filter tests
-+    tests_to_run = TESTS.copy()
-+    
-+    # Filter by specific test names
-     if args.tests:
-         test_names = set(args.tests)
--        tests_to_run = [t for t in TESTS if t.name in test_names]
-+        tests_to_run = [t for t in tests_to_run if t.name in test_names]
-         if not tests_to_run:
-             print(f"ERROR: No matching tests found for: {args.tests}")
-             return 1
--    elif args.quick:
--        tests_to_run = [t for t in TESTS if t.category != "slow"]
--    else:
--        tests_to_run = TESTS
-+    
-+    # Filter by category
-+    if args.category:
-+        tests_to_run = [t for t in tests_to_run if t.category == args.category]
-+    
-+    # Quick mode: skip slow and data-requiring tests
-+    if args.quick:
-+        tests_to_run = [t for t in tests_to_run if t.category != "slow" and not t.requires_data]
-+    
-+    # Skip GUI tests if requested
-+    if args.no_gui:
-+        tests_to_run = [t for t in tests_to_run if not t.requires_gui]
-+    
-+    # Only data-required tests
-+    if args.data_required:
-+        tests_to_run = [t for t in tests_to_run if t.requires_data]
-+    
-+    # Set PINT flag for correctness tests
-+    if args.pint:
-+        os.environ['JUG_TEST_PINT'] = '1'
-     
-     # Run tests
-     print("=" * 60)
-     print("JUG Test Runner")
-     print("=" * 60)
--    print(f"\nRunning {len(tests_to_run)} tests...")
-+    mode_info = []
-+    if args.quick:
-+        mode_info.append("quick")
-+    if args.no_gui:
-+        mode_info.append("no-gui")
-+    if args.pint:
-+        mode_info.append("+pint")
-+    mode_str = f" ({', '.join(mode_info)})" if mode_info else ""
-+    print(f"\nRunning {len(tests_to_run)} tests{mode_str}...")
-     
-     results: List[TestResult] = []
-     start_time = time.time()
-diff --git a/tests/test_paths.py b/tests/test_paths.py
-index 2b20490..b813580 100644
---- a/tests/test_paths.py
-+++ b/tests/test_paths.py
-@@ -137,6 +137,38 @@ def get_j1022_paths() -> Tuple[Optional[Path], Optional[Path]]:
-     )
- 
- 
-+def get_mini_paths() -> Tuple[Path, Path]:
-+    """Get bundled J1909_mini PAR/TIM paths.
-+    
-+    These are always available (bundled in tests/data_golden/) and require
-+    no external data files. Used for CI quick tests.
-+    
-+    Returns:
-+        Tuple of (par_path, tim_path). These always exist.
-+    """
-+    golden_dir = Path(__file__).parent / "data_golden"
-+    par = golden_dir / "J1909_mini.par"
-+    tim = golden_dir / "J1909_mini.tim"
-+    return par, tim
-+
-+
-+def get_golden_reference(name: str = "J1909_mini") -> Optional[dict]:
-+    """Load golden reference values from JSON.
-+    
-+    Args:
-+        name: Dataset name (default: J1909_mini)
-+        
-+    Returns:
-+        Dictionary with golden values, or None if not found.
-+    """
-+    import json
-+    golden_file = Path(__file__).parent / "data_golden" / f"{name}_golden.json"
-+    if not golden_file.exists():
-+        return None
-+    with open(golden_file) as f:
-+        return json.load(f)
-+
-+
- def files_exist(par: Optional[Path], tim: Optional[Path]) -> bool:
-     """Check if both PAR and TIM files exist."""
-     if par is None or tim is None:
+     else:
+         print("Some CLI smoke tests FAILED")

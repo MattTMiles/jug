@@ -99,8 +99,37 @@ def dispatch_binary_delay(model_name, t_topo_tdb, params):
             sini=params.get('SINI', 0.0)
         )
     
-    # DD and its variants
-    elif model in ('DD', 'DDH', 'DDGR', 'DDK'):
+    # DDK requires Kopeikin annual orbital parallax corrections - NOT IMPLEMENTED
+    # Check for environment variable override to allow DDK->DD aliasing (with warnings)
+    elif model == 'DDK':
+        import os
+        import warnings
+        if os.environ.get('JUG_ALLOW_DDK_AS_DD', '').lower() in ('1', 'true', 'yes'):
+            warnings.warn(
+                "JUG_ALLOW_DDK_AS_DD=1: binary_dispatch treating DDK as DD. "
+                "This is INCORRECT for high-parallax pulsars and will produce wrong science. "
+                "Use at your own risk.",
+                UserWarning
+            )
+            # Fall through to DD code below
+            model = 'DD'
+        else:
+            raise NotImplementedError(
+                f"DDK binary model is not implemented in JUG.\n\n"
+                f"DDK requires Kopeikin (1995, 1996) annual orbital parallax terms that "
+                f"modify the projected semi-major axis (A1) and longitude of periastron (OM) "
+                f"based on orbital inclination (KIN), position angle of ascending node (KOM), "
+                f"parallax (PX), and proper motion.\n\n"
+                f"Previously, JUG silently aliased DDK to DD, which is INCORRECT and would "
+                f"produce wrong science for high-parallax pulsars like J0437-4715.\n\n"
+                f"Options:\n"
+                f"  1. Convert your par file to use BINARY DD (if Kopeikin corrections are negligible)\n"
+                f"  2. Use PINT or tempo2 for DDK pulsars until JUG implements true DDK support\n"
+                f"  3. Set environment variable JUG_ALLOW_DDK_AS_DD=1 to force DD aliasing (NOT RECOMMENDED)\n"
+            )
+    
+    # DD and its variants (DDH, DDGR) - also handles DDK when override is set
+    if model in ('DD', 'DDH', 'DDGR'):
         return dd_binary_delay(
             t_topo_tdb,
             pb_days=params['PB'],

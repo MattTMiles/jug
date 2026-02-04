@@ -85,25 +85,16 @@ def test_cli_fit_f0f1():
     if par is None:
         return False, "mini dataset not found"
     
-    # Try console script first, fall back to module invocation
-    try:
-        result = subprocess.run(
-            ["jug-fit", par, tim, "--fit", "F0", "F1", "--max-iter", "5"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=str(repo_root),
-        )
-    except FileNotFoundError:
-        # Fall back to module invocation
-        result = subprocess.run(
-            [sys.executable, "-m", "jug.scripts.fit_parameters", 
-             par, tim, "--fit", "F0", "F1", "--max-iter", "5"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=str(repo_root),
-        )
+    # Use module invocation directly (more reliable than console scripts
+    # which may be outdated in editable installs)
+    result = subprocess.run(
+        [sys.executable, "-m", "jug.scripts.fit_parameters", 
+         par, tim, "--fit", "F0", "F1", "--max-iter", "5"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(repo_root),
+    )
     
     if result.returncode != 0:
         # Fit may return non-zero if it doesn't converge, check output
@@ -175,6 +166,53 @@ def test_cli_fit_improves_rms():
     return True, f"OK (prefit={prefit_rms:.2f}, postfit={postfit_rms:.2f} µs, {improvement_pct:+.1f}%)"
 
 
+def test_cli_output_has_expected_markers():
+    """Test that CLI output contains expected markers for programmatic parsing."""
+    par, tim = get_mini_paths()
+    if par is None:
+        return False, "mini dataset not found"
+    
+    # Run compute-residuals and check output format
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "jug.scripts.compute_residuals", par, tim],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(repo_root),
+        )
+    except Exception as e:
+        return False, f"subprocess error: {e}"
+    
+    if result.returncode != 0:
+        return False, f"exit {result.returncode}"
+    
+    output = result.stdout + result.stderr
+    
+    # Check for key markers that allow programmatic parsing
+    expected_markers = [
+        # Basic info
+        (r'\d+\s*TOA', "TOA count"),
+        (r'RMS|rms', "RMS mention"),
+        (r'µs|us|microsec', "time units"),
+    ]
+    
+    found_markers = []
+    missing_markers = []
+    
+    for pattern, name in expected_markers:
+        if re.search(pattern, output, re.I):
+            found_markers.append(name)
+        else:
+            missing_markers.append(name)
+    
+    # Require at least 2 of 3 markers
+    if len(found_markers) >= 2:
+        return True, f"OK (found: {', '.join(found_markers)})"
+    else:
+        return False, f"missing markers: {', '.join(missing_markers)}"
+
+
 def main():
     """Run all CLI integration tests."""
     print("=" * 60)
@@ -185,6 +223,7 @@ def main():
         ("Compute Residuals CLI", test_cli_compute_residuals),
         ("Fit F0/F1 CLI", test_cli_fit_f0f1),
         ("Fit Improves RMS", test_cli_fit_improves_rms),
+        ("Output Has Expected Markers", test_cli_output_has_expected_markers),
     ]
     
     all_passed = True

@@ -43,7 +43,7 @@ def compute_residuals_simple(
     observatory: str = "meerkat",
     subtract_tzr: bool = True,
     verbose: bool = True,
-    tzrmjd_scale: str = "TDB"
+    tzrmjd_scale: str = "AUTO"
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -68,9 +68,13 @@ def compute_residuals_simple(
         Whether to print progress messages (default: True)
         Set to False for production/batch processing
     tzrmjd_scale : str, optional
-        Timescale of TZRMJD in par file. Options: "TDB" (default) or "UTC".
-        - "TDB": TZRMJD is already in TDB (typical for *_tdb.par files and PINT output)
-        - "UTC": TZRMJD is in UTC and needs clock chain conversion (legacy behavior)
+        Timescale interpretation for TZRMJD. Options: "AUTO" (default), "TDB", "UTC".
+        - "AUTO": Derive from par file UNITS keyword (recommended). If UNITS=TDB,
+          treat TZRMJD as TDB; if UNITS=TCB/TT, fail via validate_par_timescale.
+        - "TDB": Force TZRMJD to be treated as TDB (no conversion).
+        - "UTC": Force legacy UTC->TDB conversion via clock chain. WARNING: This
+          contradicts UNITS=TDB and will produce ~69s offset. Use only for legacy
+          par files that genuinely have UTC TZRMJD values.
 
     Returns
     -------
@@ -595,15 +599,36 @@ def compute_residuals_simple(
                 tzr_obs_itrf_km[2] * u.km
             )
         
-        # Handle TZRMJD timescale
+        # Resolve TZRMJD timescale - unified with par timescale
         tzrmjd_scale_upper = tzrmjd_scale.upper()
-        if tzrmjd_scale_upper == "TDB":
-            # TZRMJD is already in TDB (default for PINT-generated par files)
+        
+        # AUTO: derive from par timescale (single source of truth)
+        if tzrmjd_scale_upper == "AUTO":
+            # par_timescale is already validated (TCB/TT would have failed by now)
+            tzrmjd_scale_resolved = par_timescale  # Will be "TDB"
+            if verbose: print(f"   TZRMJD scale: AUTO -> {tzrmjd_scale_resolved} (from par UNITS)")
+        elif tzrmjd_scale_upper in ("TDB", "UTC"):
+            tzrmjd_scale_resolved = tzrmjd_scale_upper
+            if verbose: print(f"   TZRMJD scale: {tzrmjd_scale_resolved} (explicit override)")
+        else:
+            raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'AUTO', 'TDB', or 'UTC'.")
+        
+        # Apply the resolved timescale
+        if tzrmjd_scale_resolved == "TDB":
+            # TZRMJD is already in TDB (standard for PINT/Tempo2 TDB par files)
             TZRMJD_TDB = TZRMJD_raw
             delta_tzr_sec = 0.0
             if verbose: print(f"   TZRMJD treated as TDB (no conversion)")
-        elif tzrmjd_scale_upper == "UTC":
+        elif tzrmjd_scale_resolved == "UTC":
             # Legacy behavior: convert UTC to TDB via clock chain
+            # Warn loudly if this contradicts UNITS=TDB
+            if par_timescale == "TDB":
+                print(f"   ⚠️  WARNING: tzrmjd_scale='UTC' contradicts par file UNITS=TDB!")
+                print(f"       This will apply a ~69s UTC->TDB conversion to TZRMJD.")
+                print(f"       If your par file has UNITS=TDB, TZRMJD should already be in TDB.")
+                print(f"       Use tzrmjd_scale='AUTO' (default) or 'TDB' unless you have a")
+                print(f"       legacy par file with genuinely UTC TZRMJD values.")
+            
             TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
                 [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
                 mk_clock, gps_clock, bipm_clock, tzr_location
@@ -612,13 +637,10 @@ def compute_residuals_simple(
             delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * 86400.0
             if verbose: print(f"   TZRMJD converted from UTC to TDB (delta = {delta_tzr_sec:.3f} s)")
             
-            # Warn if the shift is large (indicates likely misconfiguration)
+            # Additional warning if the shift is large
             if abs(delta_tzr_sec) > 1e-3:
                 print(f"   ⚠️  WARNING: Large TZRMJD shift detected ({delta_tzr_sec:.3f} s)!")
-                print(f"       This suggests TZRMJD may already be in TDB scale.")
-                print(f"       Consider using tzrmjd_scale='TDB' (the default).")
-        else:
-            raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'TDB' or 'UTC'.")
+                print(f"       This confirms TZRMJD was treated as UTC.")
         
         # Compute all delays at TZRMJD to get the TZR delay
         tzr_tdb_arr = np.array([float(TZRMJD_TDB)])
@@ -733,7 +755,8 @@ def compute_residuals_simple(
         tzr_phase = F0 * tzr_dt_sec + F1_half * tzr_dt_sec**2 + F2_sixth * tzr_dt_sec**3
         
         if verbose: print(f"   TZRMJD (raw):  {float(TZRMJD_raw):.15f}")
-        if verbose: print(f"   TZRMJD (used): {float(TZRMJD_TDB):.15f} ({tzrmjd_scale_upper})")
+        if verbose: print(f"   TZRMJD (used): {float(TZRMJD_TDB):.15f} (scale={tzrmjd_scale_resolved})")
+        if verbose: print(f"   delta_tzr:     {delta_tzr_sec:.6f} s")
         if verbose: print(f"   TZR delay: {float(tzr_delay):.9f} s")
         if verbose: print(f"   TZR phase: {float(tzr_phase):.6f} cycles")
 

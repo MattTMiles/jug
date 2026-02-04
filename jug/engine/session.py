@@ -257,10 +257,15 @@ class TimingSession:
                         subtract_mean=True
                     )
                     
+                    # Compute unweighted RMS (standard deviation)
+                    unweighted_rms_us = float(np.std(residuals_us))
+                    
                     # Build result using cached metadata
                     result = {
                         'residuals_us': residuals_us,
                         'rms_us': rms_us,
+                        'weighted_rms_us': rms_us,  # Same as rms_us (weighted)
+                        'unweighted_rms_us': unweighted_rms_us,
                         'mean_us': 0.0,  # Already subtracted
                         'tdb_mjd': self._cached_toa_data['tdb_mjd'],
                         'dt_sec': self._cached_toa_data['dt_sec'],
@@ -520,6 +525,7 @@ class TimingSession:
                 'toas_mjd': toas_mjd,
                 'errors_us': errors_us,
                 'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
+                'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
                 'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls')
             }
             

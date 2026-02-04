@@ -1,0 +1,498 @@
+diff --git a/jug/engine/session.py b/jug/engine/session.py
+index e1214c7..ab0145a 100644
+--- a/jug/engine/session.py
++++ b/jug/engine/session.py
+@@ -257,10 +257,15 @@ class TimingSession:
+                         subtract_mean=True
+                     )
+                     
++                    # Compute unweighted RMS (standard deviation)
++                    unweighted_rms_us = float(np.std(residuals_us))
++                    
+                     # Build result using cached metadata
+                     result = {
+                         'residuals_us': residuals_us,
+                         'rms_us': rms_us,
++                        'weighted_rms_us': rms_us,  # Same as rms_us (weighted)
++                        'unweighted_rms_us': unweighted_rms_us,
+                         'mean_us': 0.0,  # Already subtracted
+                         'tdb_mjd': self._cached_toa_data['tdb_mjd'],
+                         'dt_sec': self._cached_toa_data['dt_sec'],
+@@ -520,6 +525,7 @@ class TimingSession:
+                 'toas_mjd': toas_mjd,
+                 'errors_us': errors_us,
+                 'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
++                'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
+                 'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls')
+             }
+             
+diff --git a/jug/fitting/optimized_fitter.py b/jug/fitting/optimized_fitter.py
+index 8135f17..dad3839 100644
+--- a/jug/fitting/optimized_fitter.py
++++ b/jug/fitting/optimized_fitter.py
+@@ -1838,24 +1838,32 @@ def _build_general_fit_setup_from_cache(
+         initial_dm_params = {p: params_dict[p] for p in dm_params if p in params_dict}
+         initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
+ 
+-    # If fitting binary params, extract roemer_shapiro_sec and compute initial binary delay
++    # If fitting binary params, extract prebinary_delay_sec and compute initial binary delay
+     roemer_shapiro_sec = None
++    prebinary_delay_sec = None
+     initial_binary_delay = None
+     if binary_params:
++        # Prefer prebinary_delay_sec (PINT-compatible: roemer_shapiro + DM + SW + tropo)
++        prebinary_delay_sec = session_cached_data.get('prebinary_delay_sec')
+         roemer_shapiro_sec = session_cached_data.get('roemer_shapiro_sec')
+-        if roemer_shapiro_sec is None:
+-            raise ValueError(
+-                "Binary fitting requires roemer_shapiro_sec in setup. "
+-                "Ensure compute_residuals_simple returns 'roemer_shapiro_sec'."
+-            )
++        
++        if prebinary_delay_sec is None:
++            # Fallback to roemer_shapiro_sec for backward compatibility
++            if roemer_shapiro_sec is None:
++                raise ValueError(
++                    "Binary fitting requires prebinary_delay_sec or roemer_shapiro_sec in setup. "
++                    "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
++                )
++            prebinary_delay_sec = roemer_shapiro_sec  # Fallback (not fully PINT-compatible)
++        
+         if toa_mask is not None:
+-            roemer_shapiro_sec = roemer_shapiro_sec[toa_mask]
++            prebinary_delay_sec = prebinary_delay_sec[toa_mask]
++            if roemer_shapiro_sec is not None:
++                roemer_shapiro_sec = roemer_shapiro_sec[toa_mask]
+ 
+-        # Compute initial binary delay for iterative fitting
+-        # Route to correct binary model (DD vs ELL1)
+-        # Barycentric times = TDB - (Roemer + Shapiro)
+-        toas_bary = tdb_mjd - roemer_shapiro_sec / SECS_PER_DAY
+-        initial_binary_delay = np.array(compute_binary_delay(toas_bary, params_dict))
++        # Compute initial binary delay for iterative fitting using PINT-compatible time
++        toas_prebinary = tdb_mjd - prebinary_delay_sec / SECS_PER_DAY
++        initial_binary_delay = np.array(compute_binary_delay(toas_prebinary, params_dict))
+ 
+     # If fitting astrometry params, extract ssb_obs_pos_ls and compute initial delay
+     ssb_obs_pos_ls = None
+@@ -1898,6 +1906,7 @@ def _build_general_fit_setup_from_cache(
+         astrometry_params=astrometry_params,
+         fd_params=fd_params,
+         roemer_shapiro_sec=roemer_shapiro_sec,
++        prebinary_delay_sec=prebinary_delay_sec,
+         initial_binary_delay=initial_binary_delay,
+         ssb_obs_pos_ls=ssb_obs_pos_ls,
+         initial_astrometric_delay=initial_astrometric_delay,
+diff --git a/jug/gui/main_window.py b/jug/gui/main_window.py
+index 3a09469..1bfb76d 100644
+--- a/jug/gui/main_window.py
++++ b/jug/gui/main_window.py
+@@ -153,6 +153,11 @@ class MainWindow(QMainWindow):
+         self.errors_us = None
+         self.rms_us = None
+         
++        # RMS display mode (weighted vs unweighted)
++        self.use_weighted_rms = True  # Default to weighted RMS
++        self.weighted_rms_us = None
++        self.unweighted_rms_us = None
++        
+         # Original data (for full restart, before any deletions)
+         self.original_mjd = None
+         self.original_residuals_us = None
+@@ -399,7 +404,7 @@ class MainWindow(QMainWindow):
+         stats_layout.addWidget(self.stats_title)
+ 
+         # Create stat rows with label + value (store both for theme updates)
+-        self.rms_label_text, self.rms_label = self._create_stat_row(stats_layout, "RMS", "--")
++        self.rms_label_text, self.rms_label = self._create_stat_row(stats_layout, "wRMS", "--")
+         # Set objectName for RMS value (special emphasis styling)
+         self.rms_label.setObjectName("rmsValue")
+         self.iter_label_text, self.iter_label = self._create_stat_row(stats_layout, "Iterations", "--")
+@@ -889,7 +894,7 @@ class MainWindow(QMainWindow):
+         self.residuals_us = result['residuals_us']
+         self.prefit_residuals_us = result['residuals_us'].copy()
+         self.errors_us = result.get('errors_us', None)
+-        self.rms_us = result['rms_us']
++        self._update_rms_from_result(result)
+         self.is_fitted = False
+         self.fit_results = None
+         
+@@ -917,8 +922,9 @@ class MainWindow(QMainWindow):
+         self.ntoa_label.setText(f"{len(self.mjd)}")
+         
+         # Update status
++        rms_label = "wRMS" if self.use_weighted_rms else "RMS"
+         self.status_bar.showMessage(
+-            f"Loaded {len(self.mjd)} TOAs, Prefit RMS = {self.rms_us:.6f} μs"
++            f"Loaded {len(self.mjd)} TOAs, Prefit {rms_label} = {self.rms_us:.6f} μs"
+         )
+ 
+         # Schedule JAX warmup in background (avoids first-fit lag)
+@@ -1010,8 +1016,9 @@ class MainWindow(QMainWindow):
+         """Update the plot title with pulsar name and RMS."""
+         pulsar_str = self.pulsar_name if self.pulsar_name else "Unknown Pulsar"
+         rms_str = f"{self.rms_us:.6f} μs" if self.rms_us is not None else "--"
++        rms_label = "wRMS" if self.use_weighted_rms else "RMS"
+         # Use styled separator
+-        self.plot_title_label.setText(f"✦  {pulsar_str}  ·  RMS: {rms_str}")
++        self.plot_title_label.setText(f"✦  {pulsar_str}  ·  {rms_label}: {rms_str}")
+     
+     def on_fit_clicked(self):
+         """Handle Fit button click."""
+@@ -1133,14 +1140,14 @@ class MainWindow(QMainWindow):
+                 self.errors_us = None
+             # Recalculate RMS for filtered data using canonical engine stats
+             stats = compute_residual_stats(self.residuals_us, self.errors_us)
+-            self.rms_us = stats['weighted_rms_us']
++            self._update_rms_from_stats(stats)
+         else:
+             # No deletions - use all data
+             self.mjd = full_mjd
+             self.residuals_us = full_residuals
+             self.postfit_residuals_us = full_residuals.copy()
+             self.errors_us = full_errors
+-            self.rms_us = result['rms_us']
++            self._update_rms_from_result(result)
+         
+         # DEBUG
+         print(f"[DEBUG] Updated GUI RMS: {self.rms_us:.6f} μs (after filtering {len(self.deleted_indices)} deleted TOAs)")
+@@ -1172,9 +1179,10 @@ class MainWindow(QMainWindow):
+ 
+             # Update status
+             param_str = ', '.join(fit_result['final_params'].keys())
++            rms_label = "wRMS" if self.use_weighted_rms else "RMS"
+             self.status_bar.showMessage(
+                 f"Fit complete: {param_str} | "
+-                f"RMS = {self.rms_us:.6f} μs | "
++                f"{rms_label} = {self.rms_us:.6f} μs | "
+                 f"{fit_result['iterations']} iterations | "
+                 f"{'converged' if fit_result['converged'] else 'not converged'}"
+             )
+@@ -1263,7 +1271,10 @@ class MainWindow(QMainWindow):
+             vbox.addWidget(val)
+             stats_layout.addWidget(container)
+             
+-        add_stat("Final RMS", f"{result['final_rms']:.6f} μs", color=accent, bold=True)
++        # Use current RMS value (weighted or unweighted based on mode)
++        rms_label = "Final wRMS" if self.use_weighted_rms else "Final RMS"
++        rms_value = self.rms_us if self.rms_us is not None else result['final_rms']
++        add_stat(rms_label, f"{rms_value:.6f} μs", color=accent, bold=True)
+         add_stat("Iterations", result['iterations'])
+         conv_text = "Yes" if result['converged'] else "No"
+         conv_color = Colors.ACCENT_SUCCESS if result['converged'] else Colors.ACCENT_WARNING
+@@ -1493,7 +1504,7 @@ class MainWindow(QMainWindow):
+             
+             # Recalculate RMS using canonical engine stats
+             stats = compute_residual_stats(self.residuals_us, self.errors_us)
+-            self.rms_us = stats['weighted_rms_us']
++            self._update_rms_from_stats(stats)
+             
+             # Reset fit state
+             self.is_fitted = False
+@@ -1531,6 +1542,63 @@ class MainWindow(QMainWindow):
+                 self.plot_widget.removeItem(self.zero_line)
+                 self.zero_line = None
+ 
++    def _toggle_rms_mode(self):
++        """Toggle between weighted and unweighted RMS display (shortcut: W)."""
++        self.use_weighted_rms = not self.use_weighted_rms
++        
++        # Update the displayed RMS value based on mode
++        if self.use_weighted_rms:
++            self.rms_us = self.weighted_rms_us
++            rms_type = "weighted"
++            label_text = "wRMS"
++        else:
++            self.rms_us = self.unweighted_rms_us
++            rms_type = "unweighted"
++            label_text = "RMS"
++        
++        # Update label text in statistics panel
++        self.rms_label_text.setText(label_text)
++        
++        # Update displayed value
++        if self.rms_us is not None:
++            self.rms_label.setText(f"{self.rms_us:.6f} μs")
++        
++        # Update plot title
++        self._update_plot_title()
++        
++        # Show status message
++        if self.rms_us is not None:
++            self.status_bar.showMessage(f"Switched to {rms_type} RMS: {self.rms_us:.6f} μs (press W to toggle)")
++        else:
++            self.status_bar.showMessage(f"Switched to {rms_type} RMS (press W to toggle)")
++
++    def _update_rms_from_stats(self, stats: dict):
++        """Update all RMS values from a stats dictionary.
++        
++        Parameters
++        ----------
++        stats : dict
++            Dictionary containing 'weighted_rms_us' and 'unweighted_rms_us' keys.
++        """
++        self.weighted_rms_us = stats['weighted_rms_us']
++        self.unweighted_rms_us = stats['unweighted_rms_us']
++        # Set displayed RMS based on current mode
++        self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
++
++    def _update_rms_from_result(self, result: dict):
++        """Update all RMS values from a compute_residuals result dictionary.
++        
++        Parameters
++        ----------
++        result : dict
++            Dictionary from compute_residuals_simple containing RMS values.
++        """
++        # compute_residuals_simple returns 'weighted_rms_us' and 'unweighted_rms_us'
++        self.weighted_rms_us = result.get('weighted_rms_us', result.get('rms_us', 0.0))
++        self.unweighted_rms_us = result.get('unweighted_rms_us', 0.0)
++        # Set displayed RMS based on current mode
++        self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
++
+     def on_toggle_color_variant(self):
+         """Toggle data color variant (navy/burgundy in light, classic/scilab in dark)."""
+         if is_dark_mode():
+@@ -2001,6 +2069,9 @@ class MainWindow(QMainWindow):
+             elif key == Qt.Key_U:
+                 self.on_zoom_fit()
+                 return True
++            elif key == Qt.Key_W:
++                self._toggle_rms_mode()
++                return True
+         return super().eventFilter(obj, event)
+ 
+     def _handle_box_zoom_key(self):
+@@ -2323,7 +2394,7 @@ class MainWindow(QMainWindow):
+         
+         # Recalculate RMS using canonical engine stats
+         stats = compute_residual_stats(self.residuals_us, self.errors_us)
+-        self.rms_us = stats['weighted_rms_us']
++        self._update_rms_from_stats(stats)
+         
+         # Update plot
+         self._update_plot()
+diff --git a/jug/gui/workers/compute_worker.py b/jug/gui/workers/compute_worker.py
+index 737e462..04e553c 100644
+--- a/jug/gui/workers/compute_worker.py
++++ b/jug/gui/workers/compute_worker.py
+@@ -60,6 +60,8 @@ class ComputeWorker(QRunnable):
+             result_safe = {
+                 'residuals_us': np.array(result['residuals_us']),
+                 'rms_us': float(result['rms_us']),
++                'weighted_rms_us': float(result.get('weighted_rms_us', result['rms_us'])),
++                'unweighted_rms_us': float(result.get('unweighted_rms_us', 0.0)),
+                 'tdb_mjd': np.array(result['tdb_mjd']),
+                 'errors_us': np.array(result.get('errors_us', [])) if result.get('errors_us') is not None else None,
+                 'dt_sec': np.array(result.get('dt_sec', [])),
+diff --git a/jug/io/par_reader.py b/jug/io/par_reader.py
+index 0ad5736..c58dc3c 100644
+--- a/jug/io/par_reader.py
++++ b/jug/io/par_reader.py
+@@ -157,7 +157,7 @@ def validate_par_timescale(params: Dict[str, Any], context: str = "JUG") -> str:
+         raise ValueError(f"{context}: Unknown par file timescale '{timescale}'")
+ 
+ 
+-# List of all epoch-like parameters that are in par file timescale
++# List of epoch-like parameters that are in the par file timescale (non-exhaustive)
+ EPOCH_PARAMETERS = {
+     'PEPOCH',    # Spin epoch
+     'POSEPOCH',  # Position epoch  
+@@ -172,9 +172,20 @@ EPOCH_PARAMETERS = {
+ }
+ """Parameters that represent absolute epochs in the par file timescale.
+ 
++NOTE: This set is for documentation only and may not be exhaustive.
++Other epoch-like parameters may exist (e.g., DMX epochs, noise model epochs).
++
+ These parameters are stored as MJD values in whatever timescale the par file
+-uses (TDB or TCB). JUG treats them as already being in the model timescale
+-and does NOT apply UTC->TDB clock corrections to them.
++uses (TDB or TCB, as indicated by the UNITS keyword). JUG treats them as
++already being in the model timescale and does NOT apply UTC->TDB clock
++corrections to them.
++
++The par file timescale is determined by:
++1. The UNITS keyword (TDB or TCB) if present
++2. Default to TDB if UNITS is not specified
++
++IMPORTANT: JUG currently only supports TDB par files. TCB par files will
++trigger a NotImplementedError via validate_par_timescale().
+ """
+ 
+ 
+diff --git a/jug/residuals/simple_calculator.py b/jug/residuals/simple_calculator.py
+index 2fa8819..afcc192 100644
+--- a/jug/residuals/simple_calculator.py
++++ b/jug/residuals/simple_calculator.py
+@@ -43,7 +43,7 @@ def compute_residuals_simple(
+     observatory: str = "meerkat",
+     subtract_tzr: bool = True,
+     verbose: bool = True,
+-    tzrmjd_scale: str = "TDB"
++    tzrmjd_scale: str = "AUTO"
+ ) -> dict:
+     """Compute pulsar timing residuals from .par and .tim files.
+ 
+@@ -68,9 +68,13 @@ def compute_residuals_simple(
+         Whether to print progress messages (default: True)
+         Set to False for production/batch processing
+     tzrmjd_scale : str, optional
+-        Timescale of TZRMJD in par file. Options: "TDB" (default) or "UTC".
+-        - "TDB": TZRMJD is already in TDB (typical for *_tdb.par files and PINT output)
+-        - "UTC": TZRMJD is in UTC and needs clock chain conversion (legacy behavior)
++        Timescale interpretation for TZRMJD. Options: "AUTO" (default), "TDB", "UTC".
++        - "AUTO": Derive from par file UNITS keyword (recommended). If UNITS=TDB,
++          treat TZRMJD as TDB; if UNITS=TCB/TT, fail via validate_par_timescale.
++        - "TDB": Force TZRMJD to be treated as TDB (no conversion).
++        - "UTC": Force legacy UTC->TDB conversion via clock chain. WARNING: This
++          contradicts UNITS=TDB and will produce ~69s offset. Use only for legacy
++          par files that genuinely have UTC TZRMJD values.
+ 
+     Returns
+     -------
+@@ -595,15 +599,36 @@ def compute_residuals_simple(
+                 tzr_obs_itrf_km[2] * u.km
+             )
+         
+-        # Handle TZRMJD timescale
++        # Resolve TZRMJD timescale - unified with par timescale
+         tzrmjd_scale_upper = tzrmjd_scale.upper()
+-        if tzrmjd_scale_upper == "TDB":
+-            # TZRMJD is already in TDB (default for PINT-generated par files)
++        
++        # AUTO: derive from par timescale (single source of truth)
++        if tzrmjd_scale_upper == "AUTO":
++            # par_timescale is already validated (TCB/TT would have failed by now)
++            tzrmjd_scale_resolved = par_timescale  # Will be "TDB"
++            if verbose: print(f"   TZRMJD scale: AUTO -> {tzrmjd_scale_resolved} (from par UNITS)")
++        elif tzrmjd_scale_upper in ("TDB", "UTC"):
++            tzrmjd_scale_resolved = tzrmjd_scale_upper
++            if verbose: print(f"   TZRMJD scale: {tzrmjd_scale_resolved} (explicit override)")
++        else:
++            raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'AUTO', 'TDB', or 'UTC'.")
++        
++        # Apply the resolved timescale
++        if tzrmjd_scale_resolved == "TDB":
++            # TZRMJD is already in TDB (standard for PINT/Tempo2 TDB par files)
+             TZRMJD_TDB = TZRMJD_raw
+             delta_tzr_sec = 0.0
+             if verbose: print(f"   TZRMJD treated as TDB (no conversion)")
+-        elif tzrmjd_scale_upper == "UTC":
++        elif tzrmjd_scale_resolved == "UTC":
+             # Legacy behavior: convert UTC to TDB via clock chain
++            # Warn loudly if this contradicts UNITS=TDB
++            if par_timescale == "TDB":
++                print(f"   ⚠️  WARNING: tzrmjd_scale='UTC' contradicts par file UNITS=TDB!")
++                print(f"       This will apply a ~69s UTC->TDB conversion to TZRMJD.")
++                print(f"       If your par file has UNITS=TDB, TZRMJD should already be in TDB.")
++                print(f"       Use tzrmjd_scale='AUTO' (default) or 'TDB' unless you have a")
++                print(f"       legacy par file with genuinely UTC TZRMJD values.")
++            
+             TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
+                 [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
+                 mk_clock, gps_clock, bipm_clock, tzr_location
+@@ -612,13 +637,10 @@ def compute_residuals_simple(
+             delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * 86400.0
+             if verbose: print(f"   TZRMJD converted from UTC to TDB (delta = {delta_tzr_sec:.3f} s)")
+             
+-            # Warn if the shift is large (indicates likely misconfiguration)
++            # Additional warning if the shift is large
+             if abs(delta_tzr_sec) > 1e-3:
+                 print(f"   ⚠️  WARNING: Large TZRMJD shift detected ({delta_tzr_sec:.3f} s)!")
+-                print(f"       This suggests TZRMJD may already be in TDB scale.")
+-                print(f"       Consider using tzrmjd_scale='TDB' (the default).")
+-        else:
+-            raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'TDB' or 'UTC'.")
++                print(f"       This confirms TZRMJD was treated as UTC.")
+         
+         # Compute all delays at TZRMJD to get the TZR delay
+         tzr_tdb_arr = np.array([float(TZRMJD_TDB)])
+@@ -733,7 +755,8 @@ def compute_residuals_simple(
+         tzr_phase = F0 * tzr_dt_sec + F1_half * tzr_dt_sec**2 + F2_sixth * tzr_dt_sec**3
+         
+         if verbose: print(f"   TZRMJD (raw):  {float(TZRMJD_raw):.15f}")
+-        if verbose: print(f"   TZRMJD (used): {float(TZRMJD_TDB):.15f} ({tzrmjd_scale_upper})")
++        if verbose: print(f"   TZRMJD (used): {float(TZRMJD_TDB):.15f} (scale={tzrmjd_scale_resolved})")
++        if verbose: print(f"   delta_tzr:     {delta_tzr_sec:.6f} s")
+         if verbose: print(f"   TZR delay: {float(tzr_delay):.9f} s")
+         if verbose: print(f"   TZR phase: {float(tzr_phase):.6f} cycles")
+ 
+diff --git a/test_timescale_validation.py b/test_timescale_validation.py
+index 48dd5d5..b06bced 100644
+--- a/test_timescale_validation.py
++++ b/test_timescale_validation.py
+@@ -145,6 +145,73 @@ except Exception as e:
+ # Cleanup
+ Path(no_units_par_file).unlink()
+ 
++# Test 6: Test tzrmjd_scale="UTC" contradiction warning with UNITS=TDB
++print("\n6. Testing tzrmjd_scale='UTC' contradiction with UNITS=TDB...")
++print("   (Should print loud warning about contradiction)")
++
++import io
++from contextlib import redirect_stdout
++
++# Capture stdout to check for warning
++f_capture = io.StringIO()
++with redirect_stdout(f_capture):
++    result = compute_residuals_simple(
++        TDB_PAR_FILE, TIM_FILE, 
++        verbose=True, 
++        tzrmjd_scale="UTC"
++    )
++
++output = f_capture.getvalue()
++
++# Check for contradiction warning
++if "contradicts par file UNITS=TDB" in output:
++    print("   ✓ Contradiction warning printed")
++else:
++    print("   ✗ Missing contradiction warning!")
++    print(f"   Output snippet: {output[:500]}...")
++    sys.exit(1)
++
++# Check for large delta warning
++if "Large TZRMJD shift" in output or "delta" in output.lower():
++    print("   ✓ Large shift warning/info printed")
++
++# Check delta_tzr value (should be ~69 seconds)
++import re
++delta_match = re.search(r'delta.*?=\s*([\d.]+)\s*s', output)
++if delta_match:
++    delta_val = float(delta_match.group(1))
++    if delta_val > 60:  # Should be ~69 seconds
++        print(f"   ✓ Delta TZRMJD = {delta_val:.1f} s (confirms UTC->TDB conversion applied)")
++    else:
++        print(f"   ⚠ Delta TZRMJD = {delta_val:.1f} s (unexpectedly small)")
++else:
++    print("   ⚠ Could not extract delta_tzr value from output")
++
++# Test 7: Test tzrmjd_scale="AUTO" (default behavior)
++print("\n7. Testing tzrmjd_scale='AUTO' (default, should derive from par UNITS)...")
++
++f_capture2 = io.StringIO()
++with redirect_stdout(f_capture2):
++    result2 = compute_residuals_simple(
++        TDB_PAR_FILE, TIM_FILE, 
++        verbose=True, 
++        tzrmjd_scale="AUTO"  # This is the default
++    )
++
++output2 = f_capture2.getvalue()
++
++# Check that AUTO resolved to TDB
++if "AUTO -> TDB" in output2:
++    print("   ✓ AUTO correctly resolved to TDB (from par UNITS)")
++else:
++    print(f"   ⚠ Could not confirm AUTO->TDB resolution")
++    
++# Check delta is 0
++if "delta_tzr:     0.000000 s" in output2:
++    print("   ✓ delta_tzr = 0 (no conversion applied)")
++else:
++    print("   ⚠ Could not confirm zero delta")
++
+ print("\n" + "=" * 80)
+ print("All tests passed!")
+ print("=" * 80)

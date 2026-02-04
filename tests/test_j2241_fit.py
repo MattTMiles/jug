@@ -1,9 +1,20 @@
+"""Test J2241-5236 fitting with FB parameters.
+
+Environment variables for CI:
+    JUG_TEST_J2241_PAR=/path/to/J2241-5236.par
+    JUG_TEST_J2241_TIM=/path/to/J2241-5236.tim
+"""
 
 import numpy as np
 import sys
 import jax
 import time
-sys.path.insert(0, '/home/mattm/soft/JUG')
+
+# Import test path utilities
+try:
+    from tests.test_paths import get_j2241_paths, skip_if_missing
+except ImportError:
+    from test_paths import get_j2241_paths, skip_if_missing
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.fitting.optimized_fitter import fit_parameters_optimized
@@ -11,9 +22,16 @@ from jug.fitting.optimized_fitter import fit_parameters_optimized
 # Enable x64 precision
 jax.config.update("jax_enable_x64", True)
 
+# Get paths from environment or defaults
+par_path, tim_path = get_j2241_paths()
+if not skip_if_missing(par_path, tim_path, "j2241_fit"):
+    print("\nSKIPPED: Test data not available")
+    sys.exit(0)
+
+par_file = str(par_path)
+tim_file = str(tim_path)
+
 print("1. Running Pre-Fit JUG...")
-par_file = '/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J2241-5236_tdb.par'
-tim_file = '/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J2241-5236.tim'
 
 # Compute pre-fit residuals
 res_before = compute_residuals_simple(par_file, tim_file)

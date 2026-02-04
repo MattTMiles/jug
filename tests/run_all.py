@@ -75,6 +75,12 @@ TESTS = [
         category="critical",
         description="DDK raises NotImplementedError (no silent aliasing)",
     ),
+    TestSpec(
+        name="binary_model_overrides",
+        script="test_binary_model_overrides.py",
+        category="critical",
+        description="Centralized DDK override helper unit tests",
+    ),
     
     # CLI smoke tests
     TestSpec(

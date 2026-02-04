@@ -34,7 +34,9 @@ def combined_delays(
     # DDK Kopeikin parameters (optional, for model_id 5)
     obs_pos_ls=None, px=0.0, sin_ra=0.0, cos_ra=1.0, sin_dec=0.0, cos_dec=1.0,
     # K96 proper motion parameters (Kopeikin 1996)
-    k96=True, pmra_rad_per_sec=0.0, pmdec_rad_per_sec=0.0
+    k96=True, pmra_rad_per_sec=0.0, pmdec_rad_per_sec=0.0,
+    # Tropospheric delay (for PINT-compatible pre-binary time)
+    tropo_sec=None
 ):
     """Combined delay calculation - single JAX kernel for maximum performance.
 
@@ -81,19 +83,32 @@ def combined_delays(
         0.0
     )
 
+    # Handle troposphere array - use zeros if not provided
+    tropo_arr = jnp.where(
+        tropo_sec is None,
+        jnp.zeros_like(tdbld),
+        tropo_sec
+    ) if tropo_sec is not None else jnp.zeros_like(tdbld)
+
     # === Universal Binary Delay Dispatch ===
     def compute_binary_universal(args):
-        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val) = args
+        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val) = args
 
-        # Binary evaluation time: TDB at SSB minus Roemer+Shapiro delay to pulsar system
+        # Binary evaluation time: PINT-compatible "pre-binary" time
         #
-        # IMPORTANT: Only subtract roemer_shapiro_val, NOT dm/sw/fd delays.
-        # The frequency-dependent delays (DM, SW, FD) are observational corrections
-        # that affect the measured TOA but NOT the coordinate time at the pulsar.
-        # PINT computes binary delay at: toas.table['tdbld'] - all_delays_before_binary
-        # where all_delays_before_binary = Roemer + Einstein + Shapiro (solar system)
-        # but NOT DM/SW/FD which are in the signal propagation path, not the time coordinate.
-        t_ssb = tdbld_val - roemer_shapiro_val / SECS_PER_DAY
+        # PINT's delay component order is:
+        #   AstrometryEquatorial -> TroposphereDelay -> SolarSystemShapiro ->
+        #   SolarWindDispersion -> DispersionDM -> BinaryDD -> FD
+        #
+        # So PINT evaluates BinaryDD at:
+        #   t_prebinary = tdbld - (all delays before BinaryDD) / 86400
+        #
+        # This includes: Roemer (astrometry), Troposphere, SS Shapiro, Solar Wind, DM
+        # but NOT FD (which comes after BinaryDD).
+        #
+        # roemer_shapiro_val includes: Roemer + SS Shapiro (Sun + planets)
+        # We add: DM, Solar Wind, Troposphere
+        t_prebinary = tdbld_val - (roemer_shapiro_val + dm_val + sw_val + tropo_val) / SECS_PER_DAY
 
         # Branch 0: None
         def branch_none(t): return 0.0
@@ -321,7 +336,7 @@ def combined_delays(
         return jax.lax.switch(
             binary_model_id,
             [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt, branch_ddk],
-            t_ssb
+            t_prebinary
         )
 
     # Prepare observer position - use zeros if not provided (for non-DDK models)
@@ -333,7 +348,7 @@ def combined_delays(
 
     binary_sec = jnp.where(
         has_binary,
-        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr)),
+        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr)),
         0.0
     )
 
@@ -354,7 +369,9 @@ def compute_total_delay_jax(
     # DDK Kopeikin parameters (optional)
     obs_pos_ls=None, px=0.0, sin_ra=0.0, cos_ra=1.0, sin_dec=0.0, cos_dec=1.0,
     # K96 proper motion parameters (Kopeikin 1996)
-    k96=True, pmra_rad_per_sec=0.0, pmdec_rad_per_sec=0.0
+    k96=True, pmra_rad_per_sec=0.0, pmdec_rad_per_sec=0.0,
+    # Tropospheric delay (for PINT-compatible pre-binary time)
+    tropo_sec=None
 ):
     """Compute total delay in a single JAX kernel.
 
@@ -371,6 +388,10 @@ def compute_total_delay_jax(
     - k96: Boolean flag to enable proper motion corrections (default True)
     - pmra_rad_per_sec: Proper motion in RA (radians/second), PMRA/cos(DEC)
     - pmdec_rad_per_sec: Proper motion in DEC (radians/second)
+    
+    Tropospheric delay:
+    - tropo_sec: Tropospheric delay in seconds (for PINT-compatible pre-binary time)
+                 If None, zeros are used internally.
     """
     combined_sec = combined_delays(
         tdbld, freq_bary, obs_sun, L_hat,
@@ -381,7 +402,8 @@ def compute_total_delay_jax(
         ecc, om, t0, omdot, edot, m2, sini, kin, kom, h3, h4, stig,
         fb_coeffs, fb_factorials, fb_epoch, use_fb,
         obs_pos_ls, px, sin_ra, cos_ra, sin_dec, cos_dec,
-        k96, pmra_rad_per_sec, pmdec_rad_per_sec
+        k96, pmra_rad_per_sec, pmdec_rad_per_sec,
+        tropo_sec
     )
 
     return roemer_shapiro + combined_sec

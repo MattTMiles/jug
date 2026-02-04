@@ -69,6 +69,12 @@ TESTS = [
         category="critical",
         description="Regression: prebinary_delay_sec in cache path",
     ),
+    TestSpec(
+        name="ddk_not_implemented",
+        script="test_ddk_not_implemented.py",
+        category="critical",
+        description="DDK raises NotImplementedError (no silent aliasing)",
+    ),
     
     # CLI smoke tests
     TestSpec(
@@ -108,6 +114,14 @@ TESTS = [
         script="test_fit_correctness_mini.py",
         category="correctness",
         description="Fit reduces RMS, deterministic, finite params",
+    ),
+    
+    # Invariant tests (use bundled mini data)
+    TestSpec(
+        name="invariants",
+        script="test_invariants.py",
+        category="correctness",
+        description="Prebinary time, fit recovery, gradient sanity",
     ),
     
     # GUI tests (need Qt)
@@ -287,12 +301,13 @@ def run_script_test(
         )
         duration = time.time() - start
         
-        # Check for SKIP in output
-        if "SKIP" in result.stdout or "SKIPPED" in result.stdout:
-            return TestResult(script, "SKIP", duration, "Test data not available")
-        
+        # Check for explicit skip marker (test decided to skip entirely)
+        # Don't count "[SKIP]" in optional items as full skip
         if result.returncode == 0:
             return TestResult(script, "PASS", duration)
+        elif "SKIP: " in result.stdout and "PASS" not in result.stdout:
+            # Full test skip (e.g., "SKIP: data not available")
+            return TestResult(script, "SKIP", duration, "Test data not available")
         else:
             # Get last few lines of output for error message
             output = result.stdout + result.stderr

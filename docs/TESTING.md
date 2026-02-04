@@ -50,11 +50,13 @@ python tests/run_all.py --list
 |------|----------|---------|----------|
 | `imports` | critical | Core module imports | <1s |
 | `prebinary_cache` | critical | Cache path regression | ~2s |
+| `ddk_not_implemented` | critical | DDK raises NotImplementedError | ~1s |
 | `cli_smoke` | cli | CLI entry points respond to --help | ~3s |
 | `cli_integration` | cli | CLI compute/fit end-to-end | ~5s |
 | `api_workflow` | api | Python API with bundled data | ~2s |
 | `correctness` | correctness | Residuals match golden values + checksum | ~2s |
 | `fit_correctness` | correctness | Fit reduces RMS, deterministic, finite params | ~2s |
+| `invariants` | correctness | Prebinary time, fit recovery, gradient sanity | ~3s |
 | `gui_smoke` | gui | GUI initializes, computes, fits headless | ~3s |
 | `timescale_validation` | standard | TDB/TCB handling | ~2s |
 | `binary_patch` | standard | Binary delay correctness | ~3s |
@@ -101,7 +103,7 @@ number of TOAs, similar RMS magnitude) rather than exact agreement.
 ## Bundled Test Data
 
 The `tests/data_golden/` directory contains:
-- `J1909_mini.par` - Simplified par file (20 TOAs)
+- `J1909_mini.par` - Simplified par file (20 TOAs, ELL1 binary, DM=10.39)
 - `J1909_mini.tim` - Mini tim file (20 TOAs)
 - `J1909_mini_golden.json` - Golden reference values with:
   - Expected RMS values (µs)
@@ -110,6 +112,27 @@ The `tests/data_golden/` directory contains:
   - Tolerances: `rms_rel_tol=1e-5`, `residual_abs_tol_ns=1.0`
 
 These enable CI tests to run without external data dependencies.
+
+**Note**: The mini dataset has nonzero DM and CORRECT_TROPOSPHERE=Y, ensuring
+`prebinary_delay_sec` differs from `roemer_shapiro_sec` (required for invariant tests).
+
+## Environment Variables
+
+### DDK Override
+
+JUG does not support the DDK binary model (requires Kopeikin terms not implemented).
+By default, DDK par files raise `NotImplementedError`. For testing or comparison:
+
+```bash
+# Force DDK to be treated as DD (INCORRECT for high-parallax pulsars)
+JUG_ALLOW_DDK_AS_DD=1 python -m jug.scripts.compute_residuals par tim
+
+# Also works with Python API
+JUG_ALLOW_DDK_AS_DD=1 python -c "from jug.residuals.simple_calculator import compute_residuals_simple; ..."
+```
+
+**Warning**: This override produces scientifically incorrect results for pulsars
+where Kopeikin corrections are significant (e.g., J0437-4715). Use only for testing.
 
 ## CI/Portable Test Data
 

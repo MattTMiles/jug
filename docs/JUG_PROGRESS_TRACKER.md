@@ -1,8 +1,8 @@
 # JUG Implementation Progress Tracker
 
-**Last Updated**: 2026-02-02 (DDK Model Testing)
+**Last Updated**: 2026-02-03 (Hardening Pass - DDK explicit fail, prebinary fix documented)
 **Current Version**: M6 Complete - Full Astrometry + Binary Fitting with PINT-style Damping ✅
-**Active Milestone**: DDK Bug Fix Required, then M7
+**Active Milestone**: M6.1 Hardening (correctness tests, explicit behavior), then M7
 
 This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
 
@@ -44,7 +44,8 @@ This document tracks the implementation progress of JUG from notebook to product
   - ✅ Astrometry: RAJ, DECJ, PMRA, PMDEC, PX (PINT-style damped fitting)
   - ✅ Binary: PB, A1, ECC, OM, T0, TASC, EPS1, EPS2, M2, SINI, PBDOT, etc.
   - ⏸️ JUMP parameters (not yet)
-- **Binary Models**: ELL1, ELL1H, DD, DDH, DDK (⚠️ bug), DDGR, BT, T2
+- **Binary Models**: ELL1, ELL1H, DD, DDH, DDGR, BT, T2
+  - ⚠️ **DDK NOT IMPLEMENTED**: DDK now raises `NotImplementedError` (previously aliased DD silently - incorrect). True DDK requires Kopeikin annual orbital parallax terms not yet implemented.
 - **Multi-Backend Support**: MeerKAT, Parkes, GBT, VLA, etc.
 - **Clock Corrections**: Automatic clock file loading and caching
 
@@ -97,6 +98,32 @@ This document tracks the implementation progress of JUG from notebook to product
 - **Binary Model Tests**: Multi-pulsar validation
 - **Session Cache Tests**: Cache separation correctness
 - **ParameterSpec Tests**: Registry and routing validation
+- **CLI Integration Tests**: End-to-end with bundled mini data
+- **Correctness Invariant Tests**: prebinary_delay_sec usage, fit recovery
+
+### Recent Correctness Fixes (2026-01-30 to 2026-02-03)
+
+#### Prebinary Delay Fix ✅
+- **Problem**: Binary delay was being evaluated at wrong time (TDB - roemer_shapiro instead of TDB - prebinary_delay)
+- **Fix**: Added `prebinary_delay_sec` computation matching PINT's `delay_before_binary`:
+  ```
+  prebinary_delay_sec = roemer + shapiro + dm + sw + tropo
+  ```
+  This is the full delay-before-binary (all delays except binary and FD).
+- **Impact**: Binary delays now evaluated at correct "pre-binary" time matching PINT
+- **Test**: `test_cache_prebinary_regression.py` ensures prebinary_delay_sec is computed and cached
+
+#### TZRMJD Timescale Fix ✅
+- **Problem**: TZRMJD scale was inconsistent (sometimes UTC, sometimes TDB)
+- **Fix**: Default `tzrmjd_scale="AUTO"` derives from par file UNITS keyword
+- **Impact**: For UNITS=TDB par files, TZRMJD is correctly treated as TDB (no conversion)
+- **TCB Hard-Fail**: Par files with UNITS=TCB now raise `NotImplementedError` with clear message
+
+#### DDK Silent Aliasing Fix ✅ (2026-02-03)
+- **Problem**: DDK was silently aliased to DD, producing incorrect results (missing Kopeikin terms)
+- **Fix**: DDK now raises `NotImplementedError` with clear message about missing implementation
+- **Impact**: Users cannot accidentally get wrong science; must use DD or wait for DDK implementation
+- **Test**: `test_ddk_not_implemented.py` ensures DDK raises error
 
 ---
 

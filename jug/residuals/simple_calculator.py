@@ -237,16 +237,40 @@ def compute_residuals_simple(
     has_binary = 'PB' in params or 'FB0' in params
     binary_model = params.get('BINARY', 'NONE').upper() if has_binary else 'NONE'
 
+    # Check for DDK early and fail explicitly (DDK not implemented)
+    if binary_model == 'DDK':
+        import os
+        if os.environ.get('JUG_ALLOW_DDK_AS_DD', '').lower() not in ('1', 'true', 'yes'):
+            raise NotImplementedError(
+                f"DDK binary model is not implemented in JUG.\n\n"
+                f"DDK requires Kopeikin (1995, 1996) annual orbital parallax terms that "
+                f"modify the projected semi-major axis (A1) and longitude of periastron (OM) "
+                f"based on orbital inclination (KIN), position angle of ascending node (KOM), "
+                f"parallax (PX), and proper motion.\n\n"
+                f"Previously, JUG silently aliased DDK to DD, which is INCORRECT and would "
+                f"produce wrong science for high-parallax pulsars like J0437-4715.\n\n"
+                f"Options:\n"
+                f"  1. Convert your par file to use BINARY DD (if Kopeikin corrections are negligible)\n"
+                f"  2. Use PINT or tempo2 for DDK pulsars until JUG implements true DDK support\n"
+                f"  3. Set environment variable JUG_ALLOW_DDK_AS_DD=1 to force DD aliasing (NOT RECOMMENDED)\n"
+            )
+        else:
+            import warnings
+            warnings.warn(
+                "JUG_ALLOW_DDK_AS_DD=1: Treating DDK as DD. This is INCORRECT for "
+                "high-parallax pulsars and will produce wrong science. Use at your own risk.",
+                UserWarning
+            )
+            binary_model = 'DD'  # Force to DD if override is set
+
     # Map model name to ID
-    # 0: None, 1: ELL1/H, 2: DD/DDH/DDGR, 3: T2, 4: BT*, 5: DDK
+    # 0: None, 1: ELL1/H, 2: DD/DDH/DDGR, 3: T2, 4: BT*
     model_id = 0
     if has_binary:
         if binary_model in ('ELL1', 'ELL1H'):
             model_id = 1
         elif binary_model in ('DD', 'DDH', 'DDGR'):
             model_id = 2
-        elif binary_model == 'DDK':
-            model_id = 5  # DDK uses Kopeikin annual orbital parallax
         elif binary_model == 'T2':
             model_id = 3
         elif binary_model in ('BT', 'BTX'):

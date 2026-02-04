@@ -1,8 +1,8 @@
 # JUG Implementation Progress Tracker
 
-**Last Updated**: 2026-02-03 (Hardening Pass - DDK explicit fail, prebinary fix documented)
+**Last Updated**: 2026-02-04 (Parity Analysis - DDK plan, parameter inventory)
 **Current Version**: M6 Complete - Full Astrometry + Binary Fitting with PINT-style Damping ✅
-**Active Milestone**: M6.1 Hardening (correctness tests, explicit behavior), then M7
+**Active Milestone**: M6.2 DDK Implementation, then M7
 
 This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
 
@@ -26,6 +26,8 @@ This document tracks the implementation progress of JUG from notebook to product
 | **M6B: Data & Environment Determinism** | ✅ COMPLETED | 100% | 2026-01-29 |
 | **M6A: Parity & Regression Infrastructure** | ✅ COMPLETED | 100% | 2026-01-30 |
 | **M6: Complete Parameter Fitting** | ✅ COMPLETED | 100% | 2026-01-30 |
+| **M6.1: Hardening Pass** | ✅ COMPLETED | 100% | 2026-02-03 |
+| **M6.2: DDK Implementation** | 🚧 IN PROGRESS | 30% | TBD |
 | M7: White Noise Models (v0.7.0) | ⏸️ NOT STARTED | 0% | TBD |
 | M8: GP Noise Models (v0.8.0) | ⏸️ NOT STARTED | 0% | TBD |
 | M9: Bayesian Priors (v0.9.0) | ⏸️ NOT STARTED | 0% | TBD |
@@ -34,7 +36,48 @@ This document tracks the implementation progress of JUG from notebook to product
 
 ---
 
-## Current Capabilities Summary (2026-01-29)
+## Parameter & Fitting Parity Status (2026-02-04)
+
+**Full analysis**: See [docs/PARITY_ANALYSIS.md](PARITY_ANALYSIS.md)
+
+### Parameter Registry Completeness ✅
+
+| Group | Parameters | Analytic Partials | Fit-Ready | Notes |
+|-------|------------|-------------------|-----------|-------|
+| Spin | F0, F1, F2, F3, PEPOCH | ✅ All | ✅ All (except epoch) | PINT-compatible Taylor series |
+| DM | DM, DM1, DM2, DMEPOCH | ✅ All | ✅ All (except epoch) | K_DM/freq² formula |
+| Astrometry | RAJ, DECJ, PMRA, PMDEC, PX, POSEPOCH | ✅ All | ✅ All (except epoch) | PINT-compatible damping |
+| ELL1 Binary | PB, A1, TASC, EPS1, EPS2, PBDOT, XDOT, SINI, M2, H3, H4, STIG, FB0-FB20 | ✅ All | ✅ All | 3rd-order corrections |
+| DD Binary | PB, A1, T0, ECC, OM, GAMMA, PBDOT, OMDOT, XDOT, SINI, M2, H3, STIG | ✅ All | ✅ All | Chain rule via Kepler |
+| FD | FD1-FD9 | ✅ All | ✅ All | log(f/1GHz)^n |
+| JUMP | JUMPn | ✅ (trivial) | ⚠️ Partial | Needs TOA flag integration |
+
+### Known Gaps
+
+| Parameter | Forward Model | Partial | Fit-Ready | Priority |
+|-----------|---------------|---------|-----------|----------|
+| **KIN** (DDK) | ✅ | ❌ | ❌ | **HIGH** |
+| **KOM** (DDK) | ✅ | ❌ | ❌ | **HIGH** |
+| EDOT | ✅ | ❌ | ❌ | Medium |
+| DR, DTH | In spec | ❌ | ❌ | Low |
+| A0, B0 | In spec | ❌ | ❌ | Low |
+
+### Binary Model Status
+
+| Model | Forward | Partials | Fit-Ready | Test Coverage |
+|-------|---------|----------|-----------|---------------|
+| ELL1 | ✅ | ✅ | ✅ | ✅ |
+| ELL1H | ✅ | ✅ | ✅ | ⚠️ |
+| DD | ✅ | ✅ | ✅ | ✅ |
+| DDH | ✅ | ✅ | ✅ | ⚠️ |
+| DDGR | ✅ | ✅ | ✅ | ⚠️ |
+| BT | ✅ | ✅ | ✅ | ⚠️ |
+| T2 | ✅ | ✅ | ✅ | ⚠️ |
+| **DDK** | ✅ | ❌ | ❌ | ⚠️ Hard-fail |
+
+---
+
+## Current Capabilities Summary (2026-02-04)
 
 ### Core Features ✅
 - **Residual Computation**: Matches PINT/Tempo2 to <10ns precision
@@ -124,6 +167,122 @@ This document tracks the implementation progress of JUG from notebook to product
 - **Fix**: DDK now raises `NotImplementedError` with clear message about missing implementation
 - **Impact**: Users cannot accidentally get wrong science; must use DD or wait for DDK implementation
 - **Test**: `test_ddk_not_implemented.py` ensures DDK raises error
+
+---
+
+## Milestone 6.2: DDK Implementation 🚧
+
+**Status**: IN PROGRESS (30%)
+**Priority**: HIGH - Required for NANOGrav 15-year pulsars with annual orbital parallax
+**Started**: 2026-02-04
+
+### Goal
+Implement proper DDK (Kopeikin 1995/1996) model with both forward model and analytic partial derivatives, enabling fitting of KIN and KOM parameters.
+
+### Detailed Analysis
+See [docs/PARITY_ANALYSIS.md](PARITY_ANALYSIS.md) for complete repo inventory, parity matrix, and implementation plan.
+
+### Current Status
+
+**What EXISTS** (30%):
+- ✅ **Forward model**: `jug/delays/combined.py:branch_ddk()` (lines 222-335)
+  - K96 proper motion corrections (eq. 8): dt_k96
+  - Kopeikin 1995 parallax (eq. 9): dt_kop
+  - Effective A1/OM computation from KIN/KOM
+  - DD kernel evaluation with effective parameters
+- ✅ **DDK override helper**: `jug/utils/binary_model_overrides.py`
+  - `resolve_binary_model()`: Centralized DDK → NotImplementedError
+  - `is_ddk_override_allowed()`: Check for override flag
+  - `reset_ddk_warning()`: Clear warning deduplication state
+- ✅ **Unit tests**: `tests/test_binary_model_overrides.py` (10 tests)
+  - Override behavior, warning deduplication, reset function
+- ✅ **ParameterSpec registry**: KIN/KOM defined in `parameter_spec.py`
+
+**What is MISSING** (70%):
+- ❌ **KIN partial**: `d(delay)/d(KIN)` in `derivatives_dd.py`
+- ❌ **KOM partial**: `d(delay)/d(KOM)` in `derivatives_dd.py`
+- ❌ **Fitting integration**: Route KIN/KOM through design matrix
+- ❌ **Validation tests**: DDK forward model accuracy vs PINT
+- ❌ **End-to-end tests**: Full DDK fitting workflow
+
+### Implementation Plan
+
+#### Phase 1: DDK Partials (Est. 2-4 hours)
+- [ ] **6.2.1** Implement `_d_delay_d_KIN()` in `derivatives_dd.py`
+  - Chain rule through effective A1: `d(delay)/d(A1_eff) * d(A1_eff)/d(KIN)`
+  - Chain rule through effective OM: `d(delay)/d(OM_eff) * d(OM_eff)/d(KIN)`
+  - Use K96/Kopeikin formulas from `combined.py:branch_ddk()`
+- [ ] **6.2.2** Implement `_d_delay_d_KOM()` in `derivatives_dd.py`
+  - Same chain rule structure as KIN
+- [ ] **6.2.3** Register KIN/KOM in `binary_registry.py`
+  - Add to DDK model's derivative list
+- [ ] **6.2.4** Unit tests for partial derivatives
+  - Finite difference validation
+  - Comparison vs numerical differentiation
+
+#### Phase 2: Fitting Integration (Est. 1-2 hours)
+- [ ] **6.2.5** Enable DDK in `binary_dispatch.py`
+  - Remove/modify NotImplementedError block
+  - Add KIN/KOM to fittable_params list
+- [ ] **6.2.6** Update `optimized_fitter.py` design matrix assembly
+  - Include KIN/KOM columns when model is DDK
+- [ ] **6.2.7** Integration test: fit KIN/KOM on simulated data
+  - Verify convergence
+  - Compare fitted values to injected truth
+
+#### Phase 3: Validation (Est. 2-4 hours)
+- [ ] **6.2.8** Validation test vs PINT DDK
+  - Forward model residuals match to <10ns
+  - Partial derivatives match to <1e-6 relative error
+- [ ] **6.2.9** Real-data test
+  - NANOGrav 15-year pulsar with existing DDK solution
+  - Verify JUG reproduces PINT postfit residuals
+- [ ] **6.2.10** Documentation
+  - Update MODEL_ARCHITECTURE.md with DDK example
+  - Add DDK section to PARAMETER_FITTING.md
+
+### Key Files to Modify
+
+| File | Change Required |
+|------|-----------------|
+| `jug/fitting/derivatives_dd.py` | Add `_d_delay_d_KIN()`, `_d_delay_d_KOM()` |
+| `jug/fitting/binary_registry.py` | Register KIN/KOM for DDK model |
+| `jug/delays/binary_dispatch.py` | Enable DDK model path |
+| `jug/utils/binary_model_overrides.py` | Update allowed override logic |
+| `jug/fitting/optimized_fitter.py` | Handle KIN/KOM in design matrix |
+| `tests/test_ddk_partials.py` | NEW - Partial derivative tests |
+| `tests/test_ddk_fitting.py` | NEW - End-to-end fitting tests |
+
+### Deliverables
+
+**Code**:
+- [ ] `_d_delay_d_KIN()` and `_d_delay_d_KOM()` in `derivatives_dd.py`
+- [ ] DDK model enabled in `binary_dispatch.py`
+- [ ] KIN/KOM design matrix columns in `optimized_fitter.py`
+
+**Tests**:
+- [ ] `tests/test_ddk_partials.py` - Partial derivative accuracy
+- [ ] `tests/test_ddk_fitting.py` - End-to-end DDK fitting
+- [ ] `tests/test_ddk_pint_parity.py` - Cross-tool validation
+
+**Documentation**:
+- [ ] DDK section in MODEL_ARCHITECTURE.md
+- [ ] Updated PARITY_ANALYSIS.md with completion status
+
+### Success Criteria
+
+- [ ] DDK forward model matches PINT to <10ns RMS
+- [ ] KIN/KOM partials match PINT to <1e-6 relative error
+- [ ] Can fit KIN/KOM parameters on real DDK pulsars
+- [ ] Fitting converges in ≤10 iterations
+- [ ] No silent aliasing - DDK behaves differently from DD
+
+### Notes
+
+- DDK forward model already exists and appears correct based on K96/Kopeikin formulas
+- Main work is implementing analytic partials via chain rule
+- Use existing DD partials (`_d_delay_d_A1`, `_d_delay_d_OM`) as building blocks
+- Must handle effective parameter derivatives: `d(A1_eff)/d(KIN)`, `d(OM_eff)/d(KIN)`
 
 ---
 

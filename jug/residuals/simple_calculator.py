@@ -32,7 +32,7 @@ from jug.delays.barycentric import (
 )
 from jug.delays.combined import compute_total_delay_jax
 from jug.utils.constants import (
-    SECS_PER_DAY, T_SUN_SEC, T_PLANET, OBSERVATORIES
+    SECS_PER_DAY, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC
 )
 
 
@@ -449,26 +449,7 @@ def compute_residuals_simple(
         print(f"     KIN={kin_val:.3f}°, KOM={kom_val:.3f}°, PX={parallax_mas:.3f} mas")
         print(f"     K96={k96_flag}, PMRA={pmra_mas_yr:.3f} mas/yr, PMDEC={pmdec_mas_yr:.3f} mas/yr")
 
-    # Compute total delay (DM + SW + FD + inline binary if ELL1)
-    if verbose: print(f"\n6. Running JAX delay kernel...")
-    total_delay_jax = compute_total_delay_jax(
-        tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
-        dm_coeffs_jax, dm_factorials_jax, dm_epoch_jax,
-        ne_sw_jax, fd_coeffs_jax, has_fd_jax,
-        roemer_shapiro_jax, has_binary_jax, binary_model_id_jax,
-        pb_jax, a1_jax, tasc_jax, eps1_jax, eps2_jax, pbdot_jax, xdot_jax, gamma_jax, r_shap_jax, s_shap_jax,
-        ecc_jax, om_jax, t0_jax, omdot_jax, edot_jax, m2_jax, sini_jax, kin_jax, kom_jax, h3_jax, h4_jax, stig_jax,
-        fb_coeffs_jax, fb_factorials_jax, fb_epoch_jax, use_fb_jax,
-        # DDK Kopeikin parameters (Kopeikin 1995)
-        obs_pos_ls_jax, px_jax, sin_ra_jax, cos_ra_jax, sin_dec_jax, cos_dec_jax,
-        # K96 proper motion parameters (Kopeikin 1996)
-        k96_jax, pmra_rad_per_sec_jax, pmdec_rad_per_sec_jax
-    ).block_until_ready()
-    
-    # Add external binary delay if we used dispatcher
-    total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble)
-
-    # === Tropospheric Delay ===
+    # === Tropospheric Delay (compute BEFORE kernel for PINT-compatible pre-binary time) ===
     # Check CORRECT_TROPOSPHERE flag (usually 'Y' or 'T')
     # Default is False unless specified
     correct_troposphere = False
@@ -477,26 +458,11 @@ def compute_residuals_simple(
         if flag in ['Y', 'T', '1', 'TRUE']:
             correct_troposphere = True
     
+    tropo_delay_sec = np.zeros(len(toas), dtype=np.float64)
     if correct_troposphere:
         if verbose: print(f"   Calculating tropospheric delay (Davis ZHD + Niell MF)...")
         from jug.delays.troposphere import compute_tropospheric_delay
         
-        # We need elevation for each TOA.
-        # We have ssb_obs_pos_km (SSB -> Obs). We need Obs -> Source vector relative to local horizon?
-        # Actually, we need topocentric Az/El.
-        # The simple calculator has 'obs_itrf_km' (ITRF position).
-        # We can use astropy or simple rotation to getting local Az/El.
-        
-        # Use Astropy for robust Az/El calculation
-        # Imports handled at top of file
-        
-        # Observatory location
-        
-        # Observatory location
-        # obs_itrf_km is defined earlier.
-        # Need lat/lon/height.
-        # location object (EarthLocation) is already created near line 190!
-        # Use 'location' object.
         loc_height_m = location.height.to(u.m).value
         loc_lat_deg = location.lat.deg
         
@@ -504,14 +470,10 @@ def compute_residuals_simple(
         source_coord = SkyCoord(ra=ra_rad*u.rad, dec=dec_rad*u.rad, frame='icrs')
         
         # Observation times (UTC)
-        # Construct MJD array from mjd_ints and mjd_fracs (defined earlier)
-        # Or from original 'toas' list
         mjd_utc_arr = np.array([t.mjd_int + t.mjd_frac for t in toas])
         obs_times = Time(mjd_utc_arr, format='mjd', scale='utc')
         
         # Transform to AltAz
-        # This can be slow for many TOAs.
-        # Optimization: use ERFA/SOFA directly via astropy if needed, but High-level API is easier.
         topocentric_frame = AltAz(obstime=obs_times, location=location)
         source_altaz = source_coord.transform_to(topocentric_frame)
         elevation_deg = source_altaz.alt.deg
@@ -524,21 +486,61 @@ def compute_residuals_simple(
             mjd=mjd_utc_arr
         )
         
-        # Add to total delay
-        # Convention: Delay is added to arrival time to get emission time?
-        # Tempo2: t_emit = t_arr - delays.
-        # Troposphere adds path length => arrival is LATER.
-        # So we subtract delay from arrival time to get "free space" time?
-        # Wait, total_delay_sec is "geometric + relativistic + propagation" delays.
-        # t_emit = t_arr - total_delay.
-        # Troposphere slows down signal -> Delay > 0.
-        # So we ADD to total_delay_sec.
-        total_delay_sec += tropo_delay_sec
-        
-        # Also compute for TZR if needed (handled below in TZR section)
-        
         if verbose: print(f"   Tropospheric delay: mean={np.mean(tropo_delay_sec)*1e6:.3f} μs, range=[{np.min(tropo_delay_sec)*1e6:.3f}, {np.max(tropo_delay_sec)*1e6:.3f}] μs")
+    
+    tropo_jax = jnp.array(tropo_delay_sec, dtype=jnp.float64)
 
+    # Compute total delay (DM + SW + FD + binary)
+    # Note: Troposphere is passed to kernel for PINT-compatible pre-binary time calculation,
+    # but is also added to total delay separately (kernel only uses it for binary time).
+    if verbose: print(f"\n6. Running JAX delay kernel...")
+    total_delay_jax = compute_total_delay_jax(
+        tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
+        dm_coeffs_jax, dm_factorials_jax, dm_epoch_jax,
+        ne_sw_jax, fd_coeffs_jax, has_fd_jax,
+        roemer_shapiro_jax, has_binary_jax, binary_model_id_jax,
+        pb_jax, a1_jax, tasc_jax, eps1_jax, eps2_jax, pbdot_jax, xdot_jax, gamma_jax, r_shap_jax, s_shap_jax,
+        ecc_jax, om_jax, t0_jax, omdot_jax, edot_jax, m2_jax, sini_jax, kin_jax, kom_jax, h3_jax, h4_jax, stig_jax,
+        fb_coeffs_jax, fb_factorials_jax, fb_epoch_jax, use_fb_jax,
+        # DDK Kopeikin parameters (Kopeikin 1995)
+        obs_pos_ls_jax, px_jax, sin_ra_jax, cos_ra_jax, sin_dec_jax, cos_dec_jax,
+        # K96 proper motion parameters (Kopeikin 1996)
+        k96_jax, pmra_rad_per_sec_jax, pmdec_rad_per_sec_jax,
+        # Tropospheric delay (for PINT-compatible pre-binary time)
+        tropo_jax
+    ).block_until_ready()
+    
+    # Add external binary delay if we used dispatcher
+    total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble)
+
+    # Add tropospheric delay to total (kernel uses it only for binary time, not in sum)
+    if correct_troposphere:
+        total_delay_sec += tropo_delay_sec
+
+    # Compute DM and SW delays separately for pre-binary time (needed by fitter)
+    # These replicate the kernel formulas in NumPy for use outside the kernel
+    dm_epoch = float(params.get('DMEPOCH', params['PEPOCH']))
+    dt_years = (np.array(tdb_mjd) - dm_epoch) / 365.25
+    dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
+    dm_delay_sec = K_DM_SEC * dm_eff / (freq_bary_mhz ** 2)
+    
+    # Solar wind delay
+    ne_sw = float(params.get('NE_SW', 0.0))
+    if ne_sw > 0:
+        AU_KM = 1.495978707e8
+        AU_PC = 4.84813681e-6
+        r_km = np.sqrt(np.sum(obs_sun_pos_km**2, axis=1))
+        r_au = r_km / AU_KM
+        sun_dir = obs_sun_pos_km / r_km[:, np.newaxis]
+        cos_elong = np.sum(sun_dir * L_hat, axis=1)
+        elong = np.arccos(np.clip(cos_elong, -1.0, 1.0))
+        rho = np.pi - elong
+        sin_rho = np.maximum(np.sin(rho), 1e-10)
+        geometry_pc = AU_PC * rho / (r_au * sin_rho)
+        dm_sw = ne_sw * geometry_pc
+        sw_delay_sec = K_DM_SEC * dm_sw / (freq_bary_mhz ** 2)
+    else:
+        sw_delay_sec = np.zeros(len(tdb_mjd))
 
     # Compute residuals
     if verbose: print(f"\n7. Computing phase residuals...")
@@ -641,7 +643,7 @@ def compute_residuals_simple(
         dm_epoch = float(params.get('DMEPOCH', params['PEPOCH']))
         dt_years = (float(TZRMJD_TDB) - dm_epoch) / 365.25
         dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
-        K_DM_SEC = 1.0 / 2.41e-4
+        # Note: Use module-level K_DM_SEC constant (already imported)
         tzr_dm_delay = K_DM_SEC * dm_eff / (tzr_freq_bary ** 2)
         
         # Solar wind
@@ -742,6 +744,10 @@ def compute_residuals_simple(
     SPEED_OF_LIGHT_KM_S = 299792.458
     ssb_obs_pos_ls = ssb_obs_pos_km / SPEED_OF_LIGHT_KM_S
     
+    # Compute pre-binary delay: roemer_shapiro + DM + SW + tropo (NOT FD)
+    # This is the PINT-compatible time for binary model evaluation
+    prebinary_delay_sec = roemer_shapiro + dm_delay_sec + sw_delay_sec + tropo_delay_sec
+    
     return {
         'residuals_us': residuals_us,
         'rms_us': float(weighted_rms),  # Use weighted RMS as primary
@@ -757,8 +763,14 @@ def compute_residuals_simple(
         'tzr_phase': float(tzr_phase),
         # Add emission time (computed with longdouble, converted to float64)
         'dt_sec': np.array(dt_sec, dtype=np.float64),
-        # Roemer+Shapiro delay for computing barycentric times (needed for binary fitting)
+        # Roemer+Shapiro delay for computing barycentric times (legacy, for backward compat)
         'roemer_shapiro_sec': np.array(roemer_shapiro, dtype=np.float64),
+        # Pre-binary delay: roemer_shapiro + DM + SW + tropo (PINT-compatible binary evaluation time)
+        'prebinary_delay_sec': np.array(prebinary_delay_sec, dtype=np.float64),
+        # Individual delay components (for diagnostics)
+        'dm_delay_sec': np.array(dm_delay_sec, dtype=np.float64),
+        'sw_delay_sec': np.array(sw_delay_sec, dtype=np.float64),
+        'tropo_delay_sec': np.array(tropo_delay_sec, dtype=np.float64),
         # SSB to observatory position in light-seconds (needed for astrometry derivatives)
         'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),
     }

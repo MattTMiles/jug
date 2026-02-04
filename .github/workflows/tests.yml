@@ -1,0 +1,133 @@
+# JUG CI/CD Workflow
+# Runs tests on push/PR to main branches
+
+name: Tests
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  # Quick tests - run on every push, no external data needed
+  quick-tests:
+    name: Quick Tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libxkbcommon-x11-0 libegl1 libgl1
+    
+    - name: Install package
+      run: |
+        pip install --upgrade pip
+        pip install -e .[dev]
+    
+    - name: Run quick tests (no GUI)
+      run: |
+        python tests/run_all.py --quick --no-gui -v
+    
+    - name: Check CLI entry points
+      run: |
+        jug-compute-residuals --help
+        jug-fit --help
+        jug-gui --help || echo "GUI help may fail without display"
+  
+  # Full tests with GUI - runs less frequently
+  full-tests:
+    name: Full Tests with GUI
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[full-tests]')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb libxkbcommon-x11-0 libegl1 libgl1
+    
+    - name: Install package
+      run: |
+        pip install --upgrade pip
+        pip install -e .[dev]
+        pip install PyQt6
+    
+    - name: Run full tests with virtual display
+      env:
+        QT_QPA_PLATFORM: offscreen
+      run: |
+        xvfb-run python tests/run_all.py -v
+  
+  # Correctness validation with PINT
+  pint-validation:
+    name: PINT Cross-Validation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install package and PINT
+      run: |
+        pip install --upgrade pip
+        pip install -e .[dev]
+        pip install pint-pulsar
+    
+    - name: Run correctness tests with PINT
+      run: |
+        python tests/test_correctness.py --pint
+  
+  # Code quality
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install linters
+      run: |
+        pip install ruff black isort
+    
+    - name: Run ruff
+      run: |
+        ruff check src/ tests/ || echo "Ruff found issues (non-blocking)"
+    
+    - name: Check formatting
+      run: |
+        black --check src/ tests/ || echo "Black found issues (non-blocking)"

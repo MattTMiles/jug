@@ -137,6 +137,38 @@ def get_j1022_paths() -> Tuple[Optional[Path], Optional[Path]]:
     )
 
 
+def get_mini_paths() -> Tuple[Path, Path]:
+    """Get bundled J1909_mini PAR/TIM paths.
+    
+    These are always available (bundled in tests/data_golden/) and require
+    no external data files. Used for CI quick tests.
+    
+    Returns:
+        Tuple of (par_path, tim_path). These always exist.
+    """
+    golden_dir = Path(__file__).parent / "data_golden"
+    par = golden_dir / "J1909_mini.par"
+    tim = golden_dir / "J1909_mini.tim"
+    return par, tim
+
+
+def get_golden_reference(name: str = "J1909_mini") -> Optional[dict]:
+    """Load golden reference values from JSON.
+    
+    Args:
+        name: Dataset name (default: J1909_mini)
+        
+    Returns:
+        Dictionary with golden values, or None if not found.
+    """
+    import json
+    golden_file = Path(__file__).parent / "data_golden" / f"{name}_golden.json"
+    if not golden_file.exists():
+        return None
+    with open(golden_file) as f:
+        return json.load(f)
+
+
 def files_exist(par: Optional[Path], tim: Optional[Path]) -> bool:
     """Check if both PAR and TIM files exist."""
     if par is None or tim is None:

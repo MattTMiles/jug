@@ -100,33 +100,10 @@ def dispatch_binary_delay(model_name, t_topo_tdb, params):
         )
     
     # DDK requires Kopeikin annual orbital parallax corrections - NOT IMPLEMENTED
-    # Check for environment variable override to allow DDK->DD aliasing (with warnings)
+    # Uses centralized helper for consistent behavior across all code paths
     elif model == 'DDK':
-        import os
-        import warnings
-        if os.environ.get('JUG_ALLOW_DDK_AS_DD', '').lower() in ('1', 'true', 'yes'):
-            warnings.warn(
-                "JUG_ALLOW_DDK_AS_DD=1: binary_dispatch treating DDK as DD. "
-                "This is INCORRECT for high-parallax pulsars and will produce wrong science. "
-                "Use at your own risk.",
-                UserWarning
-            )
-            # Fall through to DD code below
-            model = 'DD'
-        else:
-            raise NotImplementedError(
-                f"DDK binary model is not implemented in JUG.\n\n"
-                f"DDK requires Kopeikin (1995, 1996) annual orbital parallax terms that "
-                f"modify the projected semi-major axis (A1) and longitude of periastron (OM) "
-                f"based on orbital inclination (KIN), position angle of ascending node (KOM), "
-                f"parallax (PX), and proper motion.\n\n"
-                f"Previously, JUG silently aliased DDK to DD, which is INCORRECT and would "
-                f"produce wrong science for high-parallax pulsars like J0437-4715.\n\n"
-                f"Options:\n"
-                f"  1. Convert your par file to use BINARY DD (if Kopeikin corrections are negligible)\n"
-                f"  2. Use PINT or tempo2 for DDK pulsars until JUG implements true DDK support\n"
-                f"  3. Set environment variable JUG_ALLOW_DDK_AS_DD=1 to force DD aliasing (NOT RECOMMENDED)\n"
-            )
+        from jug.utils.binary_model_overrides import resolve_binary_model
+        model = resolve_binary_model(model, warn=True)
     
     # DD and its variants (DDH, DDGR) - also handles DDK when override is set
     if model in ('DD', 'DDH', 'DDGR'):

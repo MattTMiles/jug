@@ -103,6 +103,10 @@ def test_ddk_override_env_var():
     """Test that JUG_ALLOW_DDK_AS_DD=1 allows DDK (with warning)."""
     import warnings
     from jug.residuals.simple_calculator import compute_residuals_simple
+    from jug.utils.binary_model_overrides import reset_ddk_warning
+    
+    # Reset warning flag from any previous test
+    reset_ddk_warning()
     
     # Set override
     os.environ['JUG_ALLOW_DDK_AS_DD'] = '1'

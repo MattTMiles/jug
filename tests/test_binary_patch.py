@@ -1,14 +1,33 @@
-"""Test that the binary delay patch is working correctly."""
+"""Test that the binary delay patch is working correctly.
 
+Environment variables for CI:
+    JUG_TEST_J1713_PAR=/path/to/J1713+0747.par
+    JUG_TEST_J1713_TIM=/path/to/J1713+0747.tim
+"""
+
+import sys
 import numpy as np
 from pathlib import Path
+
+# Import test path utilities
+try:
+    from tests.test_paths import get_j1713_paths, skip_if_missing
+except ImportError:
+    from test_paths import get_j1713_paths, skip_if_missing
+
 from pint.models import get_model
 from pint.toa import get_TOAs
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 
-par_file = '/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747_tdb.par'
-tim_file = '/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747.tim'
+# Get paths from environment or defaults
+par_path, tim_path = get_j1713_paths()
+if not skip_if_missing(par_path, tim_path, "binary_patch"):
+    print("\nSKIPPED: Test data not available")
+    sys.exit(0)
+
+par_file = str(par_path)
+tim_file = str(tim_path)
 
 print("="*80)
 print("TESTING BINARY DELAY PATCH")

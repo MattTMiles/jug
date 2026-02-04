@@ -5,19 +5,33 @@ Test script for par file timescale validation.
 This script verifies that:
 1. TDB par files work normally
 2. TCB par files trigger a clear NotImplementedError
+
+Environment variables for CI:
+    JUG_TEST_J1713_PAR=/path/to/J1713+0747.par
+    JUG_TEST_J1713_TIM=/path/to/J1713+0747.tim
 """
 
 import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, '/home/mattm/soft/JUG')
+# Import test path utilities
+try:
+    from tests.test_paths import get_j1713_paths, skip_if_missing
+except ImportError:
+    # Running from tests/ directory
+    from test_paths import get_j1713_paths, skip_if_missing
 
 from jug.io.par_reader import parse_par_file, validate_par_timescale
 
-# Paths
-TDB_PAR_FILE = "/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747_tdb.par"
-TIM_FILE = "/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747.tim"
+# Get paths from environment or defaults
+par_path, tim_path = get_j1713_paths()
+if not skip_if_missing(par_path, tim_path, "timescale_validation"):
+    print("\nSKIPPED: Test data not available")
+    sys.exit(0)
+
+TDB_PAR_FILE = str(par_path)
+TIM_FILE = str(tim_path)
 
 print("=" * 80)
 print("Testing Par File Timescale Validation")

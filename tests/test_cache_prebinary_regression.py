@@ -13,26 +13,30 @@ Run from repo root:
 Expected output:
     All checks pass → PASS
     Any failure → FAIL with details
+
+Environment variables for CI:
+    JUG_TEST_J1713_PAR=/path/to/J1713+0747.par
+    JUG_TEST_J1713_TIM=/path/to/J1713+0747.tim
 """
 
 import sys
 import numpy as np
 from pathlib import Path
 
-# Test data paths (standard MPTA J1713 dataset)
-PAR_FILE = Path("/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747_tdb.par")
-TIM_FILE = Path("/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747.tim")
+# Import test path utilities
+try:
+    from tests.test_paths import get_j1713_paths, skip_if_missing
+except ImportError:
+    # Running from tests/ directory
+    from test_paths import get_j1713_paths, skip_if_missing
+
+# Get paths from environment or defaults
+PAR_FILE, TIM_FILE = get_j1713_paths()
 
 
 def check_file_exists():
     """Check that test data files exist."""
-    if not PAR_FILE.exists():
-        print(f"SKIP: Par file not found: {PAR_FILE}")
-        return False
-    if not TIM_FILE.exists():
-        print(f"SKIP: Tim file not found: {TIM_FILE}")
-        return False
-    return True
+    return skip_if_missing(PAR_FILE, TIM_FILE, "cache_prebinary")
 
 
 def test_compute_residuals_returns_prebinary():

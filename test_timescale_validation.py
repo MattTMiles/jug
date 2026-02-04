@@ -1,0 +1,150 @@
+#!/usr/bin/env python
+"""
+Test script for par file timescale validation.
+
+This script verifies that:
+1. TDB par files work normally
+2. TCB par files trigger a clear NotImplementedError
+"""
+
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, '/home/mattm/soft/JUG')
+
+from jug.io.par_reader import parse_par_file, validate_par_timescale
+
+# Paths
+TDB_PAR_FILE = "/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747_tdb.par"
+TIM_FILE = "/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747.tim"
+
+print("=" * 80)
+print("Testing Par File Timescale Validation")
+print("=" * 80)
+
+# Test 1: TDB par file should work
+print("\n1. Testing TDB par file (should succeed)...")
+params = parse_par_file(TDB_PAR_FILE)
+timescale = params.get('_par_timescale', 'UNKNOWN')
+print(f"   UNITS in par file: {params.get('UNITS', 'not specified')}")
+print(f"   Detected timescale: {timescale}")
+
+try:
+    validated = validate_par_timescale(params, context="Test")
+    print(f"   ✓ Validation passed: timescale = {validated}")
+except Exception as e:
+    print(f"   ✗ Unexpected error: {e}")
+    sys.exit(1)
+
+# Test 2: Full residual calculation with TDB par file
+print("\n2. Testing full residual calculation with TDB par file...")
+from jug.residuals.simple_calculator import compute_residuals_simple
+
+try:
+    result = compute_residuals_simple(TDB_PAR_FILE, TIM_FILE, verbose=False)
+    print(f"   ✓ Residuals computed successfully")
+    print(f"   RMS: {result['rms_us']:.3f} μs, N_TOAs: {result['n_toas']}")
+except Exception as e:
+    print(f"   ✗ Unexpected error: {e}")
+    sys.exit(1)
+
+# Test 3: Create a fake TCB par file and verify it fails
+print("\n3. Testing TCB par file (should fail with clear error)...")
+
+# Read the TDB par file and modify it to TCB
+with open(TDB_PAR_FILE) as f:
+    par_content = f.read()
+
+# Replace UNITS TDB with UNITS TCB
+tcb_content = par_content.replace('UNITS          TDB', 'UNITS          TCB')
+
+# Write to a temp file
+with tempfile.NamedTemporaryFile(mode='w', suffix='.par', delete=False) as f:
+    f.write(tcb_content)
+    tcb_par_file = f.name
+
+print(f"   Created temp TCB par file: {tcb_par_file}")
+
+try:
+    params_tcb = parse_par_file(tcb_par_file)
+    timescale_tcb = params_tcb.get('_par_timescale', 'UNKNOWN')
+    print(f"   UNITS in par file: {params_tcb.get('UNITS', 'not specified')}")
+    print(f"   Detected timescale: {timescale_tcb}")
+    
+    # This should raise NotImplementedError
+    validate_par_timescale(params_tcb, context="Test TCB")
+    print("   ✗ ERROR: Should have raised NotImplementedError!")
+    sys.exit(1)
+except NotImplementedError as e:
+    print(f"   ✓ Correctly raised NotImplementedError")
+    print(f"\n   Error message preview:")
+    error_lines = str(e).split('\n')
+    for line in error_lines[:8]:
+        print(f"      {line}")
+    if len(error_lines) > 8:
+        print(f"      ... ({len(error_lines) - 8} more lines)")
+except Exception as e:
+    print(f"   ✗ Unexpected error type: {type(e).__name__}: {e}")
+    sys.exit(1)
+
+# Test 4: Verify compute_residuals_simple fails on TCB
+print("\n4. Testing that compute_residuals_simple fails on TCB par file...")
+
+try:
+    result = compute_residuals_simple(tcb_par_file, TIM_FILE, verbose=False)
+    print("   ✗ ERROR: Should have raised NotImplementedError!")
+    sys.exit(1)
+except NotImplementedError as e:
+    print(f"   ✓ Correctly raised NotImplementedError")
+except Exception as e:
+    print(f"   ✗ Unexpected error type: {type(e).__name__}: {e}")
+    sys.exit(1)
+
+# Cleanup
+Path(tcb_par_file).unlink()
+
+# Test 5: Test filename warning (no UNITS keyword but 'tcb' in filename)
+print("\n5. Testing filename-based warning (no UNITS, 'tcb' in filename)...")
+
+# Create a par file with no UNITS keyword but 'tcb' in filename
+no_units_content = par_content.replace('UNITS          TDB\n', '')
+
+with tempfile.NamedTemporaryFile(mode='w', suffix='_tcb_test.par', delete=False) as f:
+    f.write(no_units_content)
+    no_units_par_file = f.name
+
+print(f"   Created temp par file: {no_units_par_file}")
+
+import warnings
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    params_no_units = parse_par_file(no_units_par_file)
+    
+    if len(w) > 0:
+        print(f"   ✓ Warning raised: {w[0].message}")
+    else:
+        # Check if the filename actually has 'tcb' in it
+        if 'tcb' in Path(no_units_par_file).name.lower():
+            print(f"   ⚠ Expected warning about 'tcb' in filename but none raised")
+        else:
+            print(f"   ✓ No warning (filename doesn't contain 'tcb')")
+
+# Verify it defaults to TDB
+timescale_no_units = params_no_units.get('_par_timescale', 'UNKNOWN')
+print(f"   Detected timescale (default): {timescale_no_units}")
+
+# Should still work since we default to TDB
+try:
+    validate_par_timescale(params_no_units, context="Test no UNITS")
+    print(f"   ✓ Validation passed (defaulted to TDB)")
+except Exception as e:
+    print(f"   ✗ Unexpected error: {e}")
+    sys.exit(1)
+
+# Cleanup
+Path(no_units_par_file).unlink()
+
+print("\n" + "=" * 80)
+print("All tests passed!")
+print("=" * 80)

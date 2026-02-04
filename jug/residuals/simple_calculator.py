@@ -20,7 +20,7 @@ from jug.utils.jax_setup import ensure_jax_x64
 ensure_jax_x64()
 import jax.numpy as jnp
 
-from jug.io.par_reader import parse_par_file, get_longdouble, parse_ra, parse_dec
+from jug.io.par_reader import parse_par_file, get_longdouble, parse_ra, parse_dec, validate_par_timescale
 from jug.io.tim_reader import parse_tim_file_mjds, compute_tdb_standalone_vectorized
 from jug.io.clock import parse_clock_file
 from jug.delays.barycentric import (
@@ -42,7 +42,8 @@ def compute_residuals_simple(
     clock_dir: Path | str | None = None,
     observatory: str = "meerkat",
     subtract_tzr: bool = True,
-    verbose: bool = True
+    verbose: bool = True,
+    tzrmjd_scale: str = "TDB"
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -66,6 +67,10 @@ def compute_residuals_simple(
     verbose : bool, optional
         Whether to print progress messages (default: True)
         Set to False for production/batch processing
+    tzrmjd_scale : str, optional
+        Timescale of TZRMJD in par file. Options: "TDB" (default) or "UTC".
+        - "TDB": TZRMJD is already in TDB (typical for *_tdb.par files and PINT output)
+        - "UTC": TZRMJD is in UTC and needs clock chain conversion (legacy behavior)
 
     Returns
     -------
@@ -102,6 +107,11 @@ def compute_residuals_simple(
     # Parse files
     if verbose: print(f"\n1. Loading files...")
     params = parse_par_file(par_file)
+    
+    # Validate par file timescale (fail fast on TCB)
+    par_timescale = validate_par_timescale(params, context="compute_residuals_simple")
+    if verbose: print(f"   Par file timescale: {par_timescale}")
+    
     toas = parse_tim_file_mjds(tim_file)
     if verbose: print(f"   Loaded {len(toas)} TOAs from {Path(tim_file).name}")
     if verbose: print(f"   Loaded timing model from {Path(par_file).name}")
@@ -569,20 +579,52 @@ def compute_residuals_simple(
     tzr_phase = np.longdouble(0.0)
     if 'TZRMJD' in params:
         if verbose: print(f"\n   Computing TZR phase at TZRMJD...")
-        TZRMJD_UTC = get_longdouble(params, 'TZRMJD')
+        TZRMJD_raw = get_longdouble(params, 'TZRMJD')
         
-        # Convert TZRMJD from UTC to TDB
-        TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
-            [int(TZRMJD_UTC)], [float(TZRMJD_UTC - int(TZRMJD_UTC))],
-            mk_clock, gps_clock, bipm_clock, location
-        )[0]
-        TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
+        # Handle TZRSITE - use the TZR site for TZR-specific calculations
+        tzr_site = params.get('TZRSITE', observatory).lower()
+        tzr_obs_itrf_km = OBSERVATORIES.get(tzr_site)
+        if tzr_obs_itrf_km is None:
+            if verbose: print(f"   ⚠️  Unknown TZRSITE '{tzr_site}', falling back to '{observatory}'")
+            tzr_obs_itrf_km = obs_itrf_km
+            tzr_location = location
+        else:
+            tzr_location = EarthLocation.from_geocentric(
+                tzr_obs_itrf_km[0] * u.km,
+                tzr_obs_itrf_km[1] * u.km,
+                tzr_obs_itrf_km[2] * u.km
+            )
+        
+        # Handle TZRMJD timescale
+        tzrmjd_scale_upper = tzrmjd_scale.upper()
+        if tzrmjd_scale_upper == "TDB":
+            # TZRMJD is already in TDB (default for PINT-generated par files)
+            TZRMJD_TDB = TZRMJD_raw
+            delta_tzr_sec = 0.0
+            if verbose: print(f"   TZRMJD treated as TDB (no conversion)")
+        elif tzrmjd_scale_upper == "UTC":
+            # Legacy behavior: convert UTC to TDB via clock chain
+            TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
+                [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
+                mk_clock, gps_clock, bipm_clock, tzr_location
+            )[0]
+            TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
+            delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * 86400.0
+            if verbose: print(f"   TZRMJD converted from UTC to TDB (delta = {delta_tzr_sec:.3f} s)")
+            
+            # Warn if the shift is large (indicates likely misconfiguration)
+            if abs(delta_tzr_sec) > 1e-3:
+                print(f"   ⚠️  WARNING: Large TZRMJD shift detected ({delta_tzr_sec:.3f} s)!")
+                print(f"       This suggests TZRMJD may already be in TDB scale.")
+                print(f"       Consider using tzrmjd_scale='TDB' (the default).")
+        else:
+            raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'TDB' or 'UTC'.")
         
         # Compute all delays at TZRMJD to get the TZR delay
         tzr_tdb_arr = np.array([float(TZRMJD_TDB)])
         
-        # Astrometry at TZR
-        tzr_ssb_obs_pos, tzr_ssb_obs_vel = compute_ssb_obs_pos_vel(tzr_tdb_arr, obs_itrf_km)
+        # Astrometry at TZR (using TZR site location)
+        tzr_ssb_obs_pos, tzr_ssb_obs_vel = compute_ssb_obs_pos_vel(tzr_tdb_arr, tzr_obs_itrf_km)
         tzr_L_hat = compute_pulsar_direction(ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day, posepoch, tzr_tdb_arr)
         tzr_roemer = compute_roemer_delay(tzr_ssb_obs_pos, tzr_L_hat, parallax_mas)[0]
         
@@ -690,7 +732,8 @@ def compute_residuals_simple(
         tzr_dt_sec = TZRMJD_TDB * np.longdouble(SECS_PER_DAY) - PEPOCH_sec - tzr_delay
         tzr_phase = F0 * tzr_dt_sec + F1_half * tzr_dt_sec**2 + F2_sixth * tzr_dt_sec**3
         
-        if verbose: print(f"   TZRMJD: {TZRMJD_UTC:.6f} UTC -> {TZRMJD_TDB:.6f} TDB")
+        if verbose: print(f"   TZRMJD (raw):  {float(TZRMJD_raw):.15f}")
+        if verbose: print(f"   TZRMJD (used): {float(TZRMJD_TDB):.15f} ({tzrmjd_scale_upper})")
         if verbose: print(f"   TZR delay: {float(tzr_delay):.9f} s")
         if verbose: print(f"   TZR phase: {float(tzr_phase):.6f} cycles")
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """
-Validation script for PINT-compatible pre-binary time fix.
+Validation script for PINT-compatible pre-binary time fix AND TZRMJD fix.
 
 This script compares JUG and PINT pre-fit residuals for J1713+0747
-to verify that the orbital-phase-dependent ~1.1 μs discrepancy is resolved.
+to verify that:
+1. The orbital-phase-dependent ~1.1 μs discrepancy is resolved (pre-binary time fix)
+2. The ~956 μs mean offset is resolved (TZRMJD timescale fix)
 """
 
 import numpy as np
@@ -17,7 +19,7 @@ par_file = "/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J
 tim_file = "/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb/J1713+0747.tim"
 
 print("=" * 80)
-print("Validation: PINT-compatible pre-binary time fix for JUG")
+print("Validation: PINT-compatible pre-binary time + TZRMJD timescale fix for JUG")
 print("=" * 80)
 
 print("\nLoading PINT model and TOAs...")
@@ -39,8 +41,9 @@ sys.path.insert(0, '/home/mattm/soft/JUG')
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 
-print("\nComputing JUG pre-fit residuals (with fix)...")
-jug_result = compute_residuals_simple(par_file, tim_file, verbose=False, subtract_tzr=False)
+print("\nComputing JUG pre-fit residuals (with TZRMJD fix, tzrmjd_scale='TDB')...")
+# Use subtract_tzr=True to properly test TZR handling (like PINT default)
+jug_result = compute_residuals_simple(par_file, tim_file, verbose=False, subtract_tzr=True, tzrmjd_scale="TDB")
 jug_resid_us = jug_result['residuals_us']
 jug_wrms = jug_result['weighted_rms_us']
 
@@ -52,9 +55,9 @@ diff_centered = diff_us - np.mean(diff_us)
 
 print(f"\n" + "-" * 60)
 print("Residual difference (JUG - PINT):")
-print(f"  Mean: {np.mean(diff_us):.3f} μs")
-print(f"  Std (centered): {np.std(diff_centered):.3f} μs")
-print(f"  Range: [{np.min(diff_centered):.3f}, {np.max(diff_centered):.3f}] μs")
+print(f"  Mean: {np.mean(diff_us):.6f} μs")
+print(f"  Std (centered): {np.std(diff_centered):.6f} μs")
+print(f"  Range: [{np.min(diff_centered):.6f}, {np.max(diff_centered):.6f}] μs")
 
 # Orbital phase analysis
 print("\n" + "-" * 60)
@@ -138,17 +141,33 @@ print("\n" + "=" * 80)
 print("SUMMARY")
 print("=" * 80)
 print(f"""
-BEFORE fix: ~1.14 μs std orbital-phase-dependent discrepancy
-AFTER fix:  {np.std(diff_centered):.3f} μs std
+BEFORE fixes:
+  - ~1.14 μs std orbital-phase-dependent discrepancy (pre-binary time bug)  
+  - ~956 μs mean offset (TZRMJD double-conversion bug, only visible with subtract_tzr=False)
+
+AFTER fixes:
+  - Orbital phase std: {np.std(diff_centered):.6f} μs
+  - Mean offset: {np.mean(diff_us):.6f} μs
 
 Binary delay std: {np.std(binary_diff_us):.6f} μs
-Time offset std: {np.std(time_diff_ms):.3f} ms
+Time offset std: {np.std(time_diff_ms):.6f} ms
 
-Target: < 0.1 μs (ideally ~ns level)
+Target: < 0.001 μs std, < 0.001 μs mean (nanosecond level agreement)
 """)
 
-if np.std(diff_centered) < 0.1:
-    print("✓ FIX SUCCESSFUL: Orbital-phase-dependent discrepancy resolved!")
+# Check both conditions - tighten thresholds for ns-level agreement
+orbital_ok = np.std(diff_centered) < 0.001
+mean_ok = abs(np.mean(diff_us)) < 0.001
+
+if orbital_ok and mean_ok:
+    print("✓ BOTH FIXES SUCCESSFUL:")
+    print("  - Orbital-phase-dependent discrepancy resolved (sub-ns level)")
+    print("  - Mean offset eliminated (TZRMJD fix working)")
+    print(f"\n  JUG-PINT agreement: {np.std(diff_us)*1000:.3f} ns RMS")
+elif orbital_ok:
+    print("✓ PRE-BINARY FIX SUCCESSFUL: Orbital pattern resolved")
+    print(f"✗ TZRMJD FIX INCOMPLETE: Mean offset = {np.mean(diff_us):.6f} μs")
 else:
-    print("✗ FIX INCOMPLETE: Significant discrepancy remains.")
-    print(f"  Residual std: {np.std(diff_centered):.3f} μs")
+    print("✗ FIXES INCOMPLETE:")
+    print(f"  - Orbital std: {np.std(diff_centered):.6f} μs (target < 0.001)")
+    print(f"  - Mean offset: {np.mean(diff_us):.6f} μs (target < 0.001)")

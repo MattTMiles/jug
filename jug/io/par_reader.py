@@ -42,6 +42,8 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
     params_str = {}
 
     path = Path(path)
+    par_filename = path.name.lower()
+    
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -69,7 +71,111 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
 
     # Store high-precision string values
     params['_high_precision'] = params_str
+    
+    # Determine and store par file timescale
+    # UNITS keyword is the authoritative source (PINT/Tempo2 convention)
+    if 'UNITS' in params:
+        units_val = str(params['UNITS']).upper()
+        if units_val in ('TDB', 'TCB', 'TT'):
+            params['_par_timescale'] = units_val
+        else:
+            # Unknown UNITS value - default to TDB with warning
+            import warnings
+            warnings.warn(f"Unknown UNITS value '{params['UNITS']}' in par file, assuming TDB")
+            params['_par_timescale'] = 'TDB'
+    else:
+        # No UNITS keyword - default to TDB
+        # Warn if filename suggests TCB
+        params['_par_timescale'] = 'TDB'
+        if 'tcb' in par_filename:
+            import warnings
+            warnings.warn(
+                f"Par file '{path.name}' has 'tcb' in filename but no UNITS keyword. "
+                f"Assuming TDB timescale. If this is a TCB file, add 'UNITS TCB' to the par file."
+            )
+    
     return params
+
+
+def validate_par_timescale(params: Dict[str, Any], context: str = "JUG") -> str:
+    """Validate that the par file timescale is supported.
+    
+    Parameters
+    ----------
+    params : dict
+        Parameter dictionary from parse_par_file()
+    context : str
+        Description of where this validation is happening (for error messages)
+        
+    Returns
+    -------
+    str
+        The validated timescale ('TDB')
+        
+    Raises
+    ------
+    NotImplementedError
+        If the timescale is TCB or TT (not yet supported)
+    
+    Notes
+    -----
+    JUG currently only supports TDB par files. TCB support would require:
+    
+    1. Transforming all epoch parameters (PEPOCH, T0, TASC, etc.) from TCB to TDB
+    2. Applying the IAU-defined scaling factor L_B = 1.550519768e-8 to transform
+       frequency-like parameters (F0, F1, F2, PB, FB0, etc.)
+    3. Properly handling the TDB-TCB offset (~17 seconds per year since 1977)
+    
+    Until this is implemented, users should convert TCB par files to TDB using
+    PINT or Tempo2 before using them with JUG.
+    """
+    timescale = params.get('_par_timescale', 'TDB')
+    
+    if timescale == 'TDB':
+        return timescale
+    elif timescale == 'TCB':
+        raise NotImplementedError(
+            f"{context}: TCB par files are not yet supported.\n\n"
+            f"The par file has UNITS=TCB, indicating epochs and parameters are in "
+            f"Barycentric Coordinate Time (TCB).\n\n"
+            f"TCB support requires more than just epoch conversion - it also requires:\n"
+            f"  1. Applying the IAU scaling factor L_B = 1.550519768e-8 to transform\n"
+            f"     spin parameters (F0, F1, F2) and binary periods (PB, FB0, etc.)\n"
+            f"  2. Converting epochs (PEPOCH, T0, TASC, TZRMJD, etc.) from TCB to TDB\n"
+            f"  3. Properly accounting for the ~17 s/year drift between TCB and TDB\n\n"
+            f"Workaround: Convert your par file to TDB using PINT or Tempo2:\n"
+            f"  - PINT: model.as_parfile(units='TDB')\n"
+            f"  - Tempo2: tempo2 -output par -units TDB -f <parfile> <timfile>\n"
+        )
+    elif timescale == 'TT':
+        raise NotImplementedError(
+            f"{context}: TT (Terrestrial Time) par files are not yet supported.\n\n"
+            f"The par file has UNITS=TT. JUG currently only supports TDB par files.\n\n"
+            f"Workaround: Convert your par file to TDB using PINT or Tempo2.\n"
+        )
+    else:
+        raise ValueError(f"{context}: Unknown par file timescale '{timescale}'")
+
+
+# List of all epoch-like parameters that are in par file timescale
+EPOCH_PARAMETERS = {
+    'PEPOCH',    # Spin epoch
+    'POSEPOCH',  # Position epoch  
+    'DMEPOCH',   # DM epoch
+    'T0',        # Binary epoch (DD, BT, T2)
+    'TASC',      # Binary epoch (ELL1)
+    'TZRMJD',    # Reference TOA epoch
+    'START',     # Data span start
+    'FINISH',    # Data span end
+    'PBEPOCH',   # Period derivative reference epoch (rare)
+    'GLEP_1', 'GLEP_2', 'GLEP_3', 'GLEP_4', 'GLEP_5',  # Glitch epochs
+}
+"""Parameters that represent absolute epochs in the par file timescale.
+
+These parameters are stored as MJD values in whatever timescale the par file
+uses (TDB or TCB). JUG treats them as already being in the model timescale
+and does NOT apply UTC->TDB clock corrections to them.
+"""
 
 
 def get_longdouble(params: Dict[str, Any], key: str, default: Optional[float] = None) -> np.longdouble:

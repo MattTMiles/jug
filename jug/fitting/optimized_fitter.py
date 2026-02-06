@@ -677,7 +677,14 @@ def _fit_parameters_jax_incremental(
     param_values_start = []
     for param in fit_params:
         if param in params:
-            param_values_start.append(float(params[param]))
+            value = params[param]
+            # Handle SINI='KIN' (DDK convention)
+            if param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
+                kin_deg = float(params.get('KIN', 0.0))
+                value = float(jnp.sin(jnp.deg2rad(kin_deg)))
+            else:
+                value = float(value)
+            param_values_start.append(value)
         else:
             param_values_start.append(0.0)
     
@@ -1157,7 +1164,15 @@ def _build_general_fit_setup_from_files(
             if verbose:
                 print(f"Warning: {param} not in .par file, using default value: {default_value}")
 
-        param_values_start.append(params[param])
+        # Handle SINI='KIN' (DDK convention)
+        value = params[param]
+        if param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
+            kin_deg = float(params.get('KIN', 0.0))
+            value = float(jnp.sin(jnp.deg2rad(kin_deg)))
+        elif isinstance(value, str):
+            # Handle other string values that should be float
+            value = float(value)
+        param_values_start.append(value)
 
     # Classify parameters (spec-driven)
     spin_params = get_spin_params_from_list(fit_params)
@@ -1531,7 +1546,11 @@ def _run_general_fit_iterations(
                     "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
                 )
             toas_prebinary_mjd = toas_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
-            binary_derivs = compute_binary_derivatives(params, toas_prebinary_mjd, binary_params_list)
+            # Pass obs_pos_ls for DDK Kopeikin parallax corrections
+            binary_derivs = compute_binary_derivatives(
+                params, toas_prebinary_mjd, binary_params_list, 
+                obs_pos_ls=setup.ssb_obs_pos_ls
+            )
 
         # Batch astrometry parameters (spec-driven routing via component)
         astrometry_params_list = get_astrometry_params_from_list(fit_params)
@@ -1811,7 +1830,7 @@ def _build_general_fit_setup_from_cache(
                 raise ValueError(f"Parameter {param} not found and no default available")
             params_dict[param] = default_value
 
-        # Convert to float, handling special cases for RAJ/DECJ
+        # Convert to float, handling special cases for RAJ/DECJ and SINI
         value = params_dict[param]
         if param == 'RAJ' and isinstance(value, str):
             from jug.io.par_reader import parse_ra
@@ -1819,6 +1838,10 @@ def _build_general_fit_setup_from_cache(
         elif param == 'DECJ' and isinstance(value, str):
             from jug.io.par_reader import parse_dec
             value = parse_dec(value)
+        elif param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
+            # DDK convention: SINI derived from KIN (orbital inclination)
+            kin_deg = float(params_dict.get('KIN', 0.0))
+            value = float(jnp.sin(jnp.deg2rad(kin_deg)))
         else:
             value = float(value)
         

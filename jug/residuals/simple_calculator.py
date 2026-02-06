@@ -237,14 +237,8 @@ def compute_residuals_simple(
     has_binary = 'PB' in params or 'FB0' in params
     binary_model = params.get('BINARY', 'NONE').upper() if has_binary else 'NONE'
 
-    # Check for DDK early and fail explicitly (DDK not implemented)
-    # Uses centralized helper for consistent behavior across all code paths
-    if binary_model == 'DDK':
-        from jug.utils.binary_model_overrides import resolve_binary_model
-        binary_model = resolve_binary_model(binary_model, warn=True)
-
     # Map model name to ID
-    # 0: None, 1: ELL1/H, 2: DD/DDH/DDGR, 3: T2, 4: BT*
+    # 0: None, 1: ELL1/H, 2: DD/DDH/DDGR, 3: T2, 4: BT*, 5: DDK
     model_id = 0
     if has_binary:
         if binary_model in ('ELL1', 'ELL1H'):
@@ -255,6 +249,8 @@ def compute_residuals_simple(
             model_id = 3
         elif binary_model in ('BT', 'BTX'):
             model_id = 4
+        elif binary_model == 'DDK':
+            model_id = 5  # DDK now fully supported with KIN/KOM partials
         else:
             # Fallback for unknown models (treat as DD if looks like DD?)
             # For now default to 0 with warning or error?
@@ -332,19 +328,15 @@ def compute_residuals_simple(
     edot_val = float(params.get('EDOT', 0.0))
     
     m2_val = float(params.get('M2', 0.0))
-    sini_val = 0.0
+    
+    # Handle SINI - can be numeric or 'KIN' (DDK convention: SINI = sin(KIN))
     sini_param = params.get('SINI', 0.0)
     if isinstance(sini_param, str) and sini_param.upper() == 'KIN':
-        sini_val = float(params.get('KIN', 0.0)) # This is technically sin(KIN) needed? 
-        # Wait, wrapper logic in t2 handles "SINI" as float. 
-        # If parameters pass SINI='KIN', we need to resolve it.
-        # But 'SINI' usually holds the sine value. 
-        # Let's assume params dictionary resolves to values or we parse it.
-        pass 
-    try:
+        # DDK convention: compute SINI from KIN (orbital inclination in degrees)
+        kin_deg = float(params.get('KIN', 0.0))
+        sini_val = float(jnp.sin(jnp.deg2rad(kin_deg)))
+    else:
         sini_val = float(sini_param)
-    except ValueError:
-        pass # Handle KIN reference logic if needed, but for now strict float
         
     kin_val = float(params.get('KIN', 0.0))
     kom_val = float(params.get('KOM', 0.0))
@@ -590,7 +582,9 @@ def compute_residuals_simple(
         TZRMJD_raw = get_longdouble(params, 'TZRMJD')
         
         # Handle TZRSITE - use the TZR site for TZR-specific calculations
-        tzr_site = params.get('TZRSITE', observatory).lower()
+        # TZRSITE can be a string (e.g., 'ao', 'gbt') or a tempo-style numeric code (e.g., 1 for Arecibo)
+        tzr_site_raw = params.get('TZRSITE', observatory)
+        tzr_site = str(tzr_site_raw).lower() if tzr_site_raw is not None else observatory.lower()
         tzr_obs_itrf_km = OBSERVATORIES.get(tzr_site)
         if tzr_obs_itrf_km is None:
             if verbose: print(f"   ⚠️  Unknown TZRSITE '{tzr_site}', falling back to '{observatory}'")

@@ -142,7 +142,8 @@ def compute_binary_delay(toas_bary: np.ndarray, params: Dict) -> np.ndarray:
 def compute_binary_derivatives(
     params: Dict,
     toas_bary: np.ndarray,
-    param_list: List[str]
+    param_list: List[str],
+    obs_pos_ls: np.ndarray = None
 ) -> Dict[str, np.ndarray]:
     """
     Compute binary parameter derivatives using the correct model.
@@ -155,6 +156,9 @@ def compute_binary_derivatives(
         Barycentric TOA times in MJD
     param_list : list of str
         Binary parameters to compute derivatives for
+    obs_pos_ls : np.ndarray, optional
+        Observer position in light-seconds relative to SSB, shape (N, 3).
+        Required for DDK Kopeikin 1995 parallax corrections.
 
     Returns
     -------
@@ -179,7 +183,11 @@ def compute_binary_derivatives(
             f"Registered models: {registered}."
         )
 
-    return deriv_func(params, toas_bary, param_list)
+    # For DDK, pass obs_pos_ls for Kopeikin parallax corrections
+    if binary_model == 'DDK':
+        return deriv_func(params, toas_bary, param_list, obs_pos_ls=obs_pos_ls)
+    else:
+        return deriv_func(params, toas_bary, param_list)
 
 
 def list_registered_models() -> List[str]:
@@ -203,12 +211,21 @@ def _register_builtin_models():
     # All use the same core DD computation
     from jug.fitting.derivatives_dd import (
         compute_dd_binary_delay,
-        compute_binary_derivatives_dd
+        compute_binary_derivatives_dd,
+        compute_binary_derivatives_ddk
     )
+    # DD and variants without KIN/KOM
     register_binary_model(
-        ['DD', 'DDK', 'DDS', 'DDH', 'DDGR'],
+        ['DD', 'DDS', 'DDH', 'DDGR'],
         compute_dd_binary_delay,
         compute_binary_derivatives_dd
+    )
+    
+    # DDK uses dedicated derivatives function with KIN/KOM support
+    register_binary_model(
+        ['DDK'],
+        compute_dd_binary_delay,
+        compute_binary_derivatives_ddk
     )
 
     # BT (Blandford-Teukolsky) - uses DD-style parameterization

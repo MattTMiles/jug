@@ -93,9 +93,10 @@ This matches PINT's `delay_before_binary = roemer + shapiro + DM + SW + tropo`.
 - 5: DDK (DD with Kopeikin corrections)
 
 **Current DDK Status**:
-- Forward model EXISTS in `combined.py:branch_ddk()` (~lines 222-335)
-- DDK is BLOCKED by default via `resolve_binary_model()` which raises `NotImplementedError`
-- Override available: `JUG_ALLOW_DDK_AS_DD=1` (aliases to DD, NOT correct)
+- Forward model in `combined.py:branch_ddk()` (~lines 222-335)
+- Kopeikin (1995) parallax + K96 proper motion corrections: fully implemented
+- KIN/KOM analytic partial derivatives: implemented, finite-difference validated
+- Fitting: fully wired via binary_registry DDK entry
 
 ---
 
@@ -154,7 +155,7 @@ This matches PINT's `delay_before_binary = roemer + shapiro + DM + SW + tropo`.
 | M2 | ✅ | ✅ `d_delay_d_M2_ell1()` | ❌ | ✅ | ⚠️ | Shapiro delay |
 | FB0-FB20 | ✅ | ✅ `d_Phi_d_FBi()` | ❌ | ✅ | ⚠️ J2241 | Orbital frequency Taylor |
 | H3 | ✅ | ✅ | ❌ | ✅ | ⚠️ | ELL1H orthometric |
-| H4 | ✅ | ⚠️ (via STIG) | ❌ | ⚠️ | ⚠️ | ELL1H orthometric |
+| H4 | ✅ | ✅ `_d_delay_d_H4()` | ❌ | ✅ | ✅ | H3/H4 orthometric |
 | STIG | ✅ | ✅ | ❌ | ✅ | ⚠️ | ELL1H orthometric |
 
 ### Binary Parameters (DD Family)
@@ -170,10 +171,11 @@ This matches PINT's `delay_before_binary = roemer + shapiro + DM + SW + tropo`.
 | PBDOT | ✅ | ✅ `_d_delay_d_PBDOT()` | ❌ | ✅ | ⚠️ | |
 | OMDOT | ✅ | ✅ `_d_delay_d_OMDOT()` | ❌ | ✅ | ⚠️ | Periastron advance |
 | XDOT | ✅ | ✅ | ❌ | ✅ | ⚠️ | A1DOT alias |
-| EDOT | ✅ | ❌ | ❌ | ⚠️ | ❌ | **MISSING PARTIAL** |
+| EDOT | ✅ | ✅ (chain rule through ECC) | ❌ | ✅ | ✅ | Finite-diff validated |
 | SINI | ✅ | ✅ `_d_delay_d_SINI()` | ❌ | ✅ | ⚠️ | |
 | M2 | ✅ | ✅ `_d_delay_d_M2()` | ❌ | ✅ | ⚠️ | |
 | H3 | ✅ | ✅ `_d_delay_d_H3()` | ❌ | ✅ | ⚠️ | DDH orthometric |
+| H4 | ✅ | ✅ `_d_delay_d_H4()` | ❌ | ✅ | ✅ | H3/H4 orthometric |
 | STIG | ✅ | ✅ `_d_delay_d_STIG()` | ❌ | ✅ | ⚠️ | DDH orthometric |
 | DR | ✅ (spec) | ❌ | ❌ | ❌ | ❌ | **NOT IMPLEMENTED** |
 | DTH | ✅ (spec) | ❌ | ❌ | ❌ | ❌ | **NOT IMPLEMENTED** |
@@ -184,8 +186,8 @@ This matches PINT's `delay_before_binary = roemer + shapiro + DM + SW + tropo`.
 
 | Parameter | Forward | ∂/∂p Analytic | ∂/∂p Numeric | Fit-Ready | Test | Notes |
 |-----------|---------|---------------|--------------|-----------|------|-------|
-| KIN | ✅ `combined.py:branch_ddk()` | ❌ | ❌ | ❌ | ❌ | **NO PARTIAL** |
-| KOM | ✅ `combined.py:branch_ddk()` | ❌ | ❌ | ❌ | ❌ | **NO PARTIAL** |
+| KIN | ✅ `combined.py:branch_ddk()` | ✅ `derivatives_dd.py:compute_binary_derivatives_ddk()` | ❌ | ✅ | ✅ | Chain rule through A1_eff/OM_eff/SINI_eff; finite-diff validated |
+| KOM | ✅ `combined.py:branch_ddk()` | ✅ `derivatives_dd.py:compute_binary_derivatives_ddk()` | ❌ | ✅ | ✅ | Chain rule through A1_eff/OM_eff; finite-diff validated |
 
 ### FD Parameters
 
@@ -211,9 +213,7 @@ This matches PINT's `delay_before_binary = roemer + shapiro + DM + SW + tropo`.
 - Uses observer position in light-seconds (`obs_pos_ls`)
 - Computes effective A1 and OM, then calls DD delay
 
-**Blocking**: `jug/utils/binary_model_overrides.py:resolve_binary_model()` raises `NotImplementedError`
-
-**Override**: `JUG_ALLOW_DDK_AS_DD=1` aliases DDK→DD (INCORRECT, for testing only)
+**Status**: Fully implemented. Forward model, analytic partials (KIN/KOM), fitting all operational.
 
 ### 3.2 What DDK Requires
 
@@ -290,9 +290,7 @@ d_delay_d_KOM = (
 
 **Phase 1: Enable DDK Forward Model (No Fitting)**
 
-1. **Modify `resolve_binary_model()`** in `binary_model_overrides.py`:
-   - Add new mode: `JUG_DDK_MODE=forward` to enable DDK without raising
-   - Keep default hard-fail for fitting (partials not ready)
+1. ~~Modify `resolve_binary_model()`~~ — DONE: Override mechanism removed, DDK fully implemented.
 
 2. **Pass observer position to combined.py**:
    - `simple_calculator.py` already computes `ssb_obs_pos_km`
@@ -351,7 +349,7 @@ register_binary_model(
 |------|--------|-------------|
 | `jug/fitting/derivatives_ddk.py` | CREATE | DDK-specific partials (KIN, KOM) |
 | `jug/fitting/binary_registry.py` | MODIFY | Register DDK with new derivative function |
-| `jug/utils/binary_model_overrides.py` | MODIFY | Add `JUG_DDK_MODE=forward` option |
+| `jug/utils/binary_model_overrides.py` | DELETED | Override mechanism removed (DDK fully implemented) |
 | `jug/residuals/simple_calculator.py` | MODIFY | Pass obs_pos_ls for DDK |
 | `tests/test_ddk_forward.py` | CREATE | Forward model vs PINT |
 | `tests/test_ddk_derivatives.py` | CREATE | Numeric vs analytic partials |

@@ -118,21 +118,11 @@ These enable CI tests to run without external data dependencies.
 
 ## Environment Variables
 
-### DDK Override
+### DDK Binary Model
 
-JUG does not support the DDK binary model (requires Kopeikin terms not implemented).
-By default, DDK par files raise `NotImplementedError`. For testing or comparison:
-
-```bash
-# Force DDK to be treated as DD (INCORRECT for high-parallax pulsars)
-JUG_ALLOW_DDK_AS_DD=1 python -m jug.scripts.compute_residuals par tim
-
-# Also works with Python API
-JUG_ALLOW_DDK_AS_DD=1 python -c "from jug.residuals.simple_calculator import compute_residuals_simple; ..."
-```
-
-**Warning**: This override produces scientifically incorrect results for pulsars
-where Kopeikin corrections are significant (e.g., J0437-4715). Use only for testing.
+DDK is fully supported with Kopeikin (1995) parallax and K96 proper motion
+corrections. KIN and KOM parameters are fittable with analytic partial
+derivatives.
 
 ## CI/Portable Test Data
 

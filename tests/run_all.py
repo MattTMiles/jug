@@ -69,19 +69,6 @@ TESTS = [
         category="critical",
         description="Regression: prebinary_delay_sec in cache path",
     ),
-    TestSpec(
-        name="ddk_not_implemented",
-        script="test_ddk_not_implemented.py",
-        category="critical",
-        description="DDK raises NotImplementedError (no silent aliasing)",
-    ),
-    TestSpec(
-        name="binary_model_overrides",
-        script="test_binary_model_overrides.py",
-        category="critical",
-        description="Centralized DDK override helper unit tests",
-    ),
-    
     # CLI smoke tests
     TestSpec(
         name="cli_smoke",

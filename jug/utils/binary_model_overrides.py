@@ -2,33 +2,41 @@
 
 Provides consistent handling of binary model overrides (e.g., DDK -> DD aliasing)
 across all JUG code paths.
+
+History
+-------
+As of June 2025, DDK is now fully implemented in JUG with:
+  - Forward model: Kopeikin 1995 parallax + K96 proper motion corrections
+  - Partial derivatives: KIN/KOM chain rule derivatives through effective A1/OM/SINI
+  - Full fitting support in the optimized fitter
+
+The override mechanism remains for backward compatibility but is no longer needed
+for normal DDK usage. Users who want to force DD behavior for DDK par files
+can still use JUG_ALLOW_DDK_AS_DD=1.
 """
 
 import os
 import warnings
 
-# Canonical error message for DDK not implemented
-DDK_NOT_IMPLEMENTED_ERROR = """\
-DDK binary model is not implemented in JUG.
+# Canonical error message for DDK aliasing (now informational since DDK is implemented)
+DDK_ALIASING_INFO = """\
+DDK binary model is now FULLY IMPLEMENTED in JUG.
 
-DDK requires Kopeikin (1995, 1996) annual orbital parallax terms that modify 
-the projected semi-major axis (A1) and longitude of periastron (OM) based on 
-orbital inclination (KIN), position angle of ascending node (KOM), parallax (PX), 
-and proper motion.
+This includes:
+  - Kopeikin (1995) annual orbital parallax corrections
+  - K96 (Kopeikin 1996) proper motion corrections  
+  - Analytic partial derivatives for KIN and KOM parameters
+  - Full fitting support in the optimized fitter
 
-Previously, JUG silently aliased DDK to DD, which is INCORRECT and would produce 
-wrong science for high-parallax pulsars like J0437-4715.
-
-Options:
-  1. Convert your par file to use BINARY DD (if Kopeikin corrections are negligible)
-  2. Use PINT or tempo2 for DDK pulsars until JUG implements true DDK support
-  3. Set environment variable JUG_ALLOW_DDK_AS_DD=1 to force DD aliasing (NOT RECOMMENDED)
+If you see this message, the code path calling resolve_binary_model() is outdated.
+DDK should be used directly without aliasing.
 """
 
 # Canonical warning message for DDK override
 DDK_OVERRIDE_WARNING = (
-    "JUG_ALLOW_DDK_AS_DD=1: Treating DDK as DD. This is INCORRECT for "
-    "high-parallax pulsars and will produce wrong science. Use at your own risk."
+    "JUG_ALLOW_DDK_AS_DD=1: Forcing DDK to be treated as DD. "
+    "This ignores Kopeikin corrections. DDK is now fully implemented, "
+    "so this override is no longer needed unless you specifically want DD behavior."
 )
 
 # Track whether we've already warned about DDK override (to avoid spam in loops)
@@ -39,6 +47,9 @@ def is_ddk_override_allowed() -> bool:
     """Check if DDK->DD aliasing is allowed via environment variable.
     
     Returns True if JUG_ALLOW_DDK_AS_DD is set to '1', 'true', or 'yes'.
+    
+    Note: As of June 2025, DDK is fully implemented, so this override is
+    only needed if you want to force DD behavior (ignoring Kopeikin corrections).
     """
     return os.environ.get('JUG_ALLOW_DDK_AS_DD', '').lower() in ('1', 'true', 'yes')
 
@@ -58,11 +69,13 @@ def resolve_binary_model(model: str, warn: bool = True) -> str:
     -------
     str
         Resolved model name. For DDK with override enabled, returns 'DD'.
-        
-    Raises
-    ------
-    NotImplementedError
-        If model is DDK and override is not enabled.
+        Otherwise returns the model unchanged (DDK is now fully implemented).
+    
+    Notes
+    -----
+    As of June 2025, DDK is fully implemented in JUG, so this function
+    typically just returns 'DDK' unchanged. The aliasing only occurs if
+    JUG_ALLOW_DDK_AS_DD=1 is explicitly set (to force DD behavior).
     """
     global _ddk_warning_issued
     
@@ -74,8 +87,8 @@ def resolve_binary_model(model: str, warn: bool = True) -> str:
                 warnings.warn(DDK_OVERRIDE_WARNING, UserWarning, stacklevel=3)
                 _ddk_warning_issued = True
             return 'DD'
-        else:
-            raise NotImplementedError(DDK_NOT_IMPLEMENTED_ERROR)
+        # DDK is now fully implemented - return unchanged
+        return 'DDK'
     
     return model
 

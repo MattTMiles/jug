@@ -25,7 +25,7 @@ def test_import():
         resolve_binary_model,
         is_ddk_override_allowed,
         reset_ddk_warning,
-        DDK_NOT_IMPLEMENTED_ERROR,
+        DDK_ALIASING_INFO,  # Changed from DDK_NOT_IMPLEMENTED_ERROR
         DDK_OVERRIDE_WARNING,
     )
     return True, "OK"
@@ -91,24 +91,19 @@ def test_resolve_non_ddk_passthrough():
 
 
 def test_resolve_ddk_raises_without_override():
-    """Test that DDK raises NotImplementedError when override not set."""
+    """Test that DDK returns 'DDK' unchanged when DDK is implemented.
+    
+    Note: This test was originally for the NotImplementedError behavior.
+    Now that DDK is fully implemented, it just returns 'DDK' unchanged.
+    """
     from jug.utils.binary_model_overrides import resolve_binary_model
     
     os.environ.pop('JUG_ALLOW_DDK_AS_DD', None)
     
-    try:
-        resolve_binary_model('DDK')
-        return False, "did not raise NotImplementedError"
-    except NotImplementedError as e:
-        # Verify error message contains key information
-        msg = str(e)
-        if 'Kopeikin' not in msg:
-            return False, "error message missing 'Kopeikin'"
-        if 'JUG_ALLOW_DDK_AS_DD' not in msg:
-            return False, "error message missing env var name"
-        return True, "OK (raises NotImplementedError)"
-    except Exception as e:
-        return False, f"wrong exception: {type(e).__name__}: {e}"
+    result = resolve_binary_model('DDK')
+    if result != 'DDK':
+        return False, f"returned '{result}' (expected 'DDK')"
+    return True, "OK (returns 'DDK' unchanged - DDK now implemented)"
 
 
 def test_resolve_ddk_returns_dd_with_override():

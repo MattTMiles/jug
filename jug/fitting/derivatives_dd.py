@@ -269,8 +269,16 @@ def compute_dd_binary_delay(
     om_deg = float(params.get('OM', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
-    sini = float(params.get('SINI', 0.0))
     m2 = float(params.get('M2', 0.0))
+    
+    # Handle SINI - can be numeric or 'KIN' (DDK convention: SINI = sin(KIN))
+    sini_raw = params.get('SINI', 0.0)
+    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
+        # DDK convention: SINI derived from KIN (orbital inclination)
+        kin_deg = float(params.get('KIN', 0.0))
+        sini = jnp.sin(jnp.deg2rad(kin_deg))
+    else:
+        sini = float(sini_raw)
     
     # Check for DDH parameters if SINI/M2 not set
     # Orthometric parameterization:
@@ -292,7 +300,7 @@ def compute_dd_binary_delay(
     
     return _compute_dd_binary_delay_jit(
         jnp.asarray(toas_bary_mjd),
-        a1, pb, t0, ecc, om_rad, pbdot, gamma, sini, m2
+        a1, pb, t0, ecc, om_rad, pbdot, gamma, float(sini), m2
     )
 
 
@@ -365,9 +373,16 @@ def compute_binary_derivatives_dd(
     om_deg = float(params.get('OM', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
-    sini = float(params.get('SINI', 0.0))
     m2 = float(params.get('M2', 0.0))
     omdot = float(params.get('OMDOT', 0.0))
+    
+    # Handle SINI - can be numeric or 'KIN' (DDK convention: SINI = sin(KIN))
+    sini_raw = params.get('SINI', 0.0)
+    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
+        kin_deg = float(params.get('KIN', 0.0))
+        sini = float(jnp.sin(jnp.deg2rad(kin_deg)))
+    else:
+        sini = float(sini_raw)
     
     # Apply periastron advance for omega
     dt_yr = (toas_bary_mjd - t0) / 365.25
@@ -709,6 +724,541 @@ def _d_delay_d_OMDOT(
     
     # Convert: OMDOT is deg/yr, so d(omega_rad)/d(OMDOT) = dt_yr * DEG_TO_RAD
     return d_om_rad * dt_yr * DEG_TO_RAD
+
+
+# =============================================================================
+# DDK (Kopeikin 1995/1996) Partial Derivatives for KIN and KOM
+# =============================================================================
+# The DDK model applies corrections to A1 and OM based on:
+#   1. K96 proper motion corrections (Kopeikin 1996)
+#   2. Annual orbital parallax corrections (Kopeikin 1995)
+#
+# The total derivatives use the chain rule:
+#   d(delay)/d(KIN) = d(delay)/d(A1_eff) * d(A1_eff)/d(KIN) 
+#                   + d(delay)/d(OM_eff) * d(OM_eff)/d(KIN)
+#                   + d(delay)/d(SINI_eff) * d(SINI_eff)/d(KIN)
+#
+# where A1_eff = A1 + delta_A1_pm + delta_A1_px
+#       OM_eff = OM + delta_OM_pm + delta_OM_px  (in degrees)
+#       SINI_eff = sin(KIN_eff) for DDK when SINI not explicitly set
+#
+# References:
+#   - Kopeikin 1995: Annual orbital parallax
+#   - Kopeikin 1996: Proper motion (K96) corrections
+#   - PINT src/pint/models/binary_ddk.py for implementation details
+
+
+# Constants for DDK corrections
+PC_TO_LIGHT_SEC = 3.0857e16 / 2.99792458e8  # parsec to light-seconds
+
+
+@jax.jit
+def _compute_ddk_correction_derivatives_KIN(
+    tt0_sec: jnp.ndarray,
+    a1: float,
+    kin_rad: float,
+    kom_rad: float,
+    pmra_rad_per_sec: float,
+    pmdec_rad_per_sec: float,
+    delta_I0: jnp.ndarray,
+    delta_J0: jnp.ndarray,
+    d_ls: float,
+    use_k96: bool,
+    has_parallax: bool
+) -> tuple:
+    """
+    Compute d(delta_A1)/d(KIN) and d(delta_OM)/d(KIN) for DDK corrections.
+    
+    The K96 proper motion corrections (Kopeikin 1996) are:
+        delta_KIN_pm = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * (t - T0)
+        delta_A1_pm = A1 * delta_KIN_pm / tan(KIN_eff)
+        delta_OM_pm = (1/sin(KIN_eff)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * (t - T0)
+    
+    The Kopeikin 1995 parallax corrections are:
+        delta_A1_px = (A1 / tan(KIN) / d) * (delta_I0 * sin(KOM) - delta_J0 * cos(KOM))
+        delta_OM_px = -(1 / sin(KIN) / d) * (delta_I0 * cos(KOM) + delta_J0 * sin(KOM))
+    
+    For the chain rule, we need:
+        d(delta_A1_pm)/d(KIN) - involves d/d(KIN)[delta_KIN_pm / tan(KIN_eff)]
+        d(delta_OM_pm)/d(KIN) - involves d/d(KIN)[1/sin(KIN_eff)]
+        d(delta_A1_px)/d(KIN) - involves d/d(KIN)[1/tan(KIN)]
+        d(delta_OM_px)/d(KIN) - involves d/d(KIN)[1/sin(KIN)]
+    
+    Returns
+    -------
+    d_A1_eff_d_KIN : array
+        d(A1_eff)/d(KIN) in light-seconds per radian
+    d_OM_eff_d_KIN : array
+        d(OM_eff)/d(KIN) in radians per radian (dimensionless)
+    d_SINI_eff_d_KIN : array
+        d(SINI_eff)/d(KIN) in 1/radian
+    """
+    sin_kom = jnp.sin(kom_rad)
+    cos_kom = jnp.cos(kom_rad)
+    sin_kin = jnp.sin(kin_rad)
+    cos_kin = jnp.cos(kin_rad)
+    tan_kin = jnp.tan(kin_rad)
+    
+    # Safe denominators
+    sin_kin_safe = jnp.where(jnp.abs(sin_kin) < 1e-10, 1e-10, sin_kin)
+    tan_kin_safe = jnp.where(jnp.abs(tan_kin) < 1e-10, 1e-10, tan_kin)
+    sin2_kin = sin_kin ** 2
+    
+    # K96 proper motion corrections
+    # delta_KIN_pm = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * tt0_sec
+    pm_term = -pmra_rad_per_sec * sin_kom + pmdec_rad_per_sec * cos_kom
+    delta_kin_pm = jnp.where(use_k96, pm_term * tt0_sec, 0.0)
+    
+    # d(delta_KIN_pm)/d(KIN) = 0 (no explicit KIN dependence in the definition)
+    
+    # delta_A1_pm = A1 * delta_KIN_pm / tan(KIN_eff)
+    # where KIN_eff = KIN + delta_KIN_pm
+    # Approximate: d(KIN_eff)/d(KIN) ≈ 1 (delta_KIN_pm doesn't depend on KIN)
+    # d(A1 * delta_KIN / tan(KIN))/d(KIN) = A1 * delta_KIN * d(1/tan(KIN))/d(KIN)
+    #                                      = A1 * delta_KIN * (-1/sin²(KIN))
+    d_A1_pm_d_KIN = jnp.where(
+        use_k96,
+        -a1 * delta_kin_pm / sin2_kin,
+        0.0
+    )
+    
+    # delta_OM_pm = (1/sin(KIN)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * tt0_sec
+    # d/d(KIN)[1/sin(KIN)] = -cos(KIN)/sin²(KIN)
+    pm_omega_term = pmra_rad_per_sec * cos_kom + pmdec_rad_per_sec * sin_kom
+    d_OM_pm_d_KIN = jnp.where(
+        use_k96,
+        -cos_kin / sin2_kin * pm_omega_term * tt0_sec,
+        0.0
+    )
+    
+    # Kopeikin 1995 parallax corrections
+    # delta_A1_px = (A1 / tan(KIN) / d) * (delta_I0 * sin(KOM) - delta_J0 * cos(KOM))
+    # d/d(KIN)[A1 / tan(KIN) / d] = A1 / d * (-1/sin²(KIN))
+    parallax_a1_term = delta_I0 * sin_kom - delta_J0 * cos_kom
+    d_A1_px_d_KIN = jnp.where(
+        has_parallax,
+        -a1 / d_ls / sin2_kin * parallax_a1_term,
+        0.0
+    )
+    
+    # delta_OM_px = -(1/sin(KIN) / d) * (delta_I0 * cos(KOM) + delta_J0 * sin(KOM))
+    # d/d(KIN)[1/sin(KIN)] = -cos(KIN)/sin²(KIN)
+    parallax_om_term = delta_I0 * cos_kom + delta_J0 * sin_kom
+    d_OM_px_d_KIN = jnp.where(
+        has_parallax,
+        cos_kin / sin2_kin / d_ls * parallax_om_term,  # Note: negative from chain rule cancels original negative
+        0.0
+    )
+    
+    # Total derivatives
+    d_A1_eff_d_KIN = d_A1_pm_d_KIN + d_A1_px_d_KIN
+    d_OM_eff_d_KIN = d_OM_pm_d_KIN + d_OM_px_d_KIN  # in radians/radian
+    
+    # SINI_eff = sin(KIN_eff) where KIN_eff ≈ KIN for small corrections
+    # d(sin(KIN))/d(KIN) = cos(KIN)
+    d_SINI_eff_d_KIN = cos_kin
+    
+    return d_A1_eff_d_KIN, d_OM_eff_d_KIN, d_SINI_eff_d_KIN
+
+
+@jax.jit
+def _compute_ddk_correction_derivatives_KOM(
+    tt0_sec: jnp.ndarray,
+    a1: float,
+    kin_rad: float,
+    kom_rad: float,
+    pmra_rad_per_sec: float,
+    pmdec_rad_per_sec: float,
+    delta_I0: jnp.ndarray,
+    delta_J0: jnp.ndarray,
+    d_ls: float,
+    use_k96: bool,
+    has_parallax: bool
+) -> tuple:
+    """
+    Compute d(delta_A1)/d(KOM) and d(delta_OM)/d(KOM) for DDK corrections.
+    
+    K96 proper motion:
+        delta_KIN_pm = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * tt0
+        delta_A1_pm = A1 * delta_KIN_pm / tan(KIN)
+        delta_OM_pm = (1/sin(KIN)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * tt0
+    
+    Kopeikin 1995 parallax:
+        delta_A1_px = (A1 / tan(KIN) / d) * (delta_I0 * sin(KOM) - delta_J0 * cos(KOM))
+        delta_OM_px = -(1/sin(KIN) / d) * (delta_I0 * cos(KOM) + delta_J0 * sin(KOM))
+    
+    Returns
+    -------
+    d_A1_eff_d_KOM : array
+        d(A1_eff)/d(KOM) in light-seconds per radian
+    d_OM_eff_d_KOM : array
+        d(OM_eff)/d(KOM) in radians per radian (dimensionless)
+    """
+    sin_kom = jnp.sin(kom_rad)
+    cos_kom = jnp.cos(kom_rad)
+    sin_kin = jnp.sin(kin_rad)
+    tan_kin = jnp.tan(kin_rad)
+    
+    # Safe denominators
+    sin_kin_safe = jnp.where(jnp.abs(sin_kin) < 1e-10, 1e-10, sin_kin)
+    tan_kin_safe = jnp.where(jnp.abs(tan_kin) < 1e-10, 1e-10, tan_kin)
+    
+    # K96 proper motion: delta_KIN_pm = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * tt0
+    # d(delta_KIN_pm)/d(KOM) = (-μ_RA * cos(KOM) - μ_DEC * sin(KOM)) * tt0
+    d_delta_kin_pm_d_KOM = jnp.where(
+        use_k96,
+        (-pmra_rad_per_sec * cos_kom - pmdec_rad_per_sec * sin_kom) * tt0_sec,
+        0.0
+    )
+    
+    # delta_A1_pm = A1 * delta_KIN_pm / tan(KIN)
+    # d(delta_A1_pm)/d(KOM) = A1 / tan(KIN) * d(delta_KIN_pm)/d(KOM)
+    d_A1_pm_d_KOM = jnp.where(
+        use_k96,
+        a1 / tan_kin_safe * d_delta_kin_pm_d_KOM,
+        0.0
+    )
+    
+    # delta_OM_pm = (1/sin(KIN)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * tt0
+    # d/d(KOM)[μ_RA * cos(KOM) + μ_DEC * sin(KOM)] = -μ_RA * sin(KOM) + μ_DEC * cos(KOM)
+    d_OM_pm_d_KOM = jnp.where(
+        use_k96,
+        (1.0 / sin_kin_safe) * (-pmra_rad_per_sec * sin_kom + pmdec_rad_per_sec * cos_kom) * tt0_sec,
+        0.0
+    )
+    
+    # Kopeikin 1995: delta_A1_px = (A1/tan(KIN)/d) * (delta_I0 * sin(KOM) - delta_J0 * cos(KOM))
+    # d/d(KOM)[delta_I0 * sin(KOM) - delta_J0 * cos(KOM)] = delta_I0 * cos(KOM) + delta_J0 * sin(KOM)
+    d_A1_px_d_KOM = jnp.where(
+        has_parallax,
+        a1 / tan_kin_safe / d_ls * (delta_I0 * cos_kom + delta_J0 * sin_kom),
+        0.0
+    )
+    
+    # delta_OM_px = -(1/sin(KIN)/d) * (delta_I0 * cos(KOM) + delta_J0 * sin(KOM))
+    # d/d(KOM)[delta_I0 * cos(KOM) + delta_J0 * sin(KOM)] = -delta_I0 * sin(KOM) + delta_J0 * cos(KOM)
+    d_OM_px_d_KOM = jnp.where(
+        has_parallax,
+        -(1.0 / sin_kin_safe / d_ls) * (-delta_I0 * sin_kom + delta_J0 * cos_kom),
+        0.0
+    )
+    
+    # Total derivatives
+    d_A1_eff_d_KOM = d_A1_pm_d_KOM + d_A1_px_d_KOM
+    d_OM_eff_d_KOM = d_OM_pm_d_KOM + d_OM_px_d_KOM  # in radians/radian
+    
+    # SINI_eff = sin(KIN_eff) doesn't depend on KOM directly
+    d_SINI_eff_d_KOM = 0.0
+    
+    return d_A1_eff_d_KOM, d_OM_eff_d_KOM, d_SINI_eff_d_KOM
+
+
+def compute_binary_derivatives_ddk(
+    params: Dict,
+    toas_bary_mjd: jnp.ndarray,
+    fit_params: List[str],
+    obs_pos_ls: jnp.ndarray = None,
+) -> Dict[str, jnp.ndarray]:
+    """
+    Compute DDK binary parameter derivatives including KIN and KOM.
+    
+    DDK extends DD with Kopeikin corrections. For standard DD parameters,
+    we use the DD derivatives evaluated at the effective A1/OM values.
+    For KIN and KOM, we use the chain rule through the Kopeikin corrections.
+    
+    Parameters
+    ----------
+    params : Dict
+        DDK model parameters (must include KIN, KOM, and optionally PX, PMRA, PMDEC)
+    toas_bary_mjd : jnp.ndarray
+        Barycentric TOA times in MJD
+    fit_params : List[str]
+        Parameters to compute derivatives for
+    obs_pos_ls : jnp.ndarray, optional
+        Observer position in light-seconds relative to SSB, shape (N, 3).
+        Required for Kopeikin 1995 parallax corrections.
+        
+    Returns
+    -------
+    derivatives : Dict[str, jnp.ndarray]
+        Dictionary mapping parameter names to derivative arrays
+    """
+    toas_bary_mjd = jnp.asarray(toas_bary_mjd)
+    n_toas = len(toas_bary_mjd)
+    
+    # Extract base DD parameters
+    a1 = float(params.get('A1', 0.0))
+    pb = float(params.get('PB', 1.0))
+    t0 = float(params.get('T0', float(jnp.mean(toas_bary_mjd))))
+    ecc = float(params.get('ECC', 0.0))
+    om_deg = float(params.get('OM', 0.0))
+    pbdot = float(params.get('PBDOT', 0.0))
+    gamma = float(params.get('GAMMA', 0.0))
+    m2 = float(params.get('M2', 0.0))
+    omdot = float(params.get('OMDOT', 0.0))
+    
+    # DDK-specific parameters
+    kin_deg = float(params.get('KIN', 0.0))
+    
+    # Handle SINI - can be numeric or 'KIN' (DDK convention: SINI = sin(KIN))
+    sini_raw = params.get('SINI', 0.0)
+    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
+        sini = float(jnp.sin(jnp.deg2rad(kin_deg)))
+    else:
+        sini = float(sini_raw)
+    kom_deg = float(params.get('KOM', 0.0))
+    kin_rad = jnp.deg2rad(kin_deg)
+    kom_rad = jnp.deg2rad(kom_deg)
+    
+    px_mas = float(params.get('PX', 0.0))
+    
+    # Proper motion (for K96)
+    MAS_PER_YR_TO_RAD_PER_SEC = (jnp.pi / 180.0 / 3600.0 / 1000.0) / (365.25 * 86400.0)
+    pmra_mas_yr = float(params.get('PMRA', 0.0))
+    pmdec_mas_yr = float(params.get('PMDEC', 0.0))
+    pmra_rad_per_sec = pmra_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
+    pmdec_rad_per_sec = pmdec_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
+    
+    # K96 flag
+    k96_flag = True
+    if 'K96' in params:
+        k96_param = params['K96']
+        if isinstance(k96_param, bool):
+            k96_flag = k96_param
+        elif isinstance(k96_param, str):
+            k96_flag = k96_param.upper() not in ('N', 'NO', 'FALSE', '0', 'F')
+        else:
+            k96_flag = bool(k96_param)
+    use_k96 = k96_flag and (pmra_mas_yr != 0 or pmdec_mas_yr != 0)
+    
+    # Check for valid parallax
+    has_parallax = px_mas > 0.0 and jnp.abs(kin_deg) > 0.0
+    
+    # Distance in light-seconds from parallax
+    px_safe = max(abs(px_mas), 1e-10)
+    d_ls = 1000.0 * PC_TO_LIGHT_SEC / px_safe
+    
+    # Time since T0
+    dt_days = toas_bary_mjd - t0
+    tt0_sec = dt_days * SECS_PER_DAY
+    
+    # Observer position for Kopeikin projections
+    if obs_pos_ls is None:
+        obs_pos_ls = jnp.zeros((n_toas, 3))
+    obs_pos_ls = jnp.asarray(obs_pos_ls)
+    
+    # Get pulsar position for projections
+    # Handle both radians (float) and sexagesimal strings
+    from jug.io.par_reader import parse_ra, parse_dec
+    raj_val = params.get('RAJ', 0.0)
+    decj_val = params.get('DECJ', 0.0)
+    
+    if isinstance(raj_val, str) and ':' in raj_val:
+        ra_rad = parse_ra(raj_val)
+    else:
+        ra_rad = float(raj_val)
+        
+    if isinstance(decj_val, str) and ':' in decj_val:
+        dec_rad = parse_dec(decj_val)
+    else:
+        dec_rad = float(decj_val)
+        
+    sin_ra = jnp.sin(ra_rad)
+    cos_ra = jnp.cos(ra_rad)
+    sin_dec = jnp.sin(dec_rad)
+    cos_dec = jnp.cos(dec_rad)
+    
+    # Kopeikin projection terms (per-TOA)
+    x = obs_pos_ls[:, 0]
+    y = obs_pos_ls[:, 1]
+    z = obs_pos_ls[:, 2]
+    delta_I0 = -x * sin_ra + y * cos_ra
+    delta_J0 = -x * sin_dec * cos_ra - y * sin_dec * sin_ra + z * cos_dec
+    
+    # Compute effective parameters (matching combined.py branch_ddk)
+    sin_kom = jnp.sin(kom_rad)
+    cos_kom = jnp.cos(kom_rad)
+    
+    # K96 corrections
+    delta_kin_pm = jnp.where(
+        use_k96,
+        (-pmra_rad_per_sec * sin_kom + pmdec_rad_per_sec * cos_kom) * tt0_sec,
+        0.0
+    )
+    kin_eff_rad = kin_rad + delta_kin_pm
+    
+    tan_kin_eff = jnp.tan(kin_eff_rad)
+    tan_kin_eff_safe = jnp.where(jnp.abs(tan_kin_eff) < 1e-10, 1e-10, tan_kin_eff)
+    sin_kin_eff = jnp.sin(kin_eff_rad)
+    sin_kin_eff_safe = jnp.where(jnp.abs(sin_kin_eff) < 1e-10, 1e-10, sin_kin_eff)
+    
+    delta_a1_pm = jnp.where(use_k96, a1 * delta_kin_pm / tan_kin_eff_safe, 0.0)
+    delta_omega_pm_rad = jnp.where(
+        use_k96,
+        (1.0 / sin_kin_eff_safe) * (pmra_rad_per_sec * cos_kom + pmdec_rad_per_sec * sin_kom) * tt0_sec,
+        0.0
+    )
+    
+    # Kopeikin 1995 parallax corrections
+    delta_a1_px = jnp.where(
+        has_parallax,
+        (a1 / tan_kin_eff_safe / d_ls) * (delta_I0 * sin_kom - delta_J0 * cos_kom),
+        0.0
+    )
+    delta_omega_px_rad = jnp.where(
+        has_parallax,
+        -(1.0 / sin_kin_eff_safe / d_ls) * (delta_I0 * cos_kom + delta_J0 * sin_kom),
+        0.0
+    )
+    
+    # Effective parameters
+    a1_eff = a1 + delta_a1_pm + delta_a1_px
+    om_eff_deg = om_deg + jnp.rad2deg(delta_omega_pm_rad) + jnp.rad2deg(delta_omega_px_rad)
+    
+    # For SINI: use sin(KIN_eff) if SINI not explicitly set or if SINI='KIN'
+    sini_raw = params.get('SINI', 0.0)
+    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
+        # DDK convention: SINI derived from KIN
+        sini_explicit = 0.0  # Treat as not explicitly set
+    else:
+        sini_explicit = float(sini_raw)
+    sini_eff = jnp.where(
+        (sini_explicit == 0.0) & (jnp.abs(kin_deg) > 0.0),
+        jnp.sin(kin_eff_rad),
+        sini_explicit
+    )
+    
+    # Get the base DD derivatives evaluated at effective parameters
+    # We need to handle the time-varying omega
+    dt_yr = (toas_bary_mjd - t0) / 365.25
+    om_rad_eff = (om_eff_deg + omdot * dt_yr) * DEG_TO_RAD
+    
+    derivatives = {}
+    
+    # Check which parameters need KIN/KOM-specific handling
+    fit_params_upper = [p.upper() for p in fit_params]
+    needs_kin = 'KIN' in fit_params_upper
+    needs_kom = 'KOM' in fit_params_upper
+    
+    # First, handle standard DD parameters using effective values
+    dd_params = [p for p in fit_params if p.upper() not in ('KIN', 'KOM')]
+    
+    for param in dd_params:
+        param_upper = param.upper()
+        
+        if param_upper == 'A1':
+            # For A1, the effective derivative needs adjustment
+            # d(delay)/d(A1) through effective A1
+            # d(A1_eff)/d(A1) = 1 + d(delta_A1)/d(A1) where delta_A1 terms ∝ A1
+            # delta_A1_pm = A1 * delta_kin_pm / tan(KIN) → d/dA1 = delta_kin_pm / tan(KIN)
+            # delta_A1_px = A1 / tan(KIN) / d * (...) → d/dA1 = 1/tan(KIN)/d * (...)
+            
+            # Get base derivative for A1
+            deriv = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
+            
+            # Adjustment factor for effective A1 dependence on A1
+            d_A1_eff_d_A1 = 1.0
+            if use_k96:
+                d_A1_eff_d_A1 = d_A1_eff_d_A1 + delta_kin_pm / tan_kin_eff_safe
+            if has_parallax:
+                d_A1_eff_d_A1 = d_A1_eff_d_A1 + (1.0 / tan_kin_eff_safe / d_ls) * (delta_I0 * sin_kom - delta_J0 * cos_kom)
+            
+            derivatives[param] = deriv * d_A1_eff_d_A1
+            
+        elif param_upper == 'PB':
+            deriv = _d_delay_d_PB(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'T0':
+            deriv = _d_delay_d_T0(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'ECC':
+            deriv = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, gamma, sini_eff, m2)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'OM':
+            # d(delay)/d(OM) - OM_eff = OM + corrections, so d(OM_eff)/d(OM) = 1
+            deriv = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+            derivatives[param] = deriv * DEG_TO_RAD
+            
+        elif param_upper == 'PBDOT':
+            deriv = _d_delay_d_PBDOT(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, sini_eff, m2)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'GAMMA':
+            deriv = _d_delay_d_GAMMA(toas_bary_mjd, pb, t0, ecc, pbdot)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'SINI':
+            deriv = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'M2':
+            deriv = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, sini_eff)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'OMDOT':
+            deriv = _d_delay_d_OMDOT(toas_bary_mjd, a1_eff, pb, t0, ecc, float(jnp.mean(om_eff_deg)), omdot, pbdot, sini_eff, m2)
+            derivatives[param] = deriv
+            
+        elif param_upper == 'XDOT' or param_upper == 'A1DOT':
+            dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
+            d_a1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
+            derivatives[param] = d_a1 * dt_sec
+    
+    # Now handle KIN and KOM using chain rule
+    if needs_kin:
+        # d(delay)/d(KIN) = d(delay)/d(A1_eff) * d(A1_eff)/d(KIN)
+        #                 + d(delay)/d(OM_eff) * d(OM_eff)/d(KIN)
+        #                 + d(delay)/d(SINI_eff) * d(SINI_eff)/d(KIN)
+        
+        # Compute correction derivatives
+        d_A1_eff_d_KIN, d_OM_eff_d_KIN_rad, d_SINI_eff_d_KIN = _compute_ddk_correction_derivatives_KIN(
+            tt0_sec, a1, float(kin_rad), float(kom_rad),
+            pmra_rad_per_sec, pmdec_rad_per_sec,
+            delta_I0, delta_J0, d_ls,
+            use_k96, has_parallax
+        )
+        
+        # Get base derivatives
+        d_delay_d_A1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
+        d_delay_d_OM = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+        d_delay_d_SINI = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+        
+        # Chain rule (note: d_OM_eff_d_KIN_rad is in radians/radian, d_delay_d_OM is in sec/radian)
+        d_delay_d_KIN_rad = (
+            d_delay_d_A1 * d_A1_eff_d_KIN +
+            d_delay_d_OM * d_OM_eff_d_KIN_rad +
+            d_delay_d_SINI * d_SINI_eff_d_KIN
+        )
+        
+        # Convert from per-radian to per-degree (KIN is in degrees)
+        derivatives['KIN'] = d_delay_d_KIN_rad * DEG_TO_RAD
+    
+    if needs_kom:
+        # d(delay)/d(KOM) = d(delay)/d(A1_eff) * d(A1_eff)/d(KOM)
+        #                 + d(delay)/d(OM_eff) * d(OM_eff)/d(KOM)
+        
+        d_A1_eff_d_KOM, d_OM_eff_d_KOM_rad, _ = _compute_ddk_correction_derivatives_KOM(
+            tt0_sec, a1, float(kin_rad), float(kom_rad),
+            pmra_rad_per_sec, pmdec_rad_per_sec,
+            delta_I0, delta_J0, d_ls,
+            use_k96, has_parallax
+        )
+        
+        d_delay_d_A1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
+        d_delay_d_OM = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+        
+        d_delay_d_KOM_rad = (
+            d_delay_d_A1 * d_A1_eff_d_KOM +
+            d_delay_d_OM * d_OM_eff_d_KOM_rad
+        )
+        
+        # Convert from per-radian to per-degree
+        derivatives['KOM'] = d_delay_d_KOM_rad * DEG_TO_RAD
+    
+    return derivatives
 
 
 # =============================================================================

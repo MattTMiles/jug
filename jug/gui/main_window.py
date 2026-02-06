@@ -1410,11 +1410,24 @@ class MainWindow(QMainWindow):
                 change_str = f"{change:+.6e}"
                 unit = "M☉"
             elif param == 'SINI':
-                change = new_value - prev_value
+                # Handle SINI='KIN' (DDK convention: SINI = sin(KIN))
+                if isinstance(prev_value, str) and prev_value.upper() == 'KIN':
+                    import jax.numpy as jnp
+                    kin_deg = float(self.initial_params.get('KIN', 0.0))
+                    prev_value_num = float(jnp.sin(jnp.deg2rad(kin_deg)))
+                else:
+                    prev_value_num = float(prev_value)
+                change = new_value - prev_value_num
                 new_val_str = f"{new_value:.12f}"
-                prev_val_str = f"{prev_value:.12f}"
+                prev_val_str = f"{prev_value_num:.12f}"
                 change_str = f"{change:+.6e}"
                 unit = ""
+            elif param in ['KIN', 'KOM']:
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.10f}"
+                prev_val_str = f"{prev_value:.10f}"
+                change_str = f"{change:+.6e}"
+                unit = "deg"
             else:
                 change = new_value - float(prev_value) if isinstance(prev_value, (int, float)) else 0.0
                 new_val_str = f"{new_value:.6g}"

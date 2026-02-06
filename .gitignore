@@ -55,6 +55,7 @@ Thumbs.db
 temp_*.par
 temp_*.tim
 temp_*.out
+jug_updates.patch 
 
 # Output files (plots, etc)
 *.png

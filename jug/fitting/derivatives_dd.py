@@ -454,7 +454,21 @@ def compute_binary_derivatives_dd(
             dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
             d_a1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot)
             derivatives[param] = d_a1 * dt_sec
-    
+
+        elif param_upper == 'EDOT':
+            # Eccentricity derivative - d(delay)/d(EDOT) = d(delay)/d(ECC) * dt_sec
+            # Analogous to XDOT through A1: ecc_current = ecc + edot * dt_sec
+            dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
+            d_ecc = _d_delay_d_ECC(toas_bary_mjd, a1, pb, t0, ecc, om_rad, pbdot, gamma, sini, m2)
+            derivatives[param] = d_ecc * dt_sec
+
+        elif param_upper == 'H4':
+            # Orthometric Shapiro parameter H4 (DD/DDH model, H3/H4 parameterization)
+            h3 = float(params.get('H3', 0.0))
+            h4 = float(params.get('H4', 0.0))
+            deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3, h4)
+            derivatives[param] = deriv
+
     return derivatives
 
 
@@ -1206,7 +1220,30 @@ def compute_binary_derivatives_ddk(
             dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
             d_a1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
             derivatives[param] = d_a1 * dt_sec
-    
+
+        elif param_upper == 'EDOT':
+            dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
+            d_ecc = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, gamma, sini_eff, m2)
+            derivatives[param] = d_ecc * dt_sec
+
+        elif param_upper == 'H3':
+            h3_val = float(params.get('H3', 0.0))
+            stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
+            deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, stig_val)
+            derivatives[param] = deriv
+
+        elif param_upper in ('STIG', 'STIGMA'):
+            h3_val = float(params.get('H3', 0.0))
+            stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
+            deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, stig_val)
+            derivatives[param] = deriv
+
+        elif param_upper == 'H4':
+            h3_val = float(params.get('H3', 0.0))
+            h4_val = float(params.get('H4', 0.0))
+            deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, h4_val)
+            derivatives[param] = deriv
+
     # Now handle KIN and KOM using chain rule
     if needs_kin:
         # d(delay)/d(KIN) = d(delay)/d(A1_eff) * d(A1_eff)/d(KIN)
@@ -1333,6 +1370,44 @@ def _d_delay_d_STIG(
     dSINI_dSTIG = 2 * (1 - stig2) / (1 + stig2)**2
     
     return d_M2 * dM2_dSTIG + d_SINI * dSINI_dSTIG
+
+
+@jax.jit
+def _d_delay_d_H4(
+    toas_bary_mjd: jnp.ndarray,
+    pb: float, t0: float, ecc: float, om_rad: jnp.ndarray,
+    pbdot: float, h3: float, h4: float
+) -> jnp.ndarray:
+    """d(Shapiro delay)/d(H4) for H3/H4 orthometric parameterization.
+
+    From:
+        r_h4 = (H4 / T_SUN^3)^{1/3} = H4^{1/3} / T_SUN
+        M2 = r_h4 / T_SUN = H4^{1/3} / T_SUN^2
+        SINI = H3 / (r_h4 * T_SUN) = H3 / H4^{1/3}
+
+    Derivatives:
+        d(M2)/d(H4) = M2 / (3 * H4)
+        d(SINI)/d(H4) = -SINI / (3 * H4)
+
+    Chain rule:
+        d(delay)/d(H4) = d(delay)/d(M2) * d(M2)/d(H4)
+                        + d(delay)/d(SINI) * d(SINI)/d(H4)
+    """
+    # Compute SINI and M2 from H3/H4
+    h4_safe = jnp.maximum(jnp.abs(h4), 1e-30)
+    r_h4 = jnp.cbrt(h4_safe / T_SUN**3)
+    sini = jnp.clip(h3 / jnp.maximum(r_h4 * T_SUN, 1e-30), 0.0, 1.0)
+    m2 = r_h4 / T_SUN
+
+    # Get individual derivatives
+    d_M2 = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini)
+    d_SINI = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini, m2)
+
+    # Jacobian terms
+    dM2_dH4 = m2 / (3 * h4_safe)
+    dSINI_dH4 = -sini / (3 * h4_safe)
+
+    return d_M2 * dM2_dH4 + d_SINI * dSINI_dH4
 
 
 if __name__ == '__main__':

@@ -99,14 +99,17 @@ def dispatch_binary_delay(model_name, t_topo_tdb, params):
             sini=params.get('SINI', 0.0)
         )
     
-    # DDK requires Kopeikin annual orbital parallax corrections - NOT IMPLEMENTED
-    # Uses centralized helper for consistent behavior across all code paths
+    # DDK uses combined.py:branch_ddk() which handles Kopeikin corrections.
+    # This dispatcher cannot compute DDK correctly (needs observer positions).
     elif model == 'DDK':
-        from jug.utils.binary_model_overrides import resolve_binary_model
-        model = resolve_binary_model(model, warn=True)
-    
-    # DD and its variants (DDH, DDGR) - also handles DDK when override is set
-    if model in ('DD', 'DDH', 'DDGR'):
+        raise ValueError(
+            "DDK binary model requires Kopeikin corrections that need observer "
+            "positions (obs_pos_ls). Use combined.py:branch_ddk() for DDK delays. "
+            "This dispatcher only handles models that don't need per-TOA geometry."
+        )
+
+    # DD and its variants (DDH, DDGR)
+    elif model in ('DD', 'DDH', 'DDGR'):
         return dd_binary_delay(
             t_topo_tdb,
             pb_days=params['PB'],
@@ -181,5 +184,12 @@ BINARY_MODELS = {
         'required_params': ['PB', 'A1', 'ECC', 'OM', 'T0'],
         'optional_params': ['GAMMA', 'PBDOT', 'XDOT', 'EDOT', 'OMDOT', 'M2', 'SINI', 'KIN', 'KOM'],
         'inline': False
+    },
+    'DDK': {
+        'name': 'DDK (DD + Kopeikin 1995/1996)',
+        'required_params': ['PB', 'A1', 'ECC', 'OM', 'T0', 'KIN', 'KOM'],
+        'optional_params': ['GAMMA', 'PBDOT', 'XDOT', 'OMDOT', 'EDOT', 'M2', 'SINI',
+                            'PX', 'PMRA', 'PMDEC', 'K96'],
+        'inline': False  # Forward model in combined.py:branch_ddk()
     }
 }

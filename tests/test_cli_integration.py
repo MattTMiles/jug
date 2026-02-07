@@ -10,6 +10,7 @@ Run with: python tests/test_cli_integration.py
 Category: cli (quick, uses bundled mini data)
 """
 
+import os
 import subprocess
 import sys
 import json
@@ -19,6 +20,10 @@ from pathlib import Path
 # Ensure jug module is importable
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
+
+# Force CPU for CLI subprocesses to avoid GPU memory contention
+# when the parent process (e.g. test_cli_fit_improves_rms) already holds the GPU.
+_subprocess_env = {**os.environ, 'JAX_PLATFORMS': 'cpu'}
 
 
 def get_mini_paths():
@@ -46,6 +51,7 @@ def test_cli_compute_residuals():
             text=True,
             timeout=60,
             cwd=str(repo_root),
+            env=_subprocess_env,
         )
     except FileNotFoundError:
         # Fall back to module invocation
@@ -55,6 +61,7 @@ def test_cli_compute_residuals():
             text=True,
             timeout=60,
             cwd=str(repo_root),
+            env=_subprocess_env,
         )
     
     if result.returncode != 0:
@@ -88,12 +95,13 @@ def test_cli_fit_f0f1():
     # Use module invocation directly (more reliable than console scripts
     # which may be outdated in editable installs)
     result = subprocess.run(
-        [sys.executable, "-m", "jug.scripts.fit_parameters", 
+        [sys.executable, "-m", "jug.scripts.fit_parameters",
          par, tim, "--fit", "F0", "F1", "--max-iter", "5"],
         capture_output=True,
         text=True,
         timeout=60,
         cwd=str(repo_root),
+        env=_subprocess_env,
     )
     
     if result.returncode != 0:
@@ -180,6 +188,7 @@ def test_cli_output_has_expected_markers():
             text=True,
             timeout=60,
             cwd=str(repo_root),
+            env=_subprocess_env,
         )
     except Exception as e:
         return False, f"subprocess error: {e}"

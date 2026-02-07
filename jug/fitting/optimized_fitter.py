@@ -1203,7 +1203,6 @@ def _build_general_fit_setup_from_files(
         clock_dir=clock_dir,
         subtract_tzr=False,
         verbose=False,
-        need_sw_geometry=bool(sw_params),
     )
 
     dt_sec_cached = result['dt_sec']

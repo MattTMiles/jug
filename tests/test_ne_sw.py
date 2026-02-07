@@ -138,36 +138,27 @@ class TestCanonicalizeNE1AU:
         np.testing.assert_allclose(d_alias['NE1AU'], d_canon['NE_SW'], rtol=1e-15)
 
 
-class TestConditionalSWGeometry:
-    """Verify conditional computation of solar wind geometry."""
+class TestSWGeometryAlwaysComputed:
+    """Verify solar wind geometry is always computed and cached."""
 
-    def test_geometry_none_when_not_needed(self):
-        """sw_geometry_pc should be None when NE_SW=0 and need_sw_geometry=False.
+    def test_geometry_always_in_result(self):
+        """sw_geometry_pc is always computed (no conditional gating)."""
+        import inspect
+        from jug.residuals.simple_calculator import compute_residuals_simple
+        source = inspect.getsource(compute_residuals_simple)
+        # The function should NOT have a conditional that sets sw_geometry_pc = None
+        assert 'sw_geometry_pc = None' not in source, (
+            "sw_geometry_pc should always be computed, not conditionally set to None"
+        )
 
-        We test this indirectly by checking the return dict structure.
-        Since compute_residuals_simple requires real files, we test
-        the conditional logic at the code level.
-        """
-        # The conditional logic is: if ne_sw > 0 or need_sw_geometry: compute else None
-        # We verify this by importing and checking the logic pattern
-        ne_sw = 0.0
-        need_sw_geometry = False
-        should_compute = ne_sw > 0 or need_sw_geometry
-        assert not should_compute
-
-    def test_geometry_computed_when_needed(self):
-        """sw_geometry_pc should be computed when need_sw_geometry=True."""
-        ne_sw = 0.0
-        need_sw_geometry = True
-        should_compute = ne_sw > 0 or need_sw_geometry
-        assert should_compute
-
-    def test_geometry_computed_when_ne_sw_positive(self):
-        """sw_geometry_pc should always be computed when NE_SW > 0."""
-        ne_sw = 4.0
-        need_sw_geometry = False
-        should_compute = ne_sw > 0 or need_sw_geometry
-        assert should_compute
+    def test_geometry_in_return_dict(self):
+        """sw_geometry_pc key exists in the return dict."""
+        import inspect
+        from jug.residuals.simple_calculator import compute_residuals_simple
+        source = inspect.getsource(compute_residuals_simple)
+        assert "'sw_geometry_pc'" in source, (
+            "sw_geometry_pc should be in the return dict"
+        )
 
 
 if __name__ == '__main__':

@@ -44,7 +44,6 @@ def compute_residuals_simple(
     subtract_tzr: bool = True,
     verbose: bool = True,
     tzrmjd_scale: str = "AUTO",
-    need_sw_geometry: bool = False,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -535,21 +534,18 @@ def compute_residuals_simple(
     dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
     dm_delay_sec = K_DM_SEC * dm_eff / (freq_bary_mhz ** 2)
     
-    # Solar wind delay (compute geometry only when needed)
+    # Solar wind geometry (always computed for caching; cost is negligible)
     ne_sw = float(params.get('NE_SW', 0.0))
-    if ne_sw > 0 or need_sw_geometry:
-        AU_KM = 1.495978707e8
-        AU_PC = 4.84813681e-6
-        r_km = np.sqrt(np.sum(obs_sun_pos_km**2, axis=1))
-        r_au = r_km / AU_KM
-        sun_dir = obs_sun_pos_km / r_km[:, np.newaxis]
-        cos_elong = np.sum(sun_dir * L_hat, axis=1)
-        elong = np.arccos(np.clip(cos_elong, -1.0, 1.0))
-        rho = np.pi - elong
-        sin_rho = np.maximum(np.sin(rho), 1e-10)
-        sw_geometry_pc = AU_PC * rho / (r_au * sin_rho)
-    else:
-        sw_geometry_pc = None
+    AU_KM = 1.495978707e8
+    AU_PC = 4.84813681e-6
+    r_km = np.sqrt(np.sum(obs_sun_pos_km**2, axis=1))
+    r_au = r_km / AU_KM
+    sun_dir = obs_sun_pos_km / r_km[:, np.newaxis]
+    cos_elong = np.sum(sun_dir * L_hat, axis=1)
+    elong = np.arccos(np.clip(cos_elong, -1.0, 1.0))
+    rho = np.pi - elong
+    sin_rho = np.maximum(np.sin(rho), 1e-10)
+    sw_geometry_pc = AU_PC * rho / (r_au * sin_rho)
     if ne_sw > 0:
         dm_sw = ne_sw * sw_geometry_pc
         sw_delay_sec = K_DM_SEC * dm_sw / (freq_bary_mhz ** 2)

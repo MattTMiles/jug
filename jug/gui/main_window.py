@@ -1026,14 +1026,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Session", "Please load .par and .tim files first")
             return
 
-        # Get selected parameters
-        fit_params = [param for param, checkbox in self.param_checkboxes.items()
+        # Get selected parameters, canonicalize, and validate
+        from jug.model.parameter_spec import canonicalize_param_name, validate_fit_param
+        fit_params = [canonicalize_param_name(param)
+                      for param, checkbox in self.param_checkboxes.items()
                       if checkbox.isChecked()]
 
         if not fit_params:
             QMessageBox.warning(self, "No Parameters",
                               "Please select at least one parameter to fit")
             return
+
+        # Validate all selected parameters
+        for param in fit_params:
+            try:
+                validate_fit_param(param)
+            except ValueError as e:
+                QMessageBox.warning(self, "Invalid Parameter", str(e))
+                return
 
         # Disable fit button during fitting
         self.fit_button.setEnabled(False)
@@ -1936,14 +1946,9 @@ class MainWindow(QMainWindow):
         if not self.par_file:
             return []
 
-        # Common fittable parameters we look for
-        fittable_params = [
-            'F0', 'F1', 'F2', 'F3', 'F4', 'F5',  # Spin
-            'DM', 'DM1', 'DM2', 'DM3',  # Dispersion
-            'RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX',  # Astrometry
-            'PB', 'A1', 'ECC', 'OM', 'T0', 'TASC',  # Binary
-            'EPS1', 'EPS2', 'M2', 'SINI', 'PBDOT'  # More binary
-        ]
+        # All fittable parameters from the registry (auto-syncs with derivatives)
+        from jug.model.parameter_spec import list_fittable_params
+        fittable_params = list_fittable_params()
 
         found_params = []
 

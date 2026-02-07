@@ -907,6 +907,8 @@ def compute_ell1_binary_delay(
     sini = float(params.get('SINI', 0.0))
     m2 = float(params.get('M2', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
+    h3 = float(params.get('H3', 0.0))
+    stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
 
     # Extract FB parameters (FB0, FB1, ...)
     fb_coeffs_list = []
@@ -918,7 +920,7 @@ def compute_ell1_binary_delay(
             i += 1
         else:
             break
-    
+
     if fb_coeffs_list:
         fb_coeffs = jnp.array(fb_coeffs_list, dtype=jnp.float64)
     else:
@@ -928,7 +930,7 @@ def compute_ell1_binary_delay(
     return _compute_ell1_binary_delay_jit(
         jnp.asarray(toas_bary_mjd),
         a1, pb, tasc, eps1, eps2, pbdot, a1dot, sini, m2, gamma,
-        fb_coeffs
+        h3, stig, fb_coeffs
     )
 
 
@@ -937,7 +939,7 @@ def _compute_ell1_binary_delay_jit(
     toas_bary_mjd: jnp.ndarray,
     a1: float, pb: float, tasc: float, eps1: float, eps2: float,
     pbdot: float, a1dot: float, sini: float, m2: float, gamma: float,
-    fb_coeffs: jnp.ndarray
+    h3: float, stig: float, fb_coeffs: jnp.ndarray
 ) -> jnp.ndarray:
     """JIT-compiled ELL1 binary delay computation."""
     # Time since TASC
@@ -983,7 +985,17 @@ def _compute_ell1_binary_delay_jit(
         0.0
     )
 
-    return roemer_delay + einstein_delay + shapiro_delay
+    # H3-only Shapiro delay (Freire & Wex 2010 Eq. 19)
+    # When H3 > 0 but no STIG/M2/SINI, use harmonic expansion:
+    #   Δ_S = -(4/3)*H3*sin(3*Phi)
+    # Coefficient 4/3 = 2 * (2/3) from Fourier basis factor 2/k for k=3.
+    shapiro_h3only = jnp.where(
+        (sini == 0.0) & (m2 == 0.0) & (h3 > 0.0) & (stig == 0.0),
+        -(4.0 / 3.0) * h3 * jnp.sin(3.0 * phi),
+        0.0
+    )
+
+    return roemer_delay + einstein_delay + shapiro_delay + shapiro_h3only
 
 
 # =============================================================================
@@ -1370,7 +1382,9 @@ def compute_binary_derivatives_ell1(
                 dM2_dH3 = 1.0 / (stig_val**3 * T_SUN)
                 derivatives[param] = d_shapiro_d_M2(phi, sini_from_stig) * dM2_dH3
             else:
-                derivatives[param] = jnp.zeros(n_toas)
+                # ELL1H H3-only: Δ_S = -(4/3)*H3*sin(3*Phi)
+                # d(delay)/d(H3) = -(4/3)*sin(3*Phi)
+                derivatives[param] = -(4.0 / 3.0) * jnp.sin(3.0 * phi)
         
         # =================================================================
         # STIG derivative (orthometric Shapiro - ELL1H model)

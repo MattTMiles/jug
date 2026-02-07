@@ -526,7 +526,8 @@ class TimingSession:
                 'errors_us': errors_us,
                 'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
                 'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
-                'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls')
+                'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
+                'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
             }
             
             # Build setup from cache (with optional TOA mask)

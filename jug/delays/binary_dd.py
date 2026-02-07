@@ -243,17 +243,19 @@ def dd_binary_delay(
     sini_h3stig = 2.0 * stig_val / (1.0 + stig_val**2)
     m2_h3stig = h3_val / (stig_safe**3 * T_SUN)
 
-    # H3/H4 calculation (safe division)
+    # H3/H4 calculation (Freire & Wex 2010, PINT/Tempo2 convention)
+    # STIGMA = H4/H3, then sini = 2*STIGMA/(1+STIGMA^2) = 2*H3*H4/(H3^2+H4^2)
+    # M2 = H3/(STIGMA^3 * T_SUN) = H3^4/(H4^3 * T_SUN)
     h4_val = h4_sec if h4_sec is not None else 0.0
+    h3h4_denom = jnp.maximum(h3_val**2 + h4_val**2, 1e-60)
+    sini_h3h4 = jnp.clip(2.0 * h3_val * h4_val / h3h4_denom, 0.0, 1.0)
     h4_safe = jnp.maximum(jnp.abs(h4_val), 1e-30)
-    r_cubed = h4_safe / T_SUN**3
-    r_h4 = jnp.cbrt(r_cubed)
-    sini_h3h4 = jnp.clip(h3_val / (jnp.maximum(r_h4 * T_SUN, 1e-30)), 0.0, 1.0)
-    m2_h3h4 = r_h4 / T_SUN
+    m2_h3h4 = h3_val**4 / (h4_safe**3 * T_SUN)
 
     # Select based on which parameters are provided (use JAX where)
+    # H3/STIG takes priority over H3/H4 when both are present (DDH convention)
     use_h3stig = (h3_val != 0.0) & (stig_val != 0.0)
-    use_h3h4 = (h3_val != 0.0) & (h4_val != 0.0) & ~use_h3stig
+    use_h3h4 = (h3_val != 0.0) & (h4_val != 0.0) & (stig_val == 0.0)
 
     sini_use = jnp.where(use_h3stig, sini_h3stig,
                          jnp.where(use_h3h4, sini_h3h4, sini_default))

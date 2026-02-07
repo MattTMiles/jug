@@ -19,6 +19,8 @@ The DD delay consists of:
 Reference: Damour & Deruelle (1986), PINT src/pint/models/binary_dd.py
 """
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 from typing import Dict, List
@@ -280,18 +282,32 @@ def compute_dd_binary_delay(
     else:
         sini = float(sini_raw)
     
-    # Check for DDH parameters if SINI/M2 not set
-    # Orthometric parameterization:
-    #   SINI = 2 * STIG / (1 + STIG^2)
-    #   M2 = H3 / (STIG^3 * T_SUN)
+    # Check for orthometric parameters if SINI/M2 not set
     if sini == 0.0 or m2 == 0.0:
         h3 = float(params.get('H3', 0.0))
         stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
-        
+        h4 = float(params.get('H4', 0.0))
+
         if h3 != 0.0 and stig != 0.0:
+            if h4 != 0.0:
+                warnings.warn(
+                    "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
+                    UserWarning, stacklevel=2
+                )
+            # H3/STIG parameterization (DDH)
             sini = 2 * stig / (1 + stig**2)
             m2 = h3 / (stig**3 * T_SUN)
-            
+        elif h3 != 0.0 and h4 != 0.0:
+            # H3/H4 parameterization (Freire & Wex 2010, PINT convention)
+            h3h4_denom = h3**2 + h4**2
+            sini = min(2.0 * h3 * h4 / h3h4_denom, 1.0)
+            m2 = h3**4 / (h4**3 * T_SUN)
+        elif h3 != 0.0 and h4 == 0.0:
+            warnings.warn(
+                "H3/H4 parameterization with H4=0: M2 is ill-conditioned; Shapiro delay will be zero",
+                UserWarning, stacklevel=2
+            )
+
     omdot = float(params.get('OMDOT', 0.0))  # deg/yr
     
     # Apply periastron advance
@@ -431,19 +447,36 @@ def compute_binary_derivatives_dd(
             derivatives[param] = deriv
             
         elif param_upper == 'H3':
-            # Orthometric Shapiro parameter (DDH model)
-            h3 = float(params.get('H3', 0.0))
+            h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, stig_val)
+            h4_val = float(params.get('H4', 0.0))
+            if stig_val != 0.0:
+                if h4_val != 0.0:
+                    warnings.warn(
+                        "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
+                        UserWarning, stacklevel=2
+                    )
+                # DDH model: H3/STIG parameterization
+                deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, stig_val)
+            elif h4_val != 0.0:
+                # H3/H4 parameterization (Freire & Wex 2010)
+                deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3_val, h4_val)
+            else:
+                if h3_val != 0.0:
+                    warnings.warn(
+                        "H3/H4 parameterization with H4=0: M2 is ill-conditioned; derivative will be zero",
+                        UserWarning, stacklevel=2
+                    )
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
-            
+
         elif param_upper in ('STIG', 'STIGMA'):
-            # Orthometric Shapiro parameter (DDH model)
-            h3 = float(params.get('H3', 0.0))
+            # DDH model: H3/STIG parameterization
+            h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3, stig_val)
+            deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3_val, stig_val)
             derivatives[param] = deriv
-            
+
         elif param_upper == 'OMDOT':
             deriv = _d_delay_d_OMDOT(toas_bary_mjd, a1, pb, t0, ecc, om_deg, omdot, pbdot, sini, m2)
             # OMDOT is in deg/yr, convert appropriately
@@ -1229,7 +1262,23 @@ def compute_binary_derivatives_ddk(
         elif param_upper == 'H3':
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, stig_val)
+            h4_val = float(params.get('H4', 0.0))
+            if stig_val != 0.0:
+                if h4_val != 0.0:
+                    warnings.warn(
+                        "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
+                        UserWarning, stacklevel=2
+                    )
+                deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, stig_val)
+            elif h4_val != 0.0:
+                deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, h4_val)
+            else:
+                if h3_val != 0.0:
+                    warnings.warn(
+                        "H3/H4 parameterization with H4=0: M2 is ill-conditioned; derivative will be zero",
+                        UserWarning, stacklevel=2
+                    )
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
         elif param_upper in ('STIG', 'STIGMA'):
@@ -1373,6 +1422,40 @@ def _d_delay_d_STIG(
 
 
 @jax.jit
+def _d_delay_d_H3_h3h4(
+    toas_bary_mjd: jnp.ndarray,
+    pb: float, t0: float, ecc: float, om_rad: jnp.ndarray,
+    pbdot: float, h3: float, h4: float
+) -> jnp.ndarray:
+    """d(Shapiro delay)/d(H3) for H3/H4 orthometric parameterization.
+
+    Freire & Wex (2010), PINT/Tempo2 convention:
+        SINI = 2*H3*H4 / (H3^2 + H4^2)
+        M2   = H3^4 / (H4^3 * T_SUN)
+
+    Derivatives:
+        d(SINI)/d(H3) = 2*H4*(H4^2 - H3^2) / (H3^2 + H4^2)^2
+        d(M2)/d(H3)   = 4*H3^3 / (H4^3 * T_SUN) = 4*M2/H3
+
+    Chain rule:
+        d(delay)/d(H3) = d(delay)/d(M2) * d(M2)/d(H3)
+                        + d(delay)/d(SINI) * d(SINI)/d(H3)
+    """
+    h4_safe = jnp.maximum(jnp.abs(h4), 1e-30)
+    h3h4_denom = jnp.maximum(h3**2 + h4**2, 1e-60)
+    sini = jnp.clip(2.0 * h3 * h4 / h3h4_denom, 0.0, 1.0)
+    m2 = h3**4 / (h4_safe**3 * T_SUN)
+
+    d_M2 = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini)
+    d_SINI = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini, m2)
+
+    dM2_dH3 = 4.0 * h3**3 / (h4_safe**3 * T_SUN)
+    dSINI_dH3 = 2.0 * h4 * (h4**2 - h3**2) / h3h4_denom**2
+
+    return d_M2 * dM2_dH3 + d_SINI * dSINI_dH3
+
+
+@jax.jit
 def _d_delay_d_H4(
     toas_bary_mjd: jnp.ndarray,
     pb: float, t0: float, ecc: float, om_rad: jnp.ndarray,
@@ -1380,32 +1463,31 @@ def _d_delay_d_H4(
 ) -> jnp.ndarray:
     """d(Shapiro delay)/d(H4) for H3/H4 orthometric parameterization.
 
-    From:
-        r_h4 = (H4 / T_SUN^3)^{1/3} = H4^{1/3} / T_SUN
-        M2 = r_h4 / T_SUN = H4^{1/3} / T_SUN^2
-        SINI = H3 / (r_h4 * T_SUN) = H3 / H4^{1/3}
+    Freire & Wex (2010), PINT/Tempo2 convention:
+        SINI = 2*H3*H4 / (H3^2 + H4^2)
+        M2   = H3^4 / (H4^3 * T_SUN)
 
     Derivatives:
-        d(M2)/d(H4) = M2 / (3 * H4)
-        d(SINI)/d(H4) = -SINI / (3 * H4)
+        d(SINI)/d(H4) = 2*H3*(H3^2 - H4^2) / (H3^2 + H4^2)^2
+        d(M2)/d(H4)   = -3*M2/H4
 
     Chain rule:
         d(delay)/d(H4) = d(delay)/d(M2) * d(M2)/d(H4)
                         + d(delay)/d(SINI) * d(SINI)/d(H4)
     """
-    # Compute SINI and M2 from H3/H4
+    # Compute SINI and M2 from H3/H4 (PINT convention)
     h4_safe = jnp.maximum(jnp.abs(h4), 1e-30)
-    r_h4 = jnp.cbrt(h4_safe / T_SUN**3)
-    sini = jnp.clip(h3 / jnp.maximum(r_h4 * T_SUN, 1e-30), 0.0, 1.0)
-    m2 = r_h4 / T_SUN
+    h3h4_denom = jnp.maximum(h3**2 + h4**2, 1e-60)
+    sini = jnp.clip(2.0 * h3 * h4 / h3h4_denom, 0.0, 1.0)
+    m2 = h3**4 / (h4_safe**3 * T_SUN)
 
-    # Get individual derivatives
+    # Get individual derivatives of delay w.r.t. SINI and M2
     d_M2 = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini)
     d_SINI = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini, m2)
 
     # Jacobian terms
-    dM2_dH4 = m2 / (3 * h4_safe)
-    dSINI_dH4 = -sini / (3 * h4_safe)
+    dM2_dH4 = -3.0 * m2 / h4_safe
+    dSINI_dH4 = 2.0 * h3 * (h3**2 - h4**2) / h3h4_denom**2
 
     return d_M2 * dM2_dH4 + d_SINI * dSINI_dH4
 

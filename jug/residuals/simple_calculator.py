@@ -43,7 +43,8 @@ def compute_residuals_simple(
     observatory: str = "meerkat",
     subtract_tzr: bool = True,
     verbose: bool = True,
-    tzrmjd_scale: str = "AUTO"
+    tzrmjd_scale: str = "AUTO",
+    need_sw_geometry: bool = False,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -534,9 +535,9 @@ def compute_residuals_simple(
     dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
     dm_delay_sec = K_DM_SEC * dm_eff / (freq_bary_mhz ** 2)
     
-    # Solar wind delay
+    # Solar wind delay (compute geometry only when needed)
     ne_sw = float(params.get('NE_SW', 0.0))
-    if ne_sw > 0:
+    if ne_sw > 0 or need_sw_geometry:
         AU_KM = 1.495978707e8
         AU_PC = 4.84813681e-6
         r_km = np.sqrt(np.sum(obs_sun_pos_km**2, axis=1))
@@ -546,8 +547,11 @@ def compute_residuals_simple(
         elong = np.arccos(np.clip(cos_elong, -1.0, 1.0))
         rho = np.pi - elong
         sin_rho = np.maximum(np.sin(rho), 1e-10)
-        geometry_pc = AU_PC * rho / (r_au * sin_rho)
-        dm_sw = ne_sw * geometry_pc
+        sw_geometry_pc = AU_PC * rho / (r_au * sin_rho)
+    else:
+        sw_geometry_pc = None
+    if ne_sw > 0:
+        dm_sw = ne_sw * sw_geometry_pc
         sw_delay_sec = K_DM_SEC * dm_sw / (freq_bary_mhz ** 2)
     else:
         sw_delay_sec = np.zeros(len(tdb_mjd))
@@ -834,6 +838,7 @@ def compute_residuals_simple(
         # Individual delay components (for diagnostics)
         'dm_delay_sec': np.array(dm_delay_sec, dtype=np.float64),
         'sw_delay_sec': np.array(sw_delay_sec, dtype=np.float64),
+        'sw_geometry_pc': np.array(sw_geometry_pc, dtype=np.float64) if sw_geometry_pc is not None else None,
         'tropo_delay_sec': np.array(tropo_delay_sec, dtype=np.float64),
         # SSB to observatory position in light-seconds (needed for astrometry derivatives)
         'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),

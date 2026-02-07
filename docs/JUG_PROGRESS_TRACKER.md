@@ -1,7 +1,7 @@
 # JUG Implementation Progress Tracker
 
-**Last Updated**: 2026-02-06 (DDK fit-ready: partials + finite-diff tests + fit smoke)
-**Current Version**: M6.2 Complete - Full DDK Support with KIN/KOM Fitting ✅
+**Last Updated**: 2026-02-06 (Fit-ready parity: NE_SW, H3/H4 fix, 58 new tests)
+**Current Version**: M6.2 Complete - Full DDK + Fit-Ready Parity ✅
 **Active Milestone**: M7
 
 This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
@@ -51,6 +51,7 @@ This document tracks the implementation progress of JUG from notebook to product
 | DD Binary | PB, A1, T0, ECC, OM, GAMMA, PBDOT, OMDOT, XDOT, EDOT, SINI, M2, H3, H4, STIG | ✅ All | ✅ All | Chain rule via Kepler |
 | DDK Binary | All DD params + KIN, KOM | ✅ All | ✅ All | Kopeikin 1995/K96; finite-diff validated |
 | FD | FD1-FD9 | ✅ All | ✅ All | log(f/1GHz)^n |
+| Solar Wind | NE_SW (NE1AU alias) | ✅ | ✅ | K_DM * geometry / freq²; finite-diff validated |
 | JUMP | JUMPn | ✅ (trivial) | ⚠️ Partial | Needs TOA flag integration |
 
 ### Known Gaps
@@ -61,7 +62,7 @@ This document tracks the implementation progress of JUG from notebook to product
 | ~~**KOM** (DDK)~~ | ~~✅~~ | ~~❌~~ | ~~❌~~ | ~~**HIGH**~~ ✅ IMPLEMENTED |
 | ~~**EDOT**~~ | ~~✅~~ | ~~❌~~ | ~~❌~~ | ~~Medium~~ ✅ IMPLEMENTED |
 | ~~**H4**~~ | ~~✅~~ | ~~❌~~ | ~~❌~~ | ~~Medium~~ ✅ IMPLEMENTED |
-| NE_SW | ✅ (forward) | ❌ | ❌ | Low (not in ParameterSpec) |
+| ~~**NE_SW**~~ | ~~✅ (forward)~~ | ~~❌~~ | ~~❌~~ | ~~Low~~ ✅ IMPLEMENTED (ParameterSpec + analytic partial + fitter wiring) |
 | DR, DTH | In spec | ❌ | ❌ | Low |
 | A0, B0 | In spec | ❌ | ❌ | Low |
 
@@ -76,7 +77,7 @@ This document tracks the implementation progress of JUG from notebook to product
 | DDGR | ✅ | ✅ | ✅ | ⚠️ |
 | BT | ✅ | ✅ | ✅ | ⚠️ |
 | T2 | ✅ | ✅ | ✅ | ⚠️ |
-| **DDK** | ✅ | ✅ | ✅ | ✅ (32 tests: finite-diff, fit smoke, edge cases, dispatch, EDOT, H4) |
+| **DDK** | ✅ | ✅ | ✅ | ✅ (36 tests: finite-diff, fit smoke, edge cases, dispatch, EDOT, H3/H4, end-to-end) |
 
 ---
 
@@ -90,18 +91,20 @@ This document tracks the implementation progress of JUG from notebook to product
   - ✅ Astrometry: RAJ, DECJ, PMRA, PMDEC, PX (PINT-style damped fitting)
   - ✅ Binary: PB, A1, ECC, OM, T0, TASC, EPS1, EPS2, M2, SINI, PBDOT, etc.
   - ✅ **DDK: KIN, KOM** - Full Kopeikin corrections with chain-rule partials
+  - ✅ **Solar Wind: NE_SW** - Analytic partial, ParameterSpec, fitter wiring
   - ⏸️ JUMP parameters (not yet)
 - **Binary Models**: ELL1, ELL1H, DD, DDH, DDGR, BT, T2, **DDK** ✅
 - **Multi-Backend Support**: MeerKAT, Parkes, GBT, VLA, etc.
 - **Clock Corrections**: Automatic clock file loading and caching
 
 ### Architecture Foundation ✅ (NEW)
-- **ParameterSpec Registry**: 44 parameters defined with metadata (now includes KIN, KOM)
+- **ParameterSpec Registry**: 45 parameters defined with metadata (now includes KIN, KOM, NE_SW)
   - Spin: F0, F1, F2, F3, PEPOCH
   - DM: DM, DM1, DM2, DMEPOCH
   - Astrometry: RAJ, DECJ, PMRA, PMDEC, PX, POSEPOCH
   - Binary: PB, A1, ECC, OM, T0, TASC, EPS1, EPS2, SINI, M2, PBDOT, XDOT, OMDOT, GAMMA, EDOT, H3, H4, STIG, DR, DTH, A0, B0
   - **DDK: KIN, KOM** ✅
+  - **Solar Wind: NE_SW** (alias: NE1AU) ✅
   - FD: FD1, FD2, FD3, FD4, FD5
 - **I/O Codecs**: Type-safe parsing/formatting
   - Float codec, Epoch MJD codec
@@ -172,9 +175,21 @@ This document tracks the implementation progress of JUG from notebook to product
 - **Impact**: Users cannot accidentally get wrong science; must use DD or wait for DDK implementation
 - **Test**: `test_ddk_not_implemented.py` ensures DDK raises error
 
+#### H3/H4 Orthometric Shapiro Fix ✅ (2026-02-06)
+- **Problem**: H3/H4 parameterization used non-standard conversion (SINI = H3/H4^(1/3)), producing unphysical M2 values and unstable finite-diff tests
+- **Fix**: Switched to PINT/Tempo2 convention (Freire & Wex 2010): `STIGMA = H4/H3`, `SINI = 2*H3*H4/(H3²+H4²)`, `M2 = H3⁴/(H4³*T_SUN)`
+- **Impact**: H3/H4 parameterization now matches PINT exactly; both forward model and analytic partials validated
+- **Test**: `test_ddk_partials.py::TestH3H4PartialDerivatives` (3 tests, finite-diff r>0.95)
+
+#### NE_SW Solar Wind Fitting Support ✅ (2026-02-06)
+- **Problem**: NE_SW had no ParameterSpec, no analytic partial, and no fitter wiring
+- **Fix**: Full implementation: SOLAR_WIND DerivativeGroup, NE_SW ParameterSpec (with NE1AU alias), `derivatives_sw.py` module, fitter wiring in both file-based and session-based paths
+- **Impact**: NE_SW can now be fitted via `fit_params` list like any other parameter
+- **Test**: `test_ne_sw.py` (12 tests covering registry, derivative shape/sign/scaling, forward model match)
+
 ---
 
-## Milestone 6.2: DDK Implementation ✅ COMPLETED
+## Milestone 6.2: DDK Implementation + Fit-Ready Parity ✅ COMPLETED
 
 **Status**: COMPLETED (100%)
 **Priority**: HIGH - Required for NANOGrav 15-year pulsars with annual orbital parallax
@@ -224,18 +239,35 @@ d(delay)/d(KOM) = d(delay)/d(A1_eff) * d(A1_eff)/d(KOM)
 | `jug/delays/binary_dispatch.py` | Fixed DDK fallthrough; added DDK to BINARY_MODELS registry |
 | `jug/residuals/simple_calculator.py` | DDK (model_id=5) enabled |
 | `jug/utils/binary_model_overrides.py` | DELETED — DDK override mechanism removed (DDK fully implemented) |
-| `tests/test_ddk_partials.py` | NEW — 28 tests (unit, finite-diff, fit smoke, edge cases, PINT parity stub) |
+| `jug/fitting/derivatives_sw.py` | NEW — NE_SW analytic partial: K_DM * geometry_pc / freq² |
+| `jug/model/parameter_spec.py` | Added SOLAR_WIND DerivativeGroup, NE_SW ParameterSpec with NE1AU alias |
+| `jug/fitting/optimized_fitter.py` | Wired NE_SW into design matrix assembly (both fitter paths) |
+| `tests/test_ddk_partials.py` | NEW — 36 tests (unit, finite-diff, fit smoke, edge cases, H3/H4, EDOT, end-to-end) |
+| `tests/test_ne_sw.py` | NEW — 12 tests (ParameterSpec, derivative shape/sign/scaling, forward model match) |
+| `tests/test_xdot_fd_partials.py` | NEW — 10 tests (XDOT/FD1-FD3 finite-diff, H3/STIG finite-diff) |
 
-**Test Coverage** (`tests/test_ddk_partials.py`):
+**Test Coverage** (`tests/test_ddk_partials.py` — 36 tests):
 - ✅ `TestDDKCorrectionDerivativesKIN`: Unit tests for KIN correction derivatives (2 tests)
 - ✅ `TestDDKCorrectionDerivativesKOM`: Unit tests for KOM correction derivatives (1 test)
 - ✅ `TestComputeBinaryDerivativesDDK`: Integration tests for full function (5 tests)
 - ✅ `TestBinaryRegistryDDK`: Verifies DDK uses correct derivatives function (3 tests)
-- ✅ `TestDDKOverrideMechanism`: Tests optional DD aliasing still works (2 tests)
+- ✅ `TestDDKDispatch`: DDK dispatch raises ValueError directing to branch_ddk (2 tests)
 - ✅ `TestNumericalDerivativeValidation`: **Analytic vs finite-difference** for KIN, KOM, A1, ECC (5 tests)
 - ✅ `TestDDKEdgeCases`: Zero parallax, zero PM, K96 disabled, edge inclinations (4 tests)
 - ✅ `TestDDKFitSmoke`: Design matrix rank, WLS solve, RMS-reduction smoke test (4 tests)
 - ✅ `TestDDKPintParity`: Optional PINT cross-validation (skips if PINT not installed) (1 test)
+- ✅ `TestEDOTPartialDerivative`: EDOT chain rule through ECC, finite-diff validated (2 tests)
+- ✅ `TestH3H4PartialDerivatives`: H3/H4 PINT convention, finite-diff validated (3 tests)
+- ✅ `TestDDKEndToEndSmoke`: combined_delays with binary_model_id=5, obs_pos_ls (2 tests)
+
+**Test Coverage** (`tests/test_ne_sw.py` — 12 tests):
+- ✅ `TestNESWParameterSpec`: Registry, derivative group, alias, helpers (6 tests)
+- ✅ `TestNESWDerivative`: Shape, finiteness, sign, scaling, forward model match (6 tests)
+
+**Test Coverage** (`tests/test_xdot_fd_partials.py` — 10 tests):
+- ✅ `TestXDOTPartialDerivative`: Nonzero, finite-diff r>0.95, grows with baseline (3 tests)
+- ✅ `TestFDPartialDerivatives`: FD1-FD3 exact match and finite-diff (5 tests)
+- ✅ `TestH3STIGPartialDerivatives`: H3/STIG finite-diff r>0.95 (2 tests)
 
 ### Success Criteria (All Met)
 
@@ -246,7 +278,11 @@ d(delay)/d(KOM) = d(delay)/d(A1_eff) * d(A1_eff)/d(KOM)
 - ✅ Design matrix includes KIN/KOM columns, full rank, WLS solvable
 - ✅ Fit smoke test: perturbing KIN and fitting reduces RMS
 - ✅ No silent aliasing — DDK has full Kopeikin corrections by default
-- ✅ 28 tests pass covering unit / integration / finite-diff / smoke / edge cases
+- ✅ H3/H4 orthometric Shapiro fixed to match PINT (Freire & Wex 2010 convention)
+- ✅ NE_SW solar wind: ParameterSpec + analytic partial + fitter wiring (12 tests)
+- ✅ XDOT, EDOT, FD1-FD3, H3/STIG finite-diff validation tests (10 + 2 tests)
+- ✅ DDK end-to-end smoke test via combined_delays with obs_pos_ls (2 tests)
+- ✅ 58 total new tests pass across 3 test files (36 + 12 + 10)
 
 ---
 

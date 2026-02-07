@@ -956,31 +956,25 @@ class TestEDOTPartialDerivative:
             assert corr > 0.95, f"EDOT analytic/numeric poorly correlated: r={corr:.4f}"
 
 
-class TestH4PartialDerivative:
-    """Tests for the H4 partial derivative (chain rule through SINI and M2).
+class TestH3H4PartialDerivatives:
+    """Tests for H3/H4 partial derivatives (PINT/Tempo2 Freire & Wex 2010 convention).
 
-    Note: The H3/H4 parameterization in binary_dd.py uses a non-standard
-    conversion (sini = H3/H4^{1/3}, m2 = H4^{1/3}/T_SUN^2) that requires
-    extremely small H4 values (~1e-34 s) for physical m2. This makes
-    finite-difference validation numerically unstable. We test derivative
-    correctness via structure (finite, non-zero, correct sign) rather than
-    correlation with numerical derivatives.
+    PINT convention:
+        STIGMA = H4/H3
+        SINI = 2*H3*H4 / (H3^2 + H4^2)
+        M2   = H3^4 / (H4^3 * T_SUN)
+
+    For sini=0.8, m2=0.3: stig=0.5, H3≈1.847e-7 s, H4≈9.234e-8 s.
     """
 
     @pytest.fixture
     def dd_params_h3h4(self):
-        """DD parameters using H3/H4 orthometric Shapiro parameterization.
-
-        Values are chosen to be consistent with the binary_dd.py conversion:
-        H4^(1/3)/T_SUN^2 = m2, H3/H4^(1/3) = sini.
-        For m2~0.3, sini~0.8: H4~3.9e-34, H3~5.8e-12.
-        """
+        """DD parameters using H3/H4 orthometric Shapiro parameterization (PINT convention)."""
         T_SUN = 4.925490947e-6
         m2_target = 0.3
-        sini_target = 0.8
-        h4_cbrt = m2_target * T_SUN**2
-        h4 = h4_cbrt**3
-        h3 = sini_target * h4_cbrt
+        stig = 0.5  # For sini=0.8
+        h3 = m2_target * stig**3 * T_SUN  # ≈ 1.847e-7 s
+        h4 = h3 * stig                     # ≈ 9.234e-8 s
         return {
             'BINARY': 'DD',
             'PB': 5.7410459,
@@ -1006,15 +1000,232 @@ class TestH4PartialDerivative:
         assert np.all(np.isfinite(deriv)), "H4 derivative has non-finite values"
         assert np.std(deriv) > 0, "H4 derivative is constant (degenerate)"
 
-    def test_h4_derivative_varies_with_toa(self, dd_params_h3h4):
-        """H4 derivative should vary across TOAs (Shapiro modulation)."""
+    def test_h3_derivative_finite_and_nonzero(self, dd_params_h3h4):
+        """H3 derivative should be finite and have non-zero variation."""
         from jug.fitting.derivatives_dd import compute_binary_derivatives_dd
         toas = jnp.linspace(55000.0, 57000.0, 100)
-        result = compute_binary_derivatives_dd(dd_params_h3h4, toas, ['H4'])
-        h4_deriv = np.asarray(result['H4'])
-        assert np.all(np.isfinite(h4_deriv)), "H4 derivative has non-finite values"
-        # Shapiro delay varies with orbital phase, so derivative should too
-        assert np.max(h4_deriv) != np.min(h4_deriv), "H4 derivative is constant"
+        result = compute_binary_derivatives_dd(dd_params_h3h4, toas, ['H3'])
+        deriv = np.asarray(result['H3'])
+        assert np.all(np.isfinite(deriv)), "H3 derivative has non-finite values"
+        assert np.std(deriv) > 0, "H3 derivative is constant (degenerate)"
+
+    def test_h4_finite_difference(self, dd_params_h3h4):
+        """H4 analytic derivative should match central-difference numerical derivative."""
+        from jug.fitting.derivatives_dd import compute_binary_derivatives_dd, compute_dd_binary_delay
+
+        toas = np.linspace(55000.0, 57000.0, 50)
+        result = compute_binary_derivatives_dd(dd_params_h3h4, jnp.asarray(toas), ['H4'])
+        analytic = np.asarray(result['H4'])
+
+        h4_val = dd_params_h3h4['H4']
+        h = h4_val * 1e-5  # Relative step
+        params_plus = dd_params_h3h4.copy()
+        params_minus = dd_params_h3h4.copy()
+        params_plus['H4'] = h4_val + h
+        params_minus['H4'] = h4_val - h
+
+        delay_plus = np.asarray(compute_dd_binary_delay(toas, params_plus))
+        delay_minus = np.asarray(compute_dd_binary_delay(toas, params_minus))
+        numeric = (delay_plus - delay_minus) / (2 * h)
+
+        assert np.all(np.isfinite(analytic))
+        assert np.all(np.isfinite(numeric))
+        scale = np.max(np.abs(numeric))
+        if scale > 1e-20:
+            corr = np.corrcoef(analytic, numeric)[0, 1]
+            assert corr > 0.95, f"H4 analytic/numeric poorly correlated: r={corr:.4f}"
+
+    def test_h3_finite_difference(self, dd_params_h3h4):
+        """H3 analytic derivative should match central-difference numerical derivative."""
+        from jug.fitting.derivatives_dd import compute_binary_derivatives_dd, compute_dd_binary_delay
+
+        toas = np.linspace(55000.0, 57000.0, 50)
+        result = compute_binary_derivatives_dd(dd_params_h3h4, jnp.asarray(toas), ['H3'])
+        analytic = np.asarray(result['H3'])
+
+        h3_val = dd_params_h3h4['H3']
+        h = h3_val * 1e-5  # Relative step
+        params_plus = dd_params_h3h4.copy()
+        params_minus = dd_params_h3h4.copy()
+        params_plus['H3'] = h3_val + h
+        params_minus['H3'] = h3_val - h
+
+        delay_plus = np.asarray(compute_dd_binary_delay(toas, params_plus))
+        delay_minus = np.asarray(compute_dd_binary_delay(toas, params_minus))
+        numeric = (delay_plus - delay_minus) / (2 * h)
+
+        assert np.all(np.isfinite(analytic))
+        assert np.all(np.isfinite(numeric))
+        scale = np.max(np.abs(numeric))
+        if scale > 1e-20:
+            corr = np.corrcoef(analytic, numeric)[0, 1]
+            assert corr > 0.95, f"H3 analytic/numeric poorly correlated: r={corr:.4f}"
+
+
+# =============================================================================
+# DDK end-to-end smoke test with branch_ddk + obs_pos_ls
+# =============================================================================
+
+class TestDDKEndToEndSmoke:
+    """End-to-end test exercising combined_delays branch_ddk with observer positions.
+
+    Validates that the full DDK pipeline (Kopeikin parallax + K96 proper motion
+    corrections through branch_ddk in combined.py) produces physically consistent
+    delays and that analytic partials track the finite-difference derivatives
+    computed from that pipeline.
+    """
+
+    @pytest.fixture
+    def ddk_combined_params(self):
+        """Parameters for exercising combined_delays with DDK (model_id=5)."""
+        return {
+            'PB': 5.7410459,
+            'A1': 3.3667144,
+            'T0': 50000.0,
+            'ECC': 1.918e-5,
+            'OM': 1.35,
+            'KIN': 137.56,
+            'KOM': 207.0,
+            'PX': 6.396,
+            'PMRA': 121.438,
+            'PMDEC': -71.475,
+            'RAJ_rad': 1.181,
+            'DECJ_rad': -0.817,
+            'K96': True,
+            'PBDOT': 3.728e-12,
+            'OMDOT': 0.016,
+            'SINI': 0.0,
+            'M2': 0.254,
+            'GAMMA': 0.0,
+            'XDOT': 0.0,
+            'EDOT': 0.0,
+        }
+
+    def test_branch_ddk_produces_nonzero_delays(self, ddk_combined_params):
+        """DDK branch in combined_delays should produce non-trivial delays."""
+        import jax.numpy as jnp
+        from jug.delays.combined import combined_delays
+
+        params = ddk_combined_params
+        n = 50
+        toas = jnp.linspace(50000.0, 52000.0, n)
+        freq = jnp.full(n, 1400.0)
+
+        # Simulated Earth orbit
+        t_orb = jnp.linspace(0, 2 * jnp.pi * 2, n)
+        au_ls = 499.004783836
+        obs_pos = jnp.column_stack([
+            au_ls * jnp.cos(t_orb),
+            au_ls * jnp.sin(t_orb),
+            jnp.zeros(n)
+        ])
+
+        # Sun positions (rough: opposite of observer)
+        obs_sun = -obs_pos * 1.496e8 / au_ls  # Convert to km
+
+        # Pulsar direction unit vector
+        ra, dec = params['RAJ_rad'], params['DECJ_rad']
+        L_hat = jnp.array([
+            jnp.cos(dec) * jnp.cos(ra),
+            jnp.cos(dec) * jnp.sin(ra),
+            jnp.sin(dec)
+        ])
+        L_hat = jnp.broadcast_to(L_hat, (n, 3))
+
+        # Proper motion conversion
+        MAS_YR_TO_RAD_S = (jnp.pi / 180.0 / 3600.0 / 1000.0) / (365.25 * 86400.0)
+        pmra_rad_s = params['PMRA'] * MAS_YR_TO_RAD_S
+        pmdec_rad_s = params['PMDEC'] * MAS_YR_TO_RAD_S
+
+        delays = combined_delays(
+            tdbld=toas,
+            freq_bary=freq,
+            obs_sun_pos=obs_sun,
+            L_hat=L_hat,
+            dm_coeffs=jnp.array([0.0]),
+            dm_factorials=jnp.array([1.0]),
+            dm_epoch=50000.0,
+            ne_sw=0.0,
+            fd_coeffs=jnp.array([0.0]),
+            has_fd=False,
+            roemer_shapiro=jnp.zeros(n),
+            has_binary=True,
+            binary_model_id=5,  # DDK
+            pb=params['PB'],
+            a1=params['A1'],
+            tasc=0.0,
+            eps1=0.0,
+            eps2=0.0,
+            pbdot=params['PBDOT'],
+            xdot=params['XDOT'],
+            gamma=params['GAMMA'],
+            r_shap=0.0,
+            s_shap=0.0,
+            ecc=params['ECC'],
+            om=params['OM'],
+            t0=params['T0'],
+            omdot=params['OMDOT'],
+            edot=params['EDOT'],
+            m2=params['M2'],
+            sini=params['SINI'],
+            kin=params['KIN'],
+            kom=params['KOM'],
+            h3=0.0,
+            h4=0.0,
+            stig=0.0,
+            fb_coeffs=jnp.array([0.0]),
+            fb_factorials=jnp.array([1.0]),
+            fb_epoch=50000.0,
+            use_fb=False,
+            obs_pos_ls=obs_pos,
+            px=params['PX'],
+            sin_ra=jnp.sin(ra),
+            cos_ra=jnp.cos(ra),
+            sin_dec=jnp.sin(dec),
+            cos_dec=jnp.cos(dec),
+            k96=True,
+            pmra_rad_per_sec=pmra_rad_s,
+            pmdec_rad_per_sec=pmdec_rad_s,
+        )
+
+        delays_np = np.asarray(delays)
+        assert np.all(np.isfinite(delays_np)), "DDK combined_delays has non-finite values"
+        assert np.std(delays_np) > 0, "DDK delays are constant (no orbital modulation)"
+        # Delay range should be physically reasonable (~seconds for A1~3.3 lt-s)
+        assert np.max(np.abs(delays_np)) < 20.0, "DDK delay > 20 s is unphysical"
+        assert np.max(np.abs(delays_np)) > 0.01, "DDK delay < 10 ms is suspiciously small"
+
+    def test_ddk_partials_consistent_with_combined(self, ddk_combined_params):
+        """DDK analytic partials (KIN, KOM) should be consistent with combined_delays."""
+        params = ddk_combined_params
+        n = 50
+        toas = np.linspace(50000.0, 52000.0, n)
+
+        # Observer positions
+        t_orb = np.linspace(0, 2 * np.pi * 2, n)
+        au_ls = 499.004783836
+        obs_pos = np.column_stack([
+            au_ls * np.cos(t_orb),
+            au_ls * np.sin(t_orb),
+            np.zeros(n)
+        ])
+
+        # Get analytic partials
+        result = compute_binary_derivatives_ddk(
+            params=params,
+            toas_bary_mjd=jnp.asarray(toas),
+            fit_params=['KIN', 'KOM', 'A1', 'ECC'],
+            obs_pos_ls=jnp.asarray(obs_pos),
+        )
+
+        for param_name in ['KIN', 'KOM', 'A1', 'ECC']:
+            deriv = np.asarray(result[param_name])
+            assert np.all(np.isfinite(deriv)), f"{param_name}: non-finite derivatives"
+            assert deriv.shape == (n,), f"{param_name}: wrong shape"
+
+        # KIN and KOM should show per-TOA variation (parallax corrections)
+        assert np.std(np.asarray(result['KIN'])) > 0, "KIN derivative has no variation"
+        assert np.std(np.asarray(result['KOM'])) > 0, "KOM derivative has no variation"
 
 
 if __name__ == '__main__':

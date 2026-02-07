@@ -51,6 +51,7 @@ class DerivativeGroup(Enum):
     EPOCH = auto()
     JUMP = auto()
     FD = auto()
+    SOLAR_WIND = auto()
 
 
 @dataclass(frozen=True)
@@ -620,11 +621,25 @@ _FD_PARAMS = [
     ),
 ]
 
+# Solar wind parameters
+_SW_PARAMS = [
+    ParameterSpec(
+        name="NE_SW",
+        group="solar_wind",
+        derivative_group=DerivativeGroup.SOLAR_WIND,
+        dtype="float64",
+        internal_unit="cm^-3",
+        par_unit_str="cm^-3",
+        aliases=("NE1AU",),
+        component_name="SolarWindComponent",
+    ),
+]
+
 # Build the registry
 PARAMETER_REGISTRY: Dict[str, ParameterSpec] = {}
 _ALIAS_MAP: Dict[str, str] = {}  # alias -> canonical name
 
-for spec in _SPIN_PARAMS + _DM_PARAMS + _ASTROMETRY_PARAMS + _BINARY_PARAMS + _FD_PARAMS:
+for spec in _SPIN_PARAMS + _DM_PARAMS + _ASTROMETRY_PARAMS + _BINARY_PARAMS + _FD_PARAMS + _SW_PARAMS:
     PARAMETER_REGISTRY[spec.name] = spec
     for alias in spec.aliases:
         _ALIAS_MAP[alias] = spec.name
@@ -1051,3 +1066,77 @@ def get_fd_params_from_list(params: List[str]) -> List[str]:
         Only the FD parameters (FD1, FD2, FD3, ...)
     """
     return [p for p in params if is_fd_param(p)]
+
+
+def is_sw_param(name: str) -> bool:
+    """Check if a parameter is a solar wind parameter (NE_SW / NE1AU)."""
+    spec = get_spec(name)
+    return spec is not None and spec.derivative_group == DerivativeGroup.SOLAR_WIND
+
+
+def get_sw_params_from_list(params: List[str]) -> List[str]:
+    """Filter a list to only solar wind parameters."""
+    return [p for p in params if is_sw_param(p)]
+
+
+def validate_fit_param(name: str) -> bool:
+    """Validate that a parameter name is registered and can be fitted.
+
+    Checks the PARAMETER_REGISTRY (after alias resolution) and known
+    pattern families (FD, JUMP). Raises clear errors for unregistered
+    or out-of-range parameters.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name (aliases are resolved first)
+
+    Returns
+    -------
+    bool
+        True if the parameter is valid and fittable
+
+    Raises
+    ------
+    ValueError
+        If the parameter is not registered or is out of range
+    """
+    import re
+
+    canonical = canonicalize_param_name(name)
+
+    # Check direct registry lookup
+    if canonical in PARAMETER_REGISTRY:
+        return True
+
+    # Check pattern families: JUMP (always valid via pattern match)
+    if is_jump_param(canonical):
+        return True
+
+    # Check FD pattern - registered FD1..FD9, higher indices not yet implemented
+    fd_match = re.match(r'^FD(\d+)$', canonical)
+    if fd_match:
+        fd_idx = int(fd_match.group(1))
+        if 1 <= fd_idx <= 9:
+            return True  # FD1-FD9 are registered
+        raise ValueError(
+            f"Parameter '{name}' (FD{fd_idx}) is out of range. "
+            f"FD1-FD9 are registered; parametric families (FDn>9) are not yet implemented as first-class families."
+        )
+
+    # Check FB pattern - registered FB0..FB20, higher indices not yet implemented
+    fb_match = re.match(r'^FB(\d+)$', canonical)
+    if fb_match:
+        fb_idx = int(fb_match.group(1))
+        if 0 <= fb_idx <= 20:
+            return True  # FB0-FB20 are registered
+        raise ValueError(
+            f"Parameter '{name}' (FB{fb_idx}) is out of range. "
+            f"FB0-FB20 are registered; parametric families (FBn>20) are not yet implemented as first-class families."
+        )
+
+    # Unknown parameter
+    raise ValueError(
+        f"Parameter '{name}' is not registered. "
+        f"Parametric families (JUMP1..N, DMX_*, FDn>9, FBn>20) are not yet implemented as first-class families."
+    )

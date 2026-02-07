@@ -72,13 +72,17 @@ from jug.model.parameter_spec import (
     is_binary_param,
     is_astrometry_param,
     is_fd_param,
+    is_sw_param,
     get_spin_params_from_list,
     get_dm_params_from_list,
     get_binary_params_from_list,
     get_astrometry_params_from_list,
     get_fd_params_from_list,
+    get_sw_params_from_list,
     DerivativeGroup,
     get_derivative_group,
+    canonicalize_param_name,
+    validate_fit_param,
 )
 # Lazy import to avoid circular dependency with components
 # get_component is imported where needed in functions below
@@ -147,12 +151,14 @@ class GeneralFitSetup:
     binary_params: List[str]
     astrometry_params: List[str]
     fd_params: List[str]  # FD parameters being fit
+    sw_params: List[str]  # Solar wind parameters being fit
     roemer_shapiro_sec: Optional[np.ndarray]
     prebinary_delay_sec: Optional[np.ndarray]  # PINT-compatible pre-binary time
     initial_binary_delay: Optional[np.ndarray]  # For binary fitting iteration
     ssb_obs_pos_ls: Optional[np.ndarray]
     initial_astrometric_delay: Optional[np.ndarray]  # For astrometry fitting iteration
     initial_fd_delay: Optional[np.ndarray]  # For FD fitting iteration
+    sw_geometry_pc: Optional[np.ndarray]  # Solar wind geometry factor per TOA
 
 
 # =============================================================================
@@ -1129,28 +1135,33 @@ def _build_general_fit_setup_from_files(
     setup : GeneralFitSetup
         Complete setup data for iteration
     """
+    # Canonicalize and validate fit_params
+    fit_params = [canonicalize_param_name(p) for p in fit_params]
+    for p in fit_params:
+        validate_fit_param(p)
+
     # Parse files
     params = parse_par_file(par_file)
-    
+
     # Validate par file timescale (fail fast on TCB)
     validate_par_timescale(params, context="create_general_fit_setup")
-    
+
     toas_data = parse_tim_file_mjds(tim_file)
-    
+
     # Convert RAJ/DECJ from strings to radians (needed for fitting)
     from jug.io.par_reader import parse_ra, parse_dec
     if 'RAJ' in params and isinstance(params['RAJ'], str):
         params['RAJ'] = parse_ra(params['RAJ'])
     if 'DECJ' in params and isinstance(params['DECJ'], str):
         params['DECJ'] = parse_dec(params['DECJ'])
-    
+
     # Extract TOA data
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
     freq_mhz = np.array([toa.freq_mhz for toa in toas_data])
     errors_us = np.array([toa.error_us for toa in toas_data])
     errors_sec = errors_us * 1e-6
     weights = 1.0 / errors_sec**2
-    
+
     # Extract starting parameter values (add defaults for missing parameters)
     param_values_start = []
     for param in fit_params:
@@ -1180,17 +1191,19 @@ def _build_general_fit_setup_from_files(
     binary_params = get_binary_params_from_list(fit_params)
     astrometry_params = get_astrometry_params_from_list(fit_params)
     fd_params = get_fd_params_from_list(fit_params)
-    
+    sw_params = get_sw_params_from_list(fit_params)
+
     # Cache expensive delays (subtract_tzr=False for fitting)
     if verbose:
         print(f"\nCaching expensive delays...")
-    
+
     result = compute_residuals_simple(
         par_file,
         tim_file,
         clock_dir=clock_dir,
         subtract_tzr=False,
-        verbose=False
+        verbose=False,
+        need_sw_geometry=bool(sw_params),
     )
 
     dt_sec_cached = result['dt_sec']
@@ -1247,6 +1260,15 @@ def _build_general_fit_setup_from_files(
         initial_fd_params = {p: params[p] for p in fd_params if p in params}
         initial_fd_delay = compute_fd_delay(freq_mhz_bary, initial_fd_params)
 
+    # If fitting NE_SW, extract solar wind geometry factor
+    sw_geometry_pc = None
+    if sw_params:
+        sw_geometry_pc = result.get('sw_geometry_pc')
+        if sw_geometry_pc is None:
+            raise ValueError(
+                "NE_SW fitting requires sw_geometry_pc in compute_residuals_simple output."
+            )
+
     return GeneralFitSetup(
         params=params,
         fit_param_list=fit_params,
@@ -1264,12 +1286,14 @@ def _build_general_fit_setup_from_files(
         binary_params=binary_params,
         astrometry_params=astrometry_params,
         fd_params=fd_params,
+        sw_params=sw_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
         prebinary_delay_sec=prebinary_delay_sec,
         initial_binary_delay=initial_binary_delay,
         ssb_obs_pos_ls=ssb_obs_pos_ls,
         initial_astrometric_delay=initial_astrometric_delay,
-        initial_fd_delay=initial_fd_delay
+        initial_fd_delay=initial_fd_delay,
+        sw_geometry_pc=sw_geometry_pc,
     )
 
 
@@ -1573,23 +1597,34 @@ def _run_general_fit_iterations(
             from jug.fitting.derivatives_fd import compute_fd_derivatives
             fd_derivs = compute_fd_derivatives(params, freq_mhz, fd_params_list)
 
-        # Assemble columns in original fit_params order (preserves exact behavior)
+        # Batch solar wind parameters (NE_SW)
+        sw_params_list = get_sw_params_from_list(fit_params)
+        sw_derivs = {}
+        if sw_params_list:
+            if setup.sw_geometry_pc is None:
+                raise ValueError(
+                    "NE_SW fitting requires sw_geometry_pc in setup."
+                )
+            from jug.fitting.derivatives_sw import compute_sw_derivatives
+            sw_derivs = compute_sw_derivatives(setup.sw_geometry_pc, freq_mhz, sw_params_list)
+
+        # Merge all derivative dicts into one lookup table
+        all_derivs = {}
+        all_derivs.update(spin_derivs)
+        all_derivs.update(dm_derivs)
+        all_derivs.update(binary_derivs)
+        all_derivs.update(astrometry_derivs)
+        all_derivs.update(fd_derivs)
+        all_derivs.update(sw_derivs)
+
+        # Assemble columns in original fit_params order
         for param in fit_params:
-            if is_spin_param(param):
-                M_columns.append(spin_derivs[param])
-            elif is_dm_param(param):
-                M_columns.append(dm_derivs[param])
-            elif is_binary_param(param):
-                M_columns.append(binary_derivs[param])
-            elif is_astrometry_param(param):
-                M_columns.append(astrometry_derivs[param])
-            elif is_fd_param(param):
-                M_columns.append(fd_derivs[param])
-            elif param.startswith('FB'):
-                # FB parameters are now handled by compute_binary_derivatives
-                M_columns.append(binary_derivs[param])
-            else:
-                raise ValueError(f"Unknown parameter type: {param}")
+            if param not in all_derivs:
+                raise ValueError(
+                    f"No derivative computed for parameter '{param}'. "
+                    f"Check that it is registered in parameter_spec.py and has a derivative function."
+                )
+            M_columns.append(all_derivs[param])
         
         # Assemble design matrix
         M = np.column_stack(M_columns)
@@ -1801,13 +1836,18 @@ def _build_general_fit_setup_from_cache(
     setup : GeneralFitSetup
         Complete setup data for iteration (identical to file-based path)
     """
+    # Canonicalize and validate fit_params
+    fit_params = [canonicalize_param_name(p) for p in fit_params]
+    for p in fit_params:
+        validate_fit_param(p)
+
     # Extract cached arrays
     dt_sec_cached = session_cached_data['dt_sec']
     tdb_mjd = session_cached_data['tdb_mjd']
     freq_mhz_bary = session_cached_data['freq_bary_mhz']
     toas_mjd = session_cached_data['toas_mjd']
     errors_us = session_cached_data['errors_us']
-    
+
     # Apply TOA mask if provided
     if toa_mask is not None:
         dt_sec_cached = dt_sec_cached[toa_mask]
@@ -1853,7 +1893,8 @@ def _build_general_fit_setup_from_cache(
     binary_params = get_binary_params_from_list(fit_params)
     astrometry_params = get_astrometry_params_from_list(fit_params)
     fd_params = get_fd_params_from_list(fit_params)
-    
+    sw_params = get_sw_params_from_list(fit_params)
+
     # If fitting DM params, cache initial DM delay (same as file path)
     initial_dm_delay = None
     if dm_params:
@@ -1922,6 +1963,17 @@ def _build_general_fit_setup_from_cache(
         initial_fd_params = {p: params_dict[p] for p in fd_params if p in params_dict}
         initial_fd_delay = compute_fd_delay(freq_mhz_bary, initial_fd_params)
 
+    # If fitting NE_SW, extract solar wind geometry factor
+    sw_geometry_pc = None
+    if sw_params:
+        sw_geometry_pc = session_cached_data.get('sw_geometry_pc')
+        if sw_geometry_pc is None:
+            raise ValueError(
+                "NE_SW fitting requires sw_geometry_pc in cached data."
+            )
+        if toa_mask is not None:
+            sw_geometry_pc = sw_geometry_pc[toa_mask]
+
     return GeneralFitSetup(
         params=dict(params_dict),  # Copy
         fit_param_list=fit_params,
@@ -1939,12 +1991,14 @@ def _build_general_fit_setup_from_cache(
         binary_params=binary_params,
         astrometry_params=astrometry_params,
         fd_params=fd_params,
+        sw_params=sw_params,
         roemer_shapiro_sec=roemer_shapiro_sec,
         prebinary_delay_sec=prebinary_delay_sec,
         initial_binary_delay=initial_binary_delay,
         ssb_obs_pos_ls=ssb_obs_pos_ls,
         initial_astrometric_delay=initial_astrometric_delay,
-        initial_fd_delay=initial_fd_delay
+        initial_fd_delay=initial_fd_delay,
+        sw_geometry_pc=sw_geometry_pc,
     )
 
 

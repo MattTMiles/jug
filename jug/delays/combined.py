@@ -196,6 +196,18 @@ def combined_delays(
                 -2.0 * r_shap * jnp.log(1.0 - s_shap * sin_Phi),
                 0.0
             )
+            # Orthometric H3-only Shapiro delay (Freire & Wex 2010 Eq. 19)
+            # When r_shap=0 and s_shap=0 but h3>0, use harmonic expansion.
+            # Leading non-absorbed harmonic is the 3rd:
+            #   Δ_S = -(4/3)*H3*sin(3Φ)
+            # Coefficient 4/3 = 2 * (2/3) from Fourier basis factor 2/k for k=3.
+            # Matches Tempo2 ELL1Hmodel.C mode 0 and PINT ELL1H_model.py.
+            shapiro_h3only = jnp.where(
+                (r_shap == 0.0) & (s_shap == 0.0) & (h3 > 0.0),
+                -(4.0 / 3.0) * h3 * sin_3Phi,
+                0.0
+            )
+            shapiro_binary = shapiro_binary + shapiro_h3only
             return binary_roemer + einstein_binary + shapiro_binary
 
         # Branch 2: DD / DDK

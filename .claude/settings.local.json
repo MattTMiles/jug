@@ -51,7 +51,16 @@
       "WebFetch(domain:github.com)",
       "Bash(mamba run -n discotech python -c:*)",
       "Bash(mamba run:*)",
-      "Bash(locate:*)"
+      "Bash(locate:*)",
+      "Bash(PYTHONPATH=/home/mattm/soft/JUG python:*)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:academic.oup.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.researchgate.net)",
+      "WebFetch(domain:ar5iv.labs.arxiv.org)",
+      "WebFetch(domain:www.aanda.org)",
+      "WebFetch(domain:hal.science)",
+      "WebFetch(domain:inspirehep.net)"
     ],
     "deny": [],
     "ask": []

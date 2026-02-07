@@ -179,10 +179,12 @@ Both parameterizations have analytic partials validated against finite differenc
 | File | Tests | Coverage |
 |------|-------|----------|
 | `tests/test_ddk_partials.py` | 36 | DDK corrections, registry, finite-diff (KIN/KOM/A1/ECC), H3/H4, EDOT, DDK dispatch, end-to-end smoke |
-| `tests/test_ne_sw.py` | 12 | NE_SW ParameterSpec, derivative shape/sign/scaling, forward model match |
+| `tests/test_ne_sw.py` | 15 | NE_SW ParameterSpec, derivative shape/sign/scaling, forward model match, canonicalization, conditional geometry |
 | `tests/test_xdot_fd_partials.py` | 10 | XDOT finite-diff, FD1-FD3 finite-diff, H3/STIG finite-diff |
+| `tests/test_h3h4_edge_and_priority.py` | 18 | H3/H4 edge cases, STIG/H4 priority warnings, validate_fit_param |
+| `tests/test_gui_parity.py` | 5 | GUI parameter list uses registry, par file parsing, canonicalization/validation in fit path |
 
-**Total new/updated tests**: 58
+**Total new/updated tests**: 84
 
 ---
 
@@ -229,3 +231,4 @@ Both parameterizations have analytic partials validated against finite differenc
 - FD parameters (FD1-FD9): Trivial partials, finite-diff validated
 - Solar wind (NE_SW): Analytic partial, ParameterSpec, fitter wiring complete
 - Prebinary time evaluation: PINT-compatible (roemer + shapiro + dm + sw + tropo)
+- GUI parity: Parameter drawer uses `list_fittable_params()` registry (auto-syncs with derivatives); fit path canonicalizes + validates

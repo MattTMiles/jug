@@ -70,7 +70,10 @@ class ParameterSpec:
     internal_unit : str
         Internal storage unit (Hz, rad, s, pc/cm^3)
     par_unit_str : str
-        Human-readable unit label for .par files
+        Unit label as it appears in .par files (ASCII, e.g. 's^-2', 'Msun')
+    display_unit : str
+        Human-readable unit for GUI display (Unicode OK, e.g. 'Hz/s', 'M☉').
+        Falls back to par_unit_str when empty.
     aliases : tuple
         Alternative names that resolve to this parameter
     component_name : str
@@ -98,6 +101,7 @@ class ParameterSpec:
     dtype: str = "float64"
     internal_unit: str = ""
     par_unit_str: str = ""
+    display_unit: str = ""  # Falls back to par_unit_str when empty
     aliases: Tuple[str, ...] = ()
     component_name: str = ""
     default_fit: bool = False
@@ -131,6 +135,7 @@ _SPIN_PARAMS = [
         dtype="float64",
         internal_unit="Hz/s",
         par_unit_str="s^-2",
+        display_unit="Hz/s",
         aliases=("NUDOT", "FDOT"),
         component_name="SpinComponent",
         default_fit=True,
@@ -143,6 +148,7 @@ _SPIN_PARAMS = [
         dtype="longdouble",  # High-order terms need precision
         internal_unit="Hz/s^2",
         par_unit_str="s^-3",
+        display_unit="Hz/s²",
         component_name="SpinComponent",
         requires=("PEPOCH",),
     ),
@@ -153,6 +159,7 @@ _SPIN_PARAMS = [
         dtype="longdouble",
         internal_unit="Hz/s^3",
         par_unit_str="s^-4",
+        display_unit="Hz/s³",
         component_name="SpinComponent",
         requires=("PEPOCH",),
     ),
@@ -178,6 +185,7 @@ _DM_PARAMS = [
         dtype="float64",
         internal_unit="pc/cm^3",
         par_unit_str="pc cm^-3",
+        display_unit="pc/cm³",
         aliases=("DM0",),
         component_name="DispersionComponent",
         default_fit=True,
@@ -189,6 +197,7 @@ _DM_PARAMS = [
         dtype="float64",
         internal_unit="pc/cm^3/yr",
         par_unit_str="pc cm^-3 yr^-1",
+        display_unit="pc/cm³/yr",
         component_name="DispersionComponent",
         requires=("DMEPOCH",),
     ),
@@ -199,6 +208,7 @@ _DM_PARAMS = [
         dtype="float64",
         internal_unit="pc/cm^3/yr^2",
         par_unit_str="pc cm^-3 yr^-2",
+        display_unit="pc/cm³/yr²",
         component_name="DispersionComponent",
         requires=("DMEPOCH",),
     ),
@@ -292,6 +302,7 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="day",
         par_unit_str="d",
+        display_unit="days",
         aliases=("PORB",),
         component_name="BinaryComponent",
     ),
@@ -381,6 +392,7 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="Msun",
         par_unit_str="Msun",
+        display_unit="M☉",
         component_name="BinaryComponent",
     ),
     # Time derivatives
@@ -389,8 +401,9 @@ _BINARY_PARAMS = [
         group="binary",
         derivative_group=DerivativeGroup.BINARY,
         dtype="float64",
-        internal_unit="",
-        par_unit_str="",
+        internal_unit="s/s",
+        par_unit_str="s/s",
+        display_unit="s/s",
         component_name="BinaryComponent",
     ),
     ParameterSpec(
@@ -630,6 +643,7 @@ _SW_PARAMS = [
         dtype="float64",
         internal_unit="cm^-3",
         par_unit_str="cm^-3",
+        display_unit="cm⁻³",
         aliases=("NE1AU",),
         component_name="SolarWindComponent",
     ),
@@ -700,6 +714,38 @@ def get_spec(name: str) -> Optional[ParameterSpec]:
     """
     canonical = canonicalize_param_name(name)
     return PARAMETER_REGISTRY.get(canonical)
+
+
+def get_display_unit(name: str) -> str:
+    """
+    Get the human-readable display unit for a parameter.
+
+    Returns ``display_unit`` if set, otherwise falls back to ``par_unit_str``.
+    Returns ``""`` for unknown parameters.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name (aliases are resolved)
+
+    Returns
+    -------
+    str
+        Display-friendly unit string
+
+    Examples
+    --------
+    >>> get_display_unit('F0')
+    'Hz'
+    >>> get_display_unit('F1')
+    'Hz/s'
+    >>> get_display_unit('M2')
+    'M☉'
+    """
+    spec = get_spec(name)
+    if spec is None:
+        return ""
+    return spec.display_unit if spec.display_unit else spec.par_unit_str
 
 
 def get_derivative_group(name: str) -> Optional[DerivativeGroup]:

@@ -247,6 +247,17 @@ def _register_builtin_models():
         compute_binary_derivatives_ell1
     )
 
+    # T2 (Tempo2 universal model) - auto-dispatches based on parameters
+    from jug.fitting.binary_t2_dispatch import (
+        compute_t2_binary_delay,
+        compute_binary_derivatives_t2
+    )
+    register_binary_model(
+        ['T2'],
+        compute_t2_binary_delay,
+        compute_binary_derivatives_t2
+    )
+
 
 # Auto-register builtin models on import
 _register_builtin_models()

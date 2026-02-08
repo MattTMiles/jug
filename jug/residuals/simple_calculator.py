@@ -36,6 +36,56 @@ from jug.utils.constants import (
 )
 
 
+def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True):
+    """Compute phase residuals from emission-time offsets (canonical implementation).
+
+    This is the single shared function used by both the evaluate-only and fitter
+    codepaths to guarantee identical phase computation, wrapping, and conversion.
+
+    Parameters
+    ----------
+    dt_sec_ld : np.ndarray (longdouble)
+        Time since PEPOCH minus all delays, in seconds.
+        Must be longdouble to preserve phase precision for large |dt|.
+    params : dict
+        Timing model parameters (needs F0, F1, F2).
+    weights : np.ndarray (float64)
+        1/sigma^2 weights for weighted mean subtraction.
+    subtract_mean : bool
+        Whether to subtract weighted mean from residuals.
+
+    Returns
+    -------
+    residuals_us : np.ndarray (float64)
+        Residuals in microseconds.
+    residuals_sec : np.ndarray (float64)
+        Residuals in seconds.
+    """
+    F0 = get_longdouble(params, 'F0')
+    F1 = get_longdouble(params, 'F1', default=0.0)
+    F2 = get_longdouble(params, 'F2', default=0.0)
+    F1_half = F1 / np.longdouble(2.0)
+    F2_sixth = F2 / np.longdouble(6.0)
+
+    dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
+
+    # Phase using Horner's method (longdouble precision)
+    phase = dt * (F0 + dt * (F1_half + dt * F2_sixth))
+
+    # Wrap to nearest integer pulse
+    frac_phase = phase - np.round(phase)
+
+    # Convert to float64 seconds
+    residuals_sec = np.asarray(frac_phase / F0, dtype=np.float64)
+
+    if subtract_mean:
+        wm = np.sum(residuals_sec * weights) / np.sum(weights)
+        residuals_sec = residuals_sec - wm
+
+    residuals_us = residuals_sec * 1e6
+    return residuals_us, residuals_sec
+
+
 def compute_residuals_simple(
     par_file: Path | str,
     tim_file: Path | str,
@@ -567,13 +617,12 @@ def compute_residuals_simple(
     F2_sixth = F2 / np.longdouble(6.0)
     PEPOCH_sec = PEPOCH * np.longdouble(SECS_PER_DAY)
 
-    # Time at emission (TDB - all delays)
+    # Time at emission (TDB - all delays) — longdouble for phase precision
     tdb_mjd_ld = np.array(tdb_mjd, dtype=np.longdouble)
     tdb_sec = tdb_mjd_ld * np.longdouble(SECS_PER_DAY)
     dt_sec = tdb_sec - PEPOCH_sec - delay_sec
 
-    # Compute phase using Horner's method
-    phase = dt_sec * (F0 + dt_sec * (F1_half + dt_sec * F2_sixth))
+    # Phase computation is done by the shared function below (after TZR block)
 
     # TZR phase offset (if specified)
     tzr_phase = np.longdouble(0.0)
@@ -758,34 +807,14 @@ def compute_residuals_simple(
         if verbose: print(f"   TZR delay: {float(tzr_delay):.9f} s")
         if verbose: print(f"   TZR phase: {float(tzr_phase):.6f} cycles")
 
-    # Wrap phase to [-0.5, 0.5] cycles (PINT's "nearest" pulse approach)
-    # This is done by keeping only the fractional part
-    if subtract_tzr:
-        # Legacy mode: subtract TZR then wrap
-        frac_phase = np.mod(phase - tzr_phase + 0.5, 1.0) - 0.5
-    else:
-        # PINT-style: wrap to nearest integer pulse (discard integer part)
-        # This is what PINT does by default in track_mode="nearest"
-        phase_wrapped = phase - np.round(phase)  # Fractional part only
-        frac_phase = phase_wrapped
-
-    # Convert to microseconds
-    residuals_us = np.asarray(frac_phase / F0 * 1e6, dtype=np.float64)
-
-    # Subtract weighted mean (PINT's default behavior)
-    # NOTE: For fitting, we should NOT subtract mean here!
-    # The fitter needs the raw wrapped residuals to see parameter errors
-    if subtract_tzr:
-        # Legacy/display mode: subtract mean for nice plots
-        errors_us = np.array([toa.error_us for toa in toas])
-        weights = 1.0 / (errors_us ** 2)
-        weighted_mean = np.sum(residuals_us * weights) / np.sum(weights)
-        residuals_us = residuals_us - weighted_mean
-    else:
-        # Fitting mode: keep raw wrapped residuals
-        # The fitter will handle mean subtraction if needed
-        errors_us = np.array([toa.error_us for toa in toas])
-        weights = 1.0 / (errors_us ** 2)
+    # Phase computation + wrapping + conversion via shared canonical function.
+    # Both evaluate-only and fitter paths call compute_phase_residuals() to guarantee
+    # identical arithmetic (longdouble precision, Horner's method, np.round wrapping).
+    errors_us = np.array([toa.error_us for toa in toas])
+    weights = 1.0 / (errors_us ** 2)
+    residuals_us, _ = compute_phase_residuals(
+        dt_sec, params, weights, subtract_mean=subtract_tzr
+    )
 
     # Compute weighted RMS (chi-squared reduced)
     weighted_rms = np.sqrt(np.sum(weights * residuals_us**2) / np.sum(weights))
@@ -825,7 +854,9 @@ def compute_residuals_simple(
         'total_delay_sec': np.array(total_delay_sec, dtype=np.float64),
         'freq_bary_mhz': np.array(freq_bary_mhz, dtype=np.float64),
         'tzr_phase': float(tzr_phase),
-        # Add emission time (computed with longdouble, converted to float64)
+        # Emission time offset from PEPOCH (longdouble for phase precision)
+        'dt_sec_ld': np.array(dt_sec, dtype=np.longdouble),
+        # Also float64 for backward compatibility
         'dt_sec': np.array(dt_sec, dtype=np.float64),
         # Roemer+Shapiro delay for computing barycentric times (legacy, for backward compat)
         'roemer_shapiro_sec': np.array(roemer_shapiro, dtype=np.float64),

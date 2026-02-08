@@ -249,6 +249,9 @@ def parse_ra(ra_str: str) -> float:
     >>> ra_rad = parse_ra("06:37:24.0")
     >>> ra_deg = ra_rad * 180 / np.pi
     """
+    # If already a float (radians), return as-is
+    if isinstance(ra_str, (int, float)):
+        return float(ra_str)
     parts = ra_str.split(':')
     h, m, s = float(parts[0]), float(parts[1]), float(parts[2])
     ra_hours = h + m/60.0 + s/3600.0
@@ -274,6 +277,9 @@ def parse_dec(dec_str: str) -> float:
     >>> dec_rad = parse_dec("-47:15:09.0")
     >>> dec_deg = dec_rad * 180 / np.pi
     """
+    # If already a float (radians), return as-is
+    if isinstance(dec_str, (int, float)):
+        return float(dec_str)
     parts = dec_str.split(':')
     sign = -1 if parts[0].startswith('-') else 1
     d, m, s = abs(float(parts[0])), float(parts[1]), float(parts[2])

@@ -84,8 +84,34 @@ from jug.model.parameter_spec import (
     canonicalize_param_name,
     validate_fit_param,
 )
+from jug.utils.constants import HIGH_PRECISION_PARAMS
 # Lazy import to avoid circular dependency with components
 # get_component is imported where needed in functions below
+
+
+def _update_param(params: Dict, param: str, value: float) -> None:
+    """Update a parameter value, keeping _high_precision cache consistent.
+
+    When the fitter updates a high-precision parameter (F0, F1, PEPOCH, etc.),
+    the ``_high_precision`` string cache must also be updated. Otherwise,
+    ``get_longdouble()`` returns the stale prefit value from the cache instead
+    of the fitted value, causing phase-computation errors of order 100 ns for
+    F0 over multi-year data spans.
+
+    Parameters
+    ----------
+    params : dict
+        Parameter dictionary (modified in-place).
+    param : str
+        Parameter name.
+    value : float
+        New parameter value (float64).
+    """
+    params[param] = value
+    hp = params.get('_high_precision')
+    if hp is not None and param.upper() in HIGH_PRECISION_PARAMS:
+        # Use repr() to preserve all float64 significant digits
+        hp[param] = repr(float(value))
 
 
 @dataclass
@@ -115,7 +141,9 @@ class GeneralFitSetup:
     weights : np.ndarray
         TOA weights (1/sigma^2)
     dt_sec_cached : np.ndarray
-        Precomputed time differences (includes all delays except updated params)
+        Precomputed time differences (float64, for backward compat)
+    dt_sec_ld : np.ndarray or None
+        Precomputed time differences in longdouble (for phase precision)
     tdb_mjd : np.ndarray
         TDB times in MJD
     initial_dm_delay : np.ndarray or None
@@ -144,6 +172,7 @@ class GeneralFitSetup:
     errors_sec: np.ndarray
     weights: np.ndarray
     dt_sec_cached: np.ndarray
+    dt_sec_ld: Optional[np.ndarray]  # longdouble version for phase precision
     tdb_mjd: np.ndarray
     initial_dm_delay: Optional[np.ndarray]
     dm_params: List[str]
@@ -158,6 +187,7 @@ class GeneralFitSetup:
     ssb_obs_pos_ls: Optional[np.ndarray]
     initial_astrometric_delay: Optional[np.ndarray]  # For astrometry fitting iteration
     initial_fd_delay: Optional[np.ndarray]  # For FD fitting iteration
+    initial_sw_delay: Optional[np.ndarray]  # For SW fitting iteration
     sw_geometry_pc: Optional[np.ndarray]  # Solar wind geometry factor per TOA
 
 
@@ -727,26 +757,21 @@ def _fit_parameters_jax_incremental(
     )
     
     dt_sec_cached = result['dt_sec']
+    dt_sec_ld = result.get('dt_sec_ld')
+    if dt_sec_ld is None:
+        dt_sec_ld = np.array(dt_sec_cached, dtype=np.longdouble)
     tdb_mjd = result['tdb_mjd']
     freq_bary_mhz = result['freq_bary_mhz']
-    
+
     # Cache initial DM delay (for incremental updates)
     initial_dm_params = {'DM': dm, 'DM1': dm1}
     initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_bary_mhz, initial_dm_params, dmepoch_mjd)
-    
-    # Compute initial residuals in LONGDOUBLE (perfect precision)
-    dt_sec_ld = np.array(dt_sec_cached, dtype=np.longdouble)
-    f0_ld = np.longdouble(f0)
-    f1_ld = np.longdouble(f1)
-    
-    phase_ld = dt_sec_ld * (f0_ld + dt_sec_ld * (f1_ld / 2.0))
-    phase_wrapped_ld = phase_ld - np.round(phase_ld)
-    residuals_ld = phase_wrapped_ld / f0_ld
-    
-    # Convert to float64 (safe for small residuals)
-    residuals_init = np.array(residuals_ld, dtype=np.float64)
-    weighted_mean = np.sum(residuals_init * weights) / np.sum(weights)
-    residuals_init = residuals_init - weighted_mean
+
+    # Compute initial residuals via shared canonical function (longdouble precision)
+    from jug.residuals.simple_calculator import compute_phase_residuals
+    _, residuals_init = compute_phase_residuals(
+        dt_sec_ld, params, weights, subtract_mean=True
+    )
     
     cache_time = time.time() - cache_start
     
@@ -957,7 +982,7 @@ def _fit_parameters_jax_incremental(
     
     # Compute prefit residuals (using initial parameters)
     for i, param in enumerate(fit_params):
-        params[param] = param_values_start[i]
+        _update_param(params, param, param_values_start[i])
     
     # Restore initial DM delay
     prefit_dm_params = {'DM': param_values_start[fit_params.index('DM')] if 'DM' in fit_params else dm,
@@ -1206,6 +1231,7 @@ def _build_general_fit_setup_from_files(
     )
 
     dt_sec_cached = result['dt_sec']
+    dt_sec_ld_file = result.get('dt_sec_ld')
     tdb_mjd = result['tdb_mjd']
     freq_mhz_bary = result['freq_bary_mhz']
 
@@ -1259,14 +1285,17 @@ def _build_general_fit_setup_from_files(
         initial_fd_params = {p: params[p] for p in fd_params if p in params}
         initial_fd_delay = compute_fd_delay(freq_mhz_bary, initial_fd_params)
 
-    # If fitting NE_SW, extract solar wind geometry factor
+    # If fitting NE_SW, extract solar wind geometry factor and initial delay
     sw_geometry_pc = None
+    initial_sw_delay = None
     if sw_params:
         sw_geometry_pc = result.get('sw_geometry_pc')
         if sw_geometry_pc is None:
             raise ValueError(
                 "NE_SW fitting requires sw_geometry_pc in compute_residuals_simple output."
             )
+        ne_sw_val = float(params.get('NE_SW', params.get('NE1AU', 0.0)))
+        initial_sw_delay = K_DM_SEC * ne_sw_val * sw_geometry_pc / (freq_mhz_bary ** 2)
 
     return GeneralFitSetup(
         params=params,
@@ -1278,6 +1307,7 @@ def _build_general_fit_setup_from_files(
         errors_sec=errors_sec,
         weights=weights,
         dt_sec_cached=np.array(dt_sec_cached),
+        dt_sec_ld=np.array(dt_sec_ld_file, dtype=np.longdouble) if dt_sec_ld_file is not None else None,
         tdb_mjd=np.array(tdb_mjd),
         initial_dm_delay=initial_dm_delay,
         dm_params=dm_params,
@@ -1292,6 +1322,7 @@ def _build_general_fit_setup_from_files(
         ssb_obs_pos_ls=ssb_obs_pos_ls,
         initial_astrometric_delay=initial_astrometric_delay,
         initial_fd_delay=initial_fd_delay,
+        initial_sw_delay=initial_sw_delay,
         sw_geometry_pc=sw_geometry_pc,
     )
 
@@ -1325,17 +1356,18 @@ def _compute_full_model_residuals(
     wrms_us : float
         Weighted RMS in microseconds
     """
-    # Get cached arrays
-    dt_sec_cached = setup.dt_sec_cached
+    # Get cached arrays — use longdouble dt_sec for phase precision
+    from jug.residuals.simple_calculator import compute_phase_residuals
+    dt_sec_base = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)
     tdb_mjd = setup.tdb_mjd
     freq_mhz = setup.freq_mhz
     weights = setup.weights
     errors_sec = setup.errors_sec
-    
-    # Start with cached dt_sec (contains initial delays)
-    dt_sec_np = dt_sec_cached.copy()
-    
-    # Apply DM delay correction
+
+    # Start with longdouble dt_sec (contains initial delays)
+    dt_sec_np = dt_sec_base.copy()
+
+    # Apply DM delay correction (float64 corrections promoted to longdouble)
     dm_params = setup.dm_params
     if dm_params:
         dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
@@ -1343,17 +1375,16 @@ def _compute_full_model_residuals(
         new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
         dm_delay_change = new_dm_delay - setup.initial_dm_delay
         dt_sec_np = dt_sec_np - dm_delay_change
-    
+
     # Apply binary delay correction (route to correct binary model)
-    # Use PINT-compatible pre-binary time (roemer_shapiro + DM + SW + tropo)
     binary_params = setup.binary_params
     if binary_params and setup.initial_binary_delay is not None:
         toas_prebinary = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
         new_binary_delay = np.array(compute_binary_delay(toas_prebinary, params))
         binary_delay_change = new_binary_delay - setup.initial_binary_delay
         dt_sec_np = dt_sec_np - binary_delay_change
-    
-    # Apply astrometric delay correction (CRITICAL for astrometry fitting)
+
+    # Apply astrometric delay correction
     astrometry_params = setup.astrometry_params
     if astrometry_params and setup.initial_astrometric_delay is not None:
         from jug.fitting.derivatives_astrometry import compute_astrometric_delay
@@ -1362,8 +1393,8 @@ def _compute_full_model_residuals(
         ))
         astrometric_delay_change = new_astrometric_delay - setup.initial_astrometric_delay
         dt_sec_np = dt_sec_np - astrometric_delay_change
-    
-    # Apply FD delay correction (frequency-dependent delay)
+
+    # Apply FD delay correction
     fd_params = setup.fd_params
     if fd_params and setup.initial_fd_delay is not None:
         from jug.fitting.derivatives_fd import compute_fd_delay
@@ -1371,28 +1402,22 @@ def _compute_full_model_residuals(
         new_fd_delay = compute_fd_delay(freq_mhz, current_fd_params)
         fd_delay_change = new_fd_delay - setup.initial_fd_delay
         dt_sec_np = dt_sec_np - fd_delay_change
-    
-    # Compute phase from dt_sec
-    f0 = params['F0']
-    f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
-    f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
-    
-    phase = np.zeros_like(dt_sec_np)
-    factorial = 1.0
-    for n, f_val in enumerate(f_values):
-        factorial *= (n + 1) if n > 0 else 1.0
-        phase += f_val * (dt_sec_np ** (n + 1)) / factorial
-    
-    # Wrap phase and convert to time residuals
-    phase_wrapped = phase - np.round(phase)
-    residuals_sec = phase_wrapped / f0
-    
-    # Subtract weighted mean
-    sum_weights = np.sum(weights)
-    weighted_mean = np.sum(residuals_sec * weights) / sum_weights
-    residuals_sec = residuals_sec - weighted_mean
-    
+
+    # Apply solar wind delay correction
+    sw_params = setup.sw_params
+    if sw_params and setup.initial_sw_delay is not None:
+        ne_sw_val = float(params.get('NE_SW', params.get('NE1AU', 0.0)))
+        new_sw_delay = K_DM_SEC * ne_sw_val * setup.sw_geometry_pc / (freq_mhz ** 2)
+        sw_delay_change = new_sw_delay - setup.initial_sw_delay
+        dt_sec_np = dt_sec_np - sw_delay_change
+
+    # Phase computation via shared canonical function (longdouble precision)
+    residuals_us, residuals_sec = compute_phase_residuals(
+        dt_sec_np, params, weights, subtract_mean=True
+    )
+
     # Compute statistics
+    sum_weights = np.sum(weights)
     chi2 = np.sum((residuals_sec / errors_sec) ** 2)
     rms_us = np.sqrt(np.sum(residuals_sec**2 * weights) / sum_weights) * 1e6
     wrms_us = np.sqrt(np.sum((residuals_sec * 1e6)**2 * weights) / sum_weights)
@@ -1448,7 +1473,7 @@ def _run_general_fit_iterations(
     errors_us = setup.errors_us
     errors_sec = setup.errors_sec
     weights = setup.weights
-    dt_sec_cached = setup.dt_sec_cached
+    dt_sec_cached = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)
     tdb_mjd = setup.tdb_mjd
     initial_dm_delay = setup.initial_dm_delay
     dm_params = setup.dm_params
@@ -1459,6 +1484,11 @@ def _run_general_fit_iterations(
     astrometry_params = setup.astrometry_params
     initial_astrometric_delay = setup.initial_astrometric_delay
     ssb_obs_pos_ls = setup.ssb_obs_pos_ls
+    fd_params = setup.fd_params
+    initial_fd_delay = setup.initial_fd_delay
+    sw_params_iter = setup.sw_params
+    initial_sw_delay = setup.initial_sw_delay
+    sw_geometry_pc = setup.sw_geometry_pc
 
     # Precompute PINT-compatible pre-binary TOAs for binary fitting (only if needed)
     toas_prebinary_for_binary = None
@@ -1474,16 +1504,20 @@ def _run_general_fit_iterations(
     # This is mathematically identical - weights array doesn't change during fitting
     sum_weights = np.sum(weights)
 
-    # Convergence criteria (PINT-style)
+    # Convergence criteria
     xtol = 1e-12
     required_chi2_decrease = 1e-2  # Minimum chi2 decrease to continue
-    max_chi2_increase = 1e-2  # Maximum allowed chi2 increase before rejecting step
+    # Allow temporary chi2 increase of up to 10% of current chi2.
+    # Tempo2 takes the full WLS step without validation; a relative threshold
+    # provides a reasonable middle ground between strict (0.01 absolute, which
+    # prevents convergence on J0125-2327) and no validation at all.
+    max_chi2_increase_frac = 0.10  # 10% of current chi2
     min_lambda = 1e-3  # Minimum step scaling factor
     min_iterations = 5
     
     # Compute initial full-model chi2 for comparison
     for i, param in enumerate(fit_params):
-        params[param] = param_values_curr[i]
+        _update_param(params, param, param_values_curr[i])
     _, current_chi2, current_rms_us, _ = _compute_full_model_residuals(params, setup)
     best_chi2 = current_chi2
     best_param_values = param_values_curr.copy()
@@ -1499,7 +1533,7 @@ def _run_general_fit_iterations(
     for iteration in range(max_iter):
         # Update params dict with current values
         for i, param in enumerate(fit_params):
-            params[param] = param_values_curr[i]
+            _update_param(params, param, param_values_curr[i])
         
         # Build design matrix using linearized residuals
         # (We compute residuals for the design matrix using cached delays for spin/DM/binary,
@@ -1521,26 +1555,35 @@ def _run_general_fit_iterations(
             binary_delay_change = new_binary_delay - initial_binary_delay
             dt_sec_np = dt_sec_np - binary_delay_change
 
-        # Note: For design matrix computation, we use linearized residuals
-        # (not updating astrometric delay here - that's handled by the derivatives)
+        # If fitting astrometric parameters, update dt_sec with new astrometric delay
+        if astrometry_params and initial_astrometric_delay is not None:
+            from jug.fitting.derivatives_astrometry import compute_astrometric_delay
+            new_astrometric_delay = np.array(compute_astrometric_delay(
+                params, tdb_mjd, ssb_obs_pos_ls
+            ))
+            astrometric_delay_change = new_astrometric_delay - initial_astrometric_delay
+            dt_sec_np = dt_sec_np - astrometric_delay_change
 
-        # Compute phase residuals from updated dt_sec (linearized)
-        f0 = params['F0']
-        f_values = [params.get(f'F{i}', 0.0) for i in range(10)]
-        f_values = [v for v in f_values if v != 0.0 or f_values.index(v) == 0]
+        # If fitting FD parameters, update dt_sec with new FD delay
+        if fd_params and initial_fd_delay is not None:
+            from jug.fitting.derivatives_fd import compute_fd_delay
+            current_fd_params = {p: params[p] for p in fd_params if p in params}
+            new_fd_delay = compute_fd_delay(freq_mhz, current_fd_params)
+            fd_delay_change = new_fd_delay - initial_fd_delay
+            dt_sec_np = dt_sec_np - fd_delay_change
 
-        phase = np.zeros_like(dt_sec_np)
-        factorial = 1.0
-        for n, f_val in enumerate(f_values):
-            factorial *= (n + 1) if n > 0 else 1.0
-            phase += f_val * (dt_sec_np ** (n + 1)) / factorial
+        # If fitting SW parameters, update dt_sec with new solar wind delay
+        if sw_params_iter and initial_sw_delay is not None:
+            ne_sw_val = float(params.get('NE_SW', params.get('NE1AU', 0.0)))
+            new_sw_delay = K_DM_SEC * ne_sw_val * sw_geometry_pc / (freq_mhz ** 2)
+            sw_delay_change = new_sw_delay - initial_sw_delay
+            dt_sec_np = dt_sec_np - sw_delay_change
 
-        phase_wrapped = phase - np.round(phase)
-        residuals = phase_wrapped / f0
-
-        # Subtract weighted mean (use pre-computed sum_weights)
-        weighted_mean = np.sum(residuals * weights) / sum_weights
-        residuals = residuals - weighted_mean
+        # Compute phase residuals from updated dt_sec via shared function (longdouble)
+        from jug.residuals.simple_calculator import compute_phase_residuals
+        _, residuals = compute_phase_residuals(
+            dt_sec_np, params, weights, subtract_mean=True
+        )
 
         # Build design matrix - BATCHED derivative computation
         M_columns = []
@@ -1681,8 +1724,11 @@ def _run_general_fit_iterations(
             
             # Update params dict with trial values
             trial_params = params.copy()
+            # Deep-copy _high_precision so trial updates don't leak back
+            if '_high_precision' in trial_params:
+                trial_params['_high_precision'] = dict(trial_params['_high_precision'])
             for i, param in enumerate(fit_params):
-                trial_params[param] = trial_param_values[i]
+                _update_param(trial_params, param, trial_param_values[i])
             
             # Compute full-model chi2 with trial parameters
             try:
@@ -1694,7 +1740,8 @@ def _run_general_fit_iterations(
             
             # Check if chi2 improved (or didn't worsen too much)
             chi2_decrease = current_chi2 - trial_chi2
-            
+            max_chi2_increase = max_chi2_increase_frac * current_chi2
+
             if chi2_decrease < -max_chi2_increase:
                 # Chi2 worsened beyond tolerance - reduce step
                 lambda_ /= 2
@@ -1764,7 +1811,7 @@ def _run_general_fit_iterations(
     # Use the best state found
     param_values_curr = best_param_values
     for i, param in enumerate(fit_params):
-        params[param] = param_values_curr[i]
+        _update_param(params, param, param_values_curr[i])
     
     # Compute final TRUE residuals using full model
     residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = _compute_full_model_residuals(params, setup)
@@ -1772,14 +1819,14 @@ def _run_general_fit_iterations(
     
     # Compute prefit residuals
     for i, param in enumerate(fit_params):
-        params[param] = param_values_start[i]
+        _update_param(params, param, param_values_start[i])
     
     residuals_prefit_sec, _, prefit_rms_us, _ = _compute_full_model_residuals(params, setup)
     residuals_prefit_us = residuals_prefit_sec * 1e6
     
     # Restore final parameter values
     for i, param in enumerate(fit_params):
-        params[param] = param_values_curr[i]
+        _update_param(params, param, param_values_curr[i])
     
     # Compute uncertainties
     uncertainties = {param: np.sqrt(cov[i, i]) for i, param in enumerate(fit_params)}
@@ -1842,6 +1889,7 @@ def _build_general_fit_setup_from_cache(
 
     # Extract cached arrays
     dt_sec_cached = session_cached_data['dt_sec']
+    dt_sec_ld = session_cached_data.get('dt_sec_ld')
     tdb_mjd = session_cached_data['tdb_mjd']
     freq_mhz_bary = session_cached_data['freq_bary_mhz']
     toas_mjd = session_cached_data['toas_mjd']
@@ -1850,6 +1898,8 @@ def _build_general_fit_setup_from_cache(
     # Apply TOA mask if provided
     if toa_mask is not None:
         dt_sec_cached = dt_sec_cached[toa_mask]
+        if dt_sec_ld is not None:
+            dt_sec_ld = dt_sec_ld[toa_mask]
         tdb_mjd = tdb_mjd[toa_mask]
         freq_mhz_bary = freq_mhz_bary[toa_mask]
         toas_mjd = toas_mjd[toa_mask]
@@ -1962,8 +2012,9 @@ def _build_general_fit_setup_from_cache(
         initial_fd_params = {p: params_dict[p] for p in fd_params if p in params_dict}
         initial_fd_delay = compute_fd_delay(freq_mhz_bary, initial_fd_params)
 
-    # If fitting NE_SW, extract solar wind geometry factor
+    # If fitting NE_SW, extract solar wind geometry factor and initial delay
     sw_geometry_pc = None
+    initial_sw_delay = None
     if sw_params:
         sw_geometry_pc = session_cached_data.get('sw_geometry_pc')
         if sw_geometry_pc is None:
@@ -1972,6 +2023,8 @@ def _build_general_fit_setup_from_cache(
             )
         if toa_mask is not None:
             sw_geometry_pc = sw_geometry_pc[toa_mask]
+        ne_sw_val = float(params_dict.get('NE_SW', params_dict.get('NE1AU', 0.0)))
+        initial_sw_delay = K_DM_SEC * ne_sw_val * sw_geometry_pc / (np.array(freq_mhz_bary) ** 2)
 
     return GeneralFitSetup(
         params=dict(params_dict),  # Copy
@@ -1983,6 +2036,7 @@ def _build_general_fit_setup_from_cache(
         errors_sec=np.array(errors_sec),
         weights=np.array(weights),
         dt_sec_cached=np.array(dt_sec_cached),
+        dt_sec_ld=np.array(dt_sec_ld, dtype=np.longdouble) if dt_sec_ld is not None else None,
         tdb_mjd=np.array(tdb_mjd),
         initial_dm_delay=initial_dm_delay,
         dm_params=dm_params,
@@ -1997,6 +2051,7 @@ def _build_general_fit_setup_from_cache(
         ssb_obs_pos_ls=ssb_obs_pos_ls,
         initial_astrometric_delay=initial_astrometric_delay,
         initial_fd_delay=initial_fd_delay,
+        initial_sw_delay=initial_sw_delay,
         sw_geometry_pc=sw_geometry_pc,
     )
 

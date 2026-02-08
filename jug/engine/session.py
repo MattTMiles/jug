@@ -123,6 +123,13 @@ class TimingSession:
             # String values (like BINARY, EPHEM, etc.) - keep as-is
             if isinstance(value, str):
                 return f"{param_name:<12} {value}"
+            # RAJ/DECJ: convert radians back to sexagesimal for par file
+            if param_name == 'RAJ' and isinstance(value, (int, float)):
+                from jug.io.par_reader import format_ra
+                return f"{param_name:<12} {format_ra(float(value))}"
+            if param_name == 'DECJ' and isinstance(value, (int, float)):
+                from jug.io.par_reader import format_dec
+                return f"{param_name:<12} {format_dec(float(value))}"
             # Numeric values - format appropriately
             if param_name == 'F0':
                 return f"{param_name:<12} {value:.15f}"
@@ -520,6 +527,7 @@ class TimingSession:
             
             session_cached_data = {
                 'dt_sec': cached_result['dt_sec'],
+                'dt_sec_ld': cached_result.get('dt_sec_ld'),
                 'tdb_mjd': cached_result['tdb_mjd'],
                 'freq_bary_mhz': cached_result['freq_bary_mhz'],
                 'toas_mjd': toas_mjd,
@@ -576,6 +584,10 @@ class TimingSession:
 
         # Invalidate residuals cache since parameters changed
         self._cached_result_by_mode.clear()
+        # Also invalidate cached TOA data — the fast evaluator only handles
+        # spin/DM changes, so stale dt_sec causes wrong postfit residuals
+        # when binary, astrometric, FD, or SW parameters were fitted.
+        self._cached_toa_data = None
 
         return result
     

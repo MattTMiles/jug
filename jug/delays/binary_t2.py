@@ -38,6 +38,12 @@ def t2_binary_delay(
     
     Updated to support FB (orbital frequency) parameters.
     """
+    # Guard against None fb arrays (JAX eagerly evaluates both jnp.where branches)
+    if fb_coeffs is None:
+        fb_coeffs = jnp.array([], dtype=jnp.float64)
+    if fb_factorials is None:
+        fb_factorials = jnp.array([], dtype=jnp.float64)
+
     # Time since periastron
     dt_days = t_topo_tdb - t0
     dt_sec = dt_days * SECS_PER_DAY
@@ -62,7 +68,7 @@ def t2_binary_delay(
         # FB epoch is usually TASC.
         
         dt_fb = (t_topo_tdb - fb_epoch) * SECS_PER_DAY
-        n_coeffs = len(fb_coeffs)
+        n_coeffs = fb_coeffs.shape[0]
         indices = jnp.arange(n_coeffs)
         powers_plus1 = indices + 1
         dt_powers_plus1 = dt_fb ** powers_plus1

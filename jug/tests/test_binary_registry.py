@@ -35,6 +35,9 @@ def test_builtin_models_registered():
     for model in ['ELL1', 'ELL1H', 'ELL1K']:
         assert is_model_registered(model), f"{model} not registered"
 
+    # T2 (universal model)
+    assert is_model_registered('T2'), "T2 not registered"
+
     print("  ✓ All expected models are registered")
     return True
 
@@ -93,6 +96,76 @@ def test_compute_binary_delay_routing():
     print("  ✓ Case-insensitive model names work")
 
     print("  ✓ Binary delay routing works correctly")
+    return True
+
+
+def test_t2_delay_routing_dd_style():
+    """Test T2 routes to DD when T0/ECC/OM params are present."""
+    from jug.fitting.binary_registry import compute_binary_delay
+
+    toas = np.array([55000.0, 55001.0, 55002.0])
+
+    # DD-style T2 params (has T0, ECC, OM → should dispatch to DD)
+    t2_dd_params = {
+        'BINARY': 'T2',
+        'A1': 10.0,
+        'PB': 1.0,
+        'T0': 55000.0,
+        'ECC': 0.1,
+        'OM': 45.0,
+        'PBDOT': 0.0,
+        'GAMMA': 0.0,
+        'SINI': 0.8,
+        'M2': 0.3,
+    }
+
+    # Equivalent DD params
+    dd_params = {**t2_dd_params, 'BINARY': 'DD'}
+
+    t2_delay = compute_binary_delay(toas, t2_dd_params)
+    dd_delay = compute_binary_delay(toas, dd_params)
+
+    assert len(t2_delay) == 3, "T2 delay wrong shape"
+    assert not np.allclose(t2_delay, 0), "T2 delay should be non-zero"
+    np.testing.assert_allclose(t2_delay, dd_delay, rtol=1e-15,
+                               err_msg="T2 (DD-style) should match DD exactly")
+    print(f"  T2(DD) delay range: {t2_delay.min():.6f} to {t2_delay.max():.6f} s")
+    print("  ✓ T2 with T0/ECC/OM matches DD")
+    return True
+
+
+def test_t2_delay_routing_ell1_style():
+    """Test T2 routes to ELL1 when TASC/EPS1/EPS2 params are present."""
+    from jug.fitting.binary_registry import compute_binary_delay
+
+    toas = np.array([55000.0, 55001.0, 55002.0])
+
+    # ELL1-style T2 params (has TASC, EPS1, EPS2 → should dispatch to ELL1)
+    t2_ell1_params = {
+        'BINARY': 'T2',
+        'A1': 10.0,
+        'PB': 1.0,
+        'TASC': 55000.0,
+        'EPS1': 0.01,
+        'EPS2': 0.01,
+        'PBDOT': 0.0,
+        'A1DOT': 0.0,
+        'SINI': 0.8,
+        'M2': 0.3,
+    }
+
+    # Equivalent ELL1 params
+    ell1_params = {**t2_ell1_params, 'BINARY': 'ELL1'}
+
+    t2_delay = compute_binary_delay(toas, t2_ell1_params)
+    ell1_delay = compute_binary_delay(toas, ell1_params)
+
+    assert len(t2_delay) == 3, "T2 delay wrong shape"
+    assert not np.allclose(t2_delay, 0), "T2 delay should be non-zero"
+    np.testing.assert_allclose(t2_delay, ell1_delay, rtol=1e-15,
+                               err_msg="T2 (ELL1-style) should match ELL1 exactly")
+    print(f"  T2(ELL1) delay range: {t2_delay.min():.6f} to {t2_delay.max():.6f} s")
+    print("  ✓ T2 with TASC/EPS1/EPS2 matches ELL1")
     return True
 
 
@@ -177,6 +250,63 @@ def test_derivatives_routing():
     return True
 
 
+def test_t2_derivatives_routing():
+    """Test that T2 derivatives dispatch correctly based on parameterization."""
+    from jug.fitting.binary_registry import compute_binary_derivatives
+
+    toas = np.array([55000.0, 55001.0, 55002.0])
+
+    # DD-style T2
+    t2_dd_params = {
+        'BINARY': 'T2',
+        'F0': 100.0,
+        'A1': 10.0,
+        'PB': 1.0,
+        'T0': 55000.0,
+        'ECC': 0.1,
+        'OM': 45.0,
+    }
+
+    derivs_dd = compute_binary_derivatives(t2_dd_params, toas, ['A1', 'PB'])
+    assert 'A1' in derivs_dd, "Missing A1 derivative for T2(DD)"
+    assert 'PB' in derivs_dd, "Missing PB derivative for T2(DD)"
+    assert len(derivs_dd['A1']) == 3, "Wrong derivative shape"
+    print(f"  T2(DD) derivatives computed for: {list(derivs_dd.keys())}")
+
+    # ELL1-style T2
+    t2_ell1_params = {
+        'BINARY': 'T2',
+        'F0': 100.0,
+        'A1': 10.0,
+        'PB': 1.0,
+        'TASC': 55000.0,
+        'EPS1': 0.01,
+        'EPS2': 0.01,
+    }
+
+    derivs_ell1 = compute_binary_derivatives(t2_ell1_params, toas, ['A1', 'PB'])
+    assert 'A1' in derivs_ell1, "Missing A1 derivative for T2(ELL1)"
+    assert 'PB' in derivs_ell1, "Missing PB derivative for T2(ELL1)"
+    print(f"  T2(ELL1) derivatives computed for: {list(derivs_ell1.keys())}")
+
+    # Verify T2(DD) matches DD exactly
+    dd_params = {**t2_dd_params, 'BINARY': 'DD'}
+    derivs_dd_direct = compute_binary_derivatives(dd_params, toas, ['A1', 'PB'])
+    np.testing.assert_allclose(derivs_dd['A1'], derivs_dd_direct['A1'], rtol=1e-15)
+    np.testing.assert_allclose(derivs_dd['PB'], derivs_dd_direct['PB'], rtol=1e-15)
+    print("  ✓ T2(DD) derivatives match DD exactly")
+
+    # Verify T2(ELL1) matches ELL1 exactly
+    ell1_params = {**t2_ell1_params, 'BINARY': 'ELL1'}
+    derivs_ell1_direct = compute_binary_derivatives(ell1_params, toas, ['A1', 'PB'])
+    np.testing.assert_allclose(derivs_ell1['A1'], derivs_ell1_direct['A1'], rtol=1e-15)
+    np.testing.assert_allclose(derivs_ell1['PB'], derivs_ell1_direct['PB'], rtol=1e-15)
+    print("  ✓ T2(ELL1) derivatives match ELL1 exactly")
+
+    print("  ✓ T2 derivatives routing works correctly")
+    return True
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("Binary Model Registry Tests")
@@ -186,9 +316,12 @@ if __name__ == "__main__":
     tests = [
         test_builtin_models_registered,
         test_compute_binary_delay_routing,
+        test_t2_delay_routing_dd_style,
+        test_t2_delay_routing_ell1_style,
         test_non_binary_returns_zeros,
         test_unknown_model_raises,
         test_derivatives_routing,
+        test_t2_derivatives_routing,
     ]
 
     for test in tests:

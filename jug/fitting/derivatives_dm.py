@@ -60,77 +60,66 @@ def d_delay_d_DM(freq_mhz: np.ndarray) -> np.ndarray:
 
 def d_delay_d_DM1(dt_sec: np.ndarray, freq_mhz: np.ndarray) -> np.ndarray:
     """Compute derivative of dispersion delay with respect to DM1.
-    
-    DM1 represents linear DM evolution in pc cm⁻³ day⁻¹:
-        DM(t) = DM + DM1 × t
-    
+
+    DM1 represents linear DM evolution in pc cm⁻³ yr⁻¹:
+        DM(t) = DM + DM1 × t_yr
+
     The delay contribution from DM1 is:
-        τ_DM1 = K_DM × DM1 × t / freq²
-    
+        τ_DM1 = K_DM × DM1 × t_yr / freq²
+
     Therefore:
-        ∂τ/∂DM1 = K_DM × t / freq²
-    
-    where t is in days (DM1 has units pc cm⁻³ day⁻¹).
-    
+        ∂τ/∂DM1 = K_DM × t_yr / freq²
+
+    where t_yr is time since DMEPOCH in years.
+    Must match the forward model which uses dt_years = (MJD - DMEPOCH) / 365.25.
+
     Parameters
     ----------
     dt_sec : np.ndarray
         Time difference from DMEPOCH in seconds, shape (n_toas,)
     freq_mhz : np.ndarray
         Observing frequencies in MHz, shape (n_toas,)
-        
+
     Returns
     -------
     derivative : np.ndarray
-        ∂(delay)/∂(DM1) in units of seconds/(pc cm⁻³ day⁻¹)
+        ∂(delay)/∂(DM1) in units of seconds/(pc cm⁻³ yr⁻¹)
         Shape (n_toas,)
-        
-    Notes
-    -----
-    - Time must be converted from seconds to days
-    - Linear in time: derivative grows with |t|
-    - POSITIVE: increasing DM1 increases delay at later times
     """
-    dt_days = dt_sec / SECS_PER_DAY
-    return K_DM_SEC * dt_days / (freq_mhz ** 2)
+    dt_years = dt_sec / (SECS_PER_DAY * 365.25)
+    return K_DM_SEC * dt_years / (freq_mhz ** 2)
 
 
 def d_delay_d_DM2(dt_sec: np.ndarray, freq_mhz: np.ndarray) -> np.ndarray:
     """Compute derivative of dispersion delay with respect to DM2.
-    
-    DM2 represents quadratic DM evolution in pc cm⁻³ day⁻²:
-        DM(t) = DM + DM1×t + 0.5×DM2×t²
-    
+
+    DM2 represents quadratic DM evolution in pc cm⁻³ yr⁻²:
+        DM(t) = DM + DM1×t_yr + 0.5×DM2×t_yr²
+
     The delay contribution from DM2 is:
-        τ_DM2 = K_DM × 0.5 × DM2 × t² / freq²
-    
+        τ_DM2 = K_DM × 0.5 × DM2 × t_yr² / freq²
+
     Therefore:
-        ∂τ/∂DM2 = 0.5 × K_DM × t² / freq²
-    
-    where t is in days (DM2 has units pc cm⁻³ day⁻²).
-    
+        ∂τ/∂DM2 = 0.5 × K_DM × t_yr² / freq²
+
+    where t_yr is time since DMEPOCH in years.
+    Must match the forward model which uses dt_years = (MJD - DMEPOCH) / 365.25.
+
     Parameters
     ----------
     dt_sec : np.ndarray
         Time difference from DMEPOCH in seconds, shape (n_toas,)
     freq_mhz : np.ndarray
         Observing frequencies in MHz, shape (n_toas,)
-        
+
     Returns
     -------
     derivative : np.ndarray
-        ∂(delay)/∂(DM2) in units of seconds/(pc cm⁻³ day⁻²)
+        ∂(delay)/∂(DM2) in units of seconds/(pc cm⁻³ yr⁻²)
         Shape (n_toas,)
-        
-    Notes
-    -----
-    - Time must be converted from seconds to days
-    - Quadratic in time: derivative grows as t²
-    - Factor of 0.5 from polynomial definition
-    - POSITIVE: increasing DM2 increases delay at later times
     """
-    dt_days = dt_sec / SECS_PER_DAY
-    return 0.5 * K_DM_SEC * (dt_days ** 2) / (freq_mhz ** 2)
+    dt_years = dt_sec / (SECS_PER_DAY * 365.25)
+    return 0.5 * K_DM_SEC * (dt_years ** 2) / (freq_mhz ** 2)
 
 
 def compute_dm_derivatives(
@@ -214,10 +203,10 @@ def compute_dm_derivatives(
             # Higher-order DM terms (DM3, DM4, ...)
             try:
                 order = int(param[2:])  # 'DM3' -> 3, 'DM4' -> 4
-                # General formula: ∂τ/∂DM_n = (K_DM × t^n / n!) / freq²
-                dt_days = dt_sec / SECS_PER_DAY
+                # General formula: ∂τ/∂DM_n = (K_DM × t_yr^n / n!) / freq²
+                dt_years = dt_sec / (SECS_PER_DAY * 365.25)
                 factorial = np.math.factorial(order)
-                derivatives[param] = K_DM_SEC * (dt_days ** order) / factorial / (freq_mhz ** 2)
+                derivatives[param] = K_DM_SEC * (dt_years ** order) / factorial / (freq_mhz ** 2)
             except (ValueError, OverflowError):
                 raise ValueError(f"Cannot parse DM parameter: {param}")
         else:

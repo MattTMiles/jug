@@ -1276,7 +1276,7 @@ def create_scatter_item():
         brush=pg.mkBrush(*PlotTheme.get_scatter_color()),
         pxMode=True,      # Critical for performance (draws points as pixels, not polygons)
         useCache=True,    # Cache the symbol image
-        hoverable=True,   # Enable hover events
+        hoverable=False,  # Disabled: hit-testing every mouse move on 5000+ points is expensive
     )
 
 
@@ -1293,7 +1293,7 @@ class AnimatedButton(QPushButton):
     """
     A QPushButton with smooth background color transitions.
     Remote mode: Uses standard CSS :hover (zero overhead).
-    Local mode: Uses QVariantAnimation (smooth fade).
+    Local mode: Uses QVariantAnimation with palette updates (no stylesheet reparsing).
     """
     def __init__(self, text="", parent=None, role="primary"):
         super().__init__(text, parent)
@@ -1342,7 +1342,6 @@ class AnimatedButton(QPushButton):
 
         if self._is_remote:
             # REMOTE MODE: Standard Qt CSS with :hover (Reliable, Efficient)
-            # We append the background pseudo-states to the base style
             remote_style = self._base_style + f"""
             QPushButton {{
                 background-color: {self._bg_normal};
@@ -1357,37 +1356,49 @@ class AnimatedButton(QPushButton):
             self.setStyleSheet(remote_style)
             
         else:
-            # LOCAL MODE: Animated background
-            # Initial state
-            self.setStyleSheet(self._base_style + f"QPushButton {{ background-color: {self._bg_normal}; }}")
+            # LOCAL MODE: Animated background via palette (no stylesheet reparsing)
+            # Set base stylesheet once (without background — we paint that ourselves)
+            self.setStyleSheet(self._base_style + "QPushButton { background-color: transparent; }")
+            self.setAutoFillBackground(True)
             
-            # Setup animation
+            self._current_bg_color = QColor(self._bg_normal)
+            self._apply_palette_bg(self._current_bg_color)
+            
+            # Setup animation (QColor interpolation — no stylesheet on each frame)
             self._anim = QVariantAnimation()
             self._anim.setDuration(200) 
             self._anim.setEasingCurve(QEasingCurve.InOutQuad)
             self._anim.valueChanged.connect(self._update_bg)
-            self._current_bg = self._bg_normal
+
+    def _apply_palette_bg(self, color):
+        """Update background via QPalette (much faster than setStyleSheet)."""
+        from PySide6.QtGui import QPalette
+        pal = self.palette()
+        pal.setColor(QPalette.Button, color)
+        pal.setColor(QPalette.Window, color)
+        self.setPalette(pal)
 
     def _update_bg(self, color):
-        """Update background color via stylesheet (Local only)."""
-        # Note: setStyleSheet is heavy, but looks correct compared to manual painting.
-        # locally it should be acceptable.
-        self.setStyleSheet(self._base_style + f"QPushButton {{ background-color: {color}; }}")
-        self._current_bg = color
+        """Update background color via palette (Local only). ~60x faster than setStyleSheet."""
+        if isinstance(color, str):
+            color = QColor(color)
+        self._current_bg_color = color
+        self._apply_palette_bg(color)
+        self.update()  # Lightweight repaint, no style recalculation
 
     def enterEvent(self, event):
         if not self._is_remote:
             self._anim.stop()
-            self._anim.setStartValue(self._current_bg)
-            self._anim.setEndValue(self._bg_hover)
+            self._anim.setStartValue(self._current_bg_color)
+            self._anim.setEndValue(QColor(self._bg_hover))
             self._anim.start()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         if not self._is_remote:
             self._anim.stop()
-            self._anim.setStartValue(self._bg_hover) # or current
-            self._anim.setEndValue(self._bg_normal)
+            self._anim.setStartValue(self._current_bg_color)
+            self._anim.setEndValue(QColor(self._bg_normal))
             self._anim.start()
         super().leaveEvent(event)
 

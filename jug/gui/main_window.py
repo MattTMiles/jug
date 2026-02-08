@@ -223,8 +223,6 @@ class MainWindow(QMainWindow):
         
         # Install event filter for key handling
         self.installEventFilter(self)
-    
-        self.installEventFilter(self)
 
     def resizeEvent(self, event):
         """Handle window resize events to maintain overlay position."""
@@ -950,9 +948,6 @@ class MainWindow(QMainWindow):
 
     def on_compute_error(self, error_msg):
         """Handle computation error."""
-        # DEBUG
-        print(f"[DEBUG] Compute error: {error_msg}")
-
         QMessageBox.critical(self, "Compute Error", f"Computation failed:\n\n{error_msg}")
         self.status_bar.showMessage("Computation failed")
     
@@ -977,38 +972,51 @@ class MainWindow(QMainWindow):
         if auto_range is None:
             auto_range = is_first_plot
         
-        # Update or create scatter plot with modern styling
-        if self.scatter_item is None:
-            # First time: create themed scatter item
-            self.scatter_item = create_scatter_item()
-            self.plot_widget.addItem(self.scatter_item)
+        # Block view range signals during data update to prevent cascading
+        # redraws (setData triggers sigRangeChanged → beam recalc → redraw)
+        view_box = self.plot_widget.getPlotItem().getViewBox()
+        view_box.blockSignals(True)
         
-        # Update scatter data (fast - no recreation)
-        self.scatter_item.setData(x=self.mjd, y=self.residuals_us)
-        
-        # Update or create error bars with modern styling
-        if self.errors_us is not None:
-            if self.error_bar_item is None:
-                # First time: create themed error bar item
-                self.error_bar_item = create_error_bar_item()
-                self.plot_widget.addItem(self.error_bar_item)
+        try:
+            # Disable auto-range during batch update (prevents multiple range calcs)
+            view_box.disableAutoRange()
             
-            # Update error bar data
-            self.error_bar_item.setData(
-                x=self.mjd,
-                y=self.residuals_us,
-                height=self.errors_us * 2  # ±1σ
-            )
-        elif self.error_bar_item is not None:
-            # Remove error bars if no longer needed
-            self.plot_widget.removeItem(self.error_bar_item)
-            self.error_bar_item = None
-        
-        # Add zero line only if enabled (off by default)
-        if self.show_zero_line and self.zero_line is None:
-            self.zero_line = create_zero_line(self.plot_widget)
+            # Update or create scatter plot with modern styling
+            if self.scatter_item is None:
+                # First time: create themed scatter item
+                self.scatter_item = create_scatter_item()
+                self.plot_widget.addItem(self.scatter_item)
+            
+            # Update scatter data (fast - no recreation)
+            self.scatter_item.setData(x=self.mjd, y=self.residuals_us)
+            
+            # Update or create error bars with modern styling
+            if self.errors_us is not None:
+                if self.error_bar_item is None:
+                    # First time: create themed error bar item
+                    self.error_bar_item = create_error_bar_item()
+                    self.plot_widget.addItem(self.error_bar_item)
+                
+                # Update error bar data
+                self.error_bar_item.setData(
+                    x=self.mjd,
+                    y=self.residuals_us,
+                    height=self.errors_us * 2  # ±1σ
+                )
+            elif self.error_bar_item is not None:
+                # Remove error bars if no longer needed
+                self.plot_widget.removeItem(self.error_bar_item)
+                self.error_bar_item = None
+            
+            # Add zero line only if enabled (off by default)
+            if self.show_zero_line and self.zero_line is None:
+                self.zero_line = create_zero_line(self.plot_widget)
+        finally:
+            # Re-enable signals before auto-range so the final range is applied
+            view_box.blockSignals(False)
         
         # Auto-range only when requested (not every update!)
+        # Single range calc instead of multiple from setData calls
         if auto_range:
             self.plot_widget.autoRange()
     
@@ -1112,10 +1120,6 @@ class MainWindow(QMainWindow):
         
         self.status_bar.showMessage("Computing postfit residuals...")
         
-        # DEBUG
-        print(f"[DEBUG] Computing postfit with params: {list(result['final_params'].keys())}")
-        print(f"[DEBUG] F0 = {result['final_params'].get('F0', 'N/A')}")
-        
         # Create compute worker with fitted parameters
         worker = ComputeWorker(self.session, params=result['final_params'])
         worker.signals.result.connect(self.on_postfit_compute_complete)
@@ -1127,10 +1131,6 @@ class MainWindow(QMainWindow):
     
     def on_postfit_compute_complete(self, result):
         """Handle postfit residual computation completion."""
-        # DEBUG
-        print(f"[DEBUG] Postfit compute complete: RMS = {result['rms_us']:.6f} μs")
-        print(f"[DEBUG] Residuals range: [{result['residuals_us'].min():.3f}, {result['residuals_us'].max():.3f}]")
-        
         # Get full data from session
         full_mjd = result['tdb_mjd']
         full_residuals = result['residuals_us']
@@ -1158,9 +1158,6 @@ class MainWindow(QMainWindow):
             self.postfit_residuals_us = full_residuals.copy()
             self.errors_us = full_errors
             self._update_rms_from_result(result)
-        
-        # DEBUG
-        print(f"[DEBUG] Updated GUI RMS: {self.rms_us:.6f} μs (after filtering {len(self.deleted_indices)} deleted TOAs)")
         
         # Update plot (auto-range to show new residual scale after fit)
         self._update_plot(auto_range=True)
@@ -1329,7 +1326,10 @@ class MainWindow(QMainWindow):
             new_val_str = ""
             prev_val_str = ""
             change_str = ""
-            unit = ""
+
+            # Unit comes from the single source of truth: the parameter registry
+            from jug.model.parameter_spec import get_display_unit
+            unit = get_display_unit(param)
             
             if param == 'RAJ':
                 if isinstance(prev_value, str): prev_value_rad = parse_ra(prev_value)
@@ -1338,7 +1338,7 @@ class MainWindow(QMainWindow):
                 new_val_str = format_ra(new_value)
                 prev_val_str = format_ra(prev_value_rad) if isinstance(prev_value, str) else prev_value
                 change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
-                unit = "Δ arcsec"
+                unit = "Δ arcsec"  # Special: change column shows arcsec offset
             elif param == 'DECJ':
                 if isinstance(prev_value, str): prev_value_rad = parse_dec(prev_value)
                 else: prev_value_rad = prev_value
@@ -1346,79 +1346,68 @@ class MainWindow(QMainWindow):
                 new_val_str = format_dec(new_value)
                 prev_val_str = format_dec(prev_value_rad) if isinstance(prev_value, str) else prev_value
                 change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
-                unit = "Δ arcsec"
-            elif param.startswith('F'):
+                unit = "Δ arcsec"  # Special: change column shows arcsec offset
+            elif param == 'F0':
                 change = new_value - prev_value
-                if param == 'F0':
-                    new_val_str = f"{new_value:.15f}"
-                    prev_val_str = f"{prev_value:.15f}"
-                    change_str = f"{change:+.15f}"
-                    unit = "Hz"
-                else:
-                    new_val_str = f"{new_value:.6e}"
-                    prev_val_str = f"{prev_value:.6e}"
-                    change_str = f"{change:+.6e}"
-                    unit = "Hz/s"
-            elif param.startswith('DM'):
+                new_val_str = f"{new_value:.15f}"
+                prev_val_str = f"{prev_value:.15f}"
+                change_str = f"{change:+.15f}"
+            elif param.startswith('F') and param[1:].isdigit():
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.6e}"
+                prev_val_str = f"{prev_value:.6e}"
+                change_str = f"{change:+.6e}"
+            elif param.startswith('DM') and param != 'DMEPOCH':
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.10f}"
                 prev_val_str = f"{prev_value:.10f}"
                 change_str = f"{change:+.10f}"
-                unit = "pc/cm³"
             elif param in ['PMRA', 'PMDEC']:
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.6f}"
                 prev_val_str = f"{prev_value:.6f}"
                 change_str = f"{change:+.6f}"
-                unit = "mas/yr"
             elif param == 'PX':
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.6f}"
                 prev_val_str = f"{prev_value:.6f}"
                 change_str = f"{change:+.6f}"
-                unit = "mas"
             elif param == 'PB':
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.15f}"
                 prev_val_str = f"{prev_value:.15f}"
                 change_str = f"{change:+.6e}"
-                unit = "days"
-            elif param == 'PBDOT':
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.6e}"
-                prev_val_str = f"{prev_value:.6e}"
-                change_str = f"{change:+.6e}"
-                unit = "s/s"
             elif param == 'A1':
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.10f}"
                 prev_val_str = f"{prev_value:.10f}"
                 change_str = f"{change:+.10f}"
-                unit = "lt-s"
             elif param in ['T0', 'TASC']:
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.12f}"
                 prev_val_str = f"{prev_value:.12f}"
                 change_str = f"{change:+.6e}"
-                unit = "MJD"
             elif param in ['ECC', 'EPS1', 'EPS2']:
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.12e}"
                 prev_val_str = f"{prev_value:.12e}"
                 change_str = f"{change:+.6e}"
-                unit = ""
-            elif param == 'OM':
+            elif param in ['PBDOT', 'XDOT', 'OMDOT', 'EDOT', 'GAMMA',
+                           'H3', 'H4', 'STIG'] or param.startswith('FD'):
+                change = new_value - prev_value
+                new_val_str = f"{new_value:.6e}"
+                prev_val_str = f"{prev_value:.6e}"
+                change_str = f"{change:+.6e}"
+            elif param in ['OM', 'KIN', 'KOM']:
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.10f}"
                 prev_val_str = f"{prev_value:.10f}"
                 change_str = f"{change:+.6e}"
-                unit = "deg"
             elif param == 'M2':
                 change = new_value - prev_value
                 new_val_str = f"{new_value:.12f}"
                 prev_val_str = f"{prev_value:.12f}"
                 change_str = f"{change:+.6e}"
-                unit = "M☉"
             elif param == 'SINI':
                 # Handle SINI='KIN' (DDK convention: SINI = sin(KIN))
                 if isinstance(prev_value, str) and prev_value.upper() == 'KIN':
@@ -1431,19 +1420,11 @@ class MainWindow(QMainWindow):
                 new_val_str = f"{new_value:.12f}"
                 prev_val_str = f"{prev_value_num:.12f}"
                 change_str = f"{change:+.6e}"
-                unit = ""
-            elif param in ['KIN', 'KOM']:
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.10f}"
-                prev_val_str = f"{prev_value:.10f}"
-                change_str = f"{change:+.6e}"
-                unit = "deg"
             else:
                 change = new_value - float(prev_value) if isinstance(prev_value, (int, float)) else 0.0
                 new_val_str = f"{new_value:.6g}"
                 prev_val_str = f"{prev_value}"
                 change_str = f"{change:+.6g}"
-                unit = ""
 
             unc_str = f"±{uncertainty:.2e}"
             
@@ -1673,97 +1654,105 @@ class MainWindow(QMainWindow):
     def _apply_theme(self):
         """Apply the current theme to all UI elements.
         
-        OPTIMIZED: Uses ONE top-level stylesheet for all QSS styling.
-        Only pyqtgraph plot elements and inline-styled widgets need direct updates.
+        OPTIMIZED: Suppresses widget repaints during batch stylesheet updates,
+        then triggers a single repaint at the end.
         """
-        # ONE stylesheet update for all widgets (objectName selectors handle specifics)
-        self.setStyleSheet(get_main_stylesheet())
-
-        # Update pyqtgraph plot widget (doesn't use QSS)
-        configure_plot_widget(self.plot_widget)
+        # Suppress all intermediate repaints during theme switch
+        self.setUpdatesEnabled(False)
         
-        # Explicitly style plot containers (force theme application)
-        if hasattr(self, 'plot_container'):
-             self.plot_container.setStyleSheet(f"background-color: {Colors.BG_PRIMARY};")
-             
-        if hasattr(self, 'plot_frame'):
-             self.plot_frame.setStyleSheet(f"background-color: {Colors.PLOT_BG}; border: 1px solid {get_border_strong()}; border-radius: 12px;")
-             
-        if hasattr(self, 'plot_title_label'):
-             self.plot_title_label.setStyleSheet(get_plot_title_style())
+        try:
+            # ONE stylesheet update for all widgets (objectName selectors handle specifics)
+            self.setStyleSheet(get_main_stylesheet())
 
-        # Update control panel (needs get_control_panel_style for the panel widget)
-        if hasattr(self, 'control_container'):
-             panel = self.control_container.findChild(QWidget)
-             if panel: panel.setStyleSheet(get_control_panel_style())
-
-        # Update primary/secondary buttons (need special gradient styling in dark mode)
-        self.fit_button.setStyleSheet(get_primary_button_style())
-        secondary_style = get_secondary_button_style()
-        self.fit_report_button.setStyleSheet(secondary_style)
-        self.reset_button.setStyleSheet(secondary_style)
-        self.fit_window_button.setStyleSheet(secondary_style)
-        self.params_drawer_btn.setStyleSheet(secondary_style)
-
-        # Update params header (section title style)
-        if hasattr(self, 'params_header_label'):
-             self.params_header_label.setStyleSheet(get_section_title_style())
-
-        # Update Parameter Drawer Background & Table
-        if hasattr(self, 'params_drawer'):
-            self.params_drawer.setStyleSheet(f"background-color: {Colors.BG_SECONDARY}; border-left: 1px solid {get_border_subtle()};")
+            # Update pyqtgraph plot widget (doesn't use QSS)
+            configure_plot_widget(self.plot_widget)
             
-        if hasattr(self, 'param_table'):
-             self.param_table.setStyleSheet(f"""
-                QTableWidget {{
-                    background-color: {Colors.BG_SECONDARY};
-                    border: none;
-                }}
-                QTableWidget::item {{
-                    padding: 0px;
-                    border: none;
-                }}
-            """)
-             # Update styling of all checkboxes in the table
-             for row in range(self.param_table.rowCount()):
-                 widget = self.param_table.cellWidget(row, 0)
-                 if widget:
-                     # Re-apply text color
-                     widget.setStyleSheet(f"""
-                        QCheckBox {{
-                            color: {Colors.TEXT_PRIMARY};
-                            padding: 4px 8px;
-                            spacing: 8px;
-                            font-size: 13px;
-                        }}
-                        QCheckBox::indicator {{
-                            width: 16px; height: 16px;
-                        }}
-                     """)
-        
-        # Update Lights On Switch Labels
-        if hasattr(self, 'lbl_lights'):
-            text_style = f"border: none; color: {Colors.TEXT_PRIMARY}; font-weight: {Typography.WEIGHT_BOLD}; font-size: 13px;"
-            self.lbl_lights.setStyleSheet(text_style)
-            
-            is_on = self.lights_on_switch.isChecked()
-            self.lbl_off.setStyleSheet(f"border: none; color: {Colors.TEXT_MUTED if is_on else Colors.TEXT_PRIMARY}; font-weight: {'normal' if is_on else 'bold'}; font-size: 13px;")
-            self.lbl_on.setStyleSheet(f"border: none; color: {Colors.TEXT_PRIMARY if is_on else Colors.TEXT_MUTED}; font-weight: {'bold' if is_on else 'normal'}; font-size: 13px;")
+            # Explicitly style plot containers (force theme application)
+            if hasattr(self, 'plot_container'):
+                 self.plot_container.setStyleSheet(f"background-color: {Colors.BG_PRIMARY};")
+                 
+            if hasattr(self, 'plot_frame'):
+                 self.plot_frame.setStyleSheet(f"background-color: {Colors.PLOT_BG}; border: 1px solid {get_border_strong()}; border-radius: 12px;")
+                 
+            if hasattr(self, 'plot_title_label'):
+                 self.plot_title_label.setStyleSheet(get_plot_title_style())
 
-        # Update scatter plot colors (pyqtgraph, not QSS)
-        colors = get_scatter_colors()
-        if self.scatter_item is not None:
-            self.scatter_item.setBrush(pg.mkBrush(*colors['primary']))
+            # Update control panel (needs get_control_panel_style for the panel widget)
+            if hasattr(self, 'control_container'):
+                 panel = self.control_container.findChild(QWidget)
+                 if panel: panel.setStyleSheet(get_control_panel_style())
+
+            # Update primary/secondary buttons (need special gradient styling in dark mode)
+            self.fit_button.setStyleSheet(get_primary_button_style())
+            secondary_style = get_secondary_button_style()
+            self.fit_report_button.setStyleSheet(secondary_style)
+            self.reset_button.setStyleSheet(secondary_style)
+            self.fit_window_button.setStyleSheet(secondary_style)
+            self.params_drawer_btn.setStyleSheet(secondary_style)
+
+            # Update params header (section title style)
+            if hasattr(self, 'params_header_label'):
+                 self.params_header_label.setStyleSheet(get_section_title_style())
+
+            # Update Parameter Drawer Background & Table
+            if hasattr(self, 'params_drawer'):
+                self.params_drawer.setStyleSheet(f"background-color: {Colors.BG_SECONDARY}; border-left: 1px solid {get_border_subtle()};")
+                
+            if hasattr(self, 'param_table'):
+                 # Batch checkbox style — build string once, apply to all
+                 checkbox_style = f"""
+                    QCheckBox {{
+                        color: {Colors.TEXT_PRIMARY};
+                        padding: 4px 8px;
+                        spacing: 8px;
+                        font-size: 13px;
+                    }}
+                    QCheckBox::indicator {{
+                        width: 16px; height: 16px;
+                    }}
+                 """
+                 self.param_table.setStyleSheet(f"""
+                    QTableWidget {{
+                        background-color: {Colors.BG_SECONDARY};
+                        border: none;
+                    }}
+                    QTableWidget::item {{
+                        padding: 0px;
+                        border: none;
+                    }}
+                """)
+                 # Update styling of all checkboxes in the table
+                 for row in range(self.param_table.rowCount()):
+                     widget = self.param_table.cellWidget(row, 0)
+                     if widget:
+                         widget.setStyleSheet(checkbox_style)
             
-        # Update error bar colors (pyqtgraph)
-        if self.error_bar_item is not None:
-             error_color = PlotTheme.get_error_bar_color()
-             self.error_bar_item.setOpts(pen=pg.mkPen(color=error_color, width=2.0))
-             
-        # Update zero line if visible (pyqtgraph)
-        if self.zero_line is not None:
-            self.plot_widget.removeItem(self.zero_line)
-            self.zero_line = create_zero_line(self.plot_widget)
+            # Update Lights On Switch Labels
+            if hasattr(self, 'lbl_lights'):
+                text_style = f"border: none; color: {Colors.TEXT_PRIMARY}; font-weight: {Typography.WEIGHT_BOLD}; font-size: 13px;"
+                self.lbl_lights.setStyleSheet(text_style)
+                
+                is_on = self.lights_on_switch.isChecked()
+                self.lbl_off.setStyleSheet(f"border: none; color: {Colors.TEXT_MUTED if is_on else Colors.TEXT_PRIMARY}; font-weight: {'normal' if is_on else 'bold'}; font-size: 13px;")
+                self.lbl_on.setStyleSheet(f"border: none; color: {Colors.TEXT_PRIMARY if is_on else Colors.TEXT_MUTED}; font-weight: {'bold' if is_on else 'normal'}; font-size: 13px;")
+
+            # Update scatter plot colors (pyqtgraph, not QSS)
+            colors = get_scatter_colors()
+            if self.scatter_item is not None:
+                self.scatter_item.setBrush(pg.mkBrush(*colors['primary']))
+                
+            # Update error bar colors (pyqtgraph)
+            if self.error_bar_item is not None:
+                 error_color = PlotTheme.get_error_bar_color()
+                 self.error_bar_item.setOpts(pen=pg.mkPen(color=error_color, width=2.0))
+                 
+            # Update zero line if visible (pyqtgraph)
+            if self.zero_line is not None:
+                self.plot_widget.removeItem(self.zero_line)
+                self.zero_line = create_zero_line(self.plot_widget)
+        finally:
+            # Single repaint for the entire window
+            self.setUpdatesEnabled(True)
 
     def on_zoom_fit(self):
         """Zoom plot to fit data."""
@@ -1864,7 +1853,7 @@ class MainWindow(QMainWindow):
         # ErrorBarItem.setOpts() updates rendering options without array copies
         self.error_bar_item.setOpts(beam=self._pending_beam)
         self._pending_beam = None
-    
+
     def on_about(self):
         """Show about dialog with modern styling."""
         from PySide6.QtWidgets import QMessageBox
@@ -2431,11 +2420,10 @@ class MainWindow(QMainWindow):
     def _get_current_to_original_mapping(self):
         """Get mapping from current data indices to original data indices."""
         if self.original_mjd is None:
-            return list(range(len(self.mjd)))
+            return np.arange(len(self.mjd))
         
-        # Build list of original indices that haven't been deleted
-        original_indices = [i for i in range(len(self.original_mjd)) if i not in self.deleted_indices]
-        return original_indices
+        # Use pre-computed boolean mask for O(1) lookup via numpy
+        return np.where(self._keep_mask)[0]
 
     def _cancel_box_delete(self):
         """Cancel box delete mode and clean up."""

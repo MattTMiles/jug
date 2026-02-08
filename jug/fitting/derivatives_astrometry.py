@@ -418,35 +418,35 @@ def compute_astrometric_delay(
     3. Second-order parallax correction
     """
     from jug.io.par_reader import parse_ra, parse_dec
-    import numpy as np
 
     # Ensure inputs are arrays
     ssb_obs_pos_ls = jnp.asarray(ssb_obs_pos_ls, dtype=jnp.float64)
     toas_mjd = jnp.asarray(toas_mjd, dtype=jnp.float64)
 
     # Extract pulsar position (in radians)
+    # Use jnp.float64 instead of float() so JAX can trace through this function
     raj_value = params['RAJ']
     if isinstance(raj_value, str):
-        psr_ra = parse_ra(raj_value)
+        psr_ra = jnp.float64(parse_ra(raj_value))
     else:
-        psr_ra = float(raj_value)
+        psr_ra = jnp.float64(raj_value)
 
     decj_value = params['DECJ']
     if isinstance(decj_value, str):
-        psr_dec = parse_dec(decj_value)
+        psr_dec = jnp.float64(parse_dec(decj_value))
     else:
-        psr_dec = float(decj_value)
+        psr_dec = jnp.float64(decj_value)
 
-    posepoch = float(params.get('POSEPOCH', float(np.mean(np.array(toas_mjd)))))
+    posepoch = jnp.float64(params.get('POSEPOCH', jnp.mean(toas_mjd)))
 
     # Get proper motion (convert from mas/yr to rad/yr if present)
     pmra_mas_yr = params.get('PMRA', 0.0)
     pmdec_mas_yr = params.get('PMDEC', 0.0)
-    pmra_rad_yr = float(pmra_mas_yr) * (jnp.pi / 180 / 3600000) if pmra_mas_yr else 0.0
-    pmdec_rad_yr = float(pmdec_mas_yr) * (jnp.pi / 180 / 3600000) if pmdec_mas_yr else 0.0
+    pmra_rad_yr = jnp.float64(pmra_mas_yr) * (jnp.pi / 180 / 3600000)
+    pmdec_rad_yr = jnp.float64(pmdec_mas_yr) * (jnp.pi / 180 / 3600000)
 
     # Get parallax (in mas)
-    px_mas = float(params.get('PX', 0.0))
+    px_mas = jnp.float64(params.get('PX', 0.0))
 
     # Compute pulsar unit vector (with proper motion correction)
     n_x, n_y, n_z = compute_pulsar_unit_vector(
@@ -465,26 +465,25 @@ def compute_astrometric_delay(
     roemer_delay = -r_dot_n  # seconds
 
     # Parallax correction (second-order effect)
-    if px_mas != 0.0:
-        # Distance to pulsar: d = 1/px (pc), where px is in arcsec
-        # Convert px from mas to radians: px_rad = px_mas * pi / (180 * 3600 * 1000)
-        px_rad = px_mas * (jnp.pi / 180.0 / 3600.0 / 1000.0)
+    # Always compute — when px_mas=0 the correction is zero.
+    # Using jnp.where avoids Python conditional which breaks JAX tracing.
+    px_rad = px_mas * (jnp.pi / 180.0 / 3600.0 / 1000.0)
 
-        # Distance in light-seconds: d_ls = AU_ls / px_rad
-        # where AU_ls = AU in light-seconds
-        AU_LS = AU_METERS / SPEED_OF_LIGHT  # ~499.005 light-seconds
-        d_ls = AU_LS / px_rad if px_rad != 0 else jnp.inf
+    # Distance in light-seconds: d_ls = AU_ls / px_rad
+    AU_LS = AU_METERS / SPEED_OF_LIGHT  # ~499.005 light-seconds
+    # Guard against division by zero — use a large distance when px_rad == 0
+    d_ls = jnp.where(px_rad != 0, AU_LS / px_rad, jnp.inf)
 
-        # r^2 magnitude
-        r_sq = x**2 + y**2 + z**2
+    # r^2 magnitude
+    r_sq = x**2 + y**2 + z**2
 
-        # Transverse distance squared: px_r^2 = r^2 - (r·n̂)^2
-        px_r_sq = r_sq - r_dot_n**2
+    # Transverse distance squared: px_r^2 = r^2 - (r·n̂)^2
+    px_r_sq = r_sq - r_dot_n**2
 
-        # Parallax delay: 0.5 * px_r^2 / d
-        parallax_delay = 0.5 * px_r_sq / d_ls  # seconds
+    # Parallax delay: 0.5 * px_r^2 / d
+    parallax_delay = 0.5 * px_r_sq / d_ls  # seconds
 
-        roemer_delay = roemer_delay + parallax_delay
+    roemer_delay = roemer_delay + parallax_delay
 
     return roemer_delay
 
@@ -527,9 +526,9 @@ def compute_astrometry_derivatives(
     derivatives : Dict[str, jnp.ndarray]
         Dictionary mapping parameter names to derivative arrays.
         Each array has shape (n_toas,).
-        Units: d(residual)/d(param) in seconds per par-file unit
-        - RAJ: seconds/hourangle
-        - DECJ: seconds/degree
+        Units: d(residual)/d(param) in seconds per fitter-internal unit
+        - RAJ: seconds/radian  (fitter stores RAJ in radians)
+        - DECJ: seconds/radian  (fitter stores DECJ in radians)
         - PMRA/PMDEC: seconds/(mas/year)
         - PX: seconds/mas
     """
@@ -569,19 +568,17 @@ def compute_astrometry_derivatives(
         
         if param_upper == 'RAJ':
             # ∂(delay)/∂(RAJ) in seconds/radian
+            # Fitter stores RAJ in radians (via parse_ra), so derivative
+            # must be in sec/rad to match parameter units.
             deriv_rad = d_delay_d_RAJ(psr_ra, psr_dec, ssb_obs_pos)
-            # Convert to seconds/hourangle
-            deriv_ha = deriv_rad / HOURANGLE_PER_RAD  # seconds/hourangle
-            # Match PINT convention: +d(delay)/d(param)
-            derivatives[param] = deriv_ha
-            
+            derivatives[param] = deriv_rad
+
         elif param_upper == 'DECJ':
             # ∂(delay)/∂(DECJ) in seconds/radian
+            # Fitter stores DECJ in radians (via parse_dec), so derivative
+            # must be in sec/rad to match parameter units.
             deriv_rad = d_delay_d_DECJ(psr_ra, psr_dec, ssb_obs_pos)
-            # Convert to seconds/degree
-            deriv_deg = deriv_rad / DEG_PER_RAD  # seconds/degree
-            # Match PINT convention: +d(delay)/d(param)
-            derivatives[param] = deriv_deg
+            derivatives[param] = deriv_rad
             
         elif param_upper == 'PMRA':
             # ∂(delay)/∂(PMRA) in seconds/(rad/year)

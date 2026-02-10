@@ -524,6 +524,7 @@ class TimingSession:
             # Prepare cached data for setup builder
             toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in self.toas_data])
             errors_us = np.array([toa.error_us for toa in self.toas_data])
+            toa_flags = [toa.flags for toa in self.toas_data]
             
             session_cached_data = {
                 'dt_sec': cached_result['dt_sec'],
@@ -532,6 +533,7 @@ class TimingSession:
                 'freq_bary_mhz': cached_result['freq_bary_mhz'],
                 'toas_mjd': toas_mjd,
                 'errors_us': errors_us,
+                'toa_flags': toa_flags,
                 'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
                 'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
                 'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),

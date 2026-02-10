@@ -189,6 +189,8 @@ class GeneralFitSetup:
     initial_fd_delay: Optional[np.ndarray]  # For FD fitting iteration
     initial_sw_delay: Optional[np.ndarray]  # For SW fitting iteration
     sw_geometry_pc: Optional[np.ndarray]  # Solar wind geometry factor per TOA
+    toa_flags: Optional[List[Dict[str, str]]]  # Per-TOA flags from tim file
+    ecorr_whitener: object  # ECORRWhitener or None (for block-diagonal covariance)
 
 
 # =============================================================================
@@ -705,6 +707,16 @@ def _fit_parameters_jax_incremental(
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
     freq_mhz = np.array([toa.freq_mhz for toa in toas_data])
     errors_us = np.array([toa.error_us for toa in toas_data])
+
+    # Apply white noise scaling (EFAC/EQUAD) if present in par file
+    noise_lines = params.get('_noise_lines')
+    if noise_lines:
+        from jug.noise.white import parse_noise_lines, apply_white_noise
+        toa_flags = [toa.flags for toa in toas_data]
+        noise_entries = parse_noise_lines(noise_lines)
+        if noise_entries:
+            errors_us = apply_white_noise(errors_us, toa_flags, noise_entries)
+
     errors_sec = errors_us * 1e-6
     weights = 1.0 / errors_sec ** 2
     n_toas = len(toas_mjd)
@@ -1184,6 +1196,35 @@ def _build_general_fit_setup_from_files(
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
     freq_mhz = np.array([toa.freq_mhz for toa in toas_data])
     errors_us = np.array([toa.error_us for toa in toas_data])
+
+    # Extract per-TOA flags (needed for EFAC/EQUAD noise scaling)
+    toa_flags = [toa.flags for toa in toas_data]
+
+    # Apply white noise scaling (EFAC/EQUAD) and build ECORR whitener
+    ecorr_whitener = None
+    noise_lines = params.get('_noise_lines')
+    if noise_lines:
+        from jug.noise.white import parse_noise_lines, apply_white_noise
+        noise_entries = parse_noise_lines(noise_lines)
+        if noise_entries:
+            errors_us = apply_white_noise(errors_us, toa_flags, noise_entries)
+            # Build ECORR whitener if any ECORR entries exist
+            ecorr_entries = [e for e in noise_entries if e.kind == 'ECORR']
+            if ecorr_entries:
+                from jug.noise.ecorr import build_ecorr_whitener
+                ecorr_whitener = build_ecorr_whitener(
+                    toas_mjd, toa_flags, noise_entries
+                )
+            if verbose:
+                efac_count = sum(1 for e in noise_entries if e.kind == 'EFAC')
+                equad_count = sum(1 for e in noise_entries if e.kind == 'EQUAD')
+                ecorr_count = len(ecorr_entries) if ecorr_entries else 0
+                ecorr_msg = ''
+                if ecorr_count and ecorr_whitener is not None:
+                    n_groups = len(ecorr_whitener.epoch_groups)
+                    ecorr_msg = f', {ecorr_count} ECORR ({n_groups} epoch groups)'
+                print(f"  Applied white noise: {efac_count} EFAC, {equad_count} EQUAD{ecorr_msg}")
+
     errors_sec = errors_us * 1e-6
     weights = 1.0 / errors_sec**2
 
@@ -1324,6 +1365,8 @@ def _build_general_fit_setup_from_files(
         initial_fd_delay=initial_fd_delay,
         initial_sw_delay=initial_sw_delay,
         sw_geometry_pc=sw_geometry_pc,
+        toa_flags=toa_flags,
+        ecorr_whitener=ecorr_whitener,
     )
 
 
@@ -1418,7 +1461,13 @@ def _compute_full_model_residuals(
 
     # Compute statistics
     sum_weights = np.sum(weights)
-    chi2 = np.sum((residuals_sec / errors_sec) ** 2)
+    # Chi2: use block-diagonal C^{-1} when ECORR whitener is available
+    ecorr_w = getattr(setup, 'ecorr_whitener', None)
+    if ecorr_w is not None:
+        ecorr_w.prepare(errors_sec)
+        chi2 = ecorr_w.chi2(residuals_sec)
+    else:
+        chi2 = np.sum((residuals_sec / errors_sec) ** 2)
     rms_us = np.sqrt(np.sum(residuals_sec**2 * weights) / sum_weights) * 1e6
     wrms_us = np.sqrt(np.sum((residuals_sec * 1e6)**2 * weights) / sum_weights)
     
@@ -1677,10 +1726,23 @@ def _run_general_fit_iterations(
             M[:, i] = M[:, i] - col_mean
         
         # Solve WLS to get step direction
+        # When ECORR whitener is present, pre-whiten residuals and M
+        # so the standard solver recovers the GLS solution.
+        ecorr_w = getattr(setup, 'ecorr_whitener', None)
+        if ecorr_w is not None:
+            ecorr_w.prepare(errors_sec)
+            r_solve = ecorr_w.whiten_residuals(residuals)
+            M_solve = ecorr_w.whiten_matrix(M)
+            sigma_solve = np.ones_like(errors_sec)  # already whitened
+        else:
+            r_solve = residuals
+            M_solve = M
+            sigma_solve = errors_sec
+
         if solver_mode == "fast":
             # FAST solver: QR-based lstsq with proper conditioning
-            r1 = residuals / errors_sec
-            M1 = M / errors_sec[:, None]
+            r1 = r_solve / sigma_solve
+            M1 = M_solve / sigma_solve[:, None]
             col_norms = np.sqrt(np.sum(M1**2, axis=0))
             col_norms = np.where(col_norms == 0, 1.0, col_norms)
             M2 = M1 / col_norms[None, :]
@@ -1695,9 +1757,9 @@ def _run_general_fit_iterations(
         else:
             # EXACT solver: SVD-based (bit-for-bit reproducible)
             delta_params, cov, _ = wls_solve_svd(
-                residuals=residuals,
-                sigma=errors_sec,
-                M=M,
+                residuals=r_solve,
+                sigma=sigma_solve,
+                M=M_solve,
                 threshold=1e-14,
                 negate_dpars=False
             )
@@ -1895,6 +1957,9 @@ def _build_general_fit_setup_from_cache(
     toas_mjd = session_cached_data['toas_mjd']
     errors_us = session_cached_data['errors_us']
 
+    # Extract TOA flags (for noise scaling compatibility)
+    toa_flags_all = session_cached_data.get('toa_flags')
+
     # Apply TOA mask if provided
     if toa_mask is not None:
         dt_sec_cached = dt_sec_cached[toa_mask]
@@ -1904,6 +1969,24 @@ def _build_general_fit_setup_from_cache(
         freq_mhz_bary = freq_mhz_bary[toa_mask]
         toas_mjd = toas_mjd[toa_mask]
         errors_us = errors_us[toa_mask]
+        if toa_flags_all is not None:
+            toa_flags_all = [toa_flags_all[i] for i, m in enumerate(toa_mask) if m]
+
+    # Apply white noise scaling (EFAC/EQUAD) and build ECORR whitener
+    ecorr_whitener = None
+    noise_lines = params_dict.get('_noise_lines')
+    if noise_lines and toa_flags_all is not None:
+        from jug.noise.white import parse_noise_lines, apply_white_noise
+        noise_entries = parse_noise_lines(noise_lines)
+        if noise_entries:
+            errors_us = apply_white_noise(errors_us, toa_flags_all, noise_entries)
+            # Build ECORR whitener if any ECORR entries exist
+            ecorr_entries = [e for e in noise_entries if e.kind == 'ECORR']
+            if ecorr_entries:
+                from jug.noise.ecorr import build_ecorr_whitener
+                ecorr_whitener = build_ecorr_whitener(
+                    toas_mjd, toa_flags_all, noise_entries
+                )
     
     # Compute derived arrays (same as file path)
     errors_sec = errors_us * 1e-6
@@ -2053,6 +2136,8 @@ def _build_general_fit_setup_from_cache(
         initial_fd_delay=initial_fd_delay,
         initial_sw_delay=initial_sw_delay,
         sw_geometry_pc=sw_geometry_pc,
+        toa_flags=toa_flags_all,
+        ecorr_whitener=ecorr_whitener,
     )
 
 

@@ -14,6 +14,10 @@ For fitting, PINT divides these by F0 to get ∂(phase)/∂(param).
 Reference: PINT src/pint/models/astrometry.py
 """
 
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
+
+import jax
 import jax.numpy as jnp
 from typing import Dict, List, Optional
 import math
@@ -28,6 +32,7 @@ HOURANGLE_PER_RAD = 12.0 / math.pi  # ~3.819 hourangle/rad
 DEG_PER_RAD = 180.0 / math.pi
 
 
+@jax.jit
 def compute_earth_position_angles(ssb_obs_pos: jnp.ndarray) -> Dict[str, jnp.ndarray]:
     """Compute Earth position angles from SSB-to-observatory position vectors.
     
@@ -66,6 +71,7 @@ def compute_earth_position_angles(ssb_obs_pos: jnp.ndarray) -> Dict[str, jnp.nda
     }
 
 
+@jax.jit
 def d_delay_d_RAJ(
     psr_ra: float,
     psr_dec: float,
@@ -111,6 +117,7 @@ def d_delay_d_RAJ(
     return dd_draj
 
 
+@jax.jit
 def d_delay_d_DECJ(
     psr_ra: float,
     psr_dec: float,
@@ -147,6 +154,7 @@ def d_delay_d_DECJ(
     return dd_ddecj
 
 
+@jax.jit
 def d_delay_d_PMRA(
     psr_ra: float,
     psr_dec: float,
@@ -203,6 +211,7 @@ def d_delay_d_PMRA(
     return dd_dpmra
 
 
+@jax.jit
 def d_delay_d_PMDEC(
     psr_ra: float,
     psr_dec: float,
@@ -255,6 +264,8 @@ def compute_pulsar_unit_vector(
     pmra_rad_yr: float = 0.0,
     pmdec_rad_yr: float = 0.0,
 ) -> tuple:
+    # NOTE: Not JIT'd because of Python-level None checks and if/else branching.
+    # The branches call jnp ops which ARE traced when called from JIT'd callers.
     """Compute pulsar unit vector, optionally with proper motion correction.
     
     Parameters
@@ -319,6 +330,7 @@ def d_delay_d_PX(
     pmra_rad_yr: float = 0.0,
     pmdec_rad_yr: float = 0.0,
 ) -> jnp.ndarray:
+    # NOTE: Not JIT'd because compute_pulsar_unit_vector uses Python None checks.
     """Compute derivative of delay with respect to PX (parallax).
     
     The parallax delay is approximately:

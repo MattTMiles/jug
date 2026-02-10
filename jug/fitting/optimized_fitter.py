@@ -1324,7 +1324,7 @@ def _build_general_fit_setup_from_files(
     if fd_params:
         from jug.fitting.derivatives_fd import compute_fd_delay
         initial_fd_params = {p: params[p] for p in fd_params if p in params}
-        initial_fd_delay = compute_fd_delay(freq_mhz_bary, initial_fd_params)
+        initial_fd_delay = np.asarray(compute_fd_delay(freq_mhz_bary, initial_fd_params), dtype=np.float64)
 
     # If fitting NE_SW, extract solar wind geometry factor and initial delay
     sw_geometry_pc = None
@@ -1442,7 +1442,7 @@ def _compute_full_model_residuals(
     if fd_params and setup.initial_fd_delay is not None:
         from jug.fitting.derivatives_fd import compute_fd_delay
         current_fd_params = {p: params[p] for p in fd_params if p in params}
-        new_fd_delay = compute_fd_delay(freq_mhz, current_fd_params)
+        new_fd_delay = np.asarray(compute_fd_delay(freq_mhz, current_fd_params), dtype=np.float64)
         fd_delay_change = new_fd_delay - setup.initial_fd_delay
         dt_sec_np = dt_sec_np - fd_delay_change
 
@@ -1553,6 +1553,23 @@ def _run_general_fit_iterations(
     # This is mathematically identical - weights array doesn't change during fitting
     sum_weights = np.sum(weights)
 
+    # Pre-compute param list categorization ONCE (these never change during fitting)
+    spin_params_list = get_spin_params_from_list(fit_params)
+    dm_params_list = get_dm_params_from_list(fit_params)
+    binary_params_list = get_binary_params_from_list(fit_params)
+    astrometry_params_list = get_astrometry_params_from_list(fit_params)
+    fd_params_list = get_fd_params_from_list(fit_params)
+    sw_params_list = get_sw_params_from_list(fit_params)
+
+    # Pre-import derivative modules once (avoid repeated import lookups in hot loop)
+    from jug.fitting.derivatives_spin import compute_spin_derivatives
+    from jug.fitting.derivatives_astrometry import (
+        compute_astrometric_delay, compute_astrometry_derivatives
+    )
+    from jug.fitting.derivatives_fd import compute_fd_delay, compute_fd_derivatives
+    from jug.fitting.derivatives_sw import compute_sw_derivatives
+    from jug.residuals.simple_calculator import compute_phase_residuals
+
     # Convergence criteria
     xtol = 1e-12
     required_chi2_decrease = 1e-2  # Minimum chi2 decrease to continue
@@ -1606,7 +1623,6 @@ def _run_general_fit_iterations(
 
         # If fitting astrometric parameters, update dt_sec with new astrometric delay
         if astrometry_params and initial_astrometric_delay is not None:
-            from jug.fitting.derivatives_astrometry import compute_astrometric_delay
             new_astrometric_delay = np.array(compute_astrometric_delay(
                 params, tdb_mjd, ssb_obs_pos_ls
             ))
@@ -1615,9 +1631,8 @@ def _run_general_fit_iterations(
 
         # If fitting FD parameters, update dt_sec with new FD delay
         if fd_params and initial_fd_delay is not None:
-            from jug.fitting.derivatives_fd import compute_fd_delay
             current_fd_params = {p: params[p] for p in fd_params if p in params}
-            new_fd_delay = compute_fd_delay(freq_mhz, current_fd_params)
+            new_fd_delay = np.asarray(compute_fd_delay(freq_mhz, current_fd_params), dtype=np.float64)
             fd_delay_change = new_fd_delay - initial_fd_delay
             dt_sec_np = dt_sec_np - fd_delay_change
 
@@ -1629,7 +1644,6 @@ def _run_general_fit_iterations(
             dt_sec_np = dt_sec_np - sw_delay_change
 
         # Compute phase residuals from updated dt_sec via shared function (longdouble)
-        from jug.residuals.simple_calculator import compute_phase_residuals
         _, residuals = compute_phase_residuals(
             dt_sec_np, params, weights, subtract_mean=True
         )
@@ -1638,21 +1652,17 @@ def _run_general_fit_iterations(
         M_columns = []
 
         # Batch spin parameters (spec-driven routing via component)
-        spin_params_list = get_spin_params_from_list(fit_params)
         spin_derivs = {}
         if spin_params_list:
-            from jug.fitting.derivatives_spin import compute_spin_derivatives
             spin_derivs = compute_spin_derivatives(params, toas_mjd, spin_params_list)
 
         # Batch DM parameters (spec-driven routing via component)
-        dm_params_list = get_dm_params_from_list(fit_params)
         dm_derivs = {}
         if dm_params_list:
             dm_derivs = compute_dm_derivatives(params, toas_mjd, freq_mhz, dm_params_list)
 
         # Batch binary parameters (routed via binary_registry)
         # Use PINT-compatible pre-binary time (roemer_shapiro + DM + SW + tropo)
-        binary_params_list = get_binary_params_from_list(fit_params)
         binary_derivs = {}
         if binary_params_list:
             if setup.prebinary_delay_sec is None:
@@ -1668,7 +1678,6 @@ def _run_general_fit_iterations(
             )
 
         # Batch astrometry parameters (spec-driven routing via component)
-        astrometry_params_list = get_astrometry_params_from_list(fit_params)
         astrometry_derivs = {}
         if astrometry_params_list:
             if setup.ssb_obs_pos_ls is None:
@@ -1676,27 +1685,22 @@ def _run_general_fit_iterations(
                     "Astrometry fitting requires ssb_obs_pos_ls in setup. "
                     "Ensure compute_residuals_simple returns 'ssb_obs_pos_ls'."
                 )
-            from jug.fitting.derivatives_astrometry import compute_astrometry_derivatives
             astrometry_derivs = compute_astrometry_derivatives(
                 params, toas_mjd, setup.ssb_obs_pos_ls, astrometry_params_list
             )
 
         # Batch FD parameters (frequency-dependent delay derivatives)
-        fd_params_list = get_fd_params_from_list(fit_params)
         fd_derivs = {}
         if fd_params_list:
-            from jug.fitting.derivatives_fd import compute_fd_derivatives
             fd_derivs = compute_fd_derivatives(params, freq_mhz, fd_params_list)
 
         # Batch solar wind parameters (NE_SW)
-        sw_params_list = get_sw_params_from_list(fit_params)
         sw_derivs = {}
         if sw_params_list:
             if setup.sw_geometry_pc is None:
                 raise ValueError(
                     "NE_SW fitting requires sw_geometry_pc in setup."
                 )
-            from jug.fitting.derivatives_sw import compute_sw_derivatives
             sw_derivs = compute_sw_derivatives(setup.sw_geometry_pc, freq_mhz, sw_params_list)
 
         # Merge all derivative dicts into one lookup table
@@ -1720,10 +1724,9 @@ def _run_general_fit_iterations(
         # Assemble design matrix
         M = np.column_stack(M_columns)
         
-        # Subtract weighted mean from each column (use pre-computed sum_weights)
-        for i in range(M.shape[1]):
-            col_mean = np.sum(M[:, i] * weights) / sum_weights
-            M[:, i] = M[:, i] - col_mean
+        # Subtract weighted mean from each column (vectorized, use pre-computed sum_weights)
+        col_means = (weights @ M) / sum_weights
+        M -= col_means[np.newaxis, :]
         
         # Solve WLS to get step direction
         # When ECORR whitener is present, pre-whiten residuals and M
@@ -2093,7 +2096,7 @@ def _build_general_fit_setup_from_cache(
     if fd_params:
         from jug.fitting.derivatives_fd import compute_fd_delay
         initial_fd_params = {p: params_dict[p] for p in fd_params if p in params_dict}
-        initial_fd_delay = compute_fd_delay(freq_mhz_bary, initial_fd_params)
+        initial_fd_delay = np.asarray(compute_fd_delay(freq_mhz_bary, initial_fd_params), dtype=np.float64)
 
     # If fitting NE_SW, extract solar wind geometry factor and initial delay
     sw_geometry_pc = None

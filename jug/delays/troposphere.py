@@ -1,4 +1,9 @@
 
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
+
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_mbar=1013.25):
@@ -10,6 +15,11 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     - Mapping Function: Niell Mapping Function (NMF), Niell (1996)
     
     Default pressure is 1013.25 mbar (standard atmosphere) if no met data provided.
+    
+    NOTE: Not JIT'd because of Python-level np.interp calls for NMF coefficient
+    interpolation (scalar operations on the station latitude). The main array
+    operations on elevation_deg and mjd use jnp and will be traced when called
+    from JIT'd contexts.
     
     Parameters
     ----------
@@ -30,17 +40,18 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
         Tropospheric delay in seconds.
     """
     
+    # Ensure inputs are JAX arrays
+    elevation_deg = jnp.asarray(elevation_deg, dtype=jnp.float64)
+    mjd = jnp.asarray(mjd, dtype=jnp.float64)
+    
     # Constants
     const_a = 0.0022768  # m/mbar (Davis et al. 1985)
     
     # 1. Zenith Hydrostatic Delay (ZHD) - Davis et al. (1985)
-    # Formula: ZHD = 0.0022768 * P / (1 - 0.00266 * cos(2*lat) - 0.00028 * H_km)
-    # Result in meters
-    lat_rad = np.radians(lat_deg)
-    cos_2lat = np.cos(2.0 * lat_rad)
+    lat_rad = jnp.radians(lat_deg)
+    cos_2lat = jnp.cos(2.0 * lat_rad)
     height_km = height_m / 1000.0
     
-    # 1 - 0.00266 * cos(2phi) - 0.00028 * H
     denom = 1.0 - 0.00266 * cos_2lat - 0.00028 * height_km
     zhd_m = (const_a * pressure_mbar) / denom
     
@@ -95,12 +106,8 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     # MJD of Jan 0 is roughly ... 
     # Niell 1996: "t is time from Jan 0.0" (DOY 1 - 1?)
     # Usually: t = (DOY - 28) / 365.25. (Phase is -28 days for northern hemisphere)
-    # Check hemisphere
-    if lat_deg < 0:
-        doy_phase = 28.0 + 365.25/2.0
-    else:
-        doy_phase = 28.0
-        
+    # Seasonal variation: use jnp.where instead of Python if/else for hemisphere
+    doy_phase = jnp.where(lat_deg < 0, 28.0 + 365.25/2.0, 28.0)
     # Convert MJD to DOY (approximate is fine for NMF)
     # MJD -> Year, DOY
     # MJD 0 = Nov 17 1858
@@ -112,7 +119,7 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     doy = (days_since_2000 % 365.25) # Rough DOY 0-365
     t_year = (doy - doy_phase) / 365.25
     
-    cos_t = np.cos(2.0 * np.pi * t_year)
+    cos_t = jnp.cos(2.0 * jnp.pi * t_year)
     
     a = a0 - aa * cos_t
     b = b0 - ba * cos_t
@@ -120,7 +127,7 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     
     # Setup mapping function m(E)
     # m(E) = (1 + a/(1 + b/(1 + c))) / (sinE + a/(sinE + b/(sinE + c)))
-    sin_el = np.sin(np.radians(elevation_deg))
+    sin_el = jnp.sin(jnp.radians(elevation_deg))
     
     # Enforce minimum elevation to avoid singularity?
     # Usually impose cutoff of e.g. 2 degrees.

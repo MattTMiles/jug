@@ -6,11 +6,15 @@ expensive delay calculations (TOA parsing, clocks, TDB, Shapiro, etc.)
 and only re-evaluating the timing model with new parameters.
 """
 import numpy as np
+
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
+
+import jax
 import jax.numpy as jnp
-from jax import jit
 
 
-@jit
+@jax.jit
 def evaluate_timing_model_jax(
     dt: jnp.ndarray,
     f0: float,

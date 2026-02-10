@@ -5,12 +5,16 @@ This implements PINT's fit_wls_svd algorithm using JAX for autodiff while
 maintaining full numerical compatibility with PINT's fitter.
 """
 
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 from typing import Tuple, Callable
 
 
+@jax.jit
 def normalize_designmatrix(M: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Normalize each column of the design matrix.

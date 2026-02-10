@@ -24,6 +24,11 @@ References
 - Arzoumanian et al. (2015), ApJ, 813, 65 (NANOGrav 9-yr)
 """
 
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
+
+import jax
+import jax.numpy as jnp
 import numpy as np
 from typing import Dict, List
 import re
@@ -31,18 +36,21 @@ import re
 
 def compute_fd_derivatives(
     params: Dict,
-    freq_mhz: np.ndarray,
+    freq_mhz: jnp.ndarray,
     fit_params: List[str],
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, jnp.ndarray]:
     """Compute FD parameter derivatives.
 
     The derivative d(delay)/d(FD_n) = log(freq/1GHz)^n
+
+    NOTE: Not JIT'd because of Python-level regex/string operations.
+    The array ops use jnp and are traced when called from JIT'd contexts.
 
     Parameters
     ----------
     params : dict
         Timing model parameters (FD values not actually used for derivatives)
-    freq_mhz : np.ndarray
+    freq_mhz : jnp.ndarray
         Observing frequencies in MHz, shape (n_toas,)
     fit_params : list of str
         Parameters to fit (e.g., ['FD1', 'FD2', 'FD3'])
@@ -77,8 +85,8 @@ def compute_fd_derivatives(
         return {}
     
     # Convert frequency to GHz and compute log
-    freq_ghz = np.asarray(freq_mhz) / 1000.0
-    log_freq = np.log(freq_ghz)
+    freq_ghz = jnp.asarray(freq_mhz) / 1000.0
+    log_freq = jnp.log(freq_ghz)
     
     derivatives = {}
     
@@ -96,9 +104,9 @@ def compute_fd_derivatives(
 
 
 def compute_fd_delay(
-    freq_mhz: np.ndarray,
+    freq_mhz: jnp.ndarray,
     fd_params: Dict[str, float],
-) -> np.ndarray:
+) -> jnp.ndarray:
     """Compute total FD (frequency-dependent) delay.
 
     The FD delay is:
@@ -106,20 +114,20 @@ def compute_fd_delay(
 
     Parameters
     ----------
-    freq_mhz : np.ndarray
+    freq_mhz : jnp.ndarray
         Observing frequencies in MHz, shape (n_toas,)
     fd_params : dict
         Dictionary of FD parameter values, e.g., {'FD1': 1e-5, 'FD2': -2e-6}
 
     Returns
     -------
-    np.ndarray
+    jnp.ndarray
         FD delay in seconds, shape (n_toas,)
     """
-    freq_ghz = np.asarray(freq_mhz) / 1000.0
-    log_freq = np.log(freq_ghz)
+    freq_ghz = jnp.asarray(freq_mhz) / 1000.0
+    log_freq = jnp.log(freq_ghz)
     
-    delay = np.zeros_like(log_freq)
+    delay = jnp.zeros_like(log_freq)
     
     for param_name, value in fd_params.items():
         if param_name.startswith('FD'):
@@ -131,26 +139,27 @@ def compute_fd_delay(
     return delay
 
 
+@jax.jit
 def get_fd_derivative_column(
-    freq_mhz: np.ndarray,
+    freq_mhz: jnp.ndarray,
     order: int,
-) -> np.ndarray:
+) -> jnp.ndarray:
     """Get derivative column for a specific FD parameter.
 
     Parameters
     ----------
-    freq_mhz : np.ndarray
+    freq_mhz : jnp.ndarray
         Observing frequencies in MHz
     order : int
         FD order (1 for FD1, 2 for FD2, etc.)
 
     Returns
     -------
-    np.ndarray
+    jnp.ndarray
         Derivative column, shape (n_toas,)
     """
-    freq_ghz = np.asarray(freq_mhz) / 1000.0
-    log_freq = np.log(freq_ghz)
+    freq_ghz = jnp.asarray(freq_mhz) / 1000.0
+    log_freq = jnp.log(freq_ghz)
     return log_freq ** order
 
 

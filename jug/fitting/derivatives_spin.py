@@ -7,20 +7,26 @@ spindown.py to ensure exact compatibility.
 Reference: PINT src/pint/models/spindown.py
 """
 
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
+
+import jax
+import jax.numpy as jnp
 import numpy as np
 from typing import Dict
 
 
-def taylor_horner(dt: np.ndarray, coeffs: list) -> np.ndarray:
+@jax.jit
+def taylor_horner(dt: jnp.ndarray, coeffs: list) -> jnp.ndarray:
     """Evaluate Taylor series using Horner's method.
     
     Computes: coeffs[0] + coeffs[1]*dt + coeffs[2]*dt^2/2! + coeffs[3]*dt^3/3! + ...
     
-    This is PINT's taylor_horner function adapted for numpy float64.
+    This is PINT's taylor_horner function adapted for JAX.
     
     Parameters
     ----------
-    dt : np.ndarray
+    dt : jnp.ndarray
         Time differences from PEPOCH in seconds
     coeffs : list of float
         Taylor series coefficients [c0, c1, c2, ...]
@@ -28,7 +34,7 @@ def taylor_horner(dt: np.ndarray, coeffs: list) -> np.ndarray:
         
     Returns
     -------
-    result : np.ndarray
+    result : jnp.ndarray
         Evaluated Taylor series
         
     Notes
@@ -45,7 +51,7 @@ def taylor_horner(dt: np.ndarray, coeffs: list) -> np.ndarray:
     # = 10 + 6 + 8 + 16 = 40.0
     """
     if len(coeffs) == 0:
-        return np.zeros_like(dt)
+        return jnp.zeros_like(dt)
     
     result = 0.0
     fact = len(coeffs)
@@ -59,10 +65,10 @@ def taylor_horner(dt: np.ndarray, coeffs: list) -> np.ndarray:
 
 
 def d_phase_d_F(
-    dt_sec: np.ndarray,
+    dt_sec: jnp.ndarray,
     param_name: str,
     f_terms: list
-) -> np.ndarray:
+) -> jnp.ndarray:
     """Compute derivative of phase with respect to spin parameter.
     
     This implements PINT's d_phase_d_F method from spindown.py.
@@ -77,7 +83,7 @@ def d_phase_d_F(
     
     Parameters
     ----------
-    dt_sec : np.ndarray
+    dt_sec : jnp.ndarray
         Time difference from PEPOCH in seconds, shape (n_toas,)
     param_name : str
         Parameter name, e.g., 'F0', 'F1', 'F2', etc.
@@ -87,7 +93,7 @@ def d_phase_d_F(
         
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         d(phase)/d(param) in units of cycles/param_unit
         For F0: cycles/Hz
         For F1: cycles/(Hz/s)
@@ -131,17 +137,20 @@ def d_phase_d_F(
 
 def compute_spin_derivatives(
     params: Dict,
-    toas_mjd: np.ndarray,
+    toas_mjd: jnp.ndarray,
     fit_params: list,
     **kwargs
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, jnp.ndarray]:
     """Compute all spin parameter derivatives for design matrix.
+    
+    NOTE: Not JIT'd because of Python-level dict/string operations.
+    The inner taylor_horner calls ARE JIT'd.
     
     Parameters
     ----------
     params : dict
         Timing model parameters including PEPOCH, F0, F1, F2, etc.
-    toas_mjd : np.ndarray
+    toas_mjd : jnp.ndarray
         TOA times in MJD
     fit_params : list
         List of parameters to fit (e.g., ['F0', 'F1'])
@@ -152,7 +161,7 @@ def compute_spin_derivatives(
     -------
     derivatives : dict
         Dictionary mapping parameter name to derivative column
-        Each value is np.ndarray of shape (n_toas,)
+        Each value is jnp.ndarray of shape (n_toas,)
         
     Examples
     --------
@@ -192,7 +201,8 @@ def compute_spin_derivatives(
 
 
 # For backward compatibility / testing
-def d_phase_d_F0(dt_sec: np.ndarray) -> np.ndarray:
+@jax.jit
+def d_phase_d_F0(dt_sec: jnp.ndarray) -> jnp.ndarray:
     """Derivative of phase with respect to F0.
     
     d(phase)/d(F0) = dt
@@ -200,7 +210,8 @@ def d_phase_d_F0(dt_sec: np.ndarray) -> np.ndarray:
     return taylor_horner(dt_sec, [0.0, 1.0])
 
 
-def d_phase_d_F1(dt_sec: np.ndarray) -> np.ndarray:
+@jax.jit
+def d_phase_d_F1(dt_sec: jnp.ndarray) -> jnp.ndarray:
     """Derivative of phase with respect to F1.
     
     d(phase)/d(F1) = dt^2 / 2!
@@ -208,7 +219,8 @@ def d_phase_d_F1(dt_sec: np.ndarray) -> np.ndarray:
     return taylor_horner(dt_sec, [0.0, 0.0, 1.0])
 
 
-def d_phase_d_F2(dt_sec: np.ndarray) -> np.ndarray:
+@jax.jit
+def d_phase_d_F2(dt_sec: jnp.ndarray) -> jnp.ndarray:
     """Derivative of phase with respect to F2.
     
     d(phase)/d(F2) = dt^3 / 3!
@@ -216,7 +228,8 @@ def d_phase_d_F2(dt_sec: np.ndarray) -> np.ndarray:
     return taylor_horner(dt_sec, [0.0, 0.0, 0.0, 1.0])
 
 
-def d_phase_d_F3(dt_sec: np.ndarray) -> np.ndarray:
+@jax.jit
+def d_phase_d_F3(dt_sec: jnp.ndarray) -> jnp.ndarray:
     """Derivative of phase with respect to F3.
     
     d(phase)/d(F3) = dt^4 / 4!

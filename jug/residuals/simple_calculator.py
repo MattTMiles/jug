@@ -18,7 +18,6 @@ from astropy import units as u
 # Ensure JAX is configured for x64 precision
 from jug.utils.jax_setup import ensure_jax_x64
 ensure_jax_x64()
-import jax.numpy as jnp
 
 from jug.io.par_reader import parse_par_file, get_longdouble, parse_ra, parse_dec, validate_par_timescale
 from jug.io.tim_reader import parse_tim_file_mjds, compute_tdb_standalone_vectorized
@@ -539,12 +538,12 @@ def compute_residuals_simple(
         elevation_deg = source_altaz.alt.deg
         
         # Calculate delay
-        tropo_delay_sec = compute_tropospheric_delay(
+        tropo_delay_sec = np.asarray(compute_tropospheric_delay(
             elevation_deg=elevation_deg,
             height_m=loc_height_m,
             lat_deg=loc_lat_deg,
             mjd=mjd_utc_arr
-        )
+        ), dtype=np.float64)
         
         if verbose: print(f"   Tropospheric delay: mean={np.mean(tropo_delay_sec)*1e6:.3f} μs, range=[{np.min(tropo_delay_sec)*1e6:.3f}, {np.max(tropo_delay_sec)*1e6:.3f}] μs")
     
@@ -575,7 +574,7 @@ def compute_residuals_simple(
 
     # Add tropospheric delay to total (kernel uses it only for binary time, not in sum)
     if correct_troposphere:
-        total_delay_sec += tropo_delay_sec
+        total_delay_sec += np.asarray(tropo_delay_sec, dtype=np.float64)
 
     # Compute DM and SW delays separately for pre-binary time (needed by fitter)
     # These replicate the kernel formulas in NumPy for use outside the kernel

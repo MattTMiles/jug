@@ -14,6 +14,12 @@ DM can vary with time as a polynomial:
 Reference: PINT src/pint/models/dispersion_model.py
 """
 
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
+
+import jax
+import jax.numpy as jnp
+import math
 import numpy as np
 from typing import Dict
 
@@ -22,7 +28,8 @@ K_DM_SEC = 1.0 / 2.41e-4  # ≈ 4148.808 MHz² pc⁻¹ cm³ s
 SECS_PER_DAY = 86400.0
 
 
-def d_delay_d_DM(freq_mhz: np.ndarray) -> np.ndarray:
+@jax.jit
+def d_delay_d_DM(freq_mhz: jnp.ndarray) -> jnp.ndarray:
     """Compute derivative of dispersion delay with respect to DM.
     
     The dispersion delay is:
@@ -33,12 +40,12 @@ def d_delay_d_DM(freq_mhz: np.ndarray) -> np.ndarray:
     
     Parameters
     ----------
-    freq_mhz : np.ndarray
+    freq_mhz : jnp.ndarray
         Observing frequencies in MHz, shape (n_toas,)
         
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         ∂(delay)/∂(DM) in units of seconds/(pc cm⁻³)
         Shape (n_toas,)
         
@@ -58,7 +65,8 @@ def d_delay_d_DM(freq_mhz: np.ndarray) -> np.ndarray:
     return K_DM_SEC / (freq_mhz ** 2)
 
 
-def d_delay_d_DM1(dt_sec: np.ndarray, freq_mhz: np.ndarray) -> np.ndarray:
+@jax.jit
+def d_delay_d_DM1(dt_sec: jnp.ndarray, freq_mhz: jnp.ndarray) -> jnp.ndarray:
     """Compute derivative of dispersion delay with respect to DM1.
 
     DM1 represents linear DM evolution in pc cm⁻³ yr⁻¹:
@@ -75,14 +83,14 @@ def d_delay_d_DM1(dt_sec: np.ndarray, freq_mhz: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    dt_sec : np.ndarray
+    dt_sec : jnp.ndarray
         Time difference from DMEPOCH in seconds, shape (n_toas,)
-    freq_mhz : np.ndarray
+    freq_mhz : jnp.ndarray
         Observing frequencies in MHz, shape (n_toas,)
 
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         ∂(delay)/∂(DM1) in units of seconds/(pc cm⁻³ yr⁻¹)
         Shape (n_toas,)
     """
@@ -90,7 +98,8 @@ def d_delay_d_DM1(dt_sec: np.ndarray, freq_mhz: np.ndarray) -> np.ndarray:
     return K_DM_SEC * dt_years / (freq_mhz ** 2)
 
 
-def d_delay_d_DM2(dt_sec: np.ndarray, freq_mhz: np.ndarray) -> np.ndarray:
+@jax.jit
+def d_delay_d_DM2(dt_sec: jnp.ndarray, freq_mhz: jnp.ndarray) -> jnp.ndarray:
     """Compute derivative of dispersion delay with respect to DM2.
 
     DM2 represents quadratic DM evolution in pc cm⁻³ yr⁻²:
@@ -107,14 +116,14 @@ def d_delay_d_DM2(dt_sec: np.ndarray, freq_mhz: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    dt_sec : np.ndarray
+    dt_sec : jnp.ndarray
         Time difference from DMEPOCH in seconds, shape (n_toas,)
-    freq_mhz : np.ndarray
+    freq_mhz : jnp.ndarray
         Observing frequencies in MHz, shape (n_toas,)
 
     Returns
     -------
-    derivative : np.ndarray
+    derivative : jnp.ndarray
         ∂(delay)/∂(DM2) in units of seconds/(pc cm⁻³ yr⁻²)
         Shape (n_toas,)
     """
@@ -124,23 +133,26 @@ def d_delay_d_DM2(dt_sec: np.ndarray, freq_mhz: np.ndarray) -> np.ndarray:
 
 def compute_dm_derivatives(
     params: Dict,
-    toas_mjd: np.ndarray,
-    freq_mhz: np.ndarray,
+    toas_mjd: jnp.ndarray,
+    freq_mhz: jnp.ndarray,
     fit_params: list,
     **kwargs
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, jnp.ndarray]:
     """Compute all DM parameter derivatives for design matrix.
     
     This is the main interface function, analogous to compute_spin_derivatives()
     in derivatives_spin.py.
     
+    NOTE: Not JIT'd because of Python-level dict/string operations and variable
+    loop over fit_params. The inner derivative functions ARE JIT'd.
+    
     Parameters
     ----------
     params : dict
         Timing model parameters including DMEPOCH, DM, DM1, DM2, etc.
-    toas_mjd : np.ndarray
+    toas_mjd : jnp.ndarray
         TOA times in MJD, shape (n_toas,)
-    freq_mhz : np.ndarray
+    freq_mhz : jnp.ndarray
         Observing frequencies in MHz, shape (n_toas,)
     fit_params : list
         List of DM parameters to fit (e.g., ['DM', 'DM1'])
@@ -151,7 +163,7 @@ def compute_dm_derivatives(
     -------
     derivatives : dict
         Dictionary mapping parameter name to derivative column
-        Each value is np.ndarray of shape (n_toas,) in seconds/param_unit
+        Each value is jnp.ndarray of shape (n_toas,) in seconds/param_unit
         
     Notes
     -----
@@ -205,7 +217,7 @@ def compute_dm_derivatives(
                 order = int(param[2:])  # 'DM3' -> 3, 'DM4' -> 4
                 # General formula: ∂τ/∂DM_n = (K_DM × t_yr^n / n!) / freq²
                 dt_years = dt_sec / (SECS_PER_DAY * 365.25)
-                factorial = np.math.factorial(order)
+                factorial = math.factorial(order)
                 derivatives[param] = K_DM_SEC * (dt_years ** order) / factorial / (freq_mhz ** 2)
             except (ValueError, OverflowError):
                 raise ValueError(f"Cannot parse DM parameter: {param}")

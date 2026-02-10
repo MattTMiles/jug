@@ -44,6 +44,12 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
+# JAX for JIT-compiled EFAC/EQUAD scaling
+from jug.utils.jax_setup import ensure_jax_x64
+ensure_jax_x64()
+import jax
+import jax.numpy as jnp
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -234,6 +240,20 @@ def build_backend_mask(
 
 
 # ---------------------------------------------------------------------------
+# JIT-compiled EFAC/EQUAD kernel
+# ---------------------------------------------------------------------------
+
+@jax.jit
+def _apply_efac_equad_jax(
+    errors_us: jnp.ndarray,
+    efac: jnp.ndarray,
+    equad: jnp.ndarray,
+) -> jnp.ndarray:
+    """σ_eff = sqrt(EFAC² * (σ² + EQUAD²)), JIT-compiled."""
+    return jnp.sqrt(efac**2 * (errors_us**2 + equad**2))
+
+
+# ---------------------------------------------------------------------------
 # Apply EFAC / EQUAD scaling
 # ---------------------------------------------------------------------------
 
@@ -282,6 +302,7 @@ def apply_white_noise(
             equad[mask] = entry.value
         # ECORR is not applied here (requires block-diagonal covariance)
 
-    # σ_eff² = EFAC² * (σ² + EQUAD²)
-    scaled_var = efac**2 * (errors_us**2 + equad**2)
-    return np.sqrt(scaled_var)
+    # σ_eff² = EFAC² * (σ² + EQUAD²)  — JIT-compiled via JAX
+    return np.asarray(
+        _apply_efac_equad_jax(jnp.array(errors_us), jnp.array(efac), jnp.array(equad))
+    )

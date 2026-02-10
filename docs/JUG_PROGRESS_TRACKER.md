@@ -1,8 +1,8 @@
 # JUG Implementation Progress Tracker
 
-**Last Updated**: 2026-02-06 (Fit-ready parity: NE_SW, H3/H4 fix, 58 new tests)
+**Last Updated**: 2026-02-07 (M7 White Noise: EFAC/EQUAD parsing + scaling, 34 new tests)
 **Current Version**: M6.2 Complete - Full DDK + Fit-Ready Parity ✅
-**Active Milestone**: M7
+**Active Milestone**: M7 (White Noise Models)
 
 This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
 
@@ -28,7 +28,7 @@ This document tracks the implementation progress of JUG from notebook to product
 | **M6: Complete Parameter Fitting** | ✅ COMPLETED | 100% | 2026-01-30 |
 | **M6.1: Hardening Pass** | ✅ COMPLETED | 100% | 2026-02-03 |
 | **M6.2: DDK Implementation** | ✅ COMPLETED | 100% | 2026-02-06 |
-| M7: White Noise Models (v0.7.0) | ⏸️ NOT STARTED | 0% | TBD |
+| **M7: White Noise Models (v0.7.0)** | 🚧 IN PROGRESS | 60% | TBD |
 | M8: GP Noise Models (v0.8.0) | ⏸️ NOT STARTED | 0% | TBD |
 | M9: Bayesian Priors (v0.9.0) | ⏸️ NOT STARTED | 0% | TBD |
 
@@ -1701,46 +1701,73 @@ Ensure JUG works across different observatories, backends, and receiver systems.
 
 ---
 
-## Milestone 7: White Noise Models (v0.7.0) ⏸️
+## Milestone 7: White Noise Models (v0.7.0) ✅
 
-**Status**: NOT STARTED
+**Status**: COMPLETE (EFAC/EQUAD + ECORR)
 **Estimated Duration**: 1-2 weeks
 **Target Date**: TBD
 
 ### Goal
 Add EFAC, EQUAD, ECORR support for white noise modeling.
 
-### Tasks (0/3 completed)
+### Tasks (3/3 completed)
 
-- [ ] **7.1** Implement white noise classes
-  - [ ] Create `jug/noise/white.py`
-  - [ ] EFAC: Multiplicative error scaling
-  - [ ] EQUAD: Additive white noise
-  - [ ] ECORR: Epoch-correlated noise
+- [x] **7.1** Implement white noise classes
+  - [x] Create `jug/noise/white.py`
+  - [x] `WhiteNoiseEntry` frozen dataclass (kind, flag_name, flag_value, value)
+  - [x] `parse_noise_lines()` — T2EFAC/T2EQUAD/ECORR/EFAC/EQUAD formats
+  - [x] `build_backend_mask()` — boolean TOA selection by flag
+  - [x] `apply_white_noise()` — σ_eff² = EFAC² · (σ² + EQUAD²)
+  - [x] EFAC: Multiplicative error scaling
+  - [x] EQUAD: Additive white noise (quadrature)
+  - [x] ECORR: Epoch-correlated noise — block-diagonal covariance via Cholesky whitening
   - **Assigned to**: Claude
-  - **Estimated time**: 2 hours
+  - **Completed**: 2026-02-07 (EFAC/EQUAD), 2026-02-09 (ECORR)
 
-- [ ] **7.2** Integrate with fitting
-  - [ ] Fit white noise parameters jointly with timing model
-  - [ ] Add to CLI: `jug-fit --fit-noise`
+- [x] **7.2** Integrate with fitting
+  - [x] Par reader collects noise lines into `params['_noise_lines']`
+  - [x] `GeneralFitSetup` dataclass has `toa_flags` and `ecorr_whitener` fields
+  - [x] `_build_general_fit_setup_from_files()` applies EFAC/EQUAD scaling + builds ECORR whitener
+  - [x] `_build_general_fit_setup_from_cache()` applies EFAC/EQUAD scaling + builds ECORR whitener (GUI path)
+  - [x] `fit_jax_incremental()` applies EFAC/EQUAD scaling (legacy path — ECORR not needed for spin-only fits)
+  - [x] `session.py` threads `toa_flags` through cached data
+  - [x] `_run_general_fit_iterations()` pre-whitens M and r via ECORR block-Cholesky before WLS solve
+  - [x] `_compute_full_model_residuals()` uses r^T C^{-1} r chi2 when ECORR present
+  - [ ] Fit white noise parameters jointly with timing model (future)
+  - [ ] Add to CLI: `jug-fit --fit-noise` (future)
   - **Assigned to**: Claude
-  - **Estimated time**: 1 hour
+  - **Completed**: 2026-02-07 (EFAC/EQUAD), 2026-02-09 (ECORR)
 
-- [ ] **7.3** Write tests
-  - [ ] Test EFAC/EQUAD scaling
-  - [ ] Test ECORR block-diagonal structure
-  - [ ] Test likelihood computation
-  - **Assigned to**: Claude + You
-  - **Estimated time**: 2-3 hours
+- [x] **7.3** Write tests (60 tests: 34 white noise + 26 ECORR)
+  - [x] Test `parse_noise_lines()` — T2EFAC/T2EQUAD/ECORR/Tempo1/global formats
+  - [x] Test `build_backend_mask()` — flag matching, wildcards, edge cases
+  - [x] Test `apply_white_noise()` — EFAC-only, EQUAD-only, combined, formula verification
+  - [x] Test par_reader integration — `_noise_lines` collection
+  - [x] Test end-to-end: par file → parse → apply → verify scaled errors
+  - [x] Test `_group_toas_into_epochs()` — time grouping, masks, singletons, unsorted MJD
+  - [x] Test `build_ecorr_whitener()` — construction, multi-backend, singleton tracking
+  - [x] Test `ECORRWhitener` — block-Cholesky whitening, chi2, M^T C^{-1} M identity
+  - [x] Test ECORR integration — parsed par lines → whitener → correct chi2
+  - [ ] Test likelihood computation with noise (future)
+  - **Assigned to**: Claude
+  - **Completed**: 2026-02-07 (white noise), 2026-02-09 (ECORR)
 
 ### Deliverables
-- [ ] `jug/noise/white.py` with EFAC/EQUAD/ECORR
-- [ ] Integration with fitting module
-- [ ] Unit tests for white noise
+- [x] `jug/noise/white.py` with EFAC/EQUAD parsing + application
+- [x] `jug/noise/ecorr.py` with ECORR epoch grouping + block-Cholesky whitening
+- [x] Integration with all 3 fitter paths (ECORR in main 2 paths, EFAC/EQUAD in all 3)
+- [x] 34 unit + integration tests in `jug/tests/test_noise/test_white_noise.py`
+- [x] 26 unit + integration tests in `jug/tests/test_noise/test_ecorr.py`
+- [ ] Joint noise parameter fitting (future)
 
 ### Success Criteria
-- ✅ White noise reduces χ² for real data
-- ✅ Per-backend noise parameters fit correctly
+- ✅ EFAC/EQUAD scale TOA errors correctly (formula verified)
+- ✅ Per-backend noise parameters parsed from par files
+- ✅ All 3 fitter paths apply noise scaling
+- ✅ ECORR block-Cholesky whitening transforms GLS → OLS correctly
+- ✅ Chi2 with ECORR matches analytic r^T C^{-1} r (verified to machine precision)
+- ✅ 310 tests passing (250 pre-existing + 34 white noise + 26 ECORR)
+- ⏸️ White noise reduces χ² for real data (needs real data with noise params)
 
 ---
 

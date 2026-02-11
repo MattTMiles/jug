@@ -8,13 +8,10 @@ import sys
 import os
 import argparse
 
-# Configure JAX (x64 precision + compilation cache) EARLY
-from jug.utils.jax_setup import ensure_jax_x64
-ensure_jax_x64()
-
-# Configure Astropy for deterministic behavior (before any Astropy imports)
-from jug.utils.astropy_config import configure_astropy
-configure_astropy()
+# NOTE: JAX and Astropy initialization are intentionally NOT done here.
+# They are deferred to background workers (SessionWorker, WarmupWorker)
+# so the GUI window appears instantly. JAX_PLATFORMS env var is set
+# inside main() before any JAX import occurs.
 
 
 def main():
@@ -69,6 +66,10 @@ Note: CPU is faster for typical pulsar timing (<100k TOAs).
         os.environ['JAX_PLATFORMS'] = 'cpu'
         # Don't print message for default behavior
 
+    # Show progress before X11 connection (QApplication takes ~4s over SSH)
+    if 'SSH_CLIENT' in os.environ or 'SSH_TTY' in os.environ:
+        print("JUG GUI: Connecting to X11 display...", flush=True)
+
     # Configure pyqtgraph BEFORE importing Qt widgets
     import pyqtgraph as pg
 
@@ -118,14 +119,22 @@ Note: CPU is faster for typical pulsar timing (<100k TOAs).
     app.setApplicationName("JUG Timing")
     app.setOrganizationName("Pulsar Timing")
 
+    # Optimization: Disable menu animations on remote connections (fixes "white box" lag)
+    if is_remote or is_ssh:
+        from PySide6.QtCore import Qt
+        app.setEffectEnabled(Qt.UI_AnimateMenu, False)
+        app.setEffectEnabled(Qt.UI_FadeMenu, False)
+        app.setEffectEnabled(Qt.UI_AnimateCombo, False)
+        app.setEffectEnabled(Qt.UI_AnimateTooltip, False)
+
     # Create main window and optionally load files
     window = MainWindow(fit_params=args.fit)
-
-    # Load files if provided
-    if args.par_file or args.tim_file:
-        window.load_files_from_args(args.par_file, args.tim_file)
-
     window.show()
+
+    # Load files via QTimer to allow UI to render first (perceived speedup)
+    if args.par_file or args.tim_file:
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, lambda: window.load_files_from_args(args.par_file, args.tim_file))
 
     sys.exit(app.exec())
 

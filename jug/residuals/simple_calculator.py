@@ -840,6 +840,33 @@ def compute_residuals_simple(
     # This is the PINT-compatible time for binary model evaluation
     prebinary_delay_sec = roemer_shapiro + dm_delay_sec + sw_delay_sec + tropo_delay_sec
     
+    # Compute orbital phase (if binary)
+    orbital_phase = None
+    if has_binary:
+        # Use PB from params (already derived if FB0 used)
+        pb = float(params.get('PB', 0.0))
+        if pb == 0.0 and 'FB0' in params:
+             fb0 = float(params['FB0'])
+             if fb0 != 0.0:
+                 pb = (1.0 / fb0) / 86400.0
+        
+        # Use T0 or TASC (already extracted/normalized above as t0_val/tasc_val)
+        # Use the variable t0_val which holds T0 (or TASC if T0 missing)
+        # For ELL1, TASC is the ascending node. Phase 0 is usually defined at TASC for ELL1?
+        # Standard convention: Phase 0 is at T0 (periastron) or TASC (ascending node).
+        # We use whatever is the reference epoch.
+        ref_epoch = t0_val if t0_val != 0.0 else tasc_val
+        
+        if pb != 0.0 and ref_epoch != 0.0:
+            # Phase = (t - T0) / PB
+            # t is Barycentric time. Use tdb_mjd.
+            # wrap to [0, 1)
+            try:
+                phases = (tdb_mjd - ref_epoch) / pb
+                orbital_phase = phases - np.floor(phases)
+            except Exception:
+                orbital_phase = None
+
     return {
         'residuals_us': residuals_us,
         'rms_us': float(weighted_rms),  # Use weighted RMS as primary
@@ -868,4 +895,5 @@ def compute_residuals_simple(
         'tropo_delay_sec': np.array(tropo_delay_sec, dtype=np.float64),
         # SSB to observatory position in light-seconds (needed for astrometry derivatives)
         'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),
+        'orbital_phase': orbital_phase,
     }

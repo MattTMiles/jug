@@ -237,6 +237,7 @@ _ASTROMETRY_PARAMS = [
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         par_codec_name="raj",
+        aliases=("LAMBDA", "ELONG"),  # Ecliptic longitude (converted at parse time)
     ),
     ParameterSpec(
         name="DECJ",
@@ -248,6 +249,7 @@ _ASTROMETRY_PARAMS = [
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         par_codec_name="decj",
+        aliases=("BETA", "ELAT"),  # Ecliptic latitude (converted at parse time)
     ),
     ParameterSpec(
         name="PMRA",
@@ -256,7 +258,7 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMRAC",),  # PM in RA*cos(DEC)
+        aliases=("PMRAC", "PMLAMBDA", "PMELONG"),  # PM in RA*cos(DEC) + ecliptic aliases
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
     ),
@@ -267,6 +269,7 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
+        aliases=("PMBETA", "PMELAT"),  # Ecliptic proper motion latitude
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
     ),

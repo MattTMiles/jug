@@ -65,6 +65,10 @@ class ComputeWorker(QRunnable):
                 'tdb_mjd': np.array(result['tdb_mjd']),
                 'errors_us': np.array(result.get('errors_us', [])) if result.get('errors_us') is not None else None,
                 'dt_sec': np.array(result.get('dt_sec', [])),
+                # Phase 4.3+4.4: forward frequency and flag data for axis/coloring
+                'freq_bary_mhz': np.array(result['freq_bary_mhz']) if result.get('freq_bary_mhz') is not None else None,
+                'toa_flags': result.get('toa_flags'),  # list of dicts, not array
+                'orbital_phase': np.array(result['orbital_phase']) if result.get('orbital_phase') is not None else None, # Phase 4.3 update
             }
             
             self.signals.progress.emit(f"RMS: {result_safe['rms_us']:.6f} μs")

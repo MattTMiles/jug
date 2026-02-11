@@ -55,8 +55,12 @@ class SessionWorker(QRunnable):
     def run(self):
         """Create timing session in background thread."""
         try:
+            # Configure Astropy IERS before any time operations
+            from jug.utils.astropy_config import configure_astropy
+            configure_astropy()
+
             from jug.engine import open_session
-            
+
             self.signals.progress.emit("Loading files...")
             
             # Create session (this parses files and caches data)

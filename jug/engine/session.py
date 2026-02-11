@@ -142,6 +142,29 @@ class TimingSession:
             else:
                 return f"{param_name:<12} {value}"
 
+        # For ecliptic par files, convert fitted RAJ/DECJ back to LAMBDA/BETA
+        # so the temp par file has consistent ecliptic coordinates
+        if params.get('_ecliptic_coords'):
+            from jug.io.par_reader import parse_ra, parse_dec, convert_equatorial_to_ecliptic
+            ra_val = params.get('RAJ')
+            dec_val = params.get('DECJ')
+            if ra_val is not None and dec_val is not None:
+                ra_rad = parse_ra(ra_val) if isinstance(ra_val, str) else float(ra_val)
+                dec_rad = parse_dec(dec_val) if isinstance(dec_val, str) else float(dec_val)
+                ecl_frame = params.get('_ecliptic_frame', 'IERS2010')
+                ecl = convert_equatorial_to_ecliptic(
+                    ra_rad, dec_rad,
+                    pmra=params.get('PMRA', 0.0),
+                    pmdec=params.get('PMDEC', 0.0),
+                    ecl_frame=ecl_frame,
+                )
+                params['LAMBDA'] = ecl['LAMBDA']
+                params['BETA'] = ecl['BETA']
+                if 'PMLAMBDA' in params:
+                    params['PMLAMBDA'] = ecl['PMLAMBDA']
+                if 'PMBETA' in params:
+                    params['PMBETA'] = ecl['PMBETA']
+
         # Build temp par file with updated params
         with open(self.par_file, 'r') as f:
             original_lines = f.readlines()
@@ -296,6 +319,30 @@ class TimingSession:
             with open(self.par_file, 'r') as f:
                 par_lines = f.readlines()
             
+            # For ecliptic pulsars, convert fitted RAJ/DECJ back to LAMBDA/BETA
+            if params.get('_ecliptic_coords'):
+                from jug.io.par_reader import (
+                    parse_ra, parse_dec, convert_equatorial_to_ecliptic
+                )
+                ra_val = params.get('RAJ')
+                dec_val = params.get('DECJ')
+                if ra_val is not None and dec_val is not None:
+                    ra_rad = parse_ra(ra_val) if isinstance(ra_val, str) else float(ra_val)
+                    dec_rad = parse_dec(dec_val) if isinstance(dec_val, str) else float(dec_val)
+                    ecl_frame = params.get('_ecliptic_frame', 'IERS2010')
+                    ecl = convert_equatorial_to_ecliptic(
+                        ra_rad, dec_rad,
+                        pmra=params.get('PMRA', 0.0),
+                        pmdec=params.get('PMDEC', 0.0),
+                        ecl_frame=ecl_frame,
+                    )
+                    params['LAMBDA'] = ecl['LAMBDA']
+                    params['BETA'] = ecl['BETA']
+                    if 'PMLAMBDA' in params:
+                        params['PMLAMBDA'] = ecl['PMLAMBDA']
+                    if 'PMBETA' in params:
+                        params['PMBETA'] = ecl['PMBETA']
+
             # Update parameters
             updated_lines = []
             updated_params = set()
@@ -582,6 +629,26 @@ class TimingSession:
                 updated_params['RAJ'] = format_ra(updated_params['RAJ'])
             if 'DECJ' in updated_params:
                 updated_params['DECJ'] = format_dec(updated_params['DECJ'])
+            # For ecliptic pulsars, also update LAMBDA/BETA from fitted RAJ/DECJ
+            if self.params.get('_ecliptic_coords') and 'RAJ' in updated_params:
+                from jug.io.par_reader import (
+                    parse_ra, parse_dec, convert_equatorial_to_ecliptic
+                )
+                ra_rad = parse_ra(updated_params['RAJ'])
+                dec_rad = parse_dec(updated_params['DECJ'])
+                ecl_frame = self.params.get('_ecliptic_frame', 'IERS2010')
+                ecl = convert_equatorial_to_ecliptic(
+                    ra_rad, dec_rad,
+                    pmra=updated_params.get('PMRA', self.params.get('PMRA', 0.0)),
+                    pmdec=updated_params.get('PMDEC', self.params.get('PMDEC', 0.0)),
+                    ecl_frame=ecl_frame,
+                )
+                updated_params['LAMBDA'] = ecl['LAMBDA']
+                updated_params['BETA'] = ecl['BETA']
+                if 'PMLAMBDA' in self.params:
+                    updated_params['PMLAMBDA'] = ecl['PMLAMBDA']
+                if 'PMBETA' in self.params:
+                    updated_params['PMBETA'] = ecl['PMBETA']
             self.params.update(updated_params)
 
         # Invalidate residuals cache since parameters changed

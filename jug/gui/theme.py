@@ -15,6 +15,14 @@ Design Philosophy:
 from PySide6.QtWidgets import QPushButton
 from PySide6.QtCore import Qt, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QPalette
+import os
+
+# Detect remote environment globally
+IS_REMOTE = (
+    'SSH_CLIENT' in os.environ or 
+    'SSH_TTY' in os.environ or 
+    os.environ.get('JUG_REMOTE_UI', '').lower() in ('1', 'true', 'yes')
+)
 
 # =============================================================================
 # COLOR PALETTE
@@ -415,13 +423,13 @@ class Spacing:
 
 
 class BorderRadius:
-    """Border radius values."""
-
-    SM = "4px"
-    MD = "8px"
-    LG = "12px"
+    """Corner radii for UI elements."""
+    NONE = "0px"
+    SM = "2px"
+    MD = "4px"
+    LG = "8px"
     XL = "16px"
-    FULL = "9999px"
+    XXL = "24px"
 
 
 # =============================================================================
@@ -953,8 +961,8 @@ def get_plot_title_style():
         background: {Colors.SURFACE};
         border: 1px solid {border_subtle};
         border-radius: {BorderRadius.MD};
-        padding: {Spacing.MD} {Spacing.LG};
-        margin: {Spacing.SM};
+        padding: {Spacing.SM} {Spacing.LG};
+        margin: 0px;
     """
 
 
@@ -1301,12 +1309,7 @@ class AnimatedButton(QPushButton):
         self._role = role
         
         # Detect remote environment
-        import os
-        self._is_remote = (
-            'SSH_CLIENT' in os.environ or 
-            'SSH_TTY' in os.environ or 
-            os.environ.get('JUG_REMOTE_UI', '').lower() in ('1', 'true', 'yes')
-        )
+        self._is_remote = IS_REMOTE
         
         # Define colors
         if role == "primary":

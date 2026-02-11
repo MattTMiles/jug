@@ -6,14 +6,17 @@ Modern redesign inspired by Linear, Raycast, and Notion.
 from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QLabel, QPushButton, QStatusBar,
-    QCheckBox, QGroupBox, QMessageBox, QProgressDialog,
-    QFrame, QScrollArea, QSizePolicy, QApplication, QMenu,
-    QDialog, QTextBrowser, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView
+    QTableWidget, QTableWidgetItem, QHeaderView,
+    QCheckBox, QLabel, QSplitter, QProgressBar,
+    QMessageBox, QMenu, QFileDialog, QComboBox, QLineEdit,
+    QDialog, QTextBrowser, QAbstractItemView, QGroupBox,
+    QProgressDialog, QFrame, QScrollArea, QSizePolicy, QApplication, QPushButton, QStatusBar
 )
-from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer, QSize, QRect, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QFont, QCursor, QPainter, QBrush, QColor
+from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer, QSize, QRect, QVariantAnimation, QEasingCurve, Slot, Signal
+from PySide6.QtGui import QFont, QCursor, QPainter, QBrush, QColor, QAction, QIcon, QKeySequence, QActionGroup
+
+# Import custom widgets
+from jug.gui.widgets.colorbar import SimpleColorBar
 import pyqtgraph as pg
 import numpy as np
 
@@ -48,8 +51,9 @@ from jug.gui.theme import (
     get_plot_title_style,
 )
 
-# Import canonical stats function (engine is source of truth)
-from jug.engine.stats import compute_residual_stats
+# NOTE: jug.engine.stats import is deferred to call sites to avoid
+# triggering jug.engine.__init__ → JAX import chain at GUI startup.
+
 
 
 # =============================================================================
@@ -113,6 +117,271 @@ class ToggleSwitch(QCheckBox):
         painter.drawEllipse(int(x), 3, int(handle_dia), int(handle_dia))
         
         painter.end()
+
+
+class OverlayMenu(QFrame):
+    """
+    A custom dropdown menu that lives as an overlay widget within the main window.
+    This avoids creating new top-level windows (like QMenu/QComboBox do), 
+    eliminating X11 forwarding lag/white-box artifacts in remote sessions.
+    """
+    def __init__(self, parent, options, callback, width=160):
+        super().__init__(parent)
+        from jug.gui.theme import Colors, get_border_subtle
+        self.callback = callback
+        self.setFixedWidth(width)
+        
+        # Style matches the theme's "Surface" look
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {Colors.SURFACE};
+                border: 1px solid {Colors.ACCENT_PRIMARY};
+                border-radius: 4px;
+            }}
+            QPushButton {{
+                text-align: left;
+                padding: 6px 12px;
+                border: none;
+                background: transparent;
+                color: {Colors.TEXT_PRIMARY};
+                border-radius: 0px;
+            }}
+            QPushButton:hover {{
+                background-color: {Colors.SURFACE_HOVER};
+                color: {Colors.TEXT_PRIMARY};
+            }}
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(1, 1, 1, 1)
+        layout.setSpacing(0)
+        # Force frame to resize to fit content (buttons)
+        layout.setSizeConstraint(QVBoxLayout.SetFixedSize)
+        
+        for text in options:
+            btn = QPushButton(text)
+            # Use closure to capture text
+            btn.clicked.connect(lambda checked=False, val=text: self._on_select(val))
+            layout.addWidget(btn)
+            
+        # Drop shadow removed for X11 performance (causes significant lag)
+        # self.setGraphicsEffect(None)
+        
+        self.hide()
+        
+    def _on_select(self, val):
+        self.callback(val)
+        self.hide()
+        
+    def toggle_at(self, pos):
+        """Toggle visibility at the given local position (relative to parent)."""
+        if self.isVisible():
+            self.hide()
+        else:
+            self.move(pos)
+            self.raise_()
+            self.show()
+
+class MenuBarOverlayMenu(QFrame):
+    """
+    Enhanced overlay menu for the remote menu bar.
+
+    Supports separators, checkable items, disabled items,
+    shortcut text display, and inline submenu expansion.
+    Renders as a child QFrame (no top-level X11 windows).
+    """
+    closed = Signal()
+
+    def __init__(self, parent_window, width=220):
+        super().__init__(parent_window)
+        self.parent_window = parent_window
+        self.setFixedWidth(width)
+        self._items = {}  # name -> item_data dict
+        self._sub_items = {}  # group_name -> list of (name, btn) tuples
+        self._apply_style()
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(2, 4, 2, 4)
+        self._layout.setSpacing(0)
+        self._layout.setSizeConstraint(QVBoxLayout.SetFixedSize)
+        self.hide()
+
+    def _apply_style(self):
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {Colors.SURFACE};
+                border: 1px solid {Colors.ACCENT_PRIMARY};
+                border-radius: 4px;
+            }}
+        """)
+
+    def _item_style(self):
+        return f"""
+            QPushButton {{
+                text-align: left;
+                padding: 5px 8px;
+                border: none;
+                background: transparent;
+                color: {Colors.TEXT_PRIMARY};
+                font-family: {Typography.FONT_MONO};
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: {Colors.SURFACE_HOVER};
+            }}
+            QPushButton:disabled {{
+                color: {Colors.TEXT_MUTED};
+            }}
+        """
+
+    def _sub_item_style(self):
+        """Style for submenu child items — tinted background to show nesting."""
+        return f"""
+            QPushButton {{
+                text-align: left;
+                padding: 5px 8px 5px 16px;
+                border: none;
+                background-color: {Colors.SURFACE_HOVER};
+                color: {Colors.TEXT_PRIMARY};
+                font-family: {Typography.FONT_MONO};
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: {Colors.ACCENT_PRIMARY};
+                color: #FFFFFF;
+            }}
+        """
+
+    def _format_text(self, text, shortcut="", checkable=False, checked=False):
+        prefix = " \u2713 " if (checkable and checked) else "   "
+        if shortcut:
+            pad = max(1, 22 - len(text))
+            return f"{prefix}{text}{' ' * pad}{shortcut}"
+        return f"{prefix}{text}"
+
+    def add_action(self, text, callback, shortcut="", checkable=False,
+                   checked=False, enabled=True, name=None):
+        item_name = name or text
+        btn = QPushButton()
+        btn.setEnabled(enabled)
+        btn.setText(self._format_text(text, shortcut, checkable, checked))
+        btn.setStyleSheet(self._item_style())
+
+        item_data = {
+            'text': text, 'callback': callback, 'shortcut': shortcut,
+            'checkable': checkable, 'checked': checked, 'btn': btn,
+        }
+
+        def on_click():
+            if item_data['checkable']:
+                item_data['checked'] = not item_data['checked']
+                btn.setText(self._format_text(
+                    item_data['text'], shortcut, True, item_data['checked']))
+                callback(item_data['checked'])
+            else:
+                callback()
+            self.close_menu()
+
+        btn.clicked.connect(on_click)
+        self._layout.addWidget(btn)
+        self._items[item_name] = item_data
+        return item_data
+
+    def add_separator(self):
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {Colors.SURFACE_BORDER}; border: none; margin: 4px 8px;")
+        self._layout.addWidget(sep)
+
+    def add_submenu_group(self, label_text, items, group_name):
+        """Add an inline expandable submenu group with mutual exclusivity.
+
+        items: list of (text, callback, checked_initially) tuples
+        """
+        # Header button
+        header_btn = QPushButton(f"   {label_text}  \u25b8")
+        header_btn.setStyleSheet(self._item_style())
+        self._layout.addWidget(header_btn)
+
+        sub_buttons = []
+        for sub_text, sub_callback, sub_checked in items:
+            btn = QPushButton()
+            btn.setText(self._format_text(f"  {sub_text}", "", True, sub_checked))
+            btn.setStyleSheet(self._sub_item_style())
+            btn.setVisible(False)
+            sub_name = f"{group_name}_{sub_text}"
+            item_data = {
+                'text': sub_text, 'callback': sub_callback,
+                'checkable': True, 'checked': sub_checked, 'btn': btn,
+                'shortcut': '',
+            }
+            self._items[sub_name] = item_data
+            sub_buttons.append((sub_name, btn, item_data))
+            self._layout.addWidget(btn)
+
+        self._sub_items[group_name] = sub_buttons
+
+        def toggle_sub():
+            visible = not sub_buttons[0][1].isVisible()
+            arrow = "\u25be" if visible else "\u25b8"
+            header_btn.setText(f"   {label_text}  {arrow}")
+            for _, b, _ in sub_buttons:
+                b.setVisible(visible)
+
+        header_btn.clicked.connect(toggle_sub)
+
+        # Wire mutual exclusivity and close-on-select
+        for sn, sb, sd in sub_buttons:
+            def make_click(name, data):
+                def on_click():
+                    # Uncheck all in group, check this one
+                    for other_name, other_btn, other_data in sub_buttons:
+                        other_data['checked'] = (other_name == name)
+                        other_btn.setText(self._format_text(
+                            f"  {other_data['text']}", "", True, other_data['checked']))
+                    data['callback']()
+                    self.close_menu()
+                return on_click
+            sb.clicked.connect(make_click(sn, sd))
+
+    def set_item_text(self, name, new_text):
+        item = self._items.get(name)
+        if item:
+            item['text'] = new_text
+            item['btn'].setText(self._format_text(
+                new_text, item['shortcut'], item['checkable'], item['checked']))
+
+    def set_item_enabled(self, name, enabled):
+        item = self._items.get(name)
+        if item:
+            item['btn'].setEnabled(enabled)
+
+    def set_item_checked(self, name, checked):
+        item = self._items.get(name)
+        if item:
+            item['checked'] = checked
+            item['btn'].setText(self._format_text(
+                item['text'], item['shortcut'], True, checked))
+
+    def show_at(self, pos):
+        # Clamp to parent bounds
+        pw = self.parent_window.width()
+        ph = self.parent_window.height()
+        x = min(pos.x(), pw - self.width() - 4)
+        y = min(pos.y(), ph - self.sizeHint().height() - 4)
+        self.move(int(x), int(y))
+        self.raise_()
+        self.show()
+
+    def close_menu(self):
+        self.hide()
+        self.closed.emit()
+
+    def update_theme(self):
+        self._apply_style()
+        style = self._item_style()
+        for item in self._items.values():
+            item['btn'].setStyleSheet(style)
 
 
 class MainWindow(QMainWindow):
@@ -212,15 +481,22 @@ class MainWindow(QMainWindow):
         # Solver mode for fitting (exact or fast)
         self.solver_mode = "exact"  # "exact" or "fast"
 
+        # Color mode for scatter plot (none/backend/frequency)
+        self._color_mode = "none"
+
         # Thread pool for background tasks
         self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(2)  # Session + compute/fit
 
         # Setup UI
         self._setup_ui()
-        self._create_menu_bar()
+        if self.is_remote:
+            self._create_remote_menu_bar()
+            self._register_shortcuts()
+        else:
+            self._create_menu_bar()
         self._create_status_bar()
-        
+
         # Install event filter for key handling
         self.installEventFilter(self)
 
@@ -263,11 +539,45 @@ class MainWindow(QMainWindow):
         plot_layout.setContentsMargins(24, 16, 16, 16)
         plot_layout.setSpacing(12)
 
-        # Title label above plot (pulsar name and RMS) - card style
+        # Combined title + axis selector bar (single line)
+        title_axis_bar = QHBoxLayout()
+        title_axis_bar.setSpacing(12)
+        title_axis_bar.setContentsMargins(0, 0, 0, 0)
+
+        # Title label (pulsar name and RMS) - centered, stretches to fill space
         self.plot_title_label = QLabel("")
         self.plot_title_label.setObjectName("plotTitleLabel")
         self.plot_title_label.setAlignment(Qt.AlignCenter)
-        plot_layout.addWidget(self.plot_title_label)
+        title_axis_bar.addWidget(self.plot_title_label, 1)  # stretch factor 1
+
+        # Y-axis selector
+        y_label = QLabel("Y:")
+        y_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 12px; border: none;")
+        title_axis_bar.addWidget(y_label)
+
+        self.y_axis_btn = self._create_overlay_axis_button("Post-fit (\u03bcs)", [
+            "Post-fit (\u03bcs)", "Pre-fit (\u03bcs)",
+            "Normalized (r/\u03c3)", "Whitened",
+        ], lambda val: self._on_axis_changed(y_val=val), width=140)
+        self._y_axis_mode = "Post-fit (\u03bcs)"
+        title_axis_bar.addWidget(self.y_axis_btn)
+
+        title_axis_bar.addSpacing(8)
+
+        # X-axis selector
+        x_label = QLabel("X:")
+        x_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 12px; border: none;")
+        title_axis_bar.addWidget(x_label)
+
+        self.x_axis_btn = self._create_overlay_axis_button("MJD", [
+            "MJD", "Serial", "Frequency (MHz)",
+            "ToA Error (\u03bcs)", "Orbital Phase",
+            "Day of Year", "Year"
+        ], lambda val: self._on_axis_changed(x_val=val), width=160)
+        self._x_axis_mode = "MJD"
+        title_axis_bar.addWidget(self.x_axis_btn)
+
+        plot_layout.addLayout(title_axis_bar)
 
         # Large residual plot with modern styling
         self.plot_widget = pg.PlotWidget()
@@ -352,20 +662,30 @@ class MainWindow(QMainWindow):
             "Fast: QR-based, faster but may differ slightly"
         )
 
-        # Create dropdown menu
-        self.solver_menu = QMenu(self)
-        self.solver_menu.setObjectName("solverMenu")
-
-        # Add menu items
-        exact_action = self.solver_menu.addAction("Exact (reproducible)")
-        exact_action.setData("exact")
-        exact_action.triggered.connect(lambda: self._set_solver_mode("exact", "Exact"))
-
-        fast_action = self.solver_menu.addAction("Fast")
-        fast_action.setData("fast")
-        fast_action.triggered.connect(lambda: self._set_solver_mode("fast", "Fast"))
-
-        self.solver_button.setMenu(self.solver_menu)
+        if self.is_remote:
+            # Use overlay menu to avoid QMenu top-level window on X11
+            self._solver_overlay = OverlayMenu(
+                self, ["Exact (reproducible)", "Fast"],
+                lambda val: self._set_solver_mode(
+                    "exact" if "Exact" in val else "fast",
+                    "Exact" if "Exact" in val else "Fast"),
+                width=180)
+            self.solver_button.clicked.connect(
+                lambda: self._solver_overlay.toggle_at(
+                    self.solver_button.mapTo(
+                        self.centralWidget(),
+                        QPointF(0, self.solver_button.height()).toPoint())))
+        else:
+            # Standard QMenu for local desktop
+            self.solver_menu = QMenu(self)
+            self.solver_menu.setObjectName("solverMenu")
+            exact_action = self.solver_menu.addAction("Exact (reproducible)")
+            exact_action.setData("exact")
+            exact_action.triggered.connect(lambda: self._set_solver_mode("exact", "Exact"))
+            fast_action = self.solver_menu.addAction("Fast")
+            fast_action.setData("fast")
+            fast_action.triggered.connect(lambda: self._set_solver_mode("fast", "Fast"))
+            self.solver_button.setMenu(self.solver_menu)
         self.solver_button.setCursor(Qt.PointingHandCursor)
         self.solver_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         solver_layout.addWidget(self.solver_button)
@@ -505,6 +825,26 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(close_btn)
 
         drawer_layout.addLayout(header_layout)
+
+        # QLineEdit search filter for parameters (Phase 4.2)
+        self.param_search = QLineEdit()
+        self.param_search.setPlaceholderText("Search parameters...")
+        self.param_search.setClearButtonEnabled(True)
+        self.param_search.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {Colors.BG_PRIMARY};
+                color: {Colors.TEXT_PRIMARY};
+                border: 1px solid {get_border_subtle()};
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border-color: {Colors.ACCENT_PRIMARY};
+            }}
+        """)
+        self.param_search.textChanged.connect(self._on_param_search_changed)
+        drawer_layout.addWidget(self.param_search)
 
         # QTableWidget for parameter list (optimized for performance)
         self.param_table = QTableWidget()
@@ -671,6 +1011,18 @@ class MainWindow(QMainWindow):
             # Clear saved state as we've exited the clean mode
             self._saved_param_state.clear()
 
+    def _on_param_search_changed(self, text: str):
+        """Filter visible parameters in the table by search text (Phase 4.2)."""
+        # Fix: don't strip() so backspacing to empty works immediately
+        search = text.upper()
+        for row in range(self.param_table.rowCount()):
+            widget = self.param_table.cellWidget(row, 0)
+            if widget is None:
+                continue
+            param_name = widget.text().upper()
+            visible = (not search) or (search in param_name)
+            self.param_table.setRowHidden(row, not visible)
+
     def _create_stat_row(self, parent_layout, label_text, initial_value):
         """Create a styled statistic row with label and value. Returns (label, value) tuple."""
         row = QHBoxLayout()
@@ -751,6 +1103,29 @@ class MainWindow(QMainWindow):
         self.variant_action = view_menu.addAction("Data Color: Navy")
         self.variant_action.triggered.connect(self.on_toggle_color_variant)
 
+        # Phase 4.4: Color By submenu (backend / frequency colormap)
+        color_by_menu = view_menu.addMenu("Color By")
+
+        # key fix: use QActionGroup for mutual exclusivity
+        from PySide6.QtGui import QActionGroup
+        color_group = QActionGroup(self)
+
+        self._color_none_action = color_by_menu.addAction("None (single color)")
+        self._color_none_action.setCheckable(True)
+        self._color_none_action.setChecked(True)
+        self._color_none_action.setActionGroup(color_group)
+        self._color_none_action.triggered.connect(lambda: self._set_color_mode("none"))
+
+        self._color_backend_action = color_by_menu.addAction("Backend/Receiver")
+        self._color_backend_action.setCheckable(True)
+        self._color_backend_action.setActionGroup(color_group)
+        self._color_backend_action.triggered.connect(lambda: self._set_color_mode("backend"))
+
+        self._color_freq_action = color_by_menu.addAction("Frequency (continuous)")
+        self._color_freq_action.setCheckable(True)
+        self._color_freq_action.setActionGroup(color_group)
+        self._color_freq_action.triggered.connect(lambda: self._set_color_mode("frequency"))
+
         view_menu.addSeparator()
 
         zoom_fit_action = view_menu.addAction("Zoom to Fit")
@@ -785,7 +1160,151 @@ class MainWindow(QMainWindow):
         
         about_action = help_menu.addAction("About JUG...")
         about_action.triggered.connect(self.on_about)
-    
+
+    # -----------------------------------------------------------------
+    # Remote overlay menu bar (replaces QMenuBar over SSH/X11)
+    # -----------------------------------------------------------------
+
+    def _create_remote_menu_bar(self):
+        """Create overlay-based menu bar for remote/SSH sessions.
+
+        Replaces QMenuBar to eliminate top-level X11 window creation.
+        Each menu is a MenuBarOverlayMenu (child QFrame).
+        """
+        self.menuBar().setVisible(False)
+
+        bar = QFrame()
+        bar.setObjectName("remoteMenuBar")
+        bar.setStyleSheet(f"""
+            QFrame#remoteMenuBar {{
+                background-color: {Colors.BG_SECONDARY};
+                border-bottom: 1px solid {get_border_subtle()};
+                padding: 0px;
+            }}
+        """)
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(8, 2, 8, 2)
+        bar_layout.setSpacing(0)
+
+        self._active_menu_overlay = None
+        self._remote_menu_bar = bar
+
+        # Build the four overlay menus
+        self._file_overlay = self._build_file_overlay()
+        self._view_overlay = self._build_view_overlay()
+        self._tools_overlay = self._build_tools_overlay()
+        self._help_overlay = self._build_help_overlay()
+
+        for label, overlay in [
+            ("File", self._file_overlay),
+            ("View", self._view_overlay),
+            ("Tools", self._tools_overlay),
+            ("Help", self._help_overlay),
+        ]:
+            btn = QPushButton(label)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    color: {Colors.TEXT_PRIMARY};
+                    padding: 4px 12px;
+                    border: none;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: {Colors.SURFACE_HOVER};
+                    border-radius: 2px;
+                }}
+            """)
+            btn.clicked.connect(
+                lambda checked=False, o=overlay, b=btn: self._toggle_menu_overlay(o, b))
+            bar_layout.addWidget(btn)
+
+        bar_layout.addStretch()
+        self.setMenuWidget(bar)
+
+    def _toggle_menu_overlay(self, overlay, trigger_btn):
+        """Toggle an overlay menu, closing any other open overlay first."""
+        if self._active_menu_overlay and self._active_menu_overlay is not overlay:
+            self._active_menu_overlay.close_menu()
+
+        if overlay.isVisible():
+            overlay.close_menu()
+            self._active_menu_overlay = None
+        else:
+            # Use global coords since menu bar widget is not in centralWidget hierarchy
+            global_pos = trigger_btn.mapToGlobal(QPointF(0, trigger_btn.height()).toPoint())
+            local_pos = self.centralWidget().mapFromGlobal(global_pos)
+            overlay.show_at(local_pos)
+            self._active_menu_overlay = overlay
+
+    def _build_file_overlay(self):
+        m = MenuBarOverlayMenu(self.centralWidget())
+        m.add_action("Open .par...", self.on_open_par, shortcut="Ctrl+P")
+        m.add_action("Open .tim...", self.on_open_tim, shortcut="Ctrl+T")
+        m.add_separator()
+        m.add_action("Save .par...", self.on_save_par, shortcut="Ctrl+S",
+                      enabled=False, name="save_par")
+        m.add_action("Save .tim...", self.on_save_tim, shortcut="Ctrl+Shift+S",
+                      enabled=False, name="save_tim")
+        m.add_separator()
+        m.add_action("Exit", self.close, shortcut="Ctrl+Q")
+        return m
+
+    def _build_view_overlay(self):
+        m = MenuBarOverlayMenu(self.centralWidget(), width=260)
+        m.add_action("Parameters...", self.on_show_parameters, shortcut="Ctrl+E")
+        m.add_separator()
+        m.add_action("Show Zero Line", self.on_toggle_zero_line,
+                      checkable=True, checked=self.show_zero_line, name="zero_line")
+        m.add_separator()
+        m.add_action("Theme: Light", self.on_toggle_theme, name="theme")
+        m.add_action("Data Color: Navy", self.on_toggle_color_variant, name="variant")
+        m.add_submenu_group("Color By", [
+            ("None (single color)", lambda: self._set_color_mode("none"), True),
+            ("Backend/Receiver", lambda: self._set_color_mode("backend"), False),
+            ("Frequency (continuous)", lambda: self._set_color_mode("frequency"), False),
+        ], group_name="color_by")
+        m.add_separator()
+        m.add_action("Zoom to Fit", self.on_zoom_fit, shortcut="Ctrl+0")
+        m.add_action("Unzoom (Fit to Data)", self.on_zoom_fit, shortcut="U")
+        m.add_action("Box Zoom...", self._handle_box_zoom_key, shortcut="Z")
+        m.add_action("Box Delete...", self._handle_box_delete_key, shortcut="Shift+Z")
+        return m
+
+    def _build_tools_overlay(self):
+        m = MenuBarOverlayMenu(self.centralWidget())
+        m.add_action("Run Fit", self.on_fit_clicked, shortcut="Ctrl+F")
+        m.add_action("Restart", self.on_restart_clicked, shortcut="Ctrl+R")
+        return m
+
+    def _build_help_overlay(self):
+        m = MenuBarOverlayMenu(self.centralWidget())
+        m.add_action("About JUG...", self.on_about)
+        return m
+
+    def _register_shortcuts(self):
+        """Register keyboard shortcuts independent of menu bar.
+
+        In remote mode, QMenuBar is hidden so shortcuts must be registered
+        directly on the MainWindow.
+        """
+        shortcuts = [
+            ("Ctrl+P", self.on_open_par),
+            ("Ctrl+T", self.on_open_tim),
+            ("Ctrl+S", self.on_save_par),
+            ("Ctrl+Shift+S", self.on_save_tim),
+            ("Ctrl+Q", self.close),
+            ("Ctrl+E", self.on_show_parameters),
+            ("Ctrl+0", self.on_zoom_fit),
+            ("Ctrl+F", self.on_fit_clicked),
+            ("Ctrl+R", self.on_restart_clicked),
+        ]
+        for shortcut_str, callback in shortcuts:
+            action = QAction(self)
+            action.setShortcut(QKeySequence(shortcut_str))
+            action.triggered.connect(callback)
+            self.addAction(action)
+
     def _create_status_bar(self):
         """Create the status bar."""
         self.status_bar = QStatusBar()
@@ -892,6 +1411,9 @@ class MainWindow(QMainWindow):
         self.residuals_us = result['residuals_us']
         self.prefit_residuals_us = result['residuals_us'].copy()
         self.errors_us = result.get('errors_us', None)
+        self.toa_freqs = result.get('freq_bary_mhz', None)  # Phase 4.3
+        self.toa_flags = result.get('toa_flags', None)       # Phase 4.4
+        self.orbital_phase = result.get('orbital_phase', None) # Phase 4.3 fix
         self._update_rms_from_result(result)
         self.is_fitted = False
         self.fit_results = None
@@ -913,8 +1435,11 @@ class MainWindow(QMainWindow):
         self.fit_button.setEnabled(True)
         self.reset_button.setEnabled(True)
         self.fit_window_button.setEnabled(True)
-        self.save_tim_action.setEnabled(True)
-        
+        if self.is_remote:
+            self._file_overlay.set_item_enabled("save_tim", True)
+        else:
+            self.save_tim_action.setEnabled(True)
+
         # Update statistics (now just values, labels are separate)
         self.rms_label.setText(f"{self.rms_us:.6f} μs")
         self.ntoa_label.setText(f"{len(self.mjd)}")
@@ -988,7 +1513,30 @@ class MainWindow(QMainWindow):
                 self.plot_widget.addItem(self.scatter_item)
             
             # Update scatter data (fast - no recreation)
-            self.scatter_item.setData(x=self.mjd, y=self.residuals_us)
+            x_data, x_label = self._get_x_data()
+            y_data, y_label = self._get_y_data()
+            
+            # Phase 4.4: Get per-point coloring
+            # Renamed from _apply_point_colors to prevent double-update
+            brushes = self._get_point_brushes(len(x_data))
+            
+            # Efficient single update: set data AND brush at once
+            # This avoids the "clearing per-point brush" issue and is faster (one repaint)
+            # If brushes is None, we rely on setSymbolBrush for default color
+            self.scatter_item.setData(x=x_data, y=y_data, brush=brushes)
+
+            # Set default symbol brush if no per-point coloring
+            if brushes is None:
+                from jug.gui.theme import Colors
+                self.scatter_item.setBrush(pg.mkBrush(Colors.DATA_POINTS))
+                self.scatter_item.setPen(pg.mkPen(None))
+            else:
+                 # Clear default symbol brush if per-point coloring is active (optional but clean)
+                 self.scatter_item.setBrush(None)
+
+            # Update axis labels
+            self.plot_widget.setLabel('bottom', x_label)
+            self.plot_widget.setLabel('left', y_label)
             
             # Update or create error bars with modern styling
             if self.errors_us is not None:
@@ -998,10 +1546,18 @@ class MainWindow(QMainWindow):
                     self.plot_widget.addItem(self.error_bar_item)
                 
                 # Update error bar data
+                eb_height = self.errors_us * 2  # ±1σ
+                # If Y axis is normalized/whitened, scale error bars accordingly
+                y_mode = self._y_axis_mode
+                if y_mode == "Normalized (r/σ)":
+                    # In normalized mode, error bars are ±1 (by definition)
+                    eb_height = np.ones_like(self.errors_us) * 2
+                elif y_mode == "Whitened":
+                    eb_height = np.ones_like(self.errors_us) * 2
                 self.error_bar_item.setData(
-                    x=self.mjd,
-                    y=self.residuals_us,
-                    height=self.errors_us * 2  # ±1σ
+                    x=x_data,
+                    y=y_data,
+                    height=eb_height
                 )
             elif self.error_bar_item is not None:
                 # Remove error bars if no longer needed
@@ -1011,6 +1567,8 @@ class MainWindow(QMainWindow):
             # Add zero line only if enabled (off by default)
             if self.show_zero_line and self.zero_line is None:
                 self.zero_line = create_zero_line(self.plot_widget)
+            
+            # (No explicit _apply_point_colors call anymore)
         finally:
             # Re-enable signals before auto-range so the final range is applied
             view_box.blockSignals(False)
@@ -1018,7 +1576,139 @@ class MainWindow(QMainWindow):
         # Auto-range only when requested (not every update!)
         # Single range calc instead of multiple from setData calls
         if auto_range:
-            self.plot_widget.autoRange()
+            # Guard against all-NaN or empty data which crashes pyqtgraph's autoRange
+            if (self.residuals_us is not None
+                    and len(self.residuals_us) > 0
+                    and np.any(np.isfinite(self.residuals_us))):
+                self.plot_widget.autoRange()
+            else:
+                # Fallback: set a sensible default range so the plot isn't blank
+                self.plot_widget.setYRange(-1, 1)
+                if self.mjd is not None and len(self.mjd) > 0 and np.any(np.isfinite(self.mjd)):
+                    self.plot_widget.setXRange(float(np.nanmin(self.mjd)), float(np.nanmax(self.mjd)))
+
+    # -- Phase 4.3: Axis routing helpers -----------------------------------
+
+    def _create_overlay_axis_button(self, initial_text, options, callback, width=140):
+        """Create a styled QPushButton that toggles a custom OverlayMenu."""
+        from jug.gui.theme import Colors, get_border_subtle, AnimatedButton
+        from PySide6.QtCore import QPoint
+        
+        # Use AnimatedButton (secondary role) for axis selectors
+        btn = AnimatedButton(initial_text + "  ▾", role="secondary")
+        btn.setFixedWidth(width)
+        # Match height to plot title label by reducing padding and removing min-height
+        from jug.gui.theme import Spacing as _Sp
+        btn.setStyleSheet(btn.styleSheet().replace("min-height: 44px", "min-height: 0px").replace(
+            f"padding: {_Sp.MD} {_Sp.LG}",
+            f"padding: {_Sp.SM} {_Sp.LG}"
+        ))
+        
+        # Create the overlay menu
+        # Parent to self (MainWindow) to ensure it floats above centralWidget and all children
+        overlay = OverlayMenu(self, options, callback, width=width)
+        
+        # Wrap callback to update button text and toggle chevron
+        original_callback = overlay.callback
+        def wrapped_callback(val):
+            btn.setText(val + "  ▾")
+            original_callback(val)
+        overlay.callback = wrapped_callback
+        
+        # Toggle logic
+        def toggle_overlay():
+            if overlay.isVisible():
+                overlay.hide()
+                btn.setText(btn.text().replace("▴", "▾"))
+            else:
+                # Calculate position relative to MainWindow (self)
+                # This ensures correct placement even if centralWidget has margins/offsets
+                pos_in_window = btn.mapTo(self, QPoint(0, btn.height()))
+                
+                # Update text to show active state
+                btn.setText(btn.text().replace("▾", "▴"))
+                overlay.toggle_at(pos_in_window)
+                
+        btn.clicked.connect(toggle_overlay)
+        return btn
+
+    def _on_axis_changed(self, x_val=None, y_val=None):
+        """Re-plot when axis selection changes (no re-fitting needed)."""
+        if x_val:
+            self._x_axis_mode = x_val
+        if y_val:
+            self._y_axis_mode = y_val
+            
+        if self.mjd is not None and self.residuals_us is not None:
+            # Force auto-range
+            self._update_plot(auto_range=True)
+            
+            # Special handling for Orbital Phase: force 0..1 range if auto-range fails or to be explicit
+            if self._x_axis_mode == "Orbital Phase":
+                 self.plot_widget.setXRange(0.0, 1.0, padding=0.0)
+
+    def _get_x_data(self):
+        """Return (x_array, x_label) based on the current X-axis selector."""
+        mode = self._x_axis_mode
+        mjd = self.mjd
+
+        if mode == "MJD":
+            return mjd, "MJD"
+
+        if mode == "Serial":
+            return np.arange(len(mjd), dtype=np.float64), "TOA number"
+
+        if mode == "Year":
+            # MJD → Year (approximate: MJD 51544.0 = 2000-01-01.5)
+            return 2000.0 + (mjd - 51544.0) / 365.25, "Year"
+
+        if mode == "Day of Year":
+            # Day-of-year = fractional part of year × 365.25
+            year_frac = (mjd - 51544.0) / 365.25
+            return (year_frac - np.floor(year_frac)) * 365.25, "Day of Year"
+
+        if mode == "Frequency (MHz)":
+            if hasattr(self, 'toa_freqs') and self.toa_freqs is not None:
+                return self.toa_freqs, "Frequency (MHz)"
+            return mjd, "MJD (freq unavailable)"
+
+        if mode == "ToA Error (μs)":
+            if self.errors_us is not None:
+                return self.errors_us, "ToA Error (μs)"
+            return mjd, "MJD (errors unavailable)"
+
+        if mode == "Orbital Phase":
+            if hasattr(self, 'orbital_phase') and self.orbital_phase is not None:
+                return self.orbital_phase, "Orbital Phase"
+            return mjd, "MJD (orbital phase unavailable)"
+
+        # Fallback
+        return mjd, "MJD"
+
+    def _get_y_data(self):
+        """Return (y_array, y_label) based on the current Y-axis selector."""
+        mode = self._y_axis_mode
+        if mode == "Pre-fit (μs)":
+            if hasattr(self, 'prefit_residuals_us') and self.prefit_residuals_us is not None:
+                return self.prefit_residuals_us, "Pre-fit residual (μs)"
+            return self.residuals_us, "Residual (μs) [no pre-fit]"
+
+        if mode == "Normalized (r/σ)":
+            if self.errors_us is not None and len(self.errors_us) > 0:
+                from jug.engine.stats import compute_normalized_residuals
+                norm = compute_normalized_residuals(self.residuals_us, self.errors_us)
+                return norm, "Normalized residual (r/σ)"
+            return self.residuals_us, "Residual (μs) [no errors]"
+
+        if mode == "Whitened":
+            if self.errors_us is not None and len(self.errors_us) > 0:
+                from jug.engine.stats import compute_whitened_residuals
+                w = compute_whitened_residuals(self.residuals_us, self.errors_us)
+                return w, "Whitened residual"
+            return self.residuals_us, "Residual (μs) [no errors]"
+
+        # Default: Post-fit (μs)
+        return self.residuals_us, "Post-fit residual (μs)"
     
     def _update_plot_title(self):
         """Update the plot title with pulsar name and RMS."""
@@ -1149,6 +1839,7 @@ class MainWindow(QMainWindow):
             else:
                 self.errors_us = None
             # Recalculate RMS for filtered data using canonical engine stats
+            from jug.engine.stats import compute_residual_stats
             stats = compute_residual_stats(self.residuals_us, self.errors_us)
             self._update_rms_from_stats(stats)
         else:
@@ -1181,7 +1872,8 @@ class MainWindow(QMainWindow):
                 chi2_dof = chi2 / dof
                 self.chi2_label.setText(f"{chi2_dof:.2f}")
 
-            # Enable fit report button
+            # Pre-build fit report dialog so it opens instantly on button click
+            self._prebuild_fit_report(fit_result)
             self.fit_report_button.setEnabled(True)
 
             # Update status
@@ -1217,54 +1909,176 @@ class MainWindow(QMainWindow):
 
     def on_show_fit_report(self):
         """Show fit report dialog when button is clicked."""
-        if self.fit_results:
+        if hasattr(self, '_cached_fit_dialog') and self._cached_fit_dialog is not None:
+            # Show pre-built dialog instantly (non-blocking)
+            self._cached_fit_dialog.show()
+            self._cached_fit_dialog.raise_()
+            self._cached_fit_dialog.activateWindow()
+        elif self.fit_results:
+            # Fallback: build on demand
             self._show_fit_results(self.fit_results)
-    
-    def _show_fit_results(self, result):
-        """
-        Show fit results in a styled dialog using QTableWidget for performance.
 
-        Parameters
-        ----------
-        result : dict
-            Fit results
+    def _prebuild_fit_report(self, result):
+        """Pre-build the fit report dialog so it opens instantly on button click."""
+        # Discard any previous cached dialog
+        if hasattr(self, '_cached_fit_dialog') and self._cached_fit_dialog is not None:
+            self._cached_fit_dialog.deleteLater()
+            self._cached_fit_dialog = None
+
+        pulsar_str = self.pulsar_name or 'Unknown'
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{pulsar_str} - Fit Results")
+        dialog.setFixedSize(min(int(self.width() * 0.8), 1000),
+                            min(int(self.height() * 0.85), 700))
+
+        report_layout = self._build_fit_report_content(result, dialog)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.hide)
+        close_btn.setStyleSheet(get_primary_button_style())
+        close_btn.setFixedWidth(120)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        btn_layout.addStretch()
+        report_layout.addLayout(btn_layout)
+
+        self._cached_fit_dialog = dialog
+    
+    def _format_param_row(self, param, result):
+        """Format a single parameter row for the fit report.
+
+        Returns (param, new_val_str, prev_val_str, change_str, unc_str, unit).
         """
-        # Styling constants
+        from jug.io.par_reader import parse_ra, parse_dec, format_ra, format_dec
+        from jug.model.parameter_spec import get_display_unit
+
+        new_value = result['final_params'][param]
+        uncertainty = result['uncertainties'][param]
+        prev_value = self.initial_params.get(param, 0.0)
+        unit = get_display_unit(param)
+
+        if param == 'RAJ':
+            prev_value_rad = parse_ra(prev_value) if isinstance(prev_value, str) else prev_value
+            change = new_value - prev_value_rad
+            new_val_str = format_ra(new_value)
+            prev_val_str = format_ra(prev_value_rad) if isinstance(prev_value, str) else str(prev_value)
+            change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
+            unit = "Δ arcsec"
+        elif param == 'DECJ':
+            prev_value_rad = parse_dec(prev_value) if isinstance(prev_value, str) else prev_value
+            change = new_value - prev_value_rad
+            new_val_str = format_dec(new_value)
+            prev_val_str = format_dec(prev_value_rad) if isinstance(prev_value, str) else str(prev_value)
+            change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
+            unit = "Δ arcsec"
+        elif param == 'F0':
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.15f}"
+            prev_val_str = f"{prev_value:.15f}"
+            change_str = f"{change:+.15f}"
+        elif param.startswith('F') and param[1:].isdigit():
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.6e}"
+            prev_val_str = f"{prev_value:.6e}"
+            change_str = f"{change:+.6e}"
+        elif param.startswith('DM') and param != 'DMEPOCH':
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.10f}"
+            prev_val_str = f"{prev_value:.10f}"
+            change_str = f"{change:+.10f}"
+        elif param in ['PMRA', 'PMDEC', 'PX']:
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.6f}"
+            prev_val_str = f"{prev_value:.6f}"
+            change_str = f"{change:+.6f}"
+        elif param == 'PB':
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.15f}"
+            prev_val_str = f"{prev_value:.15f}"
+            change_str = f"{change:+.6e}"
+        elif param == 'A1':
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.10f}"
+            prev_val_str = f"{prev_value:.10f}"
+            change_str = f"{change:+.10f}"
+        elif param in ['T0', 'TASC']:
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.12f}"
+            prev_val_str = f"{prev_value:.12f}"
+            change_str = f"{change:+.6e}"
+        elif param in ['ECC', 'EPS1', 'EPS2']:
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.12e}"
+            prev_val_str = f"{prev_value:.12e}"
+            change_str = f"{change:+.6e}"
+        elif param in ['PBDOT', 'XDOT', 'OMDOT', 'EDOT', 'GAMMA',
+                       'H3', 'H4', 'STIG'] or param.startswith('FD'):
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.6e}"
+            prev_val_str = f"{prev_value:.6e}"
+            change_str = f"{change:+.6e}"
+        elif param in ['OM', 'KIN', 'KOM']:
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.10f}"
+            prev_val_str = f"{prev_value:.10f}"
+            change_str = f"{change:+.6e}"
+        elif param == 'M2':
+            change = new_value - prev_value
+            new_val_str = f"{new_value:.12f}"
+            prev_val_str = f"{prev_value:.12f}"
+            change_str = f"{change:+.6e}"
+        elif param == 'SINI':
+            if isinstance(prev_value, str) and prev_value.upper() == 'KIN':
+                kin_deg = float(self.initial_params.get('KIN', 0.0))
+                prev_value_num = float(np.sin(np.deg2rad(kin_deg)))
+            else:
+                prev_value_num = float(prev_value)
+            change = new_value - prev_value_num
+            new_val_str = f"{new_value:.12f}"
+            prev_val_str = f"{prev_value_num:.12f}"
+            change_str = f"{change:+.6e}"
+        else:
+            change = new_value - float(prev_value) if isinstance(prev_value, (int, float)) else 0.0
+            new_val_str = f"{new_value:.6g}"
+            prev_val_str = f"{prev_value}"
+            change_str = f"{change:+.6g}"
+
+        unc_str = f"\u00b1{uncertainty:.2e}"
+        return (param, new_val_str, prev_val_str, change_str, unc_str, unit)
+
+    def _build_fit_report_content(self, result, container):
+        """Build the styled fit report UI into the given container widget.
+
+        Reused by both overlay and dialog modes. Uses QTableWidget with
+        batched updates for performance.
+        """
         text_neutral = Colors.TEXT_PRIMARY
         text_muted = Colors.TEXT_SECONDARY
         accent = get_dynamic_accent_primary()
-        bg_surface = Colors.SURFACE
         bg_secondary = Colors.BG_SECONDARY
         border_col = Colors.SURFACE_BORDER
-        
-        # Dialog Setup
-        dialog = QDialog(self)
-        pulsar_str = self.pulsar_name if self.pulsar_name else 'Unknown'
-        dialog.setWindowTitle(f"{pulsar_str} - Fit Results")
-        
-        # Size
-        main_height = self.height()
-        main_width = self.width()
-        dialog.setFixedSize(min(int(main_width * 0.8), 1000), min(int(main_height * 0.85), 700))
-        
-        layout = QVBoxLayout(dialog)
+        pulsar_str = self.pulsar_name or 'Unknown'
+
+        layout = QVBoxLayout(container)
         layout.setSpacing(20)
         layout.setContentsMargins(24, 24, 24, 24)
-        
-        # 1. Header (Title)
+
+        # 1. Header
         title_lbl = QLabel(f"{pulsar_str} - Fit Results")
         title_lbl.setStyleSheet(f"color: {accent}; font-size: 20px; font-weight: bold;")
         layout.addWidget(title_lbl)
-        
-        # 2. Summary Stats (Grid/HBox)
+
+        # 2. Summary Stats
         stats_frame = QFrame()
         stats_frame.setStyleSheet(f"background-color: {bg_secondary}; border-radius: 8px;")
         stats_layout = QHBoxLayout(stats_frame)
         stats_layout.setContentsMargins(16, 16, 16, 16)
-        
+
         def add_stat(label, value, color=text_neutral, bold=False):
-            container = QWidget()
-            vbox = QVBoxLayout(container)
+            c = QWidget()
+            vbox = QVBoxLayout(c)
             vbox.setContentsMargins(0, 0, 0, 0)
             vbox.setSpacing(4)
             lbl = QLabel(label)
@@ -1276,21 +2090,19 @@ class MainWindow(QMainWindow):
             val.setAlignment(Qt.AlignCenter)
             vbox.addWidget(lbl)
             vbox.addWidget(val)
-            stats_layout.addWidget(container)
-            
-        # Use current RMS value (weighted or unweighted based on mode)
+            stats_layout.addWidget(c)
+
         rms_label = "Final wRMS" if self.use_weighted_rms else "Final RMS"
         rms_value = self.rms_us if self.rms_us is not None else result['final_rms']
-        add_stat(rms_label, f"{rms_value:.6f} μs", color=accent, bold=True)
+        add_stat(rms_label, f"{rms_value:.6f} \u03bcs", color=accent, bold=True)
         add_stat("Iterations", result['iterations'])
         conv_text = "Yes" if result['converged'] else "No"
         conv_color = Colors.ACCENT_SUCCESS if result['converged'] else Colors.ACCENT_WARNING
         add_stat("Converged", conv_text, color=conv_color, bold=True)
         add_stat("Time", f"{result['total_time']:.2f}s")
-        
         layout.addWidget(stats_frame)
-        
-        # 3. Parameters Table
+
+        # 3. Parameters Table (batched for performance)
         table = QTableWidget()
         table.setColumnCount(6)
         table.setHorizontalHeaderLabels(["Parameter", "New Value", "Previous", "Change", "Uncertainty", "Unit"])
@@ -1299,160 +2111,53 @@ class MainWindow(QMainWindow):
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setShowGrid(False)
-        
-        # Header Styling
+
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        header.setStretchLastSection(True) 
+        header.setStretchLastSection(True)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        
-        # Prepare Data
-        from jug.io.par_reader import parse_ra, parse_dec, format_ra, format_dec
-        
+
+        # Prepare ordered params
         param_order = getattr(self, 'available_params', list(result['final_params'].keys()))
         ordered_params = [p for p in param_order if p in result['final_params']]
-        for p in result['final_params'].keys():
+        for p in result['final_params']:
             if p not in ordered_params:
                 ordered_params.append(p)
-                
+
         table.setRowCount(len(ordered_params))
-        
+
+        # Pre-create shared font objects (avoid per-cell allocation)
+        mono_font = QFont("Monospace")
+        mono_font.setStyleHint(QFont.Monospace)
+        bold_font = QFont(mono_font)
+        bold_font.setBold(True)
+
+        # Batch: suppress repaints during population
+        table.setUpdatesEnabled(False)
+
         for row, param in enumerate(ordered_params):
-            new_value = result['final_params'][param]
-            uncertainty = result['uncertainties'][param]
-            prev_value = self.initial_params.get(param, 0.0)
-            
-            # Logic copied from original HTML generator
-            new_val_str = ""
-            prev_val_str = ""
-            change_str = ""
+            name, nv, pv, ch, unc, unit = self._format_param_row(param, result)
 
-            # Unit comes from the single source of truth: the parameter registry
-            from jug.model.parameter_spec import get_display_unit
-            unit = get_display_unit(param)
-            
-            if param == 'RAJ':
-                if isinstance(prev_value, str): prev_value_rad = parse_ra(prev_value)
-                else: prev_value_rad = prev_value
-                change = new_value - prev_value_rad
-                new_val_str = format_ra(new_value)
-                prev_val_str = format_ra(prev_value_rad) if isinstance(prev_value, str) else prev_value
-                change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
-                unit = "Δ arcsec"  # Special: change column shows arcsec offset
-            elif param == 'DECJ':
-                if isinstance(prev_value, str): prev_value_rad = parse_dec(prev_value)
-                else: prev_value_rad = prev_value
-                change = new_value - prev_value_rad
-                new_val_str = format_dec(new_value)
-                prev_val_str = format_dec(prev_value_rad) if isinstance(prev_value, str) else prev_value
-                change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
-                unit = "Δ arcsec"  # Special: change column shows arcsec offset
-            elif param == 'F0':
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.15f}"
-                prev_val_str = f"{prev_value:.15f}"
-                change_str = f"{change:+.15f}"
-            elif param.startswith('F') and param[1:].isdigit():
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.6e}"
-                prev_val_str = f"{prev_value:.6e}"
-                change_str = f"{change:+.6e}"
-            elif param.startswith('DM') and param != 'DMEPOCH':
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.10f}"
-                prev_val_str = f"{prev_value:.10f}"
-                change_str = f"{change:+.10f}"
-            elif param in ['PMRA', 'PMDEC']:
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.6f}"
-                prev_val_str = f"{prev_value:.6f}"
-                change_str = f"{change:+.6f}"
-            elif param == 'PX':
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.6f}"
-                prev_val_str = f"{prev_value:.6f}"
-                change_str = f"{change:+.6f}"
-            elif param == 'PB':
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.15f}"
-                prev_val_str = f"{prev_value:.15f}"
-                change_str = f"{change:+.6e}"
-            elif param == 'A1':
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.10f}"
-                prev_val_str = f"{prev_value:.10f}"
-                change_str = f"{change:+.10f}"
-            elif param in ['T0', 'TASC']:
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.12f}"
-                prev_val_str = f"{prev_value:.12f}"
-                change_str = f"{change:+.6e}"
-            elif param in ['ECC', 'EPS1', 'EPS2']:
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.12e}"
-                prev_val_str = f"{prev_value:.12e}"
-                change_str = f"{change:+.6e}"
-            elif param in ['PBDOT', 'XDOT', 'OMDOT', 'EDOT', 'GAMMA',
-                           'H3', 'H4', 'STIG'] or param.startswith('FD'):
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.6e}"
-                prev_val_str = f"{prev_value:.6e}"
-                change_str = f"{change:+.6e}"
-            elif param in ['OM', 'KIN', 'KOM']:
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.10f}"
-                prev_val_str = f"{prev_value:.10f}"
-                change_str = f"{change:+.6e}"
-            elif param == 'M2':
-                change = new_value - prev_value
-                new_val_str = f"{new_value:.12f}"
-                prev_val_str = f"{prev_value:.12f}"
-                change_str = f"{change:+.6e}"
-            elif param == 'SINI':
-                # Handle SINI='KIN' (DDK convention: SINI = sin(KIN))
-                if isinstance(prev_value, str) and prev_value.upper() == 'KIN':
-                    import jax.numpy as jnp
-                    kin_deg = float(self.initial_params.get('KIN', 0.0))
-                    prev_value_num = float(jnp.sin(jnp.deg2rad(kin_deg)))
-                else:
-                    prev_value_num = float(prev_value)
-                change = new_value - prev_value_num
-                new_val_str = f"{new_value:.12f}"
-                prev_val_str = f"{prev_value_num:.12f}"
-                change_str = f"{change:+.6e}"
-            else:
-                change = new_value - float(prev_value) if isinstance(prev_value, (int, float)) else 0.0
-                new_val_str = f"{new_value:.6g}"
-                prev_val_str = f"{prev_value}"
-                change_str = f"{change:+.6g}"
+            # Parameter name (bold, accent)
+            item_p = QTableWidgetItem(name)
+            item_p.setForeground(QBrush(QColor(accent)))
+            item_p.setFont(bold_font)
+            item_p.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            table.setItem(row, 0, item_p)
 
-            unc_str = f"±{uncertainty:.2e}"
-            
-            # Populate Row
-            def create_item(text, color=text_neutral, font_mono=False):
+            for col, (text, color) in enumerate([
+                (nv, text_neutral), (pv, text_muted), (ch, text_muted),
+                (unc, text_muted), (unit, text_muted)
+            ], start=1):
                 item = QTableWidgetItem(text)
                 item.setForeground(QBrush(QColor(color)))
-                if font_mono:
-                    font = QFont("Monospace")
-                    font.setStyleHint(QFont.Monospace)
-                    item.setFont(font)
+                if col <= 4:
+                    item.setFont(mono_font)
                 item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                return item
+                table.setItem(row, col, item)
 
-            # Parameter
-            item_p = create_item(param, color=accent) # Parameter name accent color
-            font_p = item_p.font()
-            font_p.setBold(True)
-            item_p.setFont(font_p)
-            table.setItem(row, 0, item_p)
-            
-            table.setItem(row, 1, create_item(new_val_str, font_mono=True))
-            table.setItem(row, 2, create_item(prev_val_str, color=text_muted, font_mono=True))
-            table.setItem(row, 3, create_item(change_str, color=text_muted, font_mono=True))
-            table.setItem(row, 4, create_item(unc_str, color=text_muted, font_mono=True))
-            table.setItem(row, 5, create_item(unit, color=text_muted))
+        table.setUpdatesEnabled(True)
 
-        # Table Styling
         table.setStyleSheet(f"""
             QTableWidget {{
                 background-color: {Colors.BG_PRIMARY};
@@ -1476,23 +2181,16 @@ class MainWindow(QMainWindow):
                 background-color: {Colors.SURFACE_HOVER};
             }}
         """)
-        
         layout.addWidget(table)
-        
-        # 4. Close Button
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        close_btn.setStyleSheet(get_primary_button_style())
-        close_btn.setFixedWidth(120)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        btn_layout.addWidget(close_btn)
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
-        
-        dialog.exec()
+
+        return layout
+
+    def _show_fit_results(self, result):
+        """Show fit results (fallback when no pre-built dialog is cached)."""
+        self._prebuild_fit_report(result)
+        self._cached_fit_dialog.show()
+        self._cached_fit_dialog.raise_()
+        self._cached_fit_dialog.activateWindow()
 
     def on_restart_clicked(self):
         """Handle Restart button click - restore original data including deleted TOAs."""
@@ -1506,10 +2204,19 @@ class MainWindow(QMainWindow):
             # Reset cached keep mask (all True = keep all TOAs)
             self._keep_mask = np.ones(len(self.original_mjd), dtype=bool)
             
+            # Reset session params to original par file values
+            # Without this, subsequent fits would start from previously-fitted
+            # params instead of the original model, causing stale/NaN residuals.
+            if self.session is not None:
+                self.session.params = self.session.get_initial_params()
+                self.session._cached_result_by_mode.clear()
+                self.session._cached_toa_data = None
+
             # Recalculate RMS using canonical engine stats
+            from jug.engine.stats import compute_residual_stats
             stats = compute_residual_stats(self.residuals_us, self.errors_us)
             self._update_rms_from_stats(stats)
-            
+
             # Reset fit state
             self.is_fitted = False
             self.fit_results = None
@@ -1607,48 +2314,230 @@ class MainWindow(QMainWindow):
         # Set displayed RMS based on current mode
         self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
 
+    # -- Phase 4.4: Color-by-backend/frequency --------------------------
+
+    def _set_color_mode(self, mode: str):
+        """Set coloring mode: 'none', 'backend', 'frequency'."""
+        self._color_mode = mode
+
+        # Check corresponding action in group
+        if self.is_remote:
+            # Update overlay submenu check states
+            mode_map = {"none": "None (single color)",
+                        "backend": "Backend/Receiver",
+                        "frequency": "Frequency (continuous)"}
+            for m, label in mode_map.items():
+                self._view_overlay.set_item_checked(f"color_by_{label}", m == mode)
+        else:
+            if mode == "none":
+                self._color_none_action.setChecked(True)
+            elif mode == "backend":
+                self._color_backend_action.setChecked(True)
+            elif mode == "frequency":
+                self._color_freq_action.setChecked(True)
+
+        # Re-plot to apply changes efficiently
+        if self.scatter_item is not None:
+             self._update_plot(auto_range=False)
+
+    # Renamed from _apply_point_colors
+    def _get_point_brushes(self, n_points):
+        """Return list of brushes for current coloring mode, or None for default."""
+        if not hasattr(self, 'scatter_item') or self.scatter_item is None:
+            return None
+
+        mode = self._color_mode
+        brushes = []
+        
+        if mode == "backend" and self.toa_flags is not None:
+            # Backend coloring: use 'f' flag
+            # We need a stable mapping of backend string -> color
+            # Use 'f' flag or 'i' (instrument) or 'be' (backend)?
+            # Standard is '-f' usually for frontend/backend.
+            
+            # Map unique backends to colors
+            # Get list of flags for all TOAs
+            flags_list = self.toa_flags # List of dicts
+            
+            # Extract backend for each point
+            # This might be slow if loop.
+            # But we only do it when switching mode.
+            
+            from jug.gui.theme import Colors
+            # 8 distinct colors
+            palette = [
+                Colors.ACCENT_PRIMARY, Colors.ACCENT_SECONDARY,
+                "#4CAF50", "#FFC107", "#9C27B0", "#FF5722", "#00BCD4", "#795548"
+            ]
+            
+            backend_map = {}
+            next_color_idx = 0
+            
+            for flags in flags_list:
+                be = flags.get('f', flags.get('be', flags.get('i', 'unknown')))
+                if be not in backend_map:
+                    backend_map[be] = pg.mkBrush(palette[next_color_idx % len(palette)])
+                    next_color_idx += 1
+                brushes.append(backend_map[be])
+            
+            # Match length
+            if len(brushes) != n_points:
+                if len(brushes) > n_points:
+                    brushes = brushes[:n_points]
+                else:
+                    brushes.extend([pg.mkBrush(None)] * (n_points - len(brushes)))
+
+            self._update_freq_legend(False)
+            return brushes
+
+        elif mode == "frequency" and self.toa_freqs is not None:
+            freqs = self.toa_freqs
+            
+            # Handle empty/NaN
+            if len(freqs) == 0:
+                self._update_freq_legend(False)
+                return None
+                
+            f_min, f_max = float(np.nanmin(freqs)), float(np.nanmax(freqs))
+            span = f_max - f_min if f_max > f_min else 1.0
+            
+            # [0, 0, 0.5] -> [1, 1, 0] ?
+            # Let's use a better map. Plasma or Viridis.
+            # Simple 3-point gradient: Purple -> Red -> Yellow
+            # 0.0: (68, 1, 84)   (Purple)
+            # 0.5: (193, 60, 100) (Reddish)
+            # 1.0: (253, 231, 37) (Yellow)
+            
+            brushes = []
+            for f in freqs:
+                t = np.clip((f - f_min) / span, 0.0, 1.0)
+                if t < 0.5:
+                    # Purple -> Red
+                    tt = t * 2.0
+                    r = int(68 + tt * (193 - 68))
+                    g = int(1 + tt * (60 - 1))
+                    b = int(84 + tt * (100 - 84))
+                else:
+                    # Red -> Yellow
+                    tt = (t - 0.5) * 2.0
+                    r = int(193 + tt * (253 - 193))
+                    g = int(60 + tt * (231 - 60))
+                    b = int(100 + tt * (37 - 100))
+                brushes.append(pg.mkBrush(r, g, b, 200))
+            # Check if we have points to color
+            if self.scatter_item.data is None or len(self.scatter_item.data) == 0:
+                return None # Return None if no data
+
+            # Ensure brushes match data length (handle race condition or filtered data)
+            # n_points is passed in now to be safe
+            if len(brushes) != n_points:
+                # If we have a mismatch, maybe we are coloring based on full dataset but plotting filtered/downsampled?
+                # For now, just slice or skip to avoid crash
+                if len(brushes) > n_points:
+                    brushes = brushes[:n_points]
+                else:
+                     # Not enough brushes? Fallback to default for remainder
+                     brushes.extend([pg.mkBrush(None)] * (n_points - len(brushes)))
+            
+            # Show legend
+            self._update_freq_legend(True, f_min, f_max)
+            return brushes
+
+        # mode == "none" → reset to theme default
+        self._update_freq_legend(False)
+        return None  # Returning None means "use default symbolBrush"
+
+
+
+    def _update_freq_legend(self, show, f_min=0.0, f_max=0.0):
+        """Update the frequency pseudo-colorbar legend using SimpleColorBar."""
+        # Create if not exists
+        if not hasattr(self, 'freq_legend'):
+            self.freq_legend = SimpleColorBar(size=(120, 12), offset=(20, 20))
+            # Min/max labels are sufficient?
+            
+            # Add to SCENE directly to avoid ViewBox clipping/scaling issues
+            # Only if scene exists (it should if widget is shown)
+            scene = self.plot_widget.scene()
+            if scene:
+                scene.addItem(self.freq_legend)
+            
+            # Connect range changes to update position (keep top-right)
+            def update_pos(*args):
+                # Ensure it's in the scene
+                if self.freq_legend.scene() is None and self.plot_widget.scene() is not None:
+                     self.plot_widget.scene().addItem(self.freq_legend)
+                     
+                view_box = self.plot_widget.plotItem.getViewBox()
+                self.freq_legend.setAnchor(view_box)
+            
+            # Keep reference to slot to avoid GC?
+            self._freq_legend_updater = update_pos
+            view_box = self.plot_widget.plotItem.getViewBox()
+            view_box.sigStateChanged.connect(update_pos)
+            self.plot_widget.plotItem.sigRangeChanged.connect(update_pos)
+            # Also update when geometry changes (resize)
+            self.plot_widget.plotItem.geometryChanged.connect(update_pos)
+
+        if show:
+            # Ensure it is in the scene
+            if self.freq_legend.scene() is None and self.plot_widget.scene() is not None:
+                self.plot_widget.scene().addItem(self.freq_legend)
+            
+            self.freq_legend.setVisible(True)
+            self.freq_legend.setLabels(f"{int(f_min)} MHz", f"{int(f_max)} MHz")
+            # Force update position immediately
+            self.freq_legend.setAnchor(self.plot_widget.plotItem.getViewBox())
+        else:
+            if hasattr(self, 'freq_legend'):
+                self.freq_legend.setVisible(False)
+                # Remove from scene to stop any processing/events
+                if self.freq_legend.scene() is not None:
+                    self.plot_widget.scene().removeItem(self.freq_legend)
+
+    def _set_menu_item_text(self, action_attr, overlay_name, text):
+        """Set menu item text in either QAction (local) or overlay (remote) mode."""
+        if self.is_remote:
+            self._view_overlay.set_item_text(overlay_name, text)
+        else:
+            getattr(self, action_attr).setText(text)
+
     def on_toggle_color_variant(self):
         """Toggle data color variant (navy/burgundy in light, classic/scilab in dark)."""
         if is_dark_mode():
-            # Dark mode: toggle between classic and scilab
             new_variant = toggle_synthwave_variant()
             if new_variant == "scilab":
-                self.variant_action.setText("Data Color: Cyan/Pink")
+                self._set_menu_item_text("variant_action", "variant", "Data Color: Cyan/Pink")
             else:
-                self.variant_action.setText("Data Color: Pink/Cyan")
+                self._set_menu_item_text("variant_action", "variant", "Data Color: Pink/Cyan")
         else:
-            # Light mode: toggle between navy and burgundy
             new_variant = toggle_light_variant()
             if new_variant == "burgundy":
-                self.variant_action.setText("Data Color: Burgundy")
+                self._set_menu_item_text("variant_action", "variant", "Data Color: Burgundy")
             else:
-                self.variant_action.setText("Data Color: Navy")
+                self._set_menu_item_text("variant_action", "variant", "Data Color: Navy")
 
-        # Refresh the entire UI with new variant colors
         self._apply_theme()
 
     def on_toggle_theme(self):
         """Toggle between light and dark (Synthwave) themes."""
         if is_dark_mode():
             set_theme(LightTheme)
-            self.theme_action.setText("Theme: Light")
-            # Update variant action text for light mode
+            self._set_menu_item_text("theme_action", "theme", "Theme: Light")
             variant = get_light_variant()
             if variant == "burgundy":
-                self.variant_action.setText("Data Color: Burgundy")
+                self._set_menu_item_text("variant_action", "variant", "Data Color: Burgundy")
             else:
-                self.variant_action.setText("Data Color: Navy")
+                self._set_menu_item_text("variant_action", "variant", "Data Color: Navy")
         else:
             set_theme(SynthwaveTheme)
-            self.theme_action.setText("Theme: Synthwave '84")
-            # Update variant action text for dark mode
+            self._set_menu_item_text("theme_action", "theme", "Theme: Synthwave '84")
             variant = get_synthwave_variant()
             if variant == "scilab":
-                self.variant_action.setText("Data Color: Cyan/Pink")
+                self._set_menu_item_text("variant_action", "variant", "Data Color: Cyan/Pink")
             else:
-                self.variant_action.setText("Data Color: Pink/Cyan")
+                self._set_menu_item_text("variant_action", "variant", "Data Color: Pink/Cyan")
 
-        # Refresh the entire UI
         self._apply_theme()
 
     def _apply_theme(self):
@@ -1750,6 +2639,19 @@ class MainWindow(QMainWindow):
             if self.zero_line is not None:
                 self.plot_widget.removeItem(self.zero_line)
                 self.zero_line = create_zero_line(self.plot_widget)
+
+            # Update remote overlay menus if present
+            if hasattr(self, '_remote_menu_bar'):
+                self._remote_menu_bar.setStyleSheet(f"""
+                    QFrame#remoteMenuBar {{
+                        background-color: {Colors.BG_SECONDARY};
+                        border-bottom: 1px solid {get_border_subtle()};
+                        padding: 0px;
+                    }}
+                """)
+                for overlay in [self._file_overlay, self._view_overlay,
+                                self._tools_overlay, self._help_overlay]:
+                    overlay.update_theme()
         finally:
             # Single repaint for the entire window
             self.setUpdatesEnabled(True)
@@ -1925,21 +2827,26 @@ class MainWindow(QMainWindow):
 
     def _parse_par_file_parameters(self):
         """
-        Parse .par file to extract available fittable parameters.
+        Parse .par file to extract available fittable parameters and fit flags.
+
+        The fit flag is the ``1`` between the value and uncertainty in a
+        par-file line.  When present it means "fit this parameter by default".
 
         Returns
         -------
-        list of str
-            List of parameter names that exist in the par file
+        dict
+            Mapping of parameter name → ``True`` if the fit flag is set,
+            ``False`` otherwise.  Only includes parameters recognised as
+            fittable by the parameter registry.
         """
         if not self.par_file:
-            return []
+            return {}
 
         # All fittable parameters from the registry (auto-syncs with derivatives)
         from jug.model.parameter_spec import list_fittable_params
         fittable_params = list_fittable_params()
 
-        found_params = []
+        found_params = {}  # param_name -> has_fit_flag
 
         try:
             with open(self.par_file, 'r') as f:
@@ -1952,11 +2859,20 @@ class MainWindow(QMainWindow):
                     if parts:
                         param_name = parts[0]
                         if param_name in fittable_params:
-                            found_params.append(param_name)
+                            # Detect fit flag: format is PARAM value 1 uncertainty
+                            # The '1' at parts[2] is the fit indicator
+                            has_fit_flag = False
+                            if len(parts) >= 3:
+                                try:
+                                    flag = int(parts[2])
+                                    has_fit_flag = (flag == 1)
+                                except ValueError:
+                                    pass
+                            found_params[param_name] = has_fit_flag
 
         except Exception as e:
             print(f"Error parsing par file: {e}")
-            return []
+            return {}
 
         return found_params
     
@@ -1984,8 +2900,8 @@ class MainWindow(QMainWindow):
 
     def _update_available_parameters(self):
         """Update the parameter checkboxes based on available parameters in par file."""
-        # Parse par file to get available parameters
-        params_in_file = self._parse_par_file_parameters()
+        # Parse par file to get available parameters and fit flags
+        params_in_file = self._parse_par_file_parameters()  # dict: name -> has_fit_flag
         
         # Load initial parameter values from par file
         self._load_initial_parameter_values()
@@ -2011,12 +2927,18 @@ class MainWindow(QMainWindow):
         for row, param in enumerate(all_params):
             checkbox = QCheckBox(param)
             
-            # Determine initial check state
+            # Phase 4.1: Determine initial check state from fit flags
             should_check = False
             if param in self.cmdline_fit_params:
+                # Command-line --fit override always wins
                 should_check = True
-            elif not self.cmdline_fit_params and param in ['F0', 'F1']:
+            elif param in params_in_file and params_in_file[param]:
+                # Par file has fit flag "1" for this parameter
                 should_check = True
+            elif not self.cmdline_fit_params and not any(params_in_file.values()):
+                # Fallback: if no fit flags at all and no --fit args, default F0/F1
+                if param in ['F0', 'F1']:
+                    should_check = True
             
             checkbox.setChecked(should_check)
 
@@ -2050,9 +2972,12 @@ class MainWindow(QMainWindow):
 
         self.available_params = all_params
 
-        # Update status
+        # Update status — report fit flags detected
         if all_params:
-            status_msg = f"Found {len(params_in_file)} fittable parameters in .par file"
+            n_fit_flagged = sum(1 for v in params_in_file.values() if v)
+            status_msg = f"Found {len(params_in_file)} parameters in .par"
+            if n_fit_flagged > 0:
+                status_msg += f" ({n_fit_flagged} fit-flagged)"
             if self.cmdline_fit_params:
                 added = [p for p in self.cmdline_fit_params if p not in params_in_file]
                 if added:
@@ -2064,11 +2989,32 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def eventFilter(self, obj, event):
-        """Handle key events for box zoom, box delete, and unzoom."""
+        """Handle key events for box zoom, box delete, unzoom, and overlay dismiss."""
+        # Click-outside-to-close for remote overlay menus
+        if event.type() == QEvent.MouseButtonPress:
+            active = getattr(self, '_active_menu_overlay', None)
+            if active and active.isVisible():
+                # Map click position to the overlay's parent coordinate space
+                click_pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+                if hasattr(obj, 'mapTo'):
+                    local_pos = obj.mapTo(self.centralWidget(), click_pos)
+                else:
+                    local_pos = click_pos
+                if not active.geometry().contains(local_pos):
+                    active.close_menu()
+                    self._active_menu_overlay = None
+
         if event.type() == QEvent.KeyPress:
             modifiers = event.modifiers()
             key = event.key()
-            
+
+            # Close overlay menus on Escape
+            active = getattr(self, '_active_menu_overlay', None)
+            if active and active.isVisible() and key == Qt.Key_Escape:
+                active.close_menu()
+                self._active_menu_overlay = None
+                return True
+
             if key == Qt.Key_Z:
                 if modifiers & Qt.ShiftModifier:
                     # Shift+Z for box delete
@@ -2404,13 +3350,14 @@ class MainWindow(QMainWindow):
             self.errors_us = self.errors_us[keep_mask]
         
         # Recalculate RMS using canonical engine stats
+        from jug.engine.stats import compute_residual_stats
         stats = compute_residual_stats(self.residuals_us, self.errors_us)
         self._update_rms_from_stats(stats)
-        
+
         # Update plot
         self._update_plot()
         self._update_plot_title()
-        
+
         # Update statistics
         self.rms_label.setText(f"{self.rms_us:.6f} μs")
         self.ntoa_label.setText(f"{len(self.mjd)}")

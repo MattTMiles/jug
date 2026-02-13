@@ -191,6 +191,18 @@ class GeneralFitSetup:
     sw_geometry_pc: Optional[np.ndarray]  # Solar wind geometry factor per TOA
     toa_flags: Optional[List[Dict[str, str]]]  # Per-TOA flags from tim file
     ecorr_whitener: object  # ECORRWhitener or None (for block-diagonal covariance)
+    # Red/DM noise Fourier basis and prior (Phase 1 integration)
+    red_noise_basis: Optional[np.ndarray]  # (n_toa, 2*n_harmonics) Fourier design matrix
+    red_noise_prior: Optional[np.ndarray]  # (2*n_harmonics,) diagonal prior variances
+    dm_noise_basis: Optional[np.ndarray]   # (n_toa, 2*n_harmonics) chromatic Fourier design matrix
+    dm_noise_prior: Optional[np.ndarray]   # (2*n_harmonics,) diagonal prior variances
+    ecorr_basis: Optional[np.ndarray]      # (n_toa, n_epochs) quantization matrix
+    ecorr_prior: Optional[np.ndarray]      # (n_epochs,) ECORR² prior variances (s²)
+    # DMX design matrix (Phase 2 integration)
+    dmx_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmx_ranges) DMX design matrix
+    dmx_labels: Optional[List[str]]          # DMX parameter labels
+    # Noise configuration (Phase 3 integration)
+    noise_config: object  # NoiseConfig or None
 
 
 # =============================================================================
@@ -1147,7 +1159,8 @@ def _build_general_fit_setup_from_files(
     tim_file: Path,
     fit_params: List[str],
     clock_dir: str,
-    verbose: bool
+    verbose: bool,
+    noise_config: Optional[object] = None
 ) -> GeneralFitSetup:
     """
     Build fitting setup from par/tim files (expensive I/O + compute).
@@ -1200,6 +1213,11 @@ def _build_general_fit_setup_from_files(
     # Extract per-TOA flags (needed for EFAC/EQUAD noise scaling)
     toa_flags = [toa.flags for toa in toas_data]
 
+    # Build NoiseConfig: use override if provided, otherwise auto-detect
+    from jug.engine.noise_mode import NoiseConfig
+    if noise_config is None:
+        noise_config = NoiseConfig.from_par(params)
+
     # Apply white noise scaling (EFAC/EQUAD) and build ECORR whitener
     ecorr_whitener = None
     noise_lines = params.get('_noise_lines')
@@ -1207,23 +1225,45 @@ def _build_general_fit_setup_from_files(
         from jug.noise.white import parse_noise_lines, apply_white_noise
         noise_entries = parse_noise_lines(noise_lines)
         if noise_entries:
-            errors_us = apply_white_noise(errors_us, toa_flags, noise_entries)
-            # Build ECORR whitener if any ECORR entries exist
-            ecorr_entries = [e for e in noise_entries if e.kind == 'ECORR']
-            if ecorr_entries:
-                from jug.noise.ecorr import build_ecorr_whitener
-                ecorr_whitener = build_ecorr_whitener(
-                    toas_mjd, toa_flags, noise_entries
-                )
+            # Filter noise entries based on NoiseConfig
+            active_entries = [
+                e for e in noise_entries
+                if (e.kind == 'EFAC' and noise_config.is_enabled("EFAC"))
+                or (e.kind == 'EQUAD' and noise_config.is_enabled("EQUAD"))
+                or (e.kind == 'ECORR' and noise_config.is_enabled("ECORR"))
+            ]
+            if active_entries:
+                errors_us = apply_white_noise(errors_us, toa_flags, active_entries)
+            # Build ECORR whitener if ECORR is enabled
+            if noise_config.is_enabled("ECORR"):
+                ecorr_entries = [e for e in noise_entries if e.kind == 'ECORR']
+                if ecorr_entries:
+                    from jug.noise.ecorr import build_ecorr_whitener
+                    ecorr_whitener = build_ecorr_whitener(
+                        toas_mjd, toa_flags, active_entries
+                    )
             if verbose:
-                efac_count = sum(1 for e in noise_entries if e.kind == 'EFAC')
-                equad_count = sum(1 for e in noise_entries if e.kind == 'EQUAD')
-                ecorr_count = len(ecorr_entries) if ecorr_entries else 0
+                efac_count = sum(1 for e in active_entries if e.kind == 'EFAC')
+                equad_count = sum(1 for e in active_entries if e.kind == 'EQUAD')
+                ecorr_count = sum(1 for e in active_entries if e.kind == 'ECORR')
                 ecorr_msg = ''
                 if ecorr_count and ecorr_whitener is not None:
                     n_groups = len(ecorr_whitener.epoch_groups)
                     ecorr_msg = f', {ecorr_count} ECORR ({n_groups} epoch groups)'
                 print(f"  Applied white noise: {efac_count} EFAC, {equad_count} EQUAD{ecorr_msg}")
+
+    # Parse red noise and DM noise from par file params
+    red_noise_basis = None
+    red_noise_prior = None
+    dm_noise_basis = None
+    dm_noise_prior = None
+    from jug.noise.red_noise import parse_red_noise_params, parse_dm_noise_params
+    red_noise_proc = parse_red_noise_params(params)
+    dm_noise_proc = parse_dm_noise_params(params)
+
+    # Parse DMX ranges
+    dmx_design_matrix = None
+    dmx_labels = None
 
     errors_sec = errors_us * 1e-6
     weights = 1.0 / errors_sec**2
@@ -1275,6 +1315,49 @@ def _build_general_fit_setup_from_files(
     dt_sec_ld_file = result.get('dt_sec_ld')
     tdb_mjd = result['tdb_mjd']
     freq_mhz_bary = result['freq_bary_mhz']
+
+    # Build red noise Fourier basis and prior (if detected in par file)
+    if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
+        red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
+        if verbose:
+            print(f"  Red noise: log10_A={red_noise_proc.log10_A:.3f}, "
+                  f"gamma={red_noise_proc.gamma:.3f}, "
+                  f"{red_noise_proc.n_harmonics} harmonics → {red_noise_basis.shape[1]} columns")
+
+    # Build DM noise Fourier basis and prior (chromatic, scales as 1/ν²)
+    if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
+        dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
+            toas_mjd, freq_mhz_bary
+        )
+        if verbose:
+            print(f"  DM noise: log10_A={dm_noise_proc.log10_A:.3f}, "
+                  f"gamma={dm_noise_proc.gamma:.3f}, "
+                  f"{dm_noise_proc.n_harmonics} harmonics → {dm_noise_basis.shape[1]} columns")
+
+    # Build DMX design matrix (if DMX ranges present in par file)
+    from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
+    dmx_ranges = parse_dmx_ranges(params)
+    if dmx_ranges:
+        dmx_design_matrix, dmx_labels = build_dmx_design_matrix(
+            toas_mjd, freq_mhz_bary, dmx_ranges
+        )
+        if verbose:
+            print(f"  DMX: {len(dmx_ranges)} ranges → {dmx_design_matrix.shape[1]} columns")
+
+    # Build ECORR quantization matrix for GLS basis (if ECORR present)
+    ecorr_basis = None
+    ecorr_prior = None
+    if noise_config.is_enabled("ECORR") and noise_lines and toa_flags:
+        from jug.noise.white import parse_noise_lines as _parse_nl
+        from jug.noise.ecorr import build_ecorr_basis_and_prior
+        _nl = _parse_nl(noise_lines) if not noise_entries else noise_entries
+        result_ecorr = build_ecorr_basis_and_prior(toas_mjd, toa_flags, _nl)
+        if result_ecorr is not None:
+            ecorr_basis, ecorr_prior = result_ecorr
+            # When ECORR is in the GLS basis, disable the whitener to avoid double-counting
+            ecorr_whitener = None
+            if verbose:
+                print(f"  ECORR: {ecorr_basis.shape[1]} epoch groups in GLS basis")
 
     # If fitting DM params, cache initial DM delay
     initial_dm_delay = None
@@ -1367,6 +1450,15 @@ def _build_general_fit_setup_from_files(
         sw_geometry_pc=sw_geometry_pc,
         toa_flags=toa_flags,
         ecorr_whitener=ecorr_whitener,
+        red_noise_basis=red_noise_basis,
+        red_noise_prior=red_noise_prior,
+        dm_noise_basis=dm_noise_basis,
+        dm_noise_prior=dm_noise_prior,
+        ecorr_basis=ecorr_basis,
+        ecorr_prior=ecorr_prior,
+        dmx_design_matrix=dmx_design_matrix,
+        dmx_labels=dmx_labels,
+        noise_config=noise_config,
     )
 
 
@@ -1587,6 +1679,7 @@ def _run_general_fit_iterations(
     _, current_chi2, current_rms_us, _ = _compute_full_model_residuals(params, setup)
     best_chi2 = current_chi2
     best_param_values = param_values_curr.copy()
+    best_noise_coeffs = None  # Fourier/DMX coefficients from augmented solve
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
@@ -1724,6 +1817,35 @@ def _run_general_fit_iterations(
         # Assemble design matrix
         M = np.column_stack(M_columns)
         
+        # Track how many columns are timing parameters (before augmentation)
+        n_timing_params = M.shape[1]
+        
+        # Augment with red noise Fourier basis columns (if present)
+        n_red_noise_cols = 0
+        if getattr(setup, 'red_noise_basis', None) is not None:
+            n_red_noise_cols = setup.red_noise_basis.shape[1]
+            M = np.column_stack([M, setup.red_noise_basis])
+        
+        # Augment with DM noise Fourier basis columns (if present)
+        n_dm_noise_cols = 0
+        if getattr(setup, 'dm_noise_basis', None) is not None:
+            n_dm_noise_cols = setup.dm_noise_basis.shape[1]
+            M = np.column_stack([M, setup.dm_noise_basis])
+        
+        # Augment with ECORR quantization matrix columns (if present)
+        n_ecorr_cols = 0
+        if getattr(setup, 'ecorr_basis', None) is not None:
+            n_ecorr_cols = setup.ecorr_basis.shape[1]
+            M = np.column_stack([M, setup.ecorr_basis])
+        
+        # Augment with DMX design matrix columns (if present)
+        n_dmx_cols = 0
+        if getattr(setup, 'dmx_design_matrix', None) is not None:
+            n_dmx_cols = setup.dmx_design_matrix.shape[1]
+            M = np.column_stack([M, setup.dmx_design_matrix])
+        
+        n_augmented = n_red_noise_cols + n_dm_noise_cols + n_ecorr_cols + n_dmx_cols
+        
         # Subtract weighted mean from each column (vectorized, use pre-computed sum_weights)
         col_means = (weights @ M) / sum_weights
         M -= col_means[np.newaxis, :]
@@ -1742,6 +1864,8 @@ def _run_general_fit_iterations(
             M_solve = M
             sigma_solve = errors_sec
 
+        _iter_noise_coeffs = None  # noise Fourier/DMX coefficients this iteration
+
         if solver_mode == "fast":
             # FAST solver: QR-based lstsq with proper conditioning
             r1 = r_solve / sigma_solve
@@ -1749,25 +1873,98 @@ def _run_general_fit_iterations(
             col_norms = np.sqrt(np.sum(M1**2, axis=0))
             col_norms = np.where(col_norms == 0, 1.0, col_norms)
             M2 = M1 / col_norms[None, :]
-            delta_normalized, _, _, _ = np.linalg.lstsq(M2, r1, rcond=None)
-            delta_params = delta_normalized / col_norms
-            M2tM2 = M2.T @ M2
-            try:
-                cov_normalized = np.linalg.inv(M2tM2)
-            except np.linalg.LinAlgError:
-                cov_normalized = np.linalg.pinv(M2tM2)
-            cov = (cov_normalized / col_norms).T / col_norms
+            
+            if n_augmented > 0:
+                # Regularized solve: (M^T M + Φ^{-1}) δp = M^T r
+                MtM = M2.T @ M2
+                Mtr = M2.T @ r1
+                # Build prior inverse diagonal (only for augmented columns)
+                prior_inv = np.zeros(MtM.shape[0])
+                offset = n_timing_params
+                if n_red_noise_cols > 0:
+                    prior_inv[offset:offset + n_red_noise_cols] = 1.0 / (setup.red_noise_prior * col_norms[offset:offset + n_red_noise_cols]**2)
+                    offset += n_red_noise_cols
+                if n_dm_noise_cols > 0:
+                    prior_inv[offset:offset + n_dm_noise_cols] = 1.0 / (setup.dm_noise_prior * col_norms[offset:offset + n_dm_noise_cols]**2)
+                    offset += n_dm_noise_cols
+                if n_ecorr_cols > 0:
+                    prior_inv[offset:offset + n_ecorr_cols] = 1.0 / (setup.ecorr_prior * col_norms[offset:offset + n_ecorr_cols]**2)
+                    offset += n_ecorr_cols
+                # DMX has no prior (flat prior → no regularization)
+                MtM += np.diag(prior_inv)
+                try:
+                    delta_normalized = np.linalg.solve(MtM, Mtr)
+                except np.linalg.LinAlgError:
+                    delta_normalized = np.linalg.lstsq(MtM, Mtr, rcond=None)[0]
+                delta_params_all = delta_normalized / col_norms
+                try:
+                    cov_all = np.linalg.inv(MtM)
+                except np.linalg.LinAlgError:
+                    cov_all = np.linalg.pinv(MtM)
+                cov_all = (cov_all / col_norms).T / col_norms
+                # Extract timing parameters only
+                delta_params = delta_params_all[:n_timing_params]
+                cov = cov_all[:n_timing_params, :n_timing_params]
+                _iter_noise_coeffs = delta_params_all[n_timing_params:]
+            else:
+                delta_normalized, _, _, _ = np.linalg.lstsq(M2, r1, rcond=None)
+                delta_params = delta_normalized / col_norms
+                M2tM2 = M2.T @ M2
+                try:
+                    cov_normalized = np.linalg.inv(M2tM2)
+                except np.linalg.LinAlgError:
+                    cov_normalized = np.linalg.pinv(M2tM2)
+                cov = (cov_normalized / col_norms).T / col_norms
         else:
-            # EXACT solver: SVD-based (bit-for-bit reproducible)
-            delta_params, cov, _ = wls_solve_svd(
-                residuals=r_solve,
-                sigma=sigma_solve,
-                M=M_solve,
-                threshold=1e-14,
-                negate_dpars=False
-            )
-            delta_params = np.array(delta_params)
-            cov = np.array(cov)
+            if n_augmented > 0:
+                # EXACT solver with prior regularization via normal equations
+                # Weight the system: r̃ = r/σ, M̃ = M/σ
+                r1 = r_solve / sigma_solve
+                M1 = M_solve / sigma_solve[:, None]
+                # Normalize columns for conditioning
+                col_norms = np.sqrt(np.sum(M1**2, axis=0))
+                col_norms = np.where(col_norms == 0, 1.0, col_norms)
+                M2 = M1 / col_norms[None, :]
+                # Normal equations: (M^T M + Φ^{-1}) δp = M^T r
+                MtM = M2.T @ M2
+                Mtr = M2.T @ r1
+                # Build prior inverse diagonal
+                prior_inv = np.zeros(MtM.shape[0])
+                offset = n_timing_params
+                if n_red_noise_cols > 0:
+                    prior_inv[offset:offset + n_red_noise_cols] = 1.0 / (setup.red_noise_prior * col_norms[offset:offset + n_red_noise_cols]**2)
+                    offset += n_red_noise_cols
+                if n_dm_noise_cols > 0:
+                    prior_inv[offset:offset + n_dm_noise_cols] = 1.0 / (setup.dm_noise_prior * col_norms[offset:offset + n_dm_noise_cols]**2)
+                    offset += n_dm_noise_cols
+                if n_ecorr_cols > 0:
+                    prior_inv[offset:offset + n_ecorr_cols] = 1.0 / (setup.ecorr_prior * col_norms[offset:offset + n_ecorr_cols]**2)
+                    offset += n_ecorr_cols
+                MtM += np.diag(prior_inv)
+                try:
+                    delta_normalized = np.linalg.solve(MtM, Mtr)
+                except np.linalg.LinAlgError:
+                    delta_normalized = np.linalg.lstsq(MtM, Mtr, rcond=None)[0]
+                delta_params_all = delta_normalized / col_norms
+                try:
+                    cov_all = np.linalg.inv(MtM)
+                except np.linalg.LinAlgError:
+                    cov_all = np.linalg.pinv(MtM)
+                cov_all = (cov_all / col_norms).T / col_norms
+                delta_params = delta_params_all[:n_timing_params]
+                cov = cov_all[:n_timing_params, :n_timing_params]
+                _iter_noise_coeffs = delta_params_all[n_timing_params:]
+            else:
+                # EXACT solver: SVD-based (bit-for-bit reproducible, no augmentation)
+                delta_params, cov, _ = wls_solve_svd(
+                    residuals=r_solve,
+                    sigma=sigma_solve,
+                    M=M_solve,
+                    threshold=1e-14,
+                    negate_dpars=False
+                )
+                delta_params = np.array(delta_params)
+                cov = np.array(cov)
         
         # PINT-style damping: validate step against full model
         # Try lambda = 1.0, 0.5, 0.25, ... until chi2 improves or min_lambda reached
@@ -1816,6 +2013,10 @@ def _run_general_fit_iterations(
                 param_values_curr = trial_param_values
                 current_chi2 = trial_chi2
                 current_rms_us = trial_rms_us
+                
+                # Always save noise coefficients from accepted steps
+                if _iter_noise_coeffs is not None:
+                    best_noise_coeffs = _iter_noise_coeffs.copy()
                 
                 # Track best state
                 if trial_chi2 < best_chi2:
@@ -1895,7 +2096,82 @@ def _run_general_fit_iterations(
     
     # Compute uncertainties
     uncertainties = {param: np.sqrt(cov[i, i]) for i, param in enumerate(fit_params)}
-    
+
+    # Recompute noise coefficients from the FINAL residuals for consistency.
+    # The iterative solver may use damping/rollback that causes the stored
+    # noise coefficients (from a different iteration) to be inconsistent
+    # with the final timing parameters.  A Wiener-filter solve on the final
+    # postfit residuals guarantees the noise realizations match what is
+    # displayed.
+    noise_realizations = {}
+    if n_augmented > 0:
+        noise_basis_blocks = []
+        noise_prior_blocks = []
+        if n_red_noise_cols > 0 and setup.red_noise_basis is not None:
+            noise_basis_blocks.append(setup.red_noise_basis)
+            noise_prior_blocks.append(setup.red_noise_prior)
+        if n_dm_noise_cols > 0 and setup.dm_noise_basis is not None:
+            noise_basis_blocks.append(setup.dm_noise_basis)
+            noise_prior_blocks.append(setup.dm_noise_prior)
+        if n_ecorr_cols > 0 and setup.ecorr_basis is not None:
+            noise_basis_blocks.append(setup.ecorr_basis)
+            noise_prior_blocks.append(setup.ecorr_prior)
+        if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
+            noise_basis_blocks.append(setup.dmx_design_matrix)
+            noise_prior_blocks.append(np.full(n_dmx_cols, 1e40))
+
+        if noise_basis_blocks:
+            F_noise = np.column_stack(noise_basis_blocks)
+            phi_noise = np.concatenate(noise_prior_blocks)
+            cinv = 1.0 / (errors_sec ** 2)
+            FtNF = F_noise.T @ (cinv[:, None] * F_noise)
+            FtNr = F_noise.T @ (cinv * residuals_final_sec)
+            phi_inv = 1.0 / phi_noise
+            system_matrix = FtNF + np.diag(phi_inv)
+            try:
+                final_noise_coeffs = np.linalg.solve(system_matrix, FtNr)
+            except np.linalg.LinAlgError:
+                final_noise_coeffs = np.linalg.lstsq(
+                    system_matrix, FtNr, rcond=None
+                )[0]
+
+            # Posterior covariance of coefficients: C_post = (FᵀN⁻¹F + Φ⁻¹)⁻¹
+            try:
+                C_post = np.linalg.inv(system_matrix)
+            except np.linalg.LinAlgError:
+                C_post = np.linalg.pinv(system_matrix)
+
+            offset = 0
+            if n_red_noise_cols > 0 and setup.red_noise_basis is not None:
+                rn_coeffs = final_noise_coeffs[offset:offset + n_red_noise_cols]
+                F_rn = setup.red_noise_basis
+                C_rn = C_post[offset:offset + n_red_noise_cols, offset:offset + n_red_noise_cols]
+                noise_realizations['RedNoise'] = (F_rn @ rn_coeffs) * 1e6
+                # σ_i = sqrt(diag(F · C_post · Fᵀ))
+                noise_realizations['RedNoise_err'] = np.sqrt(np.sum((F_rn @ C_rn) * F_rn, axis=1)) * 1e6
+                offset += n_red_noise_cols
+            if n_dm_noise_cols > 0 and setup.dm_noise_basis is not None:
+                dm_coeffs = final_noise_coeffs[offset:offset + n_dm_noise_cols]
+                F_dm = setup.dm_noise_basis
+                C_dm = C_post[offset:offset + n_dm_noise_cols, offset:offset + n_dm_noise_cols]
+                noise_realizations['DMNoise'] = (F_dm @ dm_coeffs) * 1e6
+                noise_realizations['DMNoise_err'] = np.sqrt(np.sum((F_dm @ C_dm) * F_dm, axis=1)) * 1e6
+                offset += n_dm_noise_cols
+            if n_ecorr_cols > 0 and setup.ecorr_basis is not None:
+                ecorr_coeffs = final_noise_coeffs[offset:offset + n_ecorr_cols]
+                F_ec = setup.ecorr_basis
+                C_ec = C_post[offset:offset + n_ecorr_cols, offset:offset + n_ecorr_cols]
+                noise_realizations['ECORR'] = (F_ec @ ecorr_coeffs) * 1e6
+                noise_realizations['ECORR_err'] = np.sqrt(np.sum((F_ec @ C_ec) * F_ec, axis=1)) * 1e6
+                offset += n_ecorr_cols
+            if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
+                dmx_coeffs = final_noise_coeffs[offset:offset + n_dmx_cols]
+                F_dmx = setup.dmx_design_matrix
+                C_dmx = C_post[offset:offset + n_dmx_cols, offset:offset + n_dmx_cols]
+                noise_realizations['DMX'] = (F_dmx @ dmx_coeffs) * 1e6
+                noise_realizations['DMX_err'] = np.sqrt(np.sum((F_dmx @ C_dmx) * F_dmx, axis=1)) * 1e6
+                offset += n_dmx_cols
+
     return {
         'final_params': {param: params[param] for param in fit_params},
         'uncertainties': uncertainties,
@@ -1909,6 +2185,7 @@ def _run_general_fit_iterations(
         'tdb_mjd': tdb_mjd,
         'covariance': cov,
         'final_chi2': final_chi2,
+        'noise_realizations': noise_realizations,
     }
 
 
@@ -1918,7 +2195,8 @@ def _build_general_fit_setup_from_cache(
     session_cached_data: Dict[str, Any],
     params_dict: Dict[str, float],
     fit_params: List[str],
-    toa_mask: Optional[np.ndarray] = None
+    toa_mask: Optional[np.ndarray] = None,
+    noise_config: Optional[object] = None
 ) -> GeneralFitSetup:
     """
     Build fitting setup from TimingSession cached data (fast, no I/O).
@@ -1975,6 +2253,11 @@ def _build_general_fit_setup_from_cache(
         if toa_flags_all is not None:
             toa_flags_all = [toa_flags_all[i] for i, m in enumerate(toa_mask) if m]
 
+    # Build NoiseConfig: use override if provided, otherwise auto-detect
+    from jug.engine.noise_mode import NoiseConfig
+    if noise_config is None:
+        noise_config = NoiseConfig.from_par(params_dict)
+
     # Apply white noise scaling (EFAC/EQUAD) and build ECORR whitener
     ecorr_whitener = None
     noise_lines = params_dict.get('_noise_lines')
@@ -1982,14 +2265,65 @@ def _build_general_fit_setup_from_cache(
         from jug.noise.white import parse_noise_lines, apply_white_noise
         noise_entries = parse_noise_lines(noise_lines)
         if noise_entries:
-            errors_us = apply_white_noise(errors_us, toa_flags_all, noise_entries)
-            # Build ECORR whitener if any ECORR entries exist
-            ecorr_entries = [e for e in noise_entries if e.kind == 'ECORR']
-            if ecorr_entries:
-                from jug.noise.ecorr import build_ecorr_whitener
-                ecorr_whitener = build_ecorr_whitener(
-                    toas_mjd, toa_flags_all, noise_entries
-                )
+            # Filter noise entries based on NoiseConfig
+            active_entries = [
+                e for e in noise_entries
+                if (e.kind == 'EFAC' and noise_config.is_enabled("EFAC"))
+                or (e.kind == 'EQUAD' and noise_config.is_enabled("EQUAD"))
+                or (e.kind == 'ECORR' and noise_config.is_enabled("ECORR"))
+            ]
+            if active_entries:
+                errors_us = apply_white_noise(errors_us, toa_flags_all, active_entries)
+            # Build ECORR whitener if ECORR is enabled
+            if noise_config.is_enabled("ECORR"):
+                ecorr_entries = [e for e in noise_entries if e.kind == 'ECORR']
+                if ecorr_entries:
+                    from jug.noise.ecorr import build_ecorr_whitener
+                    ecorr_whitener = build_ecorr_whitener(
+                        toas_mjd, toa_flags_all, active_entries
+                    )
+
+    # Parse red noise and DM noise from par file params
+    red_noise_basis = None
+    red_noise_prior = None
+    dm_noise_basis = None
+    dm_noise_prior = None
+    from jug.noise.red_noise import parse_red_noise_params, parse_dm_noise_params
+    red_noise_proc = parse_red_noise_params(params_dict)
+    dm_noise_proc = parse_dm_noise_params(params_dict)
+
+    # Build Fourier basis for red noise (if detected and enabled)
+    if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
+        red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
+
+    # Build Fourier basis for DM noise (if detected and enabled)
+    if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
+        dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
+            toas_mjd, freq_mhz_bary
+        )
+
+    # Build DMX design matrix (if DMX ranges present)
+    dmx_design_matrix = None
+    dmx_labels = None
+    from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
+    dmx_ranges = parse_dmx_ranges(params_dict)
+    if dmx_ranges:
+        dmx_design_matrix, dmx_labels = build_dmx_design_matrix(
+            toas_mjd, freq_mhz_bary, dmx_ranges
+        )
+
+    # Build ECORR quantization matrix for GLS basis (if ECORR present)
+    ecorr_basis = None
+    ecorr_prior = None
+    if noise_config.is_enabled("ECORR") and noise_lines and toa_flags_all is not None:
+        from jug.noise.ecorr import build_ecorr_basis_and_prior
+        from jug.noise.white import parse_noise_lines as _parse_nl
+        _all_entries = _parse_nl(noise_lines)
+        result_ecorr = build_ecorr_basis_and_prior(toas_mjd, toa_flags_all, _all_entries)
+        if result_ecorr is not None:
+            ecorr_basis, ecorr_prior = result_ecorr
+            # When ECORR is in the GLS basis, disable the whitener to avoid double-counting
+            ecorr_whitener = None
     
     # Compute derived arrays (same as file path)
     errors_sec = errors_us * 1e-6
@@ -2141,6 +2475,15 @@ def _build_general_fit_setup_from_cache(
         sw_geometry_pc=sw_geometry_pc,
         toa_flags=toa_flags_all,
         ecorr_whitener=ecorr_whitener,
+        red_noise_basis=red_noise_basis,
+        red_noise_prior=red_noise_prior,
+        dm_noise_basis=dm_noise_basis,
+        dm_noise_prior=dm_noise_prior,
+        ecorr_basis=ecorr_basis,
+        ecorr_prior=ecorr_prior,
+        dmx_design_matrix=dmx_design_matrix,
+        dmx_labels=dmx_labels,
+        noise_config=noise_config,
     )
 
 

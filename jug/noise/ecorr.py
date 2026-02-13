@@ -461,3 +461,63 @@ def build_ecorr_whitener(
         singleton_indices=singleton_indices,
         n_toas=n_toas,
     )
+
+
+def build_ecorr_basis_and_prior(
+    toas_mjd: np.ndarray,
+    toa_flags: List[Dict[str, str]],
+    noise_entries: List[WhiteNoiseEntry],
+    dt_days: float = 0.5,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Build ECORR quantization matrix and prior for GLS basis augmentation.
+
+    Returns the quantization matrix U (n_toa × n_epochs) and the prior
+    variance vector J (n_epochs,) where J_k = ECORR_k² in seconds².
+
+    Parameters
+    ----------
+    toas_mjd : np.ndarray, shape (n_toas,)
+        MJD of all TOAs.
+    toa_flags : list of dict
+        Per-TOA flag dictionaries.
+    noise_entries : list of WhiteNoiseEntry
+        All parsed noise entries (EFAC/EQUAD/ECORR).
+    dt_days : float, optional
+        Maximum gap within an epoch (default 0.5 days).
+
+    Returns
+    -------
+    (U, J) : tuple of (ndarray, ndarray) or None
+        U has shape (n_toas, n_epochs), J has shape (n_epochs,).
+        Returns None if no ECORR entries are found.
+    """
+    ecorr_entries = [e for e in noise_entries if e.kind == 'ECORR']
+    if not ecorr_entries:
+        return None
+
+    n_toas = len(toas_mjd)
+    epoch_indices_list: List[Tuple[int, ...]] = []
+    epoch_ecorr_sec_list: List[float] = []
+
+    for entry in ecorr_entries:
+        mask = build_backend_mask(toa_flags, entry.flag_name, entry.flag_value)
+        epochs = _group_toas_into_epochs(toas_mjd, mask, dt_days)
+        ecorr_sec = entry.value * 1e-6  # microseconds → seconds
+        for ep in epochs:
+            epoch_indices_list.append(ep)
+            epoch_ecorr_sec_list.append(ecorr_sec)
+
+    n_epochs = len(epoch_indices_list)
+    if n_epochs == 0:
+        return None
+
+    # Build quantization matrix U: U[i, k] = 1 if TOA i in epoch k
+    U = np.zeros((n_toas, n_epochs), dtype=np.float64)
+    for k, indices in enumerate(epoch_indices_list):
+        for i in indices:
+            U[i, k] = 1.0
+
+    # Prior: J_k = ECORR_k² (seconds²)
+    J = np.array([ec**2 for ec in epoch_ecorr_sec_list], dtype=np.float64)
+
+    return U, J

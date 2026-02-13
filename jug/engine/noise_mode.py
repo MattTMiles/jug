@@ -32,6 +32,7 @@ EQUAD = "EQUAD"
 ECORR = "ECORR"
 RED_NOISE = "RedNoise"
 DM_NOISE = "DMNoise"
+DMX = "DMX"
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +62,7 @@ def _has_ecorr(params: dict) -> bool:
     """Detect ECORR entries in _noise_lines."""
     for line in params.get("_noise_lines", []):
         key = line.split()[0].upper()
-        if key == "ECORR":
+        if key in ("ECORR", "TNECORR"):
             return True
     return False
 
@@ -88,6 +89,11 @@ def _has_dm_noise(params: dict) -> bool:
     return False
 
 
+def _has_dmx(params: dict) -> bool:
+    """Detect DMX parameters (per-epoch DM)."""
+    return any(k.startswith("DMXR1_") for k in params)
+
+
 # Registry: canonical name -> detection function.
 # Extend this dict to support new noise types.
 _DETECTORS: Dict[str, callable] = {
@@ -96,6 +102,7 @@ _DETECTORS: Dict[str, callable] = {
     ECORR: _has_ecorr,
     RED_NOISE: _has_red_noise,
     DM_NOISE: _has_dm_noise,
+    DMX: _has_dmx,
 }
 
 

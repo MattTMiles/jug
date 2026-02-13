@@ -47,7 +47,8 @@ def compute_ssb_obs_pos_vel(
     tdb_mjd: np.ndarray,
     obs_itrf_km: np.ndarray,
     timings: Optional[Dict[str, float]] = None,
-    use_cache: bool = True
+    use_cache: bool = True,
+    ephemeris: str = "de440"
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute observatory position and velocity relative to Solar System Barycenter.
 
@@ -104,7 +105,7 @@ def compute_ssb_obs_pos_vel(
     if use_cache:
         from jug.utils.geom_cache import get_geometry_cache
         cache = get_geometry_cache()
-        cached = cache.load(tdb_mjd, obs_itrf_km, ephemeris="de440")
+        cached = cache.load(tdb_mjd, obs_itrf_km, ephemeris=ephemeris)
         if cached is not None:
             if _PROFILE_ENABLED:
                 _call_stats['compute_ssb_obs_pos_vel']['count'] += 1
@@ -121,8 +122,8 @@ def compute_ssb_obs_pos_vel(
         timings['time_obj_creation'] = time.perf_counter() - t0
         t0 = time.perf_counter()
 
-    # Get Earth position and velocity from DE440
-    with solar_system_ephemeris.set('de440'):
+    # Get Earth position and velocity
+    with solar_system_ephemeris.set(ephemeris):
         earth_pv = get_body_barycentric_posvel('earth', times)
         ssb_geo_pos = earth_pv[0].xyz.to(u.km).value.T  # Geocenter position
         ssb_geo_vel = earth_pv[1].xyz.to(u.km/u.s).value.T  # Geocenter velocity
@@ -179,7 +180,7 @@ def compute_ssb_obs_pos_vel(
     
     # Save to disk cache
     if use_cache:
-        cache.save(tdb_mjd, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris="de440")
+        cache.save(tdb_mjd, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris=ephemeris)
     
     # Update profiling stats
     if _PROFILE_ENABLED:
@@ -192,7 +193,8 @@ def compute_ssb_obs_pos_vel(
 def compute_ssb_obs_pos_vel_gcrs_posvel(
     tdb_mjd: np.ndarray,
     obs_itrf_km: np.ndarray,
-    timings: Optional[Dict[str, float]] = None
+    timings: Optional[Dict[str, float]] = None,
+    ephemeris: str = "de440"
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute SSB position/velocity using EarthLocation.get_gcrs_posvel().
     
@@ -227,8 +229,8 @@ def compute_ssb_obs_pos_vel_gcrs_posvel(
         timings['time_obj_creation'] = time.perf_counter() - t0
         t0 = time.perf_counter()
 
-    # Get Earth position and velocity from DE440
-    with solar_system_ephemeris.set('de440'):
+    # Get Earth position and velocity
+    with solar_system_ephemeris.set(ephemeris):
         earth_pv = get_body_barycentric_posvel('earth', times)
         ssb_geo_pos = earth_pv[0].xyz.to(u.km).value.T
         ssb_geo_vel = earth_pv[1].xyz.to(u.km/u.s).value.T

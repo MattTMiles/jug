@@ -119,11 +119,10 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
 
         # -----------------------------------------------------------------
         # Tempo2 format:  T2EFAC -<flag> <value> <number>
-        #                 T2EQUAD -<flag> <value> <number>
+        #                 T2EQUAD -<flag> <value> <log10_equad_seconds>
         #                 ECORR   -<flag> <value> <number>
         # -----------------------------------------------------------------
-        if keyword in ('T2EFAC', 'T2EQUAD'):
-            kind = keyword[2:]  # strip "T2" prefix → 'EFAC' or 'EQUAD'
+        if keyword == 'T2EFAC':
             if len(parts) < 4:
                 continue
             flag_name = parts[1].lstrip('-')
@@ -132,7 +131,20 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
                 value = float(parts[3])
             except ValueError:
                 continue
-            entries.append(WhiteNoiseEntry(kind, flag_name, flag_value, value))
+            entries.append(WhiteNoiseEntry('EFAC', flag_name, flag_value, value))
+
+        elif keyword == 'T2EQUAD':
+            # TempoNest convention: value is log10(EQUAD in seconds)
+            if len(parts) < 4:
+                continue
+            flag_name = parts[1].lstrip('-')
+            flag_value = parts[2]
+            try:
+                log10_val = float(parts[3])
+            except ValueError:
+                continue
+            equad_us = 10**log10_val * 1e6  # log10(seconds) → microseconds
+            entries.append(WhiteNoiseEntry('EQUAD', flag_name, flag_value, equad_us))
 
         elif keyword == 'ECORR':
             if len(parts) < 4:
@@ -144,6 +156,19 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
             except ValueError:
                 continue
             entries.append(WhiteNoiseEntry('ECORR', flag_name, flag_value, value))
+
+        elif keyword == 'TNECORR':
+            # TempoNest convention: value is log10(ECORR in seconds)
+            if len(parts) < 4:
+                continue
+            flag_name = parts[1].lstrip('-')
+            flag_value = parts[2]
+            try:
+                log10_val = float(parts[3])
+            except ValueError:
+                continue
+            ecorr_us = 10**log10_val * 1e6  # log10(seconds) → microseconds
+            entries.append(WhiteNoiseEntry('ECORR', flag_name, flag_value, ecorr_us))
 
         # -----------------------------------------------------------------
         # Tempo1/TempoNest format:  EFAC <flag_name> <flag_value> <number>

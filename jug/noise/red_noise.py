@@ -236,19 +236,31 @@ class RedNoiseProcess:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build Fourier basis F and diagonal prior φ.
 
+        Uses the enterprise convention for the per-coefficient variance:
+
+        .. math::
+
+            \\phi_k = \\frac{A^2}{12\\pi^2} f_{\\rm yr}^{\\gamma-3} f_k^{-\\gamma} \\Delta f
+
+        where Δf = 1/T_span is the frequency resolution.
+
         Returns
         -------
         F : (n_toa, 2 * n_harmonics)
         phi : (2 * n_harmonics,)
-            Prior variance for each Fourier coefficient (the spectrum
-            is shared by the sin/cos pair of each harmonic).
+            Prior variance for each Fourier coefficient (s²).
         """
         F, freqs = build_fourier_design_matrix(
             toas_mjd, self.n_harmonics, Tspan_days
         )
-        P = self.spectrum(freqs)
-        # Each harmonic contributes [sin, cos], both with the same PSD
-        phi = np.repeat(P, 2)
+        # Frequency resolution (all harmonics equally spaced)
+        df = freqs[0]  # = 1/T_span (fundamental frequency = frequency spacing)
+        A = 10.0 ** self.log10_A
+        # Enterprise convention: phi = A²/(12π²) × f_yr^(γ-3) × f^(-γ) × Δf
+        phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
+            _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
+        # Each harmonic contributes [sin, cos], both with the same variance
+        phi = np.repeat(phi_per_harmonic, 2)
         return F, phi
 
 
@@ -288,6 +300,12 @@ class DMNoiseProcess:
         The achromatic Fourier basis is scaled column-wise by
         ``(1400 / freq_mhz)²`` to impart the ν⁻² chromatic signature.
 
+        Uses the enterprise convention for per-coefficient variance:
+
+        .. math::
+
+            \\phi_k = \\frac{A^2}{12\\pi^2} f_{\\rm yr}^{\\gamma-3} f_k^{-\\gamma} \\Delta f
+
         Parameters
         ----------
         toas_mjd : (n_toa,)
@@ -299,6 +317,7 @@ class DMNoiseProcess:
         -------
         F_dm : (n_toa, 2 * n_harmonics)
         phi : (2 * n_harmonics,)
+            Prior variance for each Fourier coefficient (s²).
         """
         F, freqs = build_fourier_design_matrix(
             toas_mjd, self.n_harmonics, Tspan_days
@@ -307,8 +326,12 @@ class DMNoiseProcess:
         # Using 1400 MHz as normalisation keeps numerical values ≈ O(1)
         chromatic_weight = (1400.0 / freq_mhz) ** 2
         F_dm = F * chromatic_weight[:, None]
-        P = self.spectrum(freqs)
-        phi = np.repeat(P, 2)
+        # Enterprise convention for per-coefficient variance
+        df = freqs[0]  # = 1/T_span
+        A = 10.0 ** self.log10_A
+        phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
+            _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
+        phi = np.repeat(phi_per_harmonic, 2)
         return F_dm, phi
 
 
@@ -321,15 +344,23 @@ def parse_red_noise_params(params: dict) -> Optional[RedNoiseProcess]:
 
     Looks for ``TNRedAmp`` / ``TNRedGam`` / ``TNRedC`` (TempoNest)
     or ``RN_log10_A`` / ``RN_gamma`` conventions.
+    Handles both mixed-case and uppercase keys (par reader uppercases).
 
     Returns None if no red noise parameters are found.
     """
-    # TempoNest convention
+    # TempoNest convention (mixed case)
     if "TNRedAmp" in params and "TNRedGam" in params:
         return RedNoiseProcess(
             log10_A=float(params["TNRedAmp"]),
             gamma=float(params["TNRedGam"]),
             n_harmonics=int(params.get("TNRedC", 30)),
+        )
+    # TempoNest convention (uppercase — par reader uppercases keys)
+    if "TNREDAMP" in params and "TNREDGAM" in params:
+        return RedNoiseProcess(
+            log10_A=float(params["TNREDAMP"]),
+            gamma=float(params["TNREDGAM"]),
+            n_harmonics=int(params.get("TNREDC", 30)),
         )
     # Alternative convention
     if "RN_log10_A" in params and "RN_gamma" in params:
@@ -346,12 +377,20 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
 
     Looks for ``TNDMAmp`` / ``TNDMGam`` / ``TNDMC`` (TempoNest)
     or ``DM_log10_A`` / ``DM_gamma`` conventions.
+    Handles both mixed-case and uppercase keys (par reader uppercases).
     """
-    # TempoNest convention
+    # TempoNest convention (mixed case)
     if "TNDMAmp" in params and "TNDMGam" in params:
         return DMNoiseProcess(
             log10_A=float(params["TNDMAmp"]),
             gamma=float(params["TNDMGam"]),
+            n_harmonics=int(params.get("TNDMC", 30)),
+        )
+    # TempoNest convention (uppercase)
+    if "TNDMAMP" in params and "TNDMGAM" in params:
+        return DMNoiseProcess(
+            log10_A=float(params["TNDMAMP"]),
+            gamma=float(params["TNDMGAM"]),
             n_harmonics=int(params.get("TNDMC", 30)),
         )
     # Alternative convention
@@ -362,3 +401,70 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
             n_harmonics=int(params.get("DM_ncoeff", 30)),
         )
     return None
+
+
+# ---------------------------------------------------------------------------
+# Noise realization — compute MAP (maximum a-posteriori) realization
+# ---------------------------------------------------------------------------
+
+def realize_red_noise(
+    toas_mjd: np.ndarray,
+    residuals_sec: np.ndarray,
+    errors_sec: np.ndarray,
+    log10_A: float,
+    gamma: float,
+    n_harmonics: int = 30,
+    Tspan_days: Optional[float] = None,
+) -> np.ndarray:
+    """Compute MAP realization of achromatic red noise.
+
+    Uses the Wiener filter: ``realization = φ F^T (F φ F^T + N)^{-1} r``
+    where φ is the prior covariance, F is the Fourier design matrix,
+    N is the white noise covariance, and r is the residual vector.
+
+    Returns
+    -------
+    realization_sec : (n_toa,)
+        MAP noise realization in seconds.
+    """
+    proc = RedNoiseProcess(log10_A, gamma, n_harmonics)
+    F, phi = proc.build_basis_and_prior(toas_mjd, Tspan_days)
+    return _wiener_filter(F, phi, residuals_sec, errors_sec)
+
+
+def realize_dm_noise(
+    toas_mjd: np.ndarray,
+    freq_mhz: np.ndarray,
+    residuals_sec: np.ndarray,
+    errors_sec: np.ndarray,
+    log10_A: float,
+    gamma: float,
+    n_harmonics: int = 30,
+    Tspan_days: Optional[float] = None,
+) -> np.ndarray:
+    """Compute MAP realization of chromatic DM noise.
+
+    Returns
+    -------
+    realization_sec : (n_toa,)
+        MAP noise realization in seconds.
+    """
+    proc = DMNoiseProcess(log10_A, gamma, n_harmonics)
+    F, phi = proc.build_basis_and_prior(toas_mjd, freq_mhz, Tspan_days)
+    return _wiener_filter(F, phi, residuals_sec, errors_sec)
+
+
+def _wiener_filter(
+    F: np.ndarray,
+    phi: np.ndarray,
+    residuals: np.ndarray,
+    errors: np.ndarray,
+) -> np.ndarray:
+    """Wiener filter: φ F^T (F φ F^T + N)^{-1} r."""
+    N_inv = 1.0 / (errors ** 2)
+    FtNir = F.T @ (N_inv * residuals)
+    FtNiF = F.T @ (N_inv[:, None] * F)
+    phi_inv = 1.0 / phi
+    A = np.diag(phi_inv) + FtNiF
+    coeffs = np.linalg.solve(A, FtNir)
+    return F @ coeffs

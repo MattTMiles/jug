@@ -490,7 +490,8 @@ class TimingSession:
         device: Optional[str] = None,
         verbose: Optional[bool] = None,
         toa_mask: Optional[np.ndarray] = None,
-        solver_mode: str = "exact"
+        solver_mode: str = "exact",
+        noise_config: Optional[object] = None
     ) -> Dict[str, Any]:
         """
         Fit timing model parameters.
@@ -513,6 +514,8 @@ class TimingSession:
         solver_mode : str, default "exact"
             Solver mode: "exact" (SVD, bit-for-bit reproducible) or
             "fast" (QR/lstsq, faster but may differ slightly).
+        noise_config : NoiseConfig, optional
+            Override noise configuration. If None, auto-detected from par file.
 
         Returns
         -------
@@ -592,7 +595,8 @@ class TimingSession:
                 session_cached_data,
                 self.params,
                 fit_params,
-                toa_mask=toa_mask
+                toa_mask=toa_mask,
+                noise_config=noise_config
             )
             
             # Run cached fit

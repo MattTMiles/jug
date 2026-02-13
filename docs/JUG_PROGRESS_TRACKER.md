@@ -1,8 +1,8 @@
 # JUG Implementation Progress Tracker
 
-**Last Updated**: 2026-02-07 (M7 White Noise: EFAC/EQUAD parsing + scaling, 34 new tests)
-**Current Version**: M6.2 Complete - Full DDK + Fit-Ready Parity ✅
-**Active Milestone**: M7 (White Noise Models)
+**Last Updated**: 2026-02-13 (Noise Integration: GLS fitter with Red/DM/ECORR Fourier basis, MAP estimation, GUI noise panel)
+**Current Version**: M7.5 Complete - Full Noise Integration ✅
+**Active Milestone**: M8 (GP Noise Models — partially complete)
 
 This document tracks the implementation progress of JUG from notebook to production package. Each milestone tracks tasks from `JUG_implementation_guide.md`.
 
@@ -28,15 +28,16 @@ This document tracks the implementation progress of JUG from notebook to product
 | **M6: Complete Parameter Fitting** | ✅ COMPLETED | 100% | 2026-01-30 |
 | **M6.1: Hardening Pass** | ✅ COMPLETED | 100% | 2026-02-03 |
 | **M6.2: DDK Implementation** | ✅ COMPLETED | 100% | 2026-02-06 |
-| **M7: White Noise Models (v0.7.0)** | 🚧 IN PROGRESS | 60% | TBD |
-| M8: GP Noise Models (v0.8.0) | ⏸️ NOT STARTED | 0% | TBD |
+| **M7: White Noise Models (v0.7.0)** | ✅ COMPLETED | 100% | 2026-02-10 |
+| **M7.5: Noise Integration & GUI** | ✅ COMPLETED | 100% | 2026-02-13 |
+| **M8: GP Noise Models (v0.8.0)** | 🚧 IN PROGRESS | 50% | TBD |
 | M9: Bayesian Priors (v0.9.0) | ⏸️ NOT STARTED | 0% | TBD |
 
 **Legend**: ✅ Completed | 🚧 In Progress | ⏸️ Not Started | ⚠️ Blocked
 
 ---
 
-## Parameter & Fitting Parity Status (2026-02-06)
+## Parameter & Fitting Parity Status (2026-02-13)
 
 **Full analysis**: See [docs/PARITY_ANALYSIS.md](PARITY_ANALYSIS.md)
 
@@ -81,7 +82,7 @@ This document tracks the implementation progress of JUG from notebook to product
 
 ---
 
-## Current Capabilities Summary (2025-06-10)
+## Current Capabilities Summary (2026-02-13)
 
 ### Core Features ✅
 - **Residual Computation**: Matches PINT/Tempo2 to <10ns precision
@@ -96,6 +97,18 @@ This document tracks the implementation progress of JUG from notebook to product
 - **Binary Models**: ELL1, ELL1H, DD, DDH, DDGR, BT, T2, **DDK** ✅
 - **Multi-Backend Support**: MeerKAT, Parkes, GBT, VLA, etc.
 - **Clock Corrections**: Automatic clock file loading and caching
+
+### Noise Modelling ✅ (NEW — 2026-02-07 to 2026-02-13)
+- **White Noise**: EFAC/EQUAD per-backend scaling of TOA uncertainties
+- **ECORR**: Epoch-correlated noise with block-Cholesky whitening
+- **Red Noise**: Achromatic power-law Fourier-basis GP model with Wiener filter realization
+- **DM Noise**: Chromatic (1/ν²) power-law Fourier-basis GP model
+- **DMX**: Per-epoch DM fitting with design matrix columns
+- **GLS Fitting**: Augmented design matrix with Fourier basis + prior regularization
+- **MAP Noise Estimation**: NumPyro SVI integration via `pulsar-map-noise-estimates`
+- **Noise Realization**: MAP (Wiener filter) noise realization with overlay/subtract in GUI
+- **NoiseConfig**: Auto-detection of noise processes from par file with per-process toggles
+- **Noise Diagnostics**: Backend mapping report and validation
 
 ### Architecture Foundation ✅ (NEW)
 - **ParameterSpec Registry**: 45 parameters defined with metadata (now includes KIN, KOM, NE_SW)
@@ -126,6 +139,12 @@ This document tracks the implementation progress of JUG from notebook to product
 - **TOA Deletion**: Box selection with mouse, Undo (U) support
 - **Prefit/Postfit Toggle**: Show original or fitted residuals
 - **Modern Themes**: Light and Dark (Synthwave) themes
+- **Noise Control Panel** ✅ (NEW): Interactive panel for toggling noise processes
+  - Per-process enable/disable (EFAC, EQUAD, ECORR, Red Noise, DM Noise)
+  - Realise noise: overlay MAP noise realization on residual plot
+  - Subtract noise: remove realization from residuals (Tempo2-like workflow)
+  - MAP noise estimation: run NumPyro SVI to estimate noise parameters
+  - Add/remove noise processes dynamically
 
 ### Performance Optimizations ✅
 - **Cached Fitting**: 257x faster for subsequent fits (0.01s vs 3.0s)
@@ -186,6 +205,353 @@ This document tracks the implementation progress of JUG from notebook to product
 - **Fix**: Full implementation: SOLAR_WIND DerivativeGroup, NE_SW ParameterSpec (with NE1AU alias), `derivatives_sw.py` module, fitter wiring in both file-based and session-based paths
 - **Impact**: NE_SW can now be fitted via `fit_params` list like any other parameter
 - **Test**: `test_ne_sw.py` (12 tests covering registry, derivative shape/sign/scaling, forward model match)
+
+### Recent Work (2026-02-07 to 2026-02-13)
+
+#### T2 Binary Model Restored ✅ (2026-02-08)
+- T2 binary model added back into the dispatch and registry
+- J0125-2327 parity testing infrastructure added (golden data, diagnostics tools)
+- Parity smoke tests and regression parity tests added
+
+#### White Noise Implementation ✅ (2026-02-10)
+- **EFAC/EQUAD**: Full parsing (T2EFAC/T2EQUAD/EFAC/EQUAD/Tempo1 formats) + application
+- **ECORR**: Epoch-correlated noise with block-diagonal covariance via Cholesky whitening
+- Fitter integration: all 3 fitter paths apply EFAC/EQUAD; main 2 paths support ECORR whitening
+- 60 tests (34 white noise + 26 ECORR)
+
+#### JIT Optimization Pass ✅ (2026-02-10)
+- JIT compilation of ECORR block operations and EFAC/EQUAD scaling
+- Derivatives and fitter performance improvements
+
+#### Red Noise & DM Noise Implementation ✅ (2026-02-10)
+- **`jug/noise/red_noise.py`** (470 lines): Full Fourier-basis GP implementation
+  - `build_fourier_design_matrix()` — JIT-compiled sin/cos Fourier design matrix
+  - `powerlaw_spectrum()` — Standard power-law PSD: A²/(12π²) · (f/f_yr)^(-γ) / f_yr
+  - `turnover_spectrum()` — Power-law with low-frequency turnover
+  - `RedNoiseProcess` / `DMNoiseProcess` dataclasses with `build_basis_and_prior()`
+  - `realize_red_noise()` / `realize_dm_noise()` — MAP Wiener filter realizations
+  - `parse_red_noise_params()` / `parse_dm_noise_params()` — TempoNest + enterprise par formats
+- **DMNoiseProcess**: Chromatic (1400/ν)² weighting on Fourier basis
+- Enterprise convention for per-coefficient variance: φ = A²/(12π²) · f_yr^(γ-3) · f^(-γ) · Δf
+- 197 lines of tests in `test_red_noise.py`
+
+#### DMX Support ✅ (2026-02-10)
+- **`jug/model/dmx.py`** (259 lines): Per-epoch DM fitting
+  - `DMXRange` dataclass, `parse_dmx_ranges()`, `assign_toas_to_dmx()`
+  - `build_dmx_design_matrix()` — K_DM/ν² columns per DMX window
+- DMX detection added to `NoiseConfig` (noise_mode.py)
+- 201 lines of tests in `test_dmx.py`
+
+#### Noise Diagnostics & Validation ✅ (2026-02-10)
+- **`jug/engine/diagnostics.py`** (183 lines): Backend/noise mapping report
+- Flag mapping infrastructure with `FlagMappingConfig`
+- Selection workflow tests, validation tests, residual metrics tests
+- 1,002 lines of new test code (diagnostics, flag mapping, validation, selection, metrics)
+
+#### GUI Noise Control Panel & Integration ✅ (2026-02-12)
+- **`jug/gui/widgets/noise_control_panel.py`** (824 lines): Interactive noise panel
+  - Toggleable rows for each noise process with parameter display
+  - Realise button: compute and overlay MAP noise realization on plot
+  - Subtract button: remove noise realization from residuals
+  - Add/remove noise processes dynamically
+  - MAP noise estimation integration (NumPyro SVI)
+- **`jug/noise/map_estimator.py`** (631 lines): MAP noise estimation wrapper
+  - Integration with `pulsar-map-noise-estimates` package
+  - `NoiseEstimateResult` dataclass with convergence tracking
+  - Handles EFAC, EQUAD, ECORR, red noise, DM noise estimation
+- Main window wiring: noise panel signals, realization overlays, subtract workflow
+- Noise diagnostics dialog (`noise_panel.py`)
+
+#### GLS Fitter with Fourier Basis ✅ (2026-02-12—13)
+- Augmented design matrix: timing model columns + red noise Fourier basis + DM noise Fourier basis + ECORR basis + DMX columns
+- Prior regularization: `M^T N^{-1} M + diag(1/φ)` for noise Fourier coefficients
+- Noise coefficient extraction after solve → MAP realizations for overlay/subtract
+- Both file-based and session-based (GUI) fitter paths fully wired
+- Fitter noise integration tests (295 lines in `test_fitter_noise_integration.py`)
+
+#### Parity Debugging ✅ (2026-02-13)
+- Fitter refinements for noise-augmented fits
+- GUI updates for noise panel integration
+- JUMP derivative fixes
+
+---
+
+## Milestone 7: White Noise Models (v0.7.0) ✅
+
+**Status**: COMPLETED (100%)
+**Started**: 2026-02-07
+**Completed**: 2026-02-10
+
+### Goal
+Add EFAC, EQUAD, ECORR support for white noise modeling.
+
+### Tasks (3/3 completed)
+
+- [x] **7.1** Implement white noise classes
+  - [x] Create `jug/noise/white.py`
+  - [x] `WhiteNoiseEntry` frozen dataclass (kind, flag_name, flag_value, value)
+  - [x] `parse_noise_lines()` — T2EFAC/T2EQUAD/ECORR/EFAC/EQUAD formats
+  - [x] `build_backend_mask()` — boolean TOA selection by flag
+  - [x] `apply_white_noise()` — σ_eff² = EFAC² · (σ² + EQUAD²)
+  - [x] EFAC: Multiplicative error scaling
+  - [x] EQUAD: Additive white noise (quadrature)
+  - [x] ECORR: Epoch-correlated noise — block-diagonal covariance via Cholesky whitening
+  - **Assigned to**: Claude
+  - **Completed**: 2026-02-07 (EFAC/EQUAD), 2026-02-09 (ECORR)
+
+- [x] **7.2** Integrate with fitting
+  - [x] Par reader collects noise lines into `params['_noise_lines']`
+  - [x] `GeneralFitSetup` dataclass has `toa_flags` and `ecorr_whitener` fields
+  - [x] `_build_general_fit_setup_from_files()` applies EFAC/EQUAD scaling + builds ECORR whitener
+  - [x] `_build_general_fit_setup_from_cache()` applies EFAC/EQUAD scaling + builds ECORR whitener (GUI path)
+  - [x] `fit_jax_incremental()` applies EFAC/EQUAD scaling (legacy path — ECORR not needed for spin-only fits)
+  - [x] `session.py` threads `toa_flags` through cached data
+  - [x] `_run_general_fit_iterations()` pre-whitens M and r via ECORR block-Cholesky before WLS solve
+  - [x] `_compute_full_model_residuals()` uses r^T C^{-1} r chi2 when ECORR present
+  - [ ] Fit white noise parameters jointly with timing model (future)
+  - [ ] Add to CLI: `jug-fit --fit-noise` (future)
+  - **Assigned to**: Claude
+  - **Completed**: 2026-02-07 (EFAC/EQUAD), 2026-02-09 (ECORR)
+
+- [x] **7.3** Write tests (60 tests: 34 white noise + 26 ECORR)
+  - [x] Test `parse_noise_lines()` — T2EFAC/T2EQUAD/ECORR/Tempo1/global formats
+  - [x] Test `build_backend_mask()` — flag matching, wildcards, edge cases
+  - [x] Test `apply_white_noise()` — EFAC-only, EQUAD-only, combined, formula verification
+  - [x] Test par_reader integration — `_noise_lines` collection
+  - [x] Test end-to-end: par file → parse → apply → verify scaled errors
+  - [x] Test `_group_toas_into_epochs()` — time grouping, masks, singletons, unsorted MJD
+  - [x] Test `build_ecorr_whitener()` — construction, multi-backend, singleton tracking
+  - [x] Test `ECORRWhitener` — block-Cholesky whitening, chi2, M^T C^{-1} M identity
+  - [x] Test ECORR integration — parsed par lines → whitener → correct chi2
+  - [ ] Test likelihood computation with noise (future)
+  - **Assigned to**: Claude
+  - **Completed**: 2026-02-07 (white noise), 2026-02-09 (ECORR)
+
+### Deliverables
+- [x] `jug/noise/white.py` with EFAC/EQUAD parsing + application
+- [x] `jug/noise/ecorr.py` with ECORR epoch grouping + block-Cholesky whitening
+- [x] Integration with all 3 fitter paths (ECORR in main 2 paths, EFAC/EQUAD in all 3)
+- [x] 34 unit + integration tests in `jug/tests/test_noise/test_white_noise.py`
+- [x] 26 unit + integration tests in `jug/tests/test_noise/test_ecorr.py`
+- [ ] Joint noise parameter fitting (future)
+
+### Success Criteria
+- ✅ EFAC/EQUAD scale TOA errors correctly (formula verified)
+- ✅ Per-backend noise parameters parsed from par files
+- ✅ All 3 fitter paths apply noise scaling
+- ✅ ECORR block-Cholesky whitening transforms GLS → OLS correctly
+- ✅ Chi2 with ECORR matches analytic r^T C^{-1} r (verified to machine precision)
+- ✅ 310 tests passing (250 pre-existing + 34 white noise + 26 ECORR)
+- ⏸️ White noise reduces χ² for real data (needs real data with noise params)
+
+---
+
+## Milestone 7.5: Noise Integration & GUI ✅ COMPLETED
+
+**Status**: COMPLETED (100%)
+**Priority**: HIGH - Required for full noise-aware fitting workflow
+**Started**: 2026-02-10
+**Completed**: 2026-02-13
+
+### Goal
+Integrate all noise processes (white, red, DM, ECORR, DMX) into the GLS fitter and GUI, enabling a complete noise-aware fitting workflow with realization overlay/subtract and MAP estimation.
+
+### What Was Delivered
+
+**Red Noise & DM Noise Fourier-basis GP** (new):
+- `jug/noise/red_noise.py` (470 lines): Full implementation
+  - JIT-compiled Fourier design matrix builder
+  - Power-law and turnover spectrum functions
+  - `RedNoiseProcess` / `DMNoiseProcess` dataclasses
+  - Wiener filter MAP noise realizations
+  - Par file parsing (TempoNest + enterprise conventions)
+
+**DMX (Per-epoch DM)** (new):
+- `jug/model/dmx.py` (259 lines): DMX range parsing and design matrix construction
+
+**NoiseConfig Auto-Detection** (new):
+- `jug/engine/noise_mode.py` (215 lines): Per-process toggle with auto-detection from par file
+- Detectors for EFAC, EQUAD, ECORR, RedNoise, DMNoise, DMX
+
+**GLS Fitter Integration** (major extension):
+- Augmented design matrix: timing model + Fourier basis (red/DM) + ECORR basis + DMX columns
+- Prior regularization: `(M^T N^{-1} M + diag(1/φ))` for noise Fourier coefficients
+- Noise coefficient extraction for MAP realizations
+- Both file-based and session-based (GUI) fitter paths fully wired
+
+**MAP Noise Estimation** (new):
+- `jug/noise/map_estimator.py` (631 lines): NumPyro SVI wrapper
+- Integration with `pulsar-map-noise-estimates` package
+- `NoiseEstimateResult` dataclass with convergence tracking
+
+**GUI Noise Control Panel** (new):
+- `jug/gui/widgets/noise_control_panel.py` (824 lines): Interactive noise panel
+  - Toggleable rows per noise process with editable parameters
+  - Realise: compute and overlay MAP noise realization on residual plot
+  - Subtract: remove noise realization from residuals (Tempo2-like workflow)
+  - MAP estimation: run NumPyro SVI from GUI with process selection
+  - Dynamic add/remove noise processes
+- `jug/gui/widgets/noise_panel.py` (152 lines): Noise diagnostics dialog
+
+**Diagnostics & Validation** (new):
+- `jug/engine/diagnostics.py` (183 lines): Backend/noise mapping report
+- Flag mapping, selection workflow, validation infrastructure
+
+**Files Created**:
+
+| File | Description |
+|------|-------------|
+| `jug/noise/red_noise.py` | Red/DM noise Fourier-basis GP models (470 lines) |
+| `jug/model/dmx.py` | DMX per-epoch DM support (259 lines) |
+| `jug/noise/map_estimator.py` | MAP noise estimation via NumPyro (631 lines) |
+| `jug/gui/widgets/noise_control_panel.py` | Interactive noise panel (824 lines) |
+| `jug/gui/widgets/noise_panel.py` | Noise diagnostics dialog (152 lines) |
+| `jug/engine/diagnostics.py` | Backend/noise diagnostics report (183 lines) |
+| `jug/engine/noise_mode.py` | NoiseConfig auto-detection (215 lines) |
+| `jug/tests/test_noise/test_red_noise.py` | Red noise unit tests (197 lines) |
+| `jug/tests/test_noise_mode.py` | NoiseConfig tests (183 lines) |
+| `jug/tests/test_diagnostics.py` | Diagnostics tests (189 lines) |
+| `jug/tests/test_dmx.py` | DMX tests (201 lines) |
+| `jug/tests/test_flag_mapping.py` | Flag mapping tests (157 lines) |
+| `jug/tests/test_residual_metrics.py` | Residual metrics tests (186 lines) |
+| `jug/tests/test_selection_workflow.py` | Selection workflow tests (241 lines) |
+| `jug/tests/test_validation.py` | Validation tests (229 lines) |
+| `tests/test_fitter_noise_integration.py` | Fitter noise integration tests (295 lines) |
+
+**Files Modified**:
+
+| File | Change |
+|------|--------|
+| `jug/fitting/optimized_fitter.py` | GLS augmented design matrix, prior regularization, noise coefficient extraction (~600 lines added) |
+| `jug/gui/main_window.py` | Noise panel wiring, realization overlay, subtract workflow (~700 lines added) |
+| `jug/noise/ecorr.py` | `build_ecorr_basis_and_prior()` for GLS basis integration |
+| `jug/noise/white.py` | Minor refinements for integration |
+| `jug/io/par_reader.py` | Red/DM noise and DMX parameter parsing |
+| `jug/residuals/simple_calculator.py` | Noise-aware residual computation |
+| `jug/gui/workers/fit_worker.py` | Noise config threading |
+| `pyproject.toml` | New optional dependency for MAP estimation |
+
+### Test Coverage (new tests: ~1,878 lines)
+- ✅ `test_noise/test_red_noise.py` — Fourier basis, spectrum, parsing, realization
+- ✅ `test_noise_mode.py` — NoiseConfig detection, toggle, serialization
+- ✅ `test_diagnostics.py` — Backend report, unmatched entries
+- ✅ `test_dmx.py` — DMX range parsing, TOA assignment, design matrix
+- ✅ `test_flag_mapping.py` — Flag resolution, backend matching
+- ✅ `test_residual_metrics.py` — Noise-weighted metrics
+- ✅ `test_selection_workflow.py` — TOA selection with noise
+- ✅ `test_validation.py` — Par file validation
+- ✅ `test_fitter_noise_integration.py` — End-to-end GLS fitting with noise
+
+### Success Criteria (All Met)
+- ✅ Red noise and DM noise Fourier basis integrated into GLS fitter
+- ✅ Prior regularization correctly applied to noise coefficients
+- ✅ ECORR basis integrated alongside Fourier basis
+- ✅ DMX columns integrated into augmented design matrix
+- ✅ GUI noise panel toggles noise processes on/off
+- ✅ Noise realizations can be overlaid on residual plot
+- ✅ Noise realizations can be subtracted from residuals
+- ✅ MAP estimation runs from GUI with process selection
+- ✅ NoiseConfig auto-detects all noise processes from par file
+- ✅ Both file-based and session-based fitter paths fully wired
+
+
+---
+
+## Milestone 8: GP Noise Models (v0.8.0) 🚧
+
+**Status**: IN PROGRESS (~50% — Fourier GP basis implemented in M7.5, remaining: FFT covariance, chromatic scattering, user extensibility)
+**Estimated Duration**: 1-2 weeks (reduced — foundation already in place)
+**Target Date**: TBD
+
+### Goal
+Complete GP noise modelling with FFT covariance method, scattering noise, and user extensibility.
+
+### Tasks (2/4 completed)
+
+- [x] **8.1** Port FFT covariance from discovery *(partially done via M7.5)*
+  - [x] Create `jug/noise/red_noise.py` with Fourier-basis GP
+  - [x] JIT-compiled Fourier design matrix
+  - [x] Power-law spectrum + turnover spectrum
+  - [ ] Extract `psd2cov()` from discovery package for O(N log N) FFT covariance
+  - [ ] Create `jug/noise/fft_covariance.py`
+  - **Status**: Fourier GP complete; FFT covariance remaining
+
+- [x] **8.2** Implement GP noise classes *(mostly done via M7.5)*
+  - [x] `jug/noise/red_noise.py` — achromatic power-law with Wiener filter realization
+  - [x] `jug/noise/red_noise.py` — chromatic DM noise (DMNoiseProcess, 1/ν² scaling)
+  - [ ] Create `jug/noise/chromatic_noise.py` (scattering, ν^(-4) or custom index)
+  - **Status**: Red + DM noise complete; scattering remaining
+
+- [ ] **8.3** Test noise models
+  - [x] Test red noise Fourier basis, spectrum, parsing (test_red_noise.py)
+  - [ ] Test red noise on synthetic data with known injection
+  - [ ] Test DM noise frequency scaling end-to-end
+  - [ ] Validate covariance matrices (positive definite)
+  - **Assigned to**: You (physics) + Claude (code)
+
+- [ ] **8.4** Create user extensibility
+  - [ ] Design API for custom PSD functions
+  - [ ] Create registration decorator
+  - [ ] Write example custom noise model
+  - **Assigned to**: Claude + You (design review)
+
+### Deliverables
+- [x] `jug/noise/red_noise.py` with red noise + DM noise GP models *(done in M7.5)*
+- [ ] `jug/noise/fft_covariance.py` with PSD → covariance (O(N log N))
+- [ ] `jug/noise/chromatic_noise.py` with scattering noise
+- [ ] Extensibility framework for custom noise
+- [ ] Tests for GP likelihood evaluation
+
+### Success Criteria
+- ✅ FFT covariance method implemented (O(N log N))
+- ✅ GP noise reduces χ² on real pulsars
+- ✅ Users can add custom noise processes
+
+---
+
+## Milestone 9: Bayesian Priors (v0.9.0) ⏸️
+
+**Status**: NOT STARTED
+**Estimated Duration**: 2-3 weeks
+**Target Date**: TBD
+
+### Goal
+Add Bayesian prior support for parameter estimation using NumPyro.
+
+### Tasks (0/4 completed)
+
+- [ ] **9.1** Design prior specification API
+  - [ ] Define prior classes (Uniform, Normal, LogUniform, etc.)
+  - [ ] Create parameter-to-prior mapping
+  - **Estimated time**: 4 hours
+
+- [ ] **9.2** Integrate with NumPyro
+  - [ ] Create likelihood function compatible with NumPyro
+  - [ ] Implement MCMC sampling (NUTS)
+  - [ ] Implement nested sampling (if desired)
+  - **Estimated time**: 8 hours
+
+- [ ] **9.3** Add prior specification to CLI/GUI
+  - [ ] CLI: `jug-fit --prior F0:normal:0:1e-12`
+  - [ ] GUI: Prior specification dialog
+  - **Estimated time**: 4 hours
+
+- [ ] **9.4** Validate against published results
+  - [ ] Compare posteriors to PINT/enterprise
+  - [ ] Test on well-characterized pulsars
+  - **Estimated time**: 6 hours
+
+### Deliverables
+- [ ] `jug/fitting/priors.py` - Prior specification
+- [ ] `jug/fitting/bayesian.py` - NumPyro integration
+- [ ] Updated CLI and GUI
+- [ ] Validation tests
+
+### Success Criteria
+- ✅ Can specify priors for any parameter
+- ✅ MCMC sampling produces valid posteriors
+- ✅ Results match PINT/enterprise
+
 
 ---
 
@@ -1698,173 +2064,6 @@ Ensure JUG works across different observatories, backends, and receiver systems.
 - ✅ Works with Parkes, MeerKAT, WSRT, NANOGrav data
 - ✅ Clock corrections validated for all sites
 - ✅ Multi-telescope datasets combine correctly
-
----
-
-## Milestone 7: White Noise Models (v0.7.0) ✅
-
-**Status**: COMPLETE (EFAC/EQUAD + ECORR)
-**Estimated Duration**: 1-2 weeks
-**Target Date**: TBD
-
-### Goal
-Add EFAC, EQUAD, ECORR support for white noise modeling.
-
-### Tasks (3/3 completed)
-
-- [x] **7.1** Implement white noise classes
-  - [x] Create `jug/noise/white.py`
-  - [x] `WhiteNoiseEntry` frozen dataclass (kind, flag_name, flag_value, value)
-  - [x] `parse_noise_lines()` — T2EFAC/T2EQUAD/ECORR/EFAC/EQUAD formats
-  - [x] `build_backend_mask()` — boolean TOA selection by flag
-  - [x] `apply_white_noise()` — σ_eff² = EFAC² · (σ² + EQUAD²)
-  - [x] EFAC: Multiplicative error scaling
-  - [x] EQUAD: Additive white noise (quadrature)
-  - [x] ECORR: Epoch-correlated noise — block-diagonal covariance via Cholesky whitening
-  - **Assigned to**: Claude
-  - **Completed**: 2026-02-07 (EFAC/EQUAD), 2026-02-09 (ECORR)
-
-- [x] **7.2** Integrate with fitting
-  - [x] Par reader collects noise lines into `params['_noise_lines']`
-  - [x] `GeneralFitSetup` dataclass has `toa_flags` and `ecorr_whitener` fields
-  - [x] `_build_general_fit_setup_from_files()` applies EFAC/EQUAD scaling + builds ECORR whitener
-  - [x] `_build_general_fit_setup_from_cache()` applies EFAC/EQUAD scaling + builds ECORR whitener (GUI path)
-  - [x] `fit_jax_incremental()` applies EFAC/EQUAD scaling (legacy path — ECORR not needed for spin-only fits)
-  - [x] `session.py` threads `toa_flags` through cached data
-  - [x] `_run_general_fit_iterations()` pre-whitens M and r via ECORR block-Cholesky before WLS solve
-  - [x] `_compute_full_model_residuals()` uses r^T C^{-1} r chi2 when ECORR present
-  - [ ] Fit white noise parameters jointly with timing model (future)
-  - [ ] Add to CLI: `jug-fit --fit-noise` (future)
-  - **Assigned to**: Claude
-  - **Completed**: 2026-02-07 (EFAC/EQUAD), 2026-02-09 (ECORR)
-
-- [x] **7.3** Write tests (60 tests: 34 white noise + 26 ECORR)
-  - [x] Test `parse_noise_lines()` — T2EFAC/T2EQUAD/ECORR/Tempo1/global formats
-  - [x] Test `build_backend_mask()` — flag matching, wildcards, edge cases
-  - [x] Test `apply_white_noise()` — EFAC-only, EQUAD-only, combined, formula verification
-  - [x] Test par_reader integration — `_noise_lines` collection
-  - [x] Test end-to-end: par file → parse → apply → verify scaled errors
-  - [x] Test `_group_toas_into_epochs()` — time grouping, masks, singletons, unsorted MJD
-  - [x] Test `build_ecorr_whitener()` — construction, multi-backend, singleton tracking
-  - [x] Test `ECORRWhitener` — block-Cholesky whitening, chi2, M^T C^{-1} M identity
-  - [x] Test ECORR integration — parsed par lines → whitener → correct chi2
-  - [ ] Test likelihood computation with noise (future)
-  - **Assigned to**: Claude
-  - **Completed**: 2026-02-07 (white noise), 2026-02-09 (ECORR)
-
-### Deliverables
-- [x] `jug/noise/white.py` with EFAC/EQUAD parsing + application
-- [x] `jug/noise/ecorr.py` with ECORR epoch grouping + block-Cholesky whitening
-- [x] Integration with all 3 fitter paths (ECORR in main 2 paths, EFAC/EQUAD in all 3)
-- [x] 34 unit + integration tests in `jug/tests/test_noise/test_white_noise.py`
-- [x] 26 unit + integration tests in `jug/tests/test_noise/test_ecorr.py`
-- [ ] Joint noise parameter fitting (future)
-
-### Success Criteria
-- ✅ EFAC/EQUAD scale TOA errors correctly (formula verified)
-- ✅ Per-backend noise parameters parsed from par files
-- ✅ All 3 fitter paths apply noise scaling
-- ✅ ECORR block-Cholesky whitening transforms GLS → OLS correctly
-- ✅ Chi2 with ECORR matches analytic r^T C^{-1} r (verified to machine precision)
-- ✅ 310 tests passing (250 pre-existing + 34 white noise + 26 ECORR)
-- ⏸️ White noise reduces χ² for real data (needs real data with noise params)
-
----
-
-## Milestone 8: GP Noise Models (v0.8.0) ⏸️
-
-**Status**: NOT STARTED
-**Estimated Duration**: 2-3 weeks
-**Target Date**: TBD
-
-### Goal
-Implement Fourier-domain GP noise using FFT covariance method.
-
-### Tasks (0/4 completed)
-
-- [ ] **8.1** Port FFT covariance from discovery
-  - [ ] Extract `psd2cov()` from discovery package
-  - [ ] Create `jug/noise/fft_covariance.py`
-  - [ ] Adapt for JUG's JAX framework
-  - **Assigned to**: Claude
-  - **Estimated time**: 4-6 hours
-
-- [ ] **8.2** Implement GP noise classes
-  - [ ] Create `jug/noise/red_noise.py` (achromatic power-law)
-  - [ ] Create `jug/noise/dm_noise.py` (chromatic DM variations)
-  - [ ] Create `jug/noise/chromatic_noise.py` (scattering)
-  - **Assigned to**: Claude
-  - **Estimated time**: 3-4 hours
-
-- [ ] **8.3** Test noise models
-  - [ ] Test red noise on synthetic data
-  - [ ] Test DM noise frequency scaling
-  - [ ] Validate covariance matrices (positive definite)
-  - **Assigned to**: You (physics) + Claude (code)
-  - **Estimated time**: 3-4 hours
-
-- [ ] **8.4** Create user extensibility
-  - [ ] Design API for custom PSD functions
-  - [ ] Create registration decorator
-  - [ ] Write example custom noise model
-  - **Assigned to**: Claude + You (design review)
-  - **Estimated time**: 2 hours
-
-### Deliverables
-- [ ] `jug/noise/fft_covariance.py` with PSD → covariance
-- [ ] `jug/noise/gp.py` with red noise, DM noise, chromatic noise
-- [ ] Extensibility framework for custom noise
-- [ ] Tests for GP likelihood evaluation
-
-### Success Criteria
-- ✅ FFT covariance method implemented (O(N log N))
-- ✅ GP noise reduces χ² on real pulsars
-- ✅ Users can add custom noise processes
-
----
-
-## Milestone 9: Bayesian Priors (v0.9.0) ⏸️
-
-**Status**: NOT STARTED
-**Estimated Duration**: 2-3 weeks
-**Target Date**: TBD
-
-### Goal
-Add Bayesian prior support for parameter estimation using NumPyro.
-
-### Tasks (0/4 completed)
-
-- [ ] **9.1** Design prior specification API
-  - [ ] Define prior classes (Uniform, Normal, LogUniform, etc.)
-  - [ ] Create parameter-to-prior mapping
-  - **Estimated time**: 4 hours
-
-- [ ] **9.2** Integrate with NumPyro
-  - [ ] Create likelihood function compatible with NumPyro
-  - [ ] Implement MCMC sampling (NUTS)
-  - [ ] Implement nested sampling (if desired)
-  - **Estimated time**: 8 hours
-
-- [ ] **9.3** Add prior specification to CLI/GUI
-  - [ ] CLI: `jug-fit --prior F0:normal:0:1e-12`
-  - [ ] GUI: Prior specification dialog
-  - **Estimated time**: 4 hours
-
-- [ ] **9.4** Validate against published results
-  - [ ] Compare posteriors to PINT/enterprise
-  - [ ] Test on well-characterized pulsars
-  - **Estimated time**: 6 hours
-
-### Deliverables
-- [ ] `jug/fitting/priors.py` - Prior specification
-- [ ] `jug/fitting/bayesian.py` - NumPyro integration
-- [ ] Updated CLI and GUI
-- [ ] Validation tests
-
-### Success Criteria
-- ✅ Can specify priors for any parameter
-- ✅ MCMC sampling produces valid posteriors
-- ✅ Results match PINT/enterprise
 
 ---
 

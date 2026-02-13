@@ -142,6 +142,19 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
     # Store raw JUMP lines for later parsing
     if jump_lines:
         params['_jump_lines'] = jump_lines
+        # Extract JUMP values as JUMP1, JUMP2, ... for the fitter
+        for idx, jl in enumerate(jump_lines):
+            jparts = jl.strip().split()
+            # Flag-based: JUMP -flag val offset [fit] [unc]
+            # MJD-based:  JUMP MJD start end offset [fit] [unc]
+            try:
+                if jparts[1].upper() == 'MJD':
+                    val = float(jparts[4])
+                else:
+                    val = float(jparts[3])
+            except (IndexError, ValueError):
+                val = 0.0
+            params[f'JUMP{idx + 1}'] = val
     
     # Determine and store par file timescale
     # UNITS keyword is the authoritative source (PINT/Tempo2 convention)

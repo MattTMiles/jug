@@ -1,7 +1,8 @@
 """Analytical derivatives for JUMP parameters using JAX.
 
 JUMP parameters represent timing offsets between different backends/receivers.
-The derivative is trivial: d(delay)/d(JUMP_i) = 1 for matching TOAs, 0 otherwise.
+The derivative d(residual)/d(JUMP_i) = -1 for matching TOAs (JUMP is subtracted from dt_sec).
+The design matrix column M = -d(r)/d(JUMP) = +1 for affected TOAs, 0 otherwise.
 
 JUMP formats in par files:
 - JUMP -fe L-wide 0.0001234  -> applies to TOAs with flag -fe L-wide
@@ -26,10 +27,11 @@ def compute_jump_derivatives(
     jump_masks: Optional[Dict[str, jnp.ndarray]] = None,
     **kwargs
 ) -> Dict[str, jnp.ndarray]:
-    """Compute derivatives for JUMP parameters using JAX.
+    """Compute design matrix columns for JUMP parameters using JAX.
     
-    The derivative d(delay)/d(JUMP_i) = 1 for TOAs that the JUMP applies to,
-    and 0 for all others. This creates a "selector" column in the design matrix.
+    The design matrix column M = +1 for TOAs that the JUMP applies to,
+    and 0 for all others. This follows from JUG's convention where JUMP
+    is subtracted from dt_sec: d(r)/d(JUMP) = -1, so M = -d(r)/d(JUMP) = +1.
     
     Parameters
     ----------
@@ -48,7 +50,7 @@ def compute_jump_derivatives(
     Returns
     -------
     derivatives : dict
-        Dictionary mapping JUMP parameter name to derivative column
+        Dictionary mapping JUMP parameter name to design matrix column
         Each value is jnp.ndarray of shape (n_toas,) with values 0.0 or 1.0
     """
     from jug.model.parameter_spec import is_jump_param
@@ -66,11 +68,9 @@ def compute_jump_derivatives(
     if jump_masks is not None:
         for param in jump_fit_params:
             if param in jump_masks:
-                # Convert boolean mask to float (0.0 or 1.0) using JAX
                 mask = jump_masks[param]
                 derivatives[param] = jnp.where(mask, 1.0, 0.0)
             else:
-                # JUMP exists but no mask - assume applies to all TOAs
                 derivatives[param] = jnp.ones(n_toas, dtype=jnp.float64)
         return derivatives
     

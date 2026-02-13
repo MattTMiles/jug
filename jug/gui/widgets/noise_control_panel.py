@@ -29,11 +29,10 @@ _PROCESS_INFO = {
     "ECORR":    {"label": "ECORR",          "tip": "Correlated noise within epochs (μs)"},
     "RedNoise": {"label": "Achr. Red Noise", "tip": "Achromatic red noise (power-law)"},
     "DMNoise":  {"label": "DM Noise",       "tip": "Chromatic DM noise (power-law)"},
-    "DMX":      {"label": "DMX",            "tip": "Per-epoch DM variation (deterministic)"},
 }
 
 # Order for display
-_DISPLAY_ORDER = ["EFAC", "EQUAD", "ECORR", "RedNoise", "DMNoise", "DMX"]
+_DISPLAY_ORDER = ["EFAC", "EQUAD", "ECORR", "RedNoise", "DMNoise"]
 
 
 class NoiseProcessRow(QFrame):
@@ -287,7 +286,7 @@ class NoiseControlPanel(QWidget):
     show_uncertainties_changed = Signal(bool)  # user toggled "Show Uncertainties" checkbox
 
     # Processes that support subtract-from-residuals (those with realizations)
-    _SUBTRACTABLE = {"RedNoise", "DMNoise", "DMX"}
+    _SUBTRACTABLE = {"RedNoise", "DMNoise"}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -586,6 +585,18 @@ class NoiseControlPanel(QWidget):
         """Return list of process names with realise toggled on."""
         return [name for name, row in self._rows.items() if row.is_realising()]
 
+    def set_subtract_all(self, active: bool):
+        """Set the subtract toggle on all rows without emitting signals.
+
+        Used by the main window to sync UI after auto-subtracting noise
+        realizations following a GLS fit (Tempo2-like behaviour).
+        """
+        for row in self._rows.values():
+            row._subtract_btn.blockSignals(True)
+            row._subtract_btn.setChecked(active)
+            row._subtracting = active
+            row._subtract_btn.blockSignals(False)
+
     # -- Internal ----------------------------------------------------------
 
     @property
@@ -665,18 +676,6 @@ class NoiseControlPanel(QWidget):
                 result.append({"key": gam_key, "label": "γ (spectral)", "value": f"{float(params[gam_key]):.4f}", "editable": True})
             if nc_key in params:
                 result.append({"key": nc_key, "label": "N harmonics", "value": str(int(float(params[nc_key]))), "editable": True})
-
-        elif proc_name == "DMX":
-            from jug.model.dmx import parse_dmx_ranges
-            try:
-                ranges = parse_dmx_ranges(params)
-                if ranges:
-                    result.append({
-                        "key": "DMX_count", "label": "N bins",
-                        "value": str(len(ranges)), "editable": False,
-                    })
-            except Exception:
-                pass
 
         return result
 
@@ -762,9 +761,6 @@ class NoiseControlPanel(QWidget):
 
         any_available = False
         for name in _DISPLAY_ORDER:
-            # DMX can't be added manually (requires par file ranges)
-            if name == "DMX":
-                continue
             if name not in self._rows:
                 any_available = True
                 info = _PROCESS_INFO[name]
@@ -810,7 +806,6 @@ class NoiseControlPanel(QWidget):
                 {"key": "TNDMGAM", "label": "γ (spectral)", "value": "3.0", "editable": True},
                 {"key": "TNDMC", "label": "N harmonics", "value": "30", "editable": True},
             ],
-            "DMX": [{"key": "DMX_count", "label": "N bins", "value": "0", "editable": False}],
         }
 
         can_sub = name in self._SUBTRACTABLE

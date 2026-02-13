@@ -134,16 +134,23 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
             entries.append(WhiteNoiseEntry('EFAC', flag_name, flag_value, value))
 
         elif keyword == 'T2EQUAD':
-            # TempoNest convention: value is log10(EQUAD in seconds)
+            # Tempo2 convention: value is EQUAD in microseconds.
+            # Some TempoNest-generated files erroneously use T2EQUAD with
+            # log10(seconds) values — detect via negative values (EQUAD in μs
+            # is always positive).
             if len(parts) < 4:
                 continue
             flag_name = parts[1].lstrip('-')
             flag_value = parts[2]
             try:
-                log10_val = float(parts[3])
+                raw_val = float(parts[3])
             except ValueError:
                 continue
-            equad_us = 10**log10_val * 1e6  # log10(seconds) → microseconds
+            if raw_val < 0:
+                # Negative → must be log10(seconds) (TempoNest convention)
+                equad_us = 10**raw_val * 1e6
+            else:
+                equad_us = raw_val  # microseconds
             entries.append(WhiteNoiseEntry('EQUAD', flag_name, flag_value, equad_us))
 
         elif keyword == 'ECORR':

@@ -88,6 +88,11 @@ class FitWorker(QRunnable):
                 'iterations': int(result['iterations']),
                 'converged': bool(result['converged']),
                 'total_time': float(result['total_time']),
+                # Pass fitter's own residuals/errors so the GUI uses them
+                # directly (avoids divergence from a separate recompute path).
+                'tdb_mjd': np.array(result['tdb_mjd']),
+                'residuals_us': np.array(result['residuals_us']),
+                'errors_us': np.array(result['errors_us']),
             }
 
             # Pass noise realizations through to the GUI

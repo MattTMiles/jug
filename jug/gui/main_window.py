@@ -1822,6 +1822,16 @@ class MainWindow(QMainWindow):
                               "Please select at least one parameter to fit")
             return
 
+        # DMX is a meta-parameter: checking it signals the fitter to augment
+        # with DMX ranges (already auto-detected from par file), but it's not
+        # passed as a real fit parameter.
+        fit_params = [p for p in fit_params if p != 'DMX']
+
+        if not fit_params:
+            QMessageBox.warning(self, "No Parameters",
+                              "Please select at least one parameter to fit (DMX alone is not sufficient)")
+            return
+
         # Validate all selected parameters
         for param in fit_params:
             try:
@@ -1882,9 +1892,11 @@ class MainWindow(QMainWindow):
         # Store fit result temporarily for postfit callback
         self._pending_fit_result = result
 
-        # Recompute residuals with fitted parameters (async)
-        # Stats and dialog will be shown when postfit completes
-        self._compute_postfit_residuals(result)
+        # Use the fitter's own residuals directly instead of recomputing.
+        # This ensures the GUI displays exactly the same residuals as the
+        # fitter computed (including JUMP handling, noise-aware validation,
+        # etc.) — no risk of divergence from a separate code path.
+        self.on_postfit_compute_complete(result)
 
     def _compute_postfit_residuals(self, result):
         """
@@ -1916,7 +1928,7 @@ class MainWindow(QMainWindow):
     
     def on_postfit_compute_complete(self, result):
         """Handle postfit residual computation completion."""
-        # Get full data from session
+        # Get full data from fitter result
         full_mjd = result['tdb_mjd']
         full_residuals = result['residuals_us']
         full_errors = result.get('errors_us', None)
@@ -1933,17 +1945,16 @@ class MainWindow(QMainWindow):
                 self.errors_us = full_errors[keep_mask]
             else:
                 self.errors_us = None
-            # Recalculate RMS for filtered data using canonical engine stats
-            from jug.engine.stats import compute_residual_stats
-            stats = compute_residual_stats(self.residuals_us, self.errors_us)
-            self._update_rms_from_stats(stats)
         else:
             # No deletions - use all data
             self.mjd = full_mjd
             self.residuals_us = full_residuals
             self.postfit_residuals_us = full_residuals.copy()
-            self.errors_us = full_errors
-            self._update_rms_from_result(result)
+            if full_errors is not None:
+                self.errors_us = full_errors
+
+        # Compute stats from the actual stored residuals/errors
+        self._refresh_stats_from_residuals()
         
         # Update plot (auto-range to show new residual scale after fit)
         # Auto-switch to post-fit view
@@ -1959,20 +1970,6 @@ class MainWindow(QMainWindow):
                 keep = self._keep_mask if self.deleted_indices else None
                 for name, real in nr.items():
                     self._noise_realizations[name] = real[keep] if keep is not None else real.copy()
-
-        # If any noise processes had subtract active, re-subtract the NEW
-        # realizations from the NEW residuals (Tempo2-like persistent mode).
-        _noise_was_subtracted = False
-        if hasattr(self, 'noise_panel'):
-            for proc_name in self.noise_panel.get_subtract_processes():
-                real = self._noise_realizations.get(proc_name)
-                if real is not None and self.residuals_us is not None:
-                    self.residuals_us = self.residuals_us - real
-                    _noise_was_subtracted = True
-
-        # Refresh stats if noise was re-subtracted so RMS/χ² reflect whitened residuals
-        if _noise_was_subtracted:
-            self._refresh_stats_from_residuals()
 
         self._update_plot(auto_range=True)
         self._update_plot_title()
@@ -2559,16 +2556,12 @@ class MainWindow(QMainWindow):
                 )
                 return real_sec * 1e6
 
-        elif process_name == "DMX":
-            return self._compute_dmx_realization()
-
         return None
 
     # Colour palette for noise realization curves
     _NOISE_CURVE_COLORS = {
         "RedNoise": "#e74c3c",   # red
         "DMNoise":  "#2ecc71",   # green
-        "DMX":      "#f39c12",   # amber
     }
 
     def _update_noise_curves(self, x_data, x_label: str):
@@ -2820,36 +2813,6 @@ class MainWindow(QMainWindow):
             self.noise_panel._show_uncertainties_cb.blockSignals(True)
             self.noise_panel._show_uncertainties_cb.setChecked(checked)
             self.noise_panel._show_uncertainties_cb.blockSignals(False)
-
-    def _compute_dmx_realization(self) -> Optional[np.ndarray]:
-        """Compute DMX delay contribution at each TOA."""
-        if self.session is None:
-            return None
-        params = self.session.params
-        from jug.model.dmx import parse_dmx_ranges
-        try:
-            ranges = parse_dmx_ranges(params)
-        except Exception:
-            return None
-        if not ranges:
-            return None
-
-        mjd = self.mjd
-        freq_mhz = self.toa_freqs
-        if freq_mhz is None:
-            return None
-
-        # DMX delay = DMX_value * K_DM / freq^2 (in seconds) → convert to μs
-        K_DM = 4.148808e3  # DM constant in MHz^2 s / pc cm^-3
-        dmx_delay_us = np.zeros(len(mjd))
-        for r in ranges:
-            mask = (mjd >= r.r1_mjd) & (mjd <= r.r2_mjd)
-            dmx_val = params.get(f"DMX_{r.index:04d}", 0.0)
-            if isinstance(dmx_val, str):
-                dmx_val = float(dmx_val)
-            dmx_delay_us[mask] = dmx_val * K_DM / (freq_mhz[mask] ** 2) * 1e6
-
-        return dmx_delay_us
 
     def _toggle_rms_mode(self):
         """Toggle between weighted and unweighted RMS display (shortcut: W)."""
@@ -3491,6 +3454,8 @@ class MainWindow(QMainWindow):
 
         found_params = {}  # param_name -> has_fit_flag
 
+        jump_counter = 0
+        dmx_has_fit_flag = None  # None = no DMX found, True/False = fit flag state
         try:
             with open(self.par_file, 'r') as f:
                 for line in f:
@@ -3501,7 +3466,48 @@ class MainWindow(QMainWindow):
                     parts = line_stripped.split()
                     if parts:
                         param_name = parts[0]
-                        if param_name in fittable_params:
+
+                        # JUMP lines are dynamically named JUMP1, JUMP2, ...
+                        if param_name == 'JUMP':
+                            jump_counter += 1
+                            jump_name = f'JUMP{jump_counter}'
+                            # Flag-based: JUMP -flag val offset fit unc
+                            # MJD-based:  JUMP MJD start end offset fit unc
+                            has_fit_flag = False
+                            try:
+                                if parts[1].upper() == 'MJD':
+                                    fit_idx = 5
+                                else:
+                                    fit_idx = 4
+                                if len(parts) > fit_idx:
+                                    has_fit_flag = (int(parts[fit_idx]) == 1)
+                            except (IndexError, ValueError):
+                                pass
+                            found_params[jump_name] = has_fit_flag
+                            continue
+
+                        # DMX_NNNN lines → single "DMX" checkbox
+                        import re
+                        if re.match(r'^DMX_\d+$', param_name):
+                            has_fit_flag = False
+                            if len(parts) >= 3:
+                                try:
+                                    has_fit_flag = (int(parts[2]) == 1)
+                                except ValueError:
+                                    pass
+                            # Any DMX range with fit flag → DMX is fit-flagged
+                            if dmx_has_fit_flag is None:
+                                dmx_has_fit_flag = has_fit_flag
+                            elif has_fit_flag:
+                                dmx_has_fit_flag = True
+                            continue
+
+                        # Canonicalize aliases (LAMBDA→RAJ, BETA→DECJ, etc.)
+                        from jug.model.parameter_spec import canonicalize_param_name
+                        canon_name = canonicalize_param_name(param_name)
+                        lookup_name = canon_name if canon_name in fittable_params else param_name
+
+                        if lookup_name in fittable_params:
                             # Detect fit flag: format is PARAM value 1 uncertainty
                             # The '1' at parts[2] is the fit indicator
                             has_fit_flag = False
@@ -3511,11 +3517,15 @@ class MainWindow(QMainWindow):
                                     has_fit_flag = (flag == 1)
                                 except ValueError:
                                     pass
-                            found_params[param_name] = has_fit_flag
+                            found_params[lookup_name] = has_fit_flag
 
         except Exception as e:
             print(f"Error parsing par file: {e}")
             return {}
+
+        # Add consolidated DMX entry if any DMX ranges were found
+        if dmx_has_fit_flag is not None:
+            found_params['DMX'] = dmx_has_fit_flag
 
         return found_params
     

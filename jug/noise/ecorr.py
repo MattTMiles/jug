@@ -362,7 +362,7 @@ class ECORRWhitener:
 def _group_toas_into_epochs(
     toas_mjd: np.ndarray,
     mask: np.ndarray,
-    dt_days: float = 0.5,
+    dt_days: float = 1.0 / 86400.0,
 ) -> List[Tuple[int, ...]]:
     """Group masked TOAs into epochs by time proximity.
 
@@ -376,7 +376,8 @@ def _group_toas_into_epochs(
     mask : np.ndarray of bool, shape (n_toas,)
         Boolean mask selecting TOAs for this backend.
     dt_days : float, optional
-        Maximum gap within an epoch (default 0.5 days).
+        Maximum gap within an epoch (default 1 second = 1/86400 days,
+        matching PINT/Tempo2 convention).
 
     Returns
     -------
@@ -409,7 +410,7 @@ def build_ecorr_whitener(
     toas_mjd: np.ndarray,
     toa_flags: List[Dict[str, str]],
     noise_entries: List[WhiteNoiseEntry],
-    dt_days: float = 0.5,
+    dt_days: float = 1.0 / 86400.0,
 ) -> Optional[ECORRWhitener]:
     """Build an ECORRWhitener from parsed noise entries and TOA metadata.
 
@@ -424,7 +425,7 @@ def build_ecorr_whitener(
     noise_entries : list of WhiteNoiseEntry
         All parsed noise entries (EFAC/EQUAD/ECORR).
     dt_days : float, optional
-        Maximum gap within an epoch (default 0.5 days).
+        Maximum gap within an epoch (default 1 second = 1/86400 days).
 
     Returns
     -------
@@ -467,7 +468,7 @@ def build_ecorr_basis_and_prior(
     toas_mjd: np.ndarray,
     toa_flags: List[Dict[str, str]],
     noise_entries: List[WhiteNoiseEntry],
-    dt_days: float = 0.5,
+    dt_days: float = 1.0 / 86400.0,
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """Build ECORR quantization matrix and prior for GLS basis augmentation.
 
@@ -483,7 +484,7 @@ def build_ecorr_basis_and_prior(
     noise_entries : list of WhiteNoiseEntry
         All parsed noise entries (EFAC/EQUAD/ECORR).
     dt_days : float, optional
-        Maximum gap within an epoch (default 0.5 days).
+        Maximum gap within an epoch (default 1 second = 1/86400 days).
 
     Returns
     -------

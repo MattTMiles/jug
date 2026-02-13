@@ -12,7 +12,6 @@ import jax.numpy as jnp
 from astropy.coordinates import solar_system_ephemeris, get_body_barycentric_posvel
 from astropy.coordinates import EarthLocation, AltAz, SkyCoord
 from astropy.time import Time
-import astropy.units as utem_ephemeris
 from astropy import units as u
 
 # Ensure JAX is configured for x64 precision
@@ -34,8 +33,43 @@ from jug.utils.constants import (
     SECS_PER_DAY, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC
 )
 
+# Old JPL ephemerides moved to a_old_versions/ on NAIF server
+_OLD_EPHEM_URL = (
+    "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
+    "/spk/planets/a_old_versions/{name}.bsp"
+)
+_OLD_EPHEMERIDES = {'de200', 'de405', 'de410', 'de414', 'de421', 'de423', 'de430'}
 
-def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True):
+
+def _resolve_ephemeris(name: str) -> str:
+    """Resolve ephemeris name to a value astropy can use.
+
+    For old JPL ephemerides that have been moved on the NAIF server,
+    downloads from the archive URL and returns the cached file path.
+    """
+    import re
+    if not re.match(r'de\d{3}s?$', name.lower()):
+        return name
+    if name.lower() not in _OLD_EPHEMERIDES:
+        return name
+    # Try standard astropy path first
+    try:
+        solar_system_ephemeris.validate(name)
+        return name
+    except Exception:
+        pass
+    # Download from old versions URL
+    from astropy.utils.data import download_file
+    url = _OLD_EPHEM_URL.format(name=name.lower())
+    try:
+        path = download_file(url, cache=True)
+        return path
+    except Exception:
+        return name  # fall back, let caller handle error
+
+
+def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
+                            tzr_phase=None):
     """Compute phase residuals from emission-time offsets (canonical implementation).
 
     This is the single shared function used by both the evaluate-only and fitter
@@ -52,6 +86,9 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True):
         1/sigma^2 weights for weighted mean subtraction.
     subtract_mean : bool
         Whether to subtract weighted mean from residuals.
+    tzr_phase : float or longdouble, optional
+        Phase at the TZR reference point. If provided, subtracted from each
+        TOA's phase before wrapping to ensure correct pulse numbering.
 
     Returns
     -------
@@ -71,6 +108,10 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True):
     # Phase using Horner's method (longdouble precision)
     phase = dt * (F0 + dt * (F1_half + dt * F2_sixth))
 
+    # Subtract TZR phase before wrapping for correct pulse numbering
+    if tzr_phase is not None:
+        phase = phase - np.longdouble(tzr_phase)
+
     # Wrap to nearest integer pulse
     frac_phase = phase - np.round(phase)
 
@@ -89,7 +130,7 @@ def compute_residuals_simple(
     par_file: Path | str,
     tim_file: Path | str,
     clock_dir: Path | str | None = None,
-    observatory: str = "meerkat",
+    observatory: str = "auto",
     subtract_tzr: bool = True,
     verbose: bool = True,
     tzrmjd_scale: str = "AUTO",
@@ -109,7 +150,7 @@ def compute_residuals_simple(
         Directory containing clock files. If None (default), uses the
         data/clock directory in the JUG package installation
     observatory : str, optional
-        Observatory name (default: "meerkat")
+        Observatory name (default: "auto" — auto-detect from .tim file)
     subtract_tzr : bool, optional
         Whether to subtract TZR phase from residuals (default: True)
         Set to False for fitting to preserve parameter signals
@@ -169,29 +210,65 @@ def compute_residuals_simple(
     if verbose: print(f"   Loaded {len(toas)} TOAs from {Path(tim_file).name}")
     if verbose: print(f"   Loaded timing model from {Path(par_file).name}")
 
+    # Observatory location - auto-detect from TOAs if not explicitly set
+    if observatory == "auto" and toas:
+        observatory = toas[0].observatory
+        if verbose: print(f"   Auto-detected observatory: {observatory}")
+    obs_itrf_km = OBSERVATORIES.get(observatory.lower())
+    if obs_itrf_km is None:
+        raise ValueError(f"Unknown observatory: {observatory}. "
+                         f"Known: {', '.join(sorted(set(OBSERVATORIES.keys())))}")
+
     # Load clock files
     if verbose: print(f"\n2. Loading clock corrections...")
     clock_dir = Path(clock_dir)
-    mk_clock = parse_clock_file(clock_dir / "mk2utc.clk")
+    # Observatory-specific clock file (obs → GPS/UTC)
+    OBS_CLOCK_FILES = {
+        'meerkat': 'mk2utc.clk',
+        'ao': 'ao2gps.clk', 'arecibo': 'ao2gps.clk', '3': 'ao2gps.clk',
+        'gbt': 'gbt2gps.clk', '1': 'gbt2gps.clk', 'gb': 'gbt2gps.clk',
+        'parkes': 'pks2gps.clk', 'pks': 'pks2gps.clk', 'pk': 'pks2gps.clk', '7': 'pks2gps.clk',
+        'jb': 'jb2gps.clk', 'jodrell': 'jb2gps.clk', '8': 'jb2gps.clk',
+        'ef': 'eff2gps.clk', 'eff': 'eff2gps.clk', 'effelsberg': 'eff2gps.clk', 'g': 'eff2gps.clk',
+        'nc': 'ncy2gps.clk', 'ncy': 'ncy2gps.clk', 'nancay': 'ncy2gps.clk', 'f': 'ncy2gps.clk',
+        'wsrt': 'wsrt2gps.clk', 'we': 'wsrt2gps.clk', 'i': 'wsrt2gps.clk',
+        'vla': 'vla2gps.clk',
+    }
+    obs_clock_file = OBS_CLOCK_FILES.get(observatory.lower())
+    if obs_clock_file and (clock_dir / obs_clock_file).exists():
+        obs_clock = parse_clock_file(clock_dir / obs_clock_file)
+        if verbose: print(f"   Loaded observatory clock: {obs_clock_file}")
+    else:
+        obs_clock = {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
+        if verbose: print(f"   No observatory clock file for '{observatory}' (assuming zero correction)")
     gps_clock = parse_clock_file(clock_dir / "gps2utc.clk")
-    bipm_clock = parse_clock_file(clock_dir / "tai2tt_bipm2024.clk")
-    if verbose: print(f"   Loaded 3 clock files (using BIPM2024)")
-    
+
+    # Select BIPM clock version from par file CLK parameter
+    clk_param = str(params.get('CLK', '')).strip()
+    bipm_version = 'bipm2024'  # default
+    if clk_param:
+        import re
+        m = re.search(r'BIPM(\d{4})', clk_param, re.IGNORECASE)
+        if m:
+            bipm_version = f'bipm{m.group(1)}'
+    bipm_file = f"tai2tt_{bipm_version}.clk"
+    if not (clock_dir / bipm_file).exists():
+        if verbose: print(f"   BIPM clock file {bipm_file} not found, falling back to bipm2024")
+        bipm_file = "tai2tt_bipm2024.clk"
+        bipm_version = 'bipm2024'
+    bipm_clock = parse_clock_file(clock_dir / bipm_file)
+    if verbose: print(f"   Loaded GPS and {bipm_version.upper()} clock files")
+
     # Validate clock file coverage
     from jug.io.clock import check_clock_files
     mjd_utc = np.array([toa.mjd_int + toa.mjd_frac for toa in toas])
     mjd_start = np.min(mjd_utc)
     mjd_end = np.max(mjd_utc)
-    
+
     if verbose: print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
-    clock_ok = check_clock_files(mjd_start, mjd_end, mk_clock, gps_clock, bipm_clock, verbose=verbose)
+    clock_ok = check_clock_files(mjd_start, mjd_end, obs_clock, gps_clock, bipm_clock, verbose=verbose)
     if not clock_ok:
         if verbose: print(f"   ⚠️  Clock file validation found issues (see above)")
-
-    # Observatory location
-    obs_itrf_km = OBSERVATORIES.get(observatory.lower())
-    if obs_itrf_km is None:
-        raise ValueError(f"Unknown observatory: {observatory}")
 
     location = EarthLocation.from_geocentric(
         obs_itrf_km[0] * u.km,
@@ -204,15 +281,22 @@ def compute_residuals_simple(
     mjd_ints = [toa.mjd_int for toa in toas]
     mjd_fracs = [toa.mjd_frac for toa in toas]
 
+    # Extract -to flags (TIME statement offsets, in seconds)
+    time_offsets = np.array([float(toa.flags.get('to', 0.0)) for toa in toas])
+    n_to = np.sum(time_offsets != 0.0)
+    if n_to > 0 and verbose:
+        print(f"   Applying -to time offsets to {n_to} TOAs")
+
     tdb_mjd = compute_tdb_standalone_vectorized(
         mjd_ints, mjd_fracs,
-        mk_clock, gps_clock, bipm_clock,
-        location
+        obs_clock, gps_clock, bipm_clock,
+        location, time_offsets=time_offsets
     )
     if verbose: print(f"   Computed TDB for {len(tdb_mjd)} TOAs")
 
     # Astrometry
     if verbose: print(f"\n4. Computing astrometric delays...")
+    ephem = _resolve_ephemeris(str(params.get('EPHEM', 'de440')).lower())
     ra_rad = parse_ra(params['RAJ'])
     dec_rad = parse_dec(params['DECJ'])
     pmra_rad_day = params.get('PMRA', 0.0) * (np.pi / 180 / 3600000) / 365.25
@@ -220,14 +304,14 @@ def compute_residuals_simple(
     posepoch = params.get('POSEPOCH', params['PEPOCH'])
     parallax_mas = params.get('PX', 0.0)
 
-    ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(tdb_mjd, obs_itrf_km)
+    ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(tdb_mjd, obs_itrf_km, ephemeris=ephem)
     L_hat = compute_pulsar_direction(ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day, posepoch, tdb_mjd)
 
     # Roemer and Shapiro delays
     roemer_sec = compute_roemer_delay(ssb_obs_pos_km, L_hat, parallax_mas)
 
     times = Time(tdb_mjd, format='mjd', scale='tdb')
-    with solar_system_ephemeris.set('de440'):
+    with solar_system_ephemeris.set(ephem):
         sun_pos = get_body_barycentric_posvel('sun', times)[0].xyz.to(u.km).value.T
     obs_sun_pos_km = sun_pos - ssb_obs_pos_km
     sun_shapiro_sec = compute_shapiro_delay(obs_sun_pos_km, L_hat, T_SUN_SEC)
@@ -237,7 +321,7 @@ def compute_residuals_simple(
     planet_shapiro_sec = np.zeros(len(tdb_mjd))
     if planet_shapiro_enabled:
         if verbose: print(f"   Computing planetary Shapiro delays...")
-        with solar_system_ephemeris.set('de440'):
+        with solar_system_ephemeris.set(ephem):
             for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
                 planet_pos = get_body_barycentric_posvel(planet, times)[0].xyz.to(u.km).value.T
                 obs_planet_km = planet_pos - ssb_obs_pos_km
@@ -582,7 +666,50 @@ def compute_residuals_simple(
     dt_years = (np.array(tdb_mjd) - dm_epoch) / 365.25
     dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
     dm_delay_sec = K_DM_SEC * dm_eff / (freq_bary_mhz ** 2)
-    
+
+    # Add DMX contribution to total delay and DM delay
+    from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
+    dmx_ranges = parse_dmx_ranges(params)
+    if dmx_ranges:
+        # Use site arrival MJDs for DMX range matching (consistent with PINT/Tempo2)
+        dmx_matrix, dmx_labels = build_dmx_design_matrix(np.array(mjd_utc, dtype=np.float64), freq_bary_mhz, dmx_ranges)
+        dmx_values = np.array([r.value for r in dmx_ranges])
+        dmx_delay_sec = dmx_matrix @ dmx_values  # Already in seconds (matrix has K_DM/freq^2)
+        # Add DMX delay to total delay and DM delay (not included in JAX kernel)
+        total_delay_sec += np.asarray(dmx_delay_sec, dtype=np.float64)
+        dm_delay_sec = dm_delay_sec + dmx_delay_sec
+        if verbose: print(f"   Applied {len(dmx_ranges)} DMX ranges to DM delay")
+
+    # Add JUMP delays (backend/receiver offsets from par file)
+    jump_lines = params.get('_jump_lines', [])
+    if jump_lines:
+        from jug.fitting.derivatives_jump import parse_jump_from_par_line, create_jump_mask_from_flags
+        n_jumps_applied = 0
+        for jline in jump_lines:
+            jinfo = parse_jump_from_par_line(jline)
+            if jinfo['type'] == 'flag':
+                mask = create_jump_mask_from_flags(
+                    [t.flags for t in toas],
+                    jinfo['flag_name'], jinfo['flag_value']
+                )
+                if np.any(mask):
+                    total_delay_sec[mask] -= jinfo['value']
+                    n_jumps_applied += 1
+                    if verbose:
+                        print(f"   JUMP {jinfo['flag_name']}={jinfo['flag_value']}: "
+                              f"{jinfo['value']*1e6:.3f} μs applied to {np.sum(mask)} TOAs")
+            elif jinfo['type'] == 'mjd':
+                toas_mjd_arr = np.array([t.mjd_int + t.mjd_frac for t in toas])
+                mask = (toas_mjd_arr >= jinfo['mjd_start']) & (toas_mjd_arr <= jinfo['mjd_end'])
+                if np.any(mask):
+                    total_delay_sec[mask] -= jinfo['value']
+                    n_jumps_applied += 1
+                    if verbose:
+                        print(f"   JUMP MJD {jinfo['mjd_start']}-{jinfo['mjd_end']}: "
+                              f"{jinfo['value']*1e6:.3f} μs applied to {np.sum(mask)} TOAs")
+        if verbose and n_jumps_applied:
+            print(f"   Applied {n_jumps_applied} JUMPs from par file")
+
     # Solar wind geometry (always computed for caching; cost is negligible)
     ne_sw = float(params.get('NE_SW', 0.0))
     AU_KM = 1.495978707e8
@@ -645,14 +772,16 @@ def compute_residuals_simple(
                 tzr_obs_itrf_km[2] * u.km
             )
         
-        # Resolve TZRMJD timescale - unified with par timescale
+        # Resolve TZRMJD timescale
+        # TZRMJD is always a site arrival time (like any TOA) and must be
+        # converted from observatory local time (UTC) to TDB via the clock chain.
+        # This is consistent with PINT and Tempo2 behavior.
         tzrmjd_scale_upper = tzrmjd_scale.upper()
         
-        # AUTO: derive from par timescale (single source of truth)
         if tzrmjd_scale_upper == "AUTO":
-            # par_timescale is already validated (TCB/TT would have failed by now)
-            tzrmjd_scale_resolved = par_timescale  # Will be "TDB"
-            if verbose: print(f"   TZRMJD scale: AUTO -> {tzrmjd_scale_resolved} (from par UNITS)")
+            # TZRMJD is a site arrival time — always convert from UTC to TDB
+            tzrmjd_scale_resolved = "UTC"
+            if verbose: print(f"   TZRMJD scale: AUTO -> UTC (site arrival time, converting to TDB)")
         elif tzrmjd_scale_upper in ("TDB", "UTC"):
             tzrmjd_scale_resolved = tzrmjd_scale_upper
             if verbose: print(f"   TZRMJD scale: {tzrmjd_scale_resolved} (explicit override)")
@@ -661,44 +790,31 @@ def compute_residuals_simple(
         
         # Apply the resolved timescale
         if tzrmjd_scale_resolved == "TDB":
-            # TZRMJD is already in TDB (standard for PINT/Tempo2 TDB par files)
+            # Explicit override: trust that TZRMJD is already in TDB
             TZRMJD_TDB = TZRMJD_raw
             delta_tzr_sec = 0.0
             if verbose: print(f"   TZRMJD treated as TDB (no conversion)")
         elif tzrmjd_scale_resolved == "UTC":
-            # Legacy behavior: convert UTC to TDB via clock chain
-            # Warn loudly if this contradicts UNITS=TDB
-            if par_timescale == "TDB":
-                print(f"   ⚠️  WARNING: tzrmjd_scale='UTC' contradicts par file UNITS=TDB!")
-                print(f"       This will apply a ~69s UTC->TDB conversion to TZRMJD.")
-                print(f"       If your par file has UNITS=TDB, TZRMJD should already be in TDB.")
-                print(f"       Use tzrmjd_scale='AUTO' (default) or 'TDB' unless you have a")
-                print(f"       legacy par file with genuinely UTC TZRMJD values.")
-            
+            # Standard: convert site arrival time to TDB via clock chain
             TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
                 [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
-                mk_clock, gps_clock, bipm_clock, tzr_location
+                obs_clock, gps_clock, bipm_clock, tzr_location
             )[0]
             TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
             delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * 86400.0
             if verbose: print(f"   TZRMJD converted from UTC to TDB (delta = {delta_tzr_sec:.3f} s)")
-            
-            # Additional warning if the shift is large
-            if abs(delta_tzr_sec) > 1e-3:
-                print(f"   ⚠️  WARNING: Large TZRMJD shift detected ({delta_tzr_sec:.3f} s)!")
-                print(f"       This confirms TZRMJD was treated as UTC.")
         
         # Compute all delays at TZRMJD to get the TZR delay
         tzr_tdb_arr = np.array([float(TZRMJD_TDB)])
         
         # Astrometry at TZR (using TZR site location)
-        tzr_ssb_obs_pos, tzr_ssb_obs_vel = compute_ssb_obs_pos_vel(tzr_tdb_arr, tzr_obs_itrf_km)
+        tzr_ssb_obs_pos, tzr_ssb_obs_vel = compute_ssb_obs_pos_vel(tzr_tdb_arr, tzr_obs_itrf_km, ephemeris=ephem)
         tzr_L_hat = compute_pulsar_direction(ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day, posepoch, tzr_tdb_arr)
         tzr_roemer = compute_roemer_delay(tzr_ssb_obs_pos, tzr_L_hat, parallax_mas)[0]
         
         # Sun Shapiro at TZR
         tzr_times = Time(tzr_tdb_arr, format='mjd', scale='tdb')
-        with solar_system_ephemeris.set('de440'):
+        with solar_system_ephemeris.set(ephem):
             tzr_sun_pos = get_body_barycentric_posvel('sun', tzr_times)[0].xyz.to(u.km).value.T
         tzr_obs_sun = tzr_sun_pos - tzr_ssb_obs_pos
         tzr_sun_shapiro = compute_shapiro_delay(tzr_obs_sun, tzr_L_hat, T_SUN_SEC)[0]
@@ -706,7 +822,7 @@ def compute_residuals_simple(
         # Planet Shapiro at TZR
         tzr_planet_shapiro = 0.0
         if planet_shapiro_enabled:
-            with solar_system_ephemeris.set('de440'):
+            with solar_system_ephemeris.set(ephem):
                 for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
                     tzr_planet_pos = get_body_barycentric_posvel(planet, tzr_times)[0].xyz.to(u.km).value.T
                     tzr_obs_planet = tzr_planet_pos - tzr_ssb_obs_pos
@@ -747,6 +863,21 @@ def compute_residuals_simple(
         ).block_until_ready()
         
         tzr_delay = np.longdouble(float(tzr_total_delay_jax[0]))
+        
+        # Add DMX delay to TZR (not included in JAX kernel, same as main TOAs)
+        from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
+        tzr_dmx_ranges = parse_dmx_ranges(params)
+        tzr_dmx_delay = 0.0
+        if tzr_dmx_ranges:
+            tzr_dmx_matrix, _ = build_dmx_design_matrix(
+                np.array([float(TZRMJD_raw)], dtype=np.float64),
+                np.array([tzr_freq_bary]),
+                tzr_dmx_ranges
+            )
+            tzr_dmx_values = np.array([r.value for r in tzr_dmx_ranges])
+            tzr_dmx_delay = float((tzr_dmx_matrix @ tzr_dmx_values)[0])
+            tzr_delay += np.longdouble(tzr_dmx_delay)
+            if verbose: print(f"   TZR DMX delay: {tzr_dmx_delay:.9f} s")
         
         # Debug: Compute individual TZR delay components (outside JAX for debugging)
         # DM delay
@@ -812,19 +943,35 @@ def compute_residuals_simple(
     errors_us = np.array([toa.error_us for toa in toas])
     weights = 1.0 / (errors_us ** 2)
     residuals_us, _ = compute_phase_residuals(
-        dt_sec, params, weights, subtract_mean=subtract_tzr
+        dt_sec, params, weights, subtract_mean=True,
+        tzr_phase=tzr_phase if subtract_tzr else None
     )
 
-    # Compute weighted RMS (chi-squared reduced)
+    # Compute weighted RMS using raw errors
     weighted_rms = np.sqrt(np.sum(weights * residuals_us**2) / np.sum(weights))
-    
+
+    # Compute weighted RMS with EFAC/EQUAD-scaled errors (PINT-compatible)
+    noise_lines = params.get('_noise_lines', [])
+    if noise_lines:
+        from jug.noise.white import apply_white_noise, parse_noise_lines
+        noise_entries = parse_noise_lines(noise_lines)
+        toa_flags = [toa.flags for toa in toas]
+        scaled_errors_us = apply_white_noise(errors_us, toa_flags, noise_entries)
+        weights_scaled = 1.0 / (scaled_errors_us ** 2)
+        wm_scaled = np.sum(residuals_us * weights_scaled) / np.sum(weights_scaled)
+        weighted_rms_scaled = np.sqrt(np.sum(weights_scaled * (residuals_us - wm_scaled)**2) / np.sum(weights_scaled))
+    else:
+        scaled_errors_us = errors_us
+        weighted_rms_scaled = weighted_rms
+
     # Also compute unweighted for comparison
     unweighted_rms = np.std(residuals_us)
 
     # Results
     if verbose: print(f"\n" + "=" * 60)
     if verbose: print(f"Results:")
-    if verbose: print(f"  Weighted RMS: {weighted_rms:.3f} μs")
+    if verbose: print(f"  Weighted RMS: {weighted_rms:.3f} μs (raw errors)")
+    if verbose: print(f"  Weighted RMS: {weighted_rms_scaled:.3f} μs (EFAC/EQUAD scaled)")
     if verbose: print(f"  Unweighted RMS: {unweighted_rms:.3f} μs")
     if verbose: print(f"  Mean: {np.mean(residuals_us):.3f} μs")
     if verbose: print(f"  Min: {np.min(residuals_us):.3f} μs")
@@ -871,6 +1018,7 @@ def compute_residuals_simple(
         'residuals_us': residuals_us,
         'rms_us': float(weighted_rms),  # Use weighted RMS as primary
         'weighted_rms_us': float(weighted_rms),
+        'weighted_rms_scaled_us': float(weighted_rms_scaled),
         'unweighted_rms_us': float(unweighted_rms),
         'mean_us': float(np.mean(residuals_us)),
         'n_toas': len(residuals_us),

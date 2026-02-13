@@ -88,9 +88,10 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
     params = {}
     params_str = {}
     noise_lines = []  # Collect EFAC/EQUAD/ECORR lines (non-standard multi-token format)
+    jump_lines = []   # Collect JUMP lines (multi-token format: JUMP -flag val value)
 
     # Keywords that use multi-token format: T2EFAC -f <val> <num>, etc.
-    _NOISE_KEYWORDS = {'T2EFAC', 'T2EQUAD', 'EFAC', 'EQUAD', 'ECORR'}
+    _NOISE_KEYWORDS = {'T2EFAC', 'T2EQUAD', 'EFAC', 'EQUAD', 'ECORR', 'TNECORR'}
 
     path = Path(path)
     par_filename = path.name.lower()
@@ -109,6 +110,11 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                 # Noise parameters have multi-token format — store raw line
                 if key in _NOISE_KEYWORDS:
                     noise_lines.append(line)
+                    continue
+
+                # JUMP parameters have multi-token format — store raw line
+                if key == 'JUMP':
+                    jump_lines.append(line)
                     continue
 
                 value_str = parts[1]
@@ -132,6 +138,10 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
     # Store raw noise lines for later parsing by jug.noise.white
     if noise_lines:
         params['_noise_lines'] = noise_lines
+
+    # Store raw JUMP lines for later parsing
+    if jump_lines:
+        params['_jump_lines'] = jump_lines
     
     # Determine and store par file timescale
     # UNITS keyword is the authoritative source (PINT/Tempo2 convention)

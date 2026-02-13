@@ -81,6 +81,8 @@ def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
     """
     toas = []
     path = Path(path)
+    # Default to Tempo2 FORMAT 1 (filename freq mjd error site [flags...])
+    tim_format = 1
 
     with open(path) as f:
         for line in f:
@@ -89,26 +91,50 @@ def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
             # Skip empty lines, comments, and directives
             if not line or line.startswith('#'):
                 continue
-            if line.startswith(('FORMAT', 'C ', 'JUMP', 'PHASE', 'MODE', 'INCLUDE')):
+            if line.startswith('C '):
+                continue
+
+            # Track FORMAT/MODE directives
+            if line.startswith('FORMAT'):
+                parts_fmt = line.split()
+                if len(parts_fmt) >= 2:
+                    tim_format = int(parts_fmt[1])
+                continue
+            if line.startswith('MODE'):
+                parts_fmt = line.split()
+                if len(parts_fmt) >= 2:
+                    tim_format = int(parts_fmt[1])
+                continue
+            if line.startswith(('JUMP', 'PHASE', 'INCLUDE', 'END')):
                 continue
 
             parts = line.split()
             if len(parts) < 4:
                 continue
 
-            # Parse standard TIM fields
-            # Format: observatory freq mjd error [flags...]
-            observatory = parts[0].lower()
-            freq_mhz = float(parts[1])
-            mjd_str = parts[2]
-            error_us = float(parts[3])
+            if tim_format == 1:
+                # FORMAT 1 (Tempo2): filename freq mjd error site [flags...]
+                if len(parts) < 5:
+                    continue
+                freq_mhz = float(parts[1])
+                mjd_str = parts[2]
+                error_us = float(parts[3])
+                observatory = parts[4].lower()
+                flag_start = 5
+            else:
+                # Princeton format: site freq mjd error [flags...]
+                observatory = parts[0].lower()
+                freq_mhz = float(parts[1])
+                mjd_str = parts[2]
+                error_us = float(parts[3])
+                flag_start = 4
 
             # Parse MJD with high precision
             mjd_int, mjd_frac = parse_mjd_string(mjd_str)
 
             # Parse optional flags (format: -flag value)
             flags = {}
-            i = 4
+            i = flag_start
             while i < len(parts):
                 if parts[i].startswith('-') and i + 1 < len(parts):
                     flag_name = parts[i][1:]  # Remove leading '-'
@@ -168,7 +194,8 @@ def parse_mjd_string(mjd_str: str) -> tuple[int, float]:
 def compute_tdb_standalone_vectorized(
     mjd_ints, mjd_fracs,
     mk_clock, gps_clock, bipm_clock,
-    location: EarthLocation
+    location: EarthLocation,
+    time_offsets: np.ndarray | None = None
 ) -> np.ndarray:
     """Compute TDB from UTC MJDs using standalone clock chain (VECTORIZED).
 
@@ -189,6 +216,9 @@ def compute_tdb_standalone_vectorized(
         BIPM clock correction data (TAI→TT) {'mjd': array, 'offset': array}
     location : EarthLocation
         Observatory location for TDB conversion
+    time_offsets : np.ndarray or None, optional
+        Per-TOA time offsets in seconds (e.g. from TIM ``-to`` flags).
+        Added to the clock corrections before TDB conversion.
 
     Returns
     -------
@@ -226,6 +256,10 @@ def compute_tdb_standalone_vectorized(
     bipm_corrs = np.interp(mjd_vals, bipm_clock['mjd'], bipm_clock['offset']) - 32.184
 
     total_corrs = mk_corrs + gps_corrs + bipm_corrs
+
+    # Add per-TOA time offsets (e.g. TIM -to flags, TEMPO TIME statements)
+    if time_offsets is not None:
+        total_corrs = total_corrs + np.asarray(time_offsets, dtype=np.float64)
 
     # Create Time objects in batch (much faster than per-TOA)
     time_utc = Time(

@@ -32,7 +32,7 @@ class FitWorker(QRunnable):
     """
 
     def __init__(self, session, fit_params: list[str], toa_mask: np.ndarray = None,
-                 solver_mode: str = "exact"):
+                 solver_mode: str = "exact", noise_config=None):
         """
         Initialize the fit worker.
 
@@ -47,6 +47,8 @@ class FitWorker(QRunnable):
             If None, all TOAs are used.
         solver_mode : str, default "exact"
             Solver mode: "exact" (SVD, reproducible) or "fast" (QR, faster).
+        noise_config : NoiseConfig, optional
+            Noise process configuration (which processes are active).
         """
         super().__init__()
         self.signals = WorkerSignals()
@@ -57,6 +59,7 @@ class FitWorker(QRunnable):
         self.solver_mode = solver_mode.lower().strip() if solver_mode else "exact"
         if self.solver_mode not in ("exact", "fast"):
             self.solver_mode = "exact"
+        self.noise_config = noise_config
         self.is_running = True
 
     @Slot()
@@ -72,7 +75,8 @@ class FitWorker(QRunnable):
                 fit_params=self.fit_params,
                 verbose=False,
                 toa_mask=self.toa_mask,
-                solver_mode=self.solver_mode
+                solver_mode=self.solver_mode,
+                noise_config=self.noise_config
             )
 
             # Copy numpy arrays to ensure thread safety
@@ -85,6 +89,13 @@ class FitWorker(QRunnable):
                 'converged': bool(result['converged']),
                 'total_time': float(result['total_time']),
             }
+
+            # Pass noise realizations through to the GUI
+            nr = result.get('noise_realizations', {})
+            if nr:
+                result_safe['noise_realizations'] = {
+                    name: np.array(arr) for name, arr in nr.items()
+                }
 
             # Emit success signal
             self.signals.result.emit(result_safe)

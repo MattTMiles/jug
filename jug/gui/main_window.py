@@ -3,6 +3,7 @@ JUG Main Window - tempo2 plk-style interactive timing GUI.
 
 Modern redesign inspired by Linear, Raycast, and Notion.
 """
+from __future__ import annotations
 from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -426,6 +427,8 @@ class MainWindow(QMainWindow):
         self.use_weighted_rms = True  # Default to weighted RMS
         self.weighted_rms_us = None
         self.unweighted_rms_us = None
+        self.prefit_weighted_rms_us = None
+        self.prefit_unweighted_rms_us = None
         
         # Original data (for full restart, before any deletions)
         self.original_mjd = None
@@ -456,6 +459,13 @@ class MainWindow(QMainWindow):
         self.error_bar_item = None
         self.zero_line = None
         self.show_zero_line = False  # Zero line hidden by default
+        self.show_residuals = True   # Residuals visible by default
+        self.show_uncertainties = True  # Error bars visible by default
+
+        # Noise realization overlay items {process_name: ScatterPlotItem/ErrorBarItem}
+        self._noise_curves: dict = {}
+        self._noise_errorbars: dict = {}
+        self._noise_realizations: dict = {}
 
         # Box zoom state
         self.box_zoom_active = False
@@ -480,6 +490,9 @@ class MainWindow(QMainWindow):
 
         # Solver mode for fitting (exact or fast)
         self.solver_mode = "exact"  # "exact" or "fast"
+
+        # Noise control panel (populated after session loads)
+        self.noise_panel = None
 
         # Color mode for scatter plot (none/backend/frequency)
         self._color_mode = "none"
@@ -544,6 +557,22 @@ class MainWindow(QMainWindow):
         title_axis_bar.setSpacing(12)
         title_axis_bar.setContentsMargins(0, 0, 0, 0)
 
+        # "Noise" button — shown when noise panel is collapsed, opens it back
+        self._noise_title_btn = QPushButton("◀  Noise")
+        self._noise_title_btn.setFixedWidth(100)
+        self._noise_title_btn.setCursor(Qt.PointingHandCursor)
+        self._noise_title_btn.setToolTip("Show noise panel")
+        self._noise_title_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {Colors.TEXT_MUTED}; "
+            f"border: 1px solid {Colors.SURFACE_BORDER}; border-radius: 4px; "
+            f"padding: 2px 8px; font-size: {Typography.SIZE_BASE}; font-weight: {Typography.WEIGHT_BOLD}; }}"
+            f"QPushButton:hover {{ color: {Colors.TEXT_PRIMARY}; "
+            f"border-color: {Colors.TEXT_MUTED}; }}"
+        )
+        self._noise_title_btn.setVisible(False)
+        self._noise_title_btn.clicked.connect(lambda: self._set_noise_panel_visible(True))
+        title_axis_bar.addWidget(self._noise_title_btn, 0, Qt.AlignVCenter)
+
         # Title label (pulsar name and RMS) - centered, stretches to fill space
         self.plot_title_label = QLabel("")
         self.plot_title_label.setObjectName("plotTitleLabel")
@@ -555,11 +584,11 @@ class MainWindow(QMainWindow):
         y_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 12px; border: none;")
         title_axis_bar.addWidget(y_label)
 
-        self.y_axis_btn = self._create_overlay_axis_button("Post-fit (\u03bcs)", [
-            "Post-fit (\u03bcs)", "Pre-fit (\u03bcs)",
-            "Normalized (r/\u03c3)", "Whitened",
+        self.y_axis_btn = self._create_overlay_axis_button("Pre-fit (\u03bcs)", [
+            "Pre-fit (\u03bcs)", "Post-fit (\u03bcs)",
+            "Normalized",
         ], lambda val: self._on_axis_changed(y_val=val), width=140)
-        self._y_axis_mode = "Post-fit (\u03bcs)"
+        self._y_axis_mode = "Pre-fit (\u03bcs)"
         title_axis_bar.addWidget(self.y_axis_btn)
 
         title_axis_bar.addSpacing(8)
@@ -604,7 +633,18 @@ class MainWindow(QMainWindow):
         # Right side: Control panel
         control_panel = self._create_control_panel()
 
-        # Add to main layout (plot takes 80%, controls 20%)
+        # Add to main layout: noise panel (if any) + plot (80%) + controls (20%)
+        # Noise panel placeholder — will be populated in on_session_ready
+        from jug.gui.widgets.noise_control_panel import NoiseControlPanel
+        self.noise_panel = NoiseControlPanel()
+        self.noise_panel.setVisible(False)  # Hidden until session loads
+        self.noise_panel.collapse_requested.connect(lambda: self._set_noise_panel_visible(False))
+        self.noise_panel.realise_changed.connect(self._on_noise_realise_changed)
+        self.noise_panel.subtract_changed.connect(self._on_noise_subtract_changed)
+        self.noise_panel.estimate_noise_requested.connect(self._on_estimate_noise)
+        self.noise_panel.show_residuals_changed.connect(self._on_toggle_residuals)
+        self.noise_panel.show_uncertainties_changed.connect(self._on_toggle_uncertainties)
+        main_layout.addWidget(self.noise_panel)
         main_layout.addWidget(self.plot_container, stretch=4)
         main_layout.addWidget(control_panel, stretch=1)
     
@@ -1093,6 +1133,13 @@ class MainWindow(QMainWindow):
         self.zero_line_action.setChecked(self.show_zero_line)
         self.zero_line_action.triggered.connect(self.on_toggle_zero_line)
 
+        # Residuals visibility toggle
+        self._show_residuals_action = view_menu.addAction("Show Residuals")
+        self._show_residuals_action.setCheckable(True)
+        self._show_residuals_action.setChecked(True)
+        self._show_residuals_action.setShortcut("R")
+        self._show_residuals_action.triggered.connect(self._on_toggle_residuals)
+
         view_menu.addSeparator()
 
         # Theme toggle
@@ -1125,6 +1172,23 @@ class MainWindow(QMainWindow):
         self._color_freq_action.setCheckable(True)
         self._color_freq_action.setActionGroup(color_group)
         self._color_freq_action.triggered.connect(lambda: self._set_color_mode("frequency"))
+
+        view_menu.addSeparator()
+
+        # Noise panel toggle
+        self.noise_panel_action = view_menu.addAction("Show Noise Panel")
+        self.noise_panel_action.setCheckable(True)
+        self.noise_panel_action.setChecked(False)
+        self.noise_panel_action.triggered.connect(self._on_toggle_noise_panel)
+
+        # Noise subtraction shortcuts (tempo2-style)
+        subtract_rn_action = view_menu.addAction("Subtract Red Noise")
+        subtract_rn_action.setShortcut("Shift+K")
+        subtract_rn_action.triggered.connect(lambda: self._toggle_noise_subtract("RedNoise"))
+
+        subtract_dm_action = view_menu.addAction("Subtract DM Noise")
+        subtract_dm_action.setShortcut("Shift+F")
+        subtract_dm_action.triggered.connect(lambda: self._toggle_noise_subtract("DMNoise"))
 
         view_menu.addSeparator()
 
@@ -1265,6 +1329,9 @@ class MainWindow(QMainWindow):
             ("Frequency (continuous)", lambda: self._set_color_mode("frequency"), False),
         ], group_name="color_by")
         m.add_separator()
+        m.add_action("Show Noise Panel", self._on_toggle_noise_panel,
+                      checkable=True, checked=False, name="noise_panel")
+        m.add_separator()
         m.add_action("Zoom to Fit", self.on_zoom_fit, shortcut="Ctrl+0")
         m.add_action("Unzoom (Fit to Data)", self.on_zoom_fit, shortcut="U")
         m.add_action("Box Zoom...", self._handle_box_zoom_key, shortcut="Z")
@@ -1369,6 +1436,17 @@ class MainWindow(QMainWindow):
         # Get initial params for GUI
         self.initial_params = session.get_initial_params()
         
+        # Populate noise panel from par file params
+        if self.noise_panel is not None:
+            self.noise_panel.populate_from_params(session.params)
+            if self.noise_panel.has_noise():
+                self._set_noise_panel_visible(True)
+            else:
+                # No noise yet — keep panel hidden but show title-bar button
+                self._set_noise_panel_visible(False)
+                if hasattr(self, '_noise_title_btn'):
+                    self._noise_title_btn.setVisible(True)
+        
         # Now compute initial residuals
         self._compute_initial_residuals()
     
@@ -1415,6 +1493,8 @@ class MainWindow(QMainWindow):
         self.toa_flags = result.get('toa_flags', None)       # Phase 4.4
         self.orbital_phase = result.get('orbital_phase', None) # Phase 4.3 fix
         self._update_rms_from_result(result)
+        self.prefit_weighted_rms_us = self.weighted_rms_us
+        self.prefit_unweighted_rms_us = self.unweighted_rms_us
         self.is_fitted = False
         self.fit_results = None
         
@@ -1547,12 +1627,10 @@ class MainWindow(QMainWindow):
                 
                 # Update error bar data
                 eb_height = self.errors_us * 2  # ±1σ
-                # If Y axis is normalized/whitened, scale error bars accordingly
+                # If Y axis is normalized, scale error bars accordingly
                 y_mode = self._y_axis_mode
-                if y_mode == "Normalized (r/σ)":
+                if y_mode == "Normalized":
                     # In normalized mode, error bars are ±1 (by definition)
-                    eb_height = np.ones_like(self.errors_us) * 2
-                elif y_mode == "Whitened":
                     eb_height = np.ones_like(self.errors_us) * 2
                 self.error_bar_item.setData(
                     x=x_data,
@@ -1564,6 +1642,15 @@ class MainWindow(QMainWindow):
                 self.plot_widget.removeItem(self.error_bar_item)
                 self.error_bar_item = None
             
+            # Residuals visibility (scatter + error bars)
+            if self.scatter_item is not None:
+                self.scatter_item.setVisible(self.show_residuals)
+            if self.error_bar_item is not None:
+                self.error_bar_item.setVisible(self.show_residuals and self.show_uncertainties)
+
+            # Update noise realization overlay curves
+            self._update_noise_curves(x_data, x_label)
+
             # Add zero line only if enabled (off by default)
             if self.show_zero_line and self.zero_line is None:
                 self.zero_line = create_zero_line(self.plot_widget)
@@ -1642,6 +1729,7 @@ class MainWindow(QMainWindow):
         if self.mjd is not None and self.residuals_us is not None:
             # Force auto-range
             self._update_plot(auto_range=True)
+            self._update_plot_title()
             
             # Special handling for Orbital Phase: force 0..1 range if auto-range fails or to be explicit
             if self._x_axis_mode == "Orbital Phase":
@@ -1693,29 +1781,28 @@ class MainWindow(QMainWindow):
                 return self.prefit_residuals_us, "Pre-fit residual (μs)"
             return self.residuals_us, "Residual (μs) [no pre-fit]"
 
-        if mode == "Normalized (r/σ)":
+        if mode == "Normalized":
             if self.errors_us is not None and len(self.errors_us) > 0:
                 from jug.engine.stats import compute_normalized_residuals
                 norm = compute_normalized_residuals(self.residuals_us, self.errors_us)
-                return norm, "Normalized residual (r/σ)"
-            return self.residuals_us, "Residual (μs) [no errors]"
-
-        if mode == "Whitened":
-            if self.errors_us is not None and len(self.errors_us) > 0:
-                from jug.engine.stats import compute_whitened_residuals
-                w = compute_whitened_residuals(self.residuals_us, self.errors_us)
-                return w, "Whitened residual"
+                return norm, "Normalized residual"
             return self.residuals_us, "Residual (μs) [no errors]"
 
         # Default: Post-fit (μs)
         return self.residuals_us, "Post-fit residual (μs)"
     
     def _update_plot_title(self):
-        """Update the plot title with pulsar name and RMS."""
+        """Update the plot title with pulsar name and RMS matching displayed view."""
         pulsar_str = self.pulsar_name if self.pulsar_name else "Unknown Pulsar"
-        rms_str = f"{self.rms_us:.6f} μs" if self.rms_us is not None else "--"
         rms_label = "wRMS" if self.use_weighted_rms else "RMS"
-        # Use styled separator
+
+        # Show RMS corresponding to what's on screen
+        if self._y_axis_mode == "Pre-fit (μs)":
+            rms_val = self.prefit_weighted_rms_us if self.use_weighted_rms else self.prefit_unweighted_rms_us
+        else:
+            rms_val = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
+
+        rms_str = f"{rms_val:.6f} μs" if rms_val is not None else "--"
         self.plot_title_label.setText(f"✦  {pulsar_str}  ·  {rms_label}: {rms_str}")
     
     def on_fit_clicked(self):
@@ -1759,11 +1846,19 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage(f"Fitting {', '.join(fit_params)}...")
 
-        # Run fit with mask and solver mode
+        # Run fit with mask, solver mode, and noise config
         from jug.gui.workers.fit_worker import FitWorker
 
+        noise_config = None
+        if self.noise_panel is not None:
+            noise_config = self.noise_panel.get_noise_config()
+
+        # Remember which noise was active for the fit report
+        self._last_fit_noise_config = noise_config
+
         worker = FitWorker(self.session, fit_params, toa_mask=toa_mask,
-                           solver_mode=self.solver_mode)
+                           solver_mode=self.solver_mode,
+                           noise_config=noise_config)
         worker.signals.result.connect(self.on_fit_complete)
         worker.signals.error.connect(self.on_fit_error)
         worker.signals.finished.connect(self.on_fit_finished)
@@ -1851,6 +1946,34 @@ class MainWindow(QMainWindow):
             self._update_rms_from_result(result)
         
         # Update plot (auto-range to show new residual scale after fit)
+        # Auto-switch to post-fit view
+        self._y_axis_mode = "Post-fit (μs)"
+        if hasattr(self, 'y_axis_btn'):
+            self.y_axis_btn.setText("Post-fit (μs)")
+
+        # Store GLS noise realizations from the fit (if available)
+        if hasattr(self, '_pending_fit_result'):
+            nr = self._pending_fit_result.get('noise_realizations', {})
+            if nr:
+                # Apply TOA mask if needed
+                keep = self._keep_mask if self.deleted_indices else None
+                for name, real in nr.items():
+                    self._noise_realizations[name] = real[keep] if keep is not None else real.copy()
+
+        # If any noise processes had subtract active, re-subtract the NEW
+        # realizations from the NEW residuals (Tempo2-like persistent mode).
+        _noise_was_subtracted = False
+        if hasattr(self, 'noise_panel'):
+            for proc_name in self.noise_panel.get_subtract_processes():
+                real = self._noise_realizations.get(proc_name)
+                if real is not None and self.residuals_us is not None:
+                    self.residuals_us = self.residuals_us - real
+                    _noise_was_subtracted = True
+
+        # Refresh stats if noise was re-subtracted so RMS/χ² reflect whitened residuals
+        if _noise_was_subtracted:
+            self._refresh_stats_from_residuals()
+
         self._update_plot(auto_range=True)
         self._update_plot_title()
         
@@ -2102,6 +2225,34 @@ class MainWindow(QMainWindow):
         add_stat("Time", f"{result['total_time']:.2f}s")
         layout.addWidget(stats_frame)
 
+        # 2b. Noise processes used in fit
+        nc = getattr(self, '_last_fit_noise_config', None)
+        active_noise = nc.active_processes() if nc is not None else []
+        if active_noise:
+            noise_frame = QFrame()
+            noise_frame.setStyleSheet(
+                f"background-color: {bg_secondary}; border-radius: 8px; "
+                f"margin-top: 4px;"
+            )
+            nf_layout = QHBoxLayout(noise_frame)
+            nf_layout.setContentsMargins(16, 10, 16, 10)
+            noise_lbl = QLabel("Noise in fit:")
+            noise_lbl.setStyleSheet(f"color: {text_muted}; font-size: 12px;")
+            nf_layout.addWidget(noise_lbl)
+            from jug.gui.widgets.noise_control_panel import _PROCESS_INFO
+            names = [_PROCESS_INFO.get(p, {}).get("label", p) for p in active_noise]
+            noise_val = QLabel(", ".join(names))
+            noise_val.setStyleSheet(
+                f"color: {accent}; font-size: 13px; font-weight: bold;"
+            )
+            nf_layout.addWidget(noise_val)
+            nf_layout.addStretch()
+            layout.addWidget(noise_frame)
+        else:
+            no_noise_lbl = QLabel("Fit mode: WLS (no noise model)")
+            no_noise_lbl.setStyleSheet(f"color: {text_muted}; font-size: 12px; margin-top: 4px;")
+            layout.addWidget(no_noise_lbl)
+
         # 3. Parameters Table (batched for performance)
         table = QTableWidget()
         table.setColumnCount(6)
@@ -2212,6 +2363,32 @@ class MainWindow(QMainWindow):
                 self.session._cached_result_by_mode.clear()
                 self.session._cached_toa_data = None
 
+            # Clear noise state: realizations, overlay curves, error bars
+            for name in list(self._noise_curves):
+                self._remove_noise_curve(name)
+            self._noise_realizations.clear()
+
+            # Reset noise panel toggles to all off
+            if self.noise_panel is not None and self.session is not None:
+                self.noise_panel.populate_from_params(self.session.params)
+
+            # Restore residuals + uncertainties visibility
+            self.show_residuals = True
+            self.show_uncertainties = True
+            if hasattr(self, 'noise_panel') and self.noise_panel is not None:
+                if hasattr(self.noise_panel, '_show_residuals_cb'):
+                    self.noise_panel._show_residuals_cb.blockSignals(True)
+                    self.noise_panel._show_residuals_cb.setChecked(True)
+                    self.noise_panel._show_residuals_cb.blockSignals(False)
+                if hasattr(self.noise_panel, '_show_uncertainties_cb'):
+                    self.noise_panel._show_uncertainties_cb.blockSignals(True)
+                    self.noise_panel._show_uncertainties_cb.setChecked(True)
+                    self.noise_panel._show_uncertainties_cb.blockSignals(False)
+            if hasattr(self, '_show_residuals_action'):
+                self._show_residuals_action.blockSignals(True)
+                self._show_residuals_action.setChecked(True)
+                self._show_residuals_action.blockSignals(False)
+
             # Recalculate RMS using canonical engine stats
             from jug.engine.stats import compute_residual_stats
             stats = compute_residual_stats(self.residuals_us, self.errors_us)
@@ -2222,7 +2399,7 @@ class MainWindow(QMainWindow):
             self.fit_results = None
             self.fit_report_button.setEnabled(False)
             
-            # Update plot
+            # Update plot (auto-range to fit prefit residuals)
             self._update_plot(auto_range=True)
             self._update_plot_title()
 
@@ -2252,6 +2429,427 @@ class MainWindow(QMainWindow):
             if self.zero_line is not None:
                 self.plot_widget.removeItem(self.zero_line)
                 self.zero_line = None
+
+    def _on_toggle_noise_panel(self, checked):
+        """Toggle noise panel visibility from menu."""
+        self._set_noise_panel_visible(checked)
+
+    def _set_noise_panel_visible(self, visible: bool):
+        """Show or hide the noise panel, resizing the window to keep the plot the same size."""
+        if self.noise_panel is None:
+            return
+        was_visible = self.noise_panel.isVisible()
+        if visible == was_visible:
+            return
+
+        panel_width = self.noise_panel.minimumWidth()  # 220
+
+        if visible:
+            geo = self.geometry()
+            new_x = max(0, geo.x() - panel_width)
+            self.setGeometry(new_x, geo.y(), geo.width() + panel_width, geo.height())
+            self.setMinimumSize(self.minimumWidth() + panel_width, self.minimumHeight())
+        else:
+            geo = self.geometry()
+            min_w = self.minimumWidth()
+            self.setMinimumSize(max(1152, min_w - panel_width), self.minimumHeight())
+            self.setGeometry(geo.x() + panel_width, geo.y(),
+                             geo.width() - panel_width, geo.height())
+
+        self.noise_panel.setVisible(visible)
+
+        # Toggle "Noise" button in title bar (visible when panel is hidden)
+        if hasattr(self, '_noise_title_btn'):
+            self._noise_title_btn.setVisible(not visible)
+
+        # Sync menu checkboxes
+        if hasattr(self, 'noise_panel_action'):
+            self.noise_panel_action.setChecked(visible)
+        if hasattr(self, '_view_overlay'):
+            self._view_overlay.set_item_checked("noise_panel", visible)
+
+    def _on_noise_realise_changed(self, process_name: str, show: bool):
+        """Handle toggling noise realization overlay for a process.
+
+        When toggled on, overlays the GLS realization as a curve on the plot.
+        When toggled off, removes the curve.
+        Uses GLS realizations from the fit if available, falls back to
+        Wiener filter MAP estimate.
+        """
+        if not show:
+            self._remove_noise_curve(process_name)
+            self.status_bar.showMessage(f"Removed {process_name} overlay")
+            return
+
+        if self.residuals_us is None or self.session is None:
+            return
+
+        # Prefer GLS realization from fit (stored in _noise_realizations after fit)
+        realization_us = self._noise_realizations.get(process_name)
+
+        # Fallback to Wiener filter if no GLS realization available
+        if realization_us is None:
+            realization_us = self._compute_noise_realization_fallback(process_name)
+
+        if realization_us is None:
+            self.status_bar.showMessage(
+                f"No {process_name} realization available — run fit first or check parameters"
+            )
+            return
+
+        # Store for overlay rendering (won't overwrite GLS if it exists)
+        if process_name not in self._noise_realizations:
+            self._noise_realizations[process_name] = realization_us
+
+        self._update_plot(auto_range=False)
+        self.status_bar.showMessage(f"Showing {process_name} realization")
+
+    def _on_noise_subtract_changed(self, process_name: str, subtract: bool):
+        """Handle subtracting/restoring a noise realization from residuals.
+
+        This modifies the displayed residuals in-place (like tempo2 Shift+K / Shift+F).
+        Requires the realization to already be computed (via "Realise" toggle).
+        Also updates displayed RMS / wRMS / χ² to reflect the new residuals.
+        """
+        realization_us = self._noise_realizations.get(process_name)
+        if realization_us is None or self.residuals_us is None:
+            self.status_bar.showMessage(f"No {process_name} realization to subtract")
+            return
+
+        if subtract:
+            self.residuals_us = self.residuals_us - realization_us
+        else:
+            self.residuals_us = self.residuals_us + realization_us
+
+        # Recompute and display statistics on the current residuals
+        self._refresh_stats_from_residuals()
+
+        self._update_plot(auto_range=True)
+        self._update_plot_title()
+        self.status_bar.showMessage(
+            f"{'Subtracted' if subtract else 'Restored'} {process_name}"
+        )
+
+    def _compute_noise_realization_fallback(self, process_name: str):
+        """Wiener filter fallback when GLS realization isn't available."""
+        params = self.session.params
+        mjd = self.mjd
+        current_res_us = self.residuals_us.copy()
+        errors_us = self.errors_us
+        if errors_us is None:
+            return None
+
+        if process_name == "RedNoise":
+            from jug.noise.red_noise import realize_red_noise, parse_red_noise_params
+            rn = parse_red_noise_params(params)
+            if rn is not None:
+                real_sec = realize_red_noise(
+                    mjd, current_res_us * 1e-6, errors_us * 1e-6,
+                    rn.log10_A, rn.gamma, rn.n_harmonics,
+                )
+                return real_sec * 1e6
+
+        elif process_name == "DMNoise":
+            from jug.noise.red_noise import realize_dm_noise, parse_dm_noise_params
+            dm = parse_dm_noise_params(params)
+            if dm is not None and self.toa_freqs is not None:
+                real_sec = realize_dm_noise(
+                    mjd, self.toa_freqs, current_res_us * 1e-6,
+                    errors_us * 1e-6, dm.log10_A, dm.gamma, dm.n_harmonics,
+                )
+                return real_sec * 1e6
+
+        elif process_name == "DMX":
+            return self._compute_dmx_realization()
+
+        return None
+
+    # Colour palette for noise realization curves
+    _NOISE_CURVE_COLORS = {
+        "RedNoise": "#e74c3c",   # red
+        "DMNoise":  "#2ecc71",   # green
+        "DMX":      "#f39c12",   # amber
+    }
+
+    def _update_noise_curves(self, x_data, x_label: str):
+        """Sync overlay scatter items and error bars with current noise realizations."""
+        # Determine which processes should have visible overlays
+        active_realise = set()
+        if self.noise_panel is not None:
+            active_realise = set(self.noise_panel.get_realise_processes())
+
+        # Remove items for processes no longer realised
+        for name in list(self._noise_curves):
+            if name not in active_realise:
+                self._remove_noise_curve(name)
+
+        if not active_realise:
+            return
+
+        for name in active_realise:
+            real_us = self._noise_realizations.get(name)
+            if real_us is None:
+                continue
+            err_us = self._noise_realizations.get(f'{name}_err')
+
+            color = self._NOISE_CURVE_COLORS.get(name, "#3498db")
+            if name in self._noise_curves:
+                self._noise_curves[name].setData(x=x_data, y=real_us)
+            else:
+                scatter = pg.ScatterPlotItem(
+                    x=x_data, y=real_us,
+                    size=PlotTheme.SCATTER_SIZE,
+                    pen=pg.mkPen(None),
+                    brush=pg.mkBrush(color),
+                    pxMode=True,
+                    useCache=True,
+                    hoverable=False,
+                    name=name,
+                )
+                self.plot_widget.addItem(scatter)
+                self._noise_curves[name] = scatter
+
+            # Error bars from GLS posterior covariance
+            if err_us is not None:
+                if name in self._noise_errorbars:
+                    self._noise_errorbars[name].setData(
+                        x=x_data, y=real_us, height=2 * err_us,
+                    )
+                else:
+                    errbar = pg.ErrorBarItem(
+                        x=x_data, y=real_us, height=2 * err_us,
+                        beam=0.0,
+                        pen=pg.mkPen(color=color, width=1.5),
+                    )
+                    self.plot_widget.addItem(errbar)
+                    self._noise_errorbars[name] = errbar
+
+    def _remove_noise_curve(self, name: str):
+        """Remove noise realization scatter and error bars from the plot."""
+        curve = self._noise_curves.pop(name, None)
+        if curve is not None:
+            self.plot_widget.removeItem(curve)
+        errbar = self._noise_errorbars.pop(name, None)
+        if errbar is not None:
+            self.plot_widget.removeItem(errbar)
+
+    def _toggle_noise_subtract(self, process_name: str):
+        """Keyboard shortcut handler: toggle subtract for a noise process.
+
+        If the realization isn't computed yet, compute it first (Wiener fallback).
+        """
+        if process_name not in self._noise_realizations:
+            # Try to compute the realization
+            real = self._compute_noise_realization_fallback(process_name)
+            if real is not None:
+                self._noise_realizations[process_name] = real
+            else:
+                self.status_bar.showMessage(
+                    f"No {process_name} realization available — run fit first"
+                )
+                return
+
+        # Toggle the subtract state
+        key = f"_subtract_active_{process_name}"
+        currently_subtracting = getattr(self, key, False)
+        self._on_noise_subtract_changed(process_name, not currently_subtracting)
+        setattr(self, key, not currently_subtracting)
+
+        # Sync the noise panel button if visible
+        if self.noise_panel is not None and process_name in self.noise_panel._rows:
+            row = self.noise_panel._rows[process_name]
+            if row._subtract_btn is not None:
+                row._subtract_btn.setChecked(not currently_subtracting)
+                row._subtracting = not currently_subtracting
+
+    def _on_estimate_noise(self, selections):
+        """Run MAP estimation in background with selected noise processes."""
+        if self.session is None:
+            self.status_bar.showMessage("No data loaded")
+            if self.noise_panel:
+                self.noise_panel.set_estimate_complete(False)
+            return
+
+        include_red = selections.get('include_red', True)
+        include_dm = selections.get('include_dm', True)
+        include_ecorr = selections.get('include_ecorr', False)
+
+        self.status_bar.showMessage("Running MAP noise estimation...")
+
+        # Run in background thread to avoid freezing GUI
+        from PySide6.QtCore import QThread, QObject, Signal as QtSignal
+
+        class EstimateWorker(QObject):
+            finished = QtSignal(object)  # NoiseEstimateResult or Exception
+            progress = QtSignal(str)
+
+            def __init__(self, session, inc_red, inc_dm, inc_ecorr):
+                super().__init__()
+                self.session = session
+                self.inc_red = inc_red
+                self.inc_dm = inc_dm
+                self.inc_ecorr = inc_ecorr
+
+            def run(self):
+                try:
+                    from jug.noise.map_estimator import estimate_noise_parameters
+                    import numpy as np
+
+                    # Get pre-computed residuals
+                    result = self.session.compute_residuals(subtract_tzr=True)
+                    residuals_us = result['residuals_us']
+                    residuals_sec = residuals_us * 1e-6
+
+                    # Original errors (before EFAC/EQUAD)
+                    errors_us = np.array([t.error_us for t in self.session.toas_data])
+                    errors_sec = errors_us * 1e-6
+
+                    toas_mjd = np.array([
+                        t.mjd_int + t.mjd_frac for t in self.session.toas_data
+                    ])
+                    freq_mhz = result['freq_bary_mhz']
+                    toa_flags = [t.flags for t in self.session.toas_data]
+
+                    est_result = estimate_noise_parameters(
+                        residuals_sec=residuals_sec,
+                        errors_sec=errors_sec,
+                        toas_mjd=toas_mjd,
+                        freq_mhz=freq_mhz,
+                        toa_flags=toa_flags,
+                        params=self.session.params,
+                        include_red_noise=self.inc_red,
+                        include_dm_noise=self.inc_dm,
+                        include_ecorr=self.inc_ecorr,
+                        batch_size=1000,
+                        max_num_batches=30,
+                        patience=3,
+                    )
+                    self.finished.emit(est_result)
+                except Exception as e:
+                    self.finished.emit(e)
+
+        self._estimate_thread = QThread()
+        self._estimate_worker = EstimateWorker(
+            self.session, include_red, include_dm, include_ecorr
+        )
+        self._estimate_worker.moveToThread(self._estimate_thread)
+        self._estimate_thread.started.connect(self._estimate_worker.run)
+        self._estimate_worker.finished.connect(self._on_estimate_complete)
+        self._estimate_worker.finished.connect(self._estimate_thread.quit)
+        self._estimate_thread.start()
+
+    def _on_estimate_complete(self, result):
+        """Handle MAP estimation completion."""
+        if self.noise_panel:
+            self.noise_panel.set_estimate_complete(True)
+
+        if isinstance(result, Exception):
+            self.status_bar.showMessage(f"Noise estimation failed: {result}")
+            return
+
+        # Update par params with estimated values
+        from jug.noise.map_estimator import NoiseEstimateResult
+        if isinstance(result, NoiseEstimateResult):
+            self.status_bar.showMessage(
+                f"Noise estimation complete: {len(result.params)} parameters"
+            )
+            # Log the estimated parameters
+            for key, val in sorted(result.params.items()):
+                print(f"  MAP estimate: {key} = {val}")
+
+            # Update session params with estimated noise values
+            if self.session is not None:
+                for key, val in result.params.items():
+                    self.session.params[key] = val
+
+                # Rebuild _noise_lines so populate_from_params can find
+                # the estimated EFAC/EQUAD/ECORR values.
+                existing = list(self.session.params.get('_noise_lines', []))
+                for key, val in result.params.items():
+                    if key.startswith('EFAC_'):
+                        backend = key[len('EFAC_'):]
+                        line = f"EFAC -f {backend} {val}"
+                        existing = [l for l in existing
+                                    if not (l.strip().startswith(('EFAC','T2EFAC'))
+                                            and backend in l)]
+                        existing.append(line)
+                    elif key.startswith('EQUAD_'):
+                        backend = key[len('EQUAD_'):]
+                        line = f"EQUAD -f {backend} {val}"
+                        existing = [l for l in existing
+                                    if not (l.strip().startswith(('EQUAD','T2EQUAD'))
+                                            and backend in l)]
+                        existing.append(line)
+                    elif key.startswith('ECORR_'):
+                        backend = key[len('ECORR_'):]
+                        line = f"ECORR -f {backend} {val}"
+                        existing = [l for l in existing
+                                    if not (l.strip().startswith(('ECORR','TNECORR'))
+                                            and backend in l)]
+                        existing.append(line)
+                self.session.params['_noise_lines'] = existing
+
+            # Refresh the noise panel to show updated values
+            if self.noise_panel and self.session:
+                self.noise_panel.populate_from_params(self.session.params)
+
+    def _on_toggle_residuals(self, checked: bool):
+        """Toggle visibility of residuals (scatter points + error bars)."""
+        self.show_residuals = checked
+        if self.scatter_item is not None:
+            self.scatter_item.setVisible(checked)
+        if self.error_bar_item is not None:
+            self.error_bar_item.setVisible(checked and self.show_uncertainties)
+        # Keep View menu action and noise panel checkbox in sync
+        if hasattr(self, '_show_residuals_action'):
+            self._show_residuals_action.blockSignals(True)
+            self._show_residuals_action.setChecked(checked)
+            self._show_residuals_action.blockSignals(False)
+        if hasattr(self, 'noise_panel') and hasattr(self.noise_panel, '_show_residuals_cb'):
+            self.noise_panel._show_residuals_cb.blockSignals(True)
+            self.noise_panel._show_residuals_cb.setChecked(checked)
+            self.noise_panel._show_residuals_cb.blockSignals(False)
+
+    def _on_toggle_uncertainties(self, checked: bool):
+        """Toggle visibility of residual error bars independently."""
+        self.show_uncertainties = checked
+        if self.error_bar_item is not None:
+            self.error_bar_item.setVisible(self.show_residuals and checked)
+        # Keep noise panel checkbox in sync
+        if hasattr(self, 'noise_panel') and hasattr(self.noise_panel, '_show_uncertainties_cb'):
+            self.noise_panel._show_uncertainties_cb.blockSignals(True)
+            self.noise_panel._show_uncertainties_cb.setChecked(checked)
+            self.noise_panel._show_uncertainties_cb.blockSignals(False)
+
+    def _compute_dmx_realization(self) -> Optional[np.ndarray]:
+        """Compute DMX delay contribution at each TOA."""
+        if self.session is None:
+            return None
+        params = self.session.params
+        from jug.model.dmx import parse_dmx_ranges
+        try:
+            ranges = parse_dmx_ranges(params)
+        except Exception:
+            return None
+        if not ranges:
+            return None
+
+        mjd = self.mjd
+        freq_mhz = self.toa_freqs
+        if freq_mhz is None:
+            return None
+
+        # DMX delay = DMX_value * K_DM / freq^2 (in seconds) → convert to μs
+        K_DM = 4.148808e3  # DM constant in MHz^2 s / pc cm^-3
+        dmx_delay_us = np.zeros(len(mjd))
+        for r in ranges:
+            mask = (mjd >= r.r1_mjd) & (mjd <= r.r2_mjd)
+            dmx_val = params.get(f"DMX_{r.index:04d}", 0.0)
+            if isinstance(dmx_val, str):
+                dmx_val = float(dmx_val)
+            dmx_delay_us[mask] = dmx_val * K_DM / (freq_mhz[mask] ** 2) * 1e6
+
+        return dmx_delay_us
 
     def _toggle_rms_mode(self):
         """Toggle between weighted and unweighted RMS display (shortcut: W)."""
@@ -2313,6 +2911,31 @@ class MainWindow(QMainWindow):
         self.unweighted_rms_us = result.get('unweighted_rms_us', 0.0)
         # Set displayed RMS based on current mode
         self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
+
+    def _refresh_stats_from_residuals(self):
+        """Recompute RMS / wRMS / χ² from the current ``self.residuals_us`` and update labels."""
+        if self.residuals_us is None:
+            return
+        r = self.residuals_us
+        self.unweighted_rms_us = float(np.std(r))
+        if self.errors_us is not None and len(self.errors_us) == len(r):
+            w = 1.0 / (self.errors_us ** 2)
+            wmean = np.sum(w * r) / np.sum(w)
+            self.weighted_rms_us = float(np.sqrt(np.sum(w * (r - wmean) ** 2) / np.sum(w)))
+        else:
+            self.weighted_rms_us = self.unweighted_rms_us
+        self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
+        if self.rms_us is not None:
+            self.rms_label.setText(f"{self.rms_us:.6f} μs")
+        # Update χ²/dof
+        if self.errors_us is not None:
+            n_toas = len(r)
+            n_params = len(self.param_checkboxes) if hasattr(self, 'param_checkboxes') else 0
+            n_fit = sum(1 for cb in self.param_checkboxes.values() if cb.isChecked()) if n_params else 1
+            dof = max(n_toas - n_fit, 1)
+            chi2 = float(np.sum((r / self.errors_us) ** 2))
+            chi2_dof = chi2 / dof
+            self.chi2_label.setText(f"{chi2_dof:.2f}")
 
     # -- Phase 4.4: Color-by-backend/frequency --------------------------
 
@@ -2658,7 +3281,24 @@ class MainWindow(QMainWindow):
 
     def on_zoom_fit(self):
         """Zoom plot to fit data."""
+        # Temporarily hide items that should stay hidden so autoRange
+        # computes bounds only from visible data.
+        hidden_items = []
+        if not self.show_residuals:
+            for item in (self.scatter_item, self.error_bar_item):
+                if item is not None:
+                    hidden_items.append(item)
+        elif not self.show_uncertainties:
+            if self.error_bar_item is not None:
+                hidden_items.append(self.error_bar_item)
+
         self.plot_widget.autoRange()
+
+        # Re-enforce visibility state
+        if self.scatter_item is not None:
+            self.scatter_item.setVisible(self.show_residuals)
+        if self.error_bar_item is not None:
+            self.error_bar_item.setVisible(self.show_residuals and self.show_uncertainties)
 
     def _set_solver_mode(self, mode: str, display_name: str):
         """Set the solver mode from dropdown menu selection."""
@@ -2677,6 +3317,9 @@ class MainWindow(QMainWindow):
         beam update runs (throttled). A final cleanup runs when interaction ends.
         """
         if self.error_bar_item is None or self.mjd is None:
+            return
+        # Skip beam updates when error bars are hidden
+        if not (self.show_residuals and self.show_uncertainties):
             return
 
         # Mark interaction as active (will be cleared after idle period)

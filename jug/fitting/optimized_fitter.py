@@ -34,12 +34,6 @@ Implementation
 2. JAX JIT-compile entire iteration (residuals + derivatives + WLS solve)
 3. Iterate until convergence
 
-Status
-------
-✅ Spin parameters (F0, F1, F2): IMPLEMENTED & VALIDATED
-✅ DM parameters (DM, DM1, DM2): IMPLEMENTED (2025-12-04)
-⏳ Astrometry: TODO
-⏳ Binary: TODO
 """
 
 # Ensure JAX is configured for x64 precision

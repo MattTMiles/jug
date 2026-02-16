@@ -56,7 +56,6 @@ def test_dd_binary_convergence():
     assert final_rms < 5.0, f"Final RMS too high: {final_rms:.6f} µs (expected < 5 µs)"
 
     print("  ✓ Test PASSED: DD binary fitting converges efficiently")
-    return True
 
 
 def test_dd_binary_fitting_all_params():
@@ -93,7 +92,6 @@ def test_dd_binary_fitting_all_params():
     assert final_rms < 5.0, f"Final RMS too high: {final_rms:.6f} µs"
 
     print("  ✓ Test PASSED: Multi-param DD binary fitting works")
-    return True
 
 
 if __name__ == "__main__":

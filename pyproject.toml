@@ -94,6 +94,7 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = ["playground", "archival_code"]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings

@@ -1,19 +1,19 @@
 {
   "_comment": "Golden reference values for J1909_mini test dataset",
-  "_generated": "2026-02-07 - regenerated after fixing phase wrapping (np.round, not np.mod)",
+  "_generated": "2026-02-13 - regenerated after ECORR epoch-grouping fix (dt_days 1/86400 → 0.5)",
   "_purpose": "CI validation - verify JUG produces consistent results",
 
   "n_toas": 20,
-  "weighted_rms_us": 744.9210834665472,
-  "unweighted_rms_us": 779.2077026295647,
-  "mean_residual_us": -54.04569572722696,
+  "weighted_rms_us": 699.3005610101535,
+  "unweighted_rms_us": 745.6913927014858,
+  "mean_residual_us": -45.69961550534666,
 
   "first_5_residuals_ns": [
-    304955.509,
-    305967.864,
-    305904.478,
-    305780.211,
-    305838.649
+    -276120.0203,
+    -275107.6621,
+    -275171.0484,
+    -275295.3123,
+    -275236.8775
   ],
 
   "tolerances": {
@@ -25,6 +25,6 @@
   "residual_checksum": {
     "_comment": "Hash of residuals rounded to 10ns for determinism check",
     "round_to_ns": 10,
-    "first_10_rounded_ns": [304960, 305970, 305900, 305780, 305840, 305900, 306360, 837140, -1209600, -473120]
+    "first_10_rounded_ns": [-276120, -275110, -275170, -275300, -275240, -275170, -274720, 256060, 1156430, -1054200]
   }
 }

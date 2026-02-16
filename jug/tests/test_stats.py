@@ -61,8 +61,6 @@ def test_compute_residual_stats_basic():
         print("✓ N TOAs: CORRECT")
     else:
         print(f"✗ N TOAs: MISMATCH ({stats['n_toas']} vs 5)")
-    
-    return rms_match and mean_match and n_match
 
 
 def test_compute_residual_stats_empty():
@@ -93,8 +91,6 @@ def test_compute_residual_stats_empty():
         print("✓ N TOAs is 0")
     else:
         print("✗ N TOAs should be 0")
-    
-    return rms_ok and n_ok
 
 
 def test_compute_residual_stats_no_errors():
@@ -129,8 +125,6 @@ def test_compute_residual_stats_no_errors():
         print("✓ Mean matches equal-weight expectation")
     else:
         print(f"✗ Mean mismatch")
-    
-    return rms_match and mean_match
 
 
 def test_engine_gui_consistency():
@@ -147,7 +141,7 @@ def test_engine_gui_consistency():
     
     if not par_file.exists():
         print(f"SKIP: Test data not found: {par_file}")
-        return True
+        return
     
     # Get engine result
     result = compute_residuals_simple(par_file, tim_file, verbose=False, subtract_tzr=False)
@@ -171,8 +165,6 @@ def test_engine_gui_consistency():
     else:
         diff = abs(gui_style_rms - engine_weighted_rms)
         print(f"✗ Mismatch: {diff:.10e} μs")
-    
-    return rms_match
 
 
 def test_deletion_mask_consistency():
@@ -189,7 +181,7 @@ def test_deletion_mask_consistency():
     
     if not par_file.exists():
         print(f"SKIP: Test data not found")
-        return True
+        return
     
     # Get full result
     result = compute_residuals_simple(par_file, tim_file, verbose=False, subtract_tzr=False)
@@ -226,8 +218,6 @@ def test_deletion_mask_consistency():
     else:
         diff = abs(stats_kept['weighted_rms_us'] - expected_rms)
         print(f"✗ Mismatch: {diff:.10e} μs")
-    
-    return rms_match
 
 
 def test_chi2_calculation():
@@ -271,8 +261,6 @@ def test_chi2_calculation():
         print("✓ Chi2/DOF correct")
     else:
         print("✗ Chi2/DOF incorrect")
-    
-    return chi2_ok and dof_ok and chi2_red_ok
 
 
 def run_all_tests():

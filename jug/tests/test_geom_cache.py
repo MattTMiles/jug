@@ -64,8 +64,6 @@ def test_cache_save_load():
         assert loaded_pos.dtype == np.float64, "Position dtype mismatch"
         assert loaded_vel.dtype == np.float64, "Velocity dtype mismatch"
         print("✓ Dtypes: float64")
-        
-        return pos_identical and vel_identical
 
 
 def test_cache_key_mismatch():
@@ -105,8 +103,6 @@ def test_cache_key_mismatch():
         loaded = cache.load(tdb_mjd, obs_itrf_km)
         assert loaded is not None, "Cache should hit on original inputs"
         print("✓ Cache hits on original inputs")
-        
-        return True
 
 
 def test_compute_with_cache():
@@ -159,8 +155,6 @@ def test_compute_with_cache():
     assert pos2.dtype == np.float64, "Position dtype must be float64"
     assert vel2.dtype == np.float64, "Velocity dtype must be float64"
     print("✓ Dtypes: float64")
-    
-    return pos_identical and vel_identical
 
 
 def test_residuals_with_cache():
@@ -177,7 +171,7 @@ def test_residuals_with_cache():
     
     if not par_file.exists():
         print(f"SKIP: Test data not found: {par_file}")
-        return True
+        return
     
     # Clear cache
     cache = get_geometry_cache()
@@ -222,8 +216,6 @@ def test_residuals_with_cache():
         print("✓ RMS: IDENTICAL")
     else:
         print(f"✗ RMS DIFFER ({result1['rms_us']} vs {result2['rms_us']})")
-    
-    return residuals_identical and tdb_identical and dt_identical and rms_identical
 
 
 def test_cache_disabled():
@@ -259,8 +251,6 @@ def test_cache_disabled():
         print("✓ Velocities: BIT-FOR-BIT IDENTICAL")
     else:
         print(f"✗ Velocities DIFFER")
-    
-    return pos_identical and vel_identical
 
 
 def run_all_tests():

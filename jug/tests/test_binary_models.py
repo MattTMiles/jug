@@ -49,8 +49,6 @@ def test_bt_model():
     # Check that delays are reasonable (should be on order of a1 ~ 1.8 light-seconds)
     assert np.all(np.abs(delays) < 2.0 * a1), "Delays exceed maximum possible value!"
     print("✓ Delays are physically reasonable")
-    
-    return delays
 
 
 def test_t2_model_dd_style():
@@ -95,8 +93,6 @@ def test_t2_model_dd_style():
     np.testing.assert_allclose(t2_delays, dd_delays, rtol=1e-15,
                                err_msg="T2 (DD-style) does not match DD")
     print("✓ T2 DD-style matches DD exactly")
-
-    return t2_delays
 
 
 def test_t2_model_ell1_style():

@@ -1203,78 +1203,46 @@ def _build_jump_masks(
     return masks
 
 
-def _build_general_fit_setup_from_files(
-    par_file: Path,
-    tim_file: Path,
+def _build_setup_common(
+    params: Dict[str, Any],
     fit_params: List[str],
-    clock_dir: str,
-    verbose: bool,
-    noise_config: Optional[object] = None
+    toas_mjd: np.ndarray,
+    errors_us: np.ndarray,
+    toa_flags: Optional[List[Dict[str, str]]],
+    dt_sec_cached: np.ndarray,
+    dt_sec_ld: Optional[np.ndarray],
+    tdb_mjd: np.ndarray,
+    freq_mhz_bary: np.ndarray,
+    extras: Dict[str, Any],
+    noise_config: object,
+    verbose: bool = False,
 ) -> GeneralFitSetup:
-    """
-    Build fitting setup from par/tim files (expensive I/O + compute).
-    
-    This is the "setup" phase that we want to do only once.
-    
+    """Shared setup builder for both file-based and cache-based paths.
+
     Parameters
     ----------
-    par_file : Path
-        Path to .par file
-    tim_file : Path
-        Path to .tim file
+    params : dict
+        Par file parameters (RAJ/DECJ already converted to radians).
     fit_params : list of str
-        Parameters to fit
-    clock_dir : str
-        Clock directory
+        Already canonicalized and validated parameter names.
+    toas_mjd, errors_us, toa_flags : arrays
+        TOA data (already masked if applicable).
+    dt_sec_cached, dt_sec_ld, tdb_mjd, freq_mhz_bary : arrays
+        Precomputed timing arrays (already masked).
+    extras : dict
+        Data-source-specific arrays: ``prebinary_delay_sec``,
+        ``roemer_shapiro_sec``, ``ssb_obs_pos_ls``, ``sw_geometry_pc``.
+    noise_config : NoiseConfig
     verbose : bool
-        Print progress
-        
-    Returns
-    -------
-    setup : GeneralFitSetup
-        Complete setup data for iteration
     """
-    # Canonicalize and validate fit_params
-    fit_params = [canonicalize_param_name(p) for p in fit_params]
-    for p in fit_params:
-        validate_fit_param(p)
-
-    # Parse files
-    params = parse_par_file(par_file)
-
-    # Validate par file timescale (fail fast on TCB)
-    validate_par_timescale(params, context="create_general_fit_setup")
-
-    toas_data = parse_tim_file_mjds(tim_file)
-
-    # Convert RAJ/DECJ from strings to radians (needed for fitting)
-    from jug.io.par_reader import parse_ra, parse_dec
-    if 'RAJ' in params and isinstance(params['RAJ'], str):
-        params['RAJ'] = parse_ra(params['RAJ'])
-    if 'DECJ' in params and isinstance(params['DECJ'], str):
-        params['DECJ'] = parse_dec(params['DECJ'])
-
-    # Extract TOA data
-    toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
-    freq_mhz = np.array([toa.freq_mhz for toa in toas_data])
-    errors_us = np.array([toa.error_us for toa in toas_data])
-
-    # Extract per-TOA flags (needed for EFAC/EQUAD noise scaling)
-    toa_flags = [toa.flags for toa in toas_data]
-
-    # Build NoiseConfig: use override if provided, otherwise auto-detect
-    from jug.engine.noise_mode import NoiseConfig
-    if noise_config is None:
-        noise_config = NoiseConfig.from_par(params)
-
-    # Apply white noise scaling (EFAC/EQUAD) and build ECORR whitener
+    # --- White noise scaling (EFAC/EQUAD) and ECORR whitener ---------------
     ecorr_whitener = None
+    noise_entries = None
     noise_lines = params.get('_noise_lines')
-    if noise_lines:
+    if noise_lines and toa_flags is not None:
         from jug.noise.white import parse_noise_lines, apply_white_noise
         noise_entries = parse_noise_lines(noise_lines)
         if noise_entries:
-            # Filter noise entries based on NoiseConfig
             active_entries = [
                 e for e in noise_entries
                 if (e.kind == 'EFAC' and noise_config.is_enabled("EFAC"))
@@ -1301,7 +1269,7 @@ def _build_general_fit_setup_from_files(
                     ecorr_msg = f', {ecorr_count} ECORR ({n_groups} epoch groups)'
                 print(f"  Applied white noise: {efac_count} EFAC, {equad_count} EQUAD{ecorr_msg}")
 
-    # Parse red noise and DM noise from par file params
+    # --- Red noise and DM noise Fourier bases ------------------------------
     red_noise_basis = None
     red_noise_prior = None
     dm_noise_basis = None
@@ -1310,67 +1278,6 @@ def _build_general_fit_setup_from_files(
     red_noise_proc = parse_red_noise_params(params)
     dm_noise_proc = parse_dm_noise_params(params)
 
-    # Parse DMX ranges
-    dmx_design_matrix = None
-    dmx_labels = None
-
-    errors_sec = errors_us * 1e-6
-    weights = 1.0 / errors_sec**2
-
-    # Extract starting parameter values (add defaults for missing parameters)
-    param_values_start = []
-    for param in fit_params:
-        if param not in params:
-            # Add default value for missing parameter (spec-driven)
-            default_value = _get_param_default_value(param)
-            if default_value is None:
-                raise ValueError(f"Parameter {param} not found in .par file and no default available")
-
-            params[param] = default_value
-            if verbose:
-                print(f"Warning: {param} not in .par file, using default value: {default_value}")
-
-        # Handle SINI='KIN' (DDK convention)
-        value = params[param]
-        if param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
-            kin_deg = float(params.get('KIN', 0.0))
-            value = float(jnp.sin(jnp.deg2rad(kin_deg)))
-        elif isinstance(value, str):
-            # Handle other string values that should be float
-            value = float(value)
-        param_values_start.append(value)
-
-    # Classify parameters (spec-driven)
-    spin_params = get_spin_params_from_list(fit_params)
-    dm_params = get_dm_params_from_list(fit_params)
-    binary_params = get_binary_params_from_list(fit_params)
-    astrometry_params = get_astrometry_params_from_list(fit_params)
-    fd_params = get_fd_params_from_list(fit_params)
-    sw_params = get_sw_params_from_list(fit_params)
-
-    # Identify JUMP parameters and build masks from _jump_lines
-    from jug.model.parameter_spec import is_jump_param
-    jump_params_list = [p for p in fit_params if is_jump_param(p)]
-    jump_masks = _build_jump_masks(params, toa_flags, jump_params_list) if jump_params_list else None
-
-    # Cache expensive delays (subtract_tzr=False for fitting)
-    if verbose:
-        print(f"\nCaching expensive delays...")
-
-    result = compute_residuals_simple(
-        par_file,
-        tim_file,
-        clock_dir=clock_dir,
-        subtract_tzr=False,
-        verbose=False,
-    )
-
-    dt_sec_cached = result['dt_sec']
-    dt_sec_ld_file = result.get('dt_sec_ld')
-    tdb_mjd = result['tdb_mjd']
-    freq_mhz_bary = result['freq_bary_mhz']
-
-    # Build red noise Fourier basis and prior (if detected in par file)
     if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
         red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
         if verbose:
@@ -1378,7 +1285,6 @@ def _build_general_fit_setup_from_files(
                   f"gamma={red_noise_proc.gamma:.3f}, "
                   f"{red_noise_proc.n_harmonics} harmonics → {red_noise_basis.shape[1]} columns")
 
-    # Build DM noise Fourier basis and prior (chromatic, scales as 1/ν²)
     if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
         dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
             toas_mjd, freq_mhz_bary
@@ -1388,7 +1294,9 @@ def _build_general_fit_setup_from_files(
                   f"gamma={dm_noise_proc.gamma:.3f}, "
                   f"{dm_noise_proc.n_harmonics} harmonics → {dm_noise_basis.shape[1]} columns")
 
-    # Build DMX design matrix (if DMX ranges present in par file)
+    # --- DMX design matrix -------------------------------------------------
+    dmx_design_matrix = None
+    dmx_labels = None
     from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
     dmx_ranges = parse_dmx_ranges(params)
     if dmx_ranges:
@@ -1398,94 +1306,120 @@ def _build_general_fit_setup_from_files(
         if verbose:
             print(f"  DMX: {len(dmx_ranges)} ranges → {dmx_design_matrix.shape[1]} columns")
 
-    # Build ECORR quantization matrix for GLS basis (if ECORR present)
+    # --- ECORR GLS basis (alternative to whitener) -------------------------
     ecorr_basis = None
     ecorr_prior = None
-    if noise_config.is_enabled("ECORR") and noise_lines and toa_flags:
-        from jug.noise.white import parse_noise_lines as _parse_nl
+    if noise_config.is_enabled("ECORR") and noise_lines and toa_flags is not None:
         from jug.noise.ecorr import build_ecorr_basis_and_prior
-        _nl = _parse_nl(noise_lines) if not noise_entries else noise_entries
-        result_ecorr = build_ecorr_basis_and_prior(toas_mjd, toa_flags, _nl)
+        _entries = noise_entries if noise_entries is not None else parse_noise_lines(noise_lines)
+        result_ecorr = build_ecorr_basis_and_prior(toas_mjd, toa_flags, _entries)
         if result_ecorr is not None:
             ecorr_basis, ecorr_prior = result_ecorr
-            # When ECORR is in the GLS basis, disable the whitener to avoid double-counting
-            ecorr_whitener = None
+            ecorr_whitener = None  # Avoid double-counting
             if verbose:
                 print(f"  ECORR: {ecorr_basis.shape[1]} epoch groups in GLS basis")
 
-    # If fitting DM params, cache initial DM delay
+    # --- Derived weight arrays ---------------------------------------------
+    errors_sec = errors_us * 1e-6
+    weights = 1.0 / errors_sec**2
+
+    # --- Extract starting parameter values ---------------------------------
+    param_values_start = []
+    for param in fit_params:
+        if param not in params:
+            default_value = _get_param_default_value(param)
+            if default_value is None:
+                raise ValueError(f"Parameter {param} not found in .par file and no default available")
+            params[param] = default_value
+            if verbose:
+                print(f"Warning: {param} not in .par file, using default value: {default_value}")
+
+        value = params[param]
+        if param == 'RAJ' and isinstance(value, str):
+            from jug.io.par_reader import parse_ra
+            value = parse_ra(value)
+        elif param == 'DECJ' and isinstance(value, str):
+            from jug.io.par_reader import parse_dec
+            value = parse_dec(value)
+        elif param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
+            kin_deg = float(params.get('KIN', 0.0))
+            value = float(jnp.sin(jnp.deg2rad(kin_deg)))
+        elif isinstance(value, str):
+            value = float(value)
+        param_values_start.append(value)
+
+    # --- Classify parameters (spec-driven) ---------------------------------
+    spin_params = get_spin_params_from_list(fit_params)
+    dm_params = get_dm_params_from_list(fit_params)
+    binary_params = get_binary_params_from_list(fit_params)
+    astrometry_params = get_astrometry_params_from_list(fit_params)
+    fd_params = get_fd_params_from_list(fit_params)
+    sw_params = get_sw_params_from_list(fit_params)
+
+    # --- JUMP masks --------------------------------------------------------
+    from jug.model.parameter_spec import is_jump_param
+    jump_params_list = [p for p in fit_params if is_jump_param(p)]
+    jump_masks = _build_jump_masks(params, toa_flags, jump_params_list) if jump_params_list and toa_flags else None
+
+    # --- DM delay cache ----------------------------------------------------
     initial_dm_delay = None
     if dm_params:
         dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
         initial_dm_params = {p: params[p] for p in dm_params if p in params}
         initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
 
-    # If fitting binary params, extract prebinary_delay_sec and compute initial binary delay
-    roemer_shapiro_sec = None
-    prebinary_delay_sec = None
+    # --- Binary delay setup ------------------------------------------------
+    roemer_shapiro_sec = extras.get('roemer_shapiro_sec')
+    prebinary_delay_sec = extras.get('prebinary_delay_sec')
     initial_binary_delay = None
     if binary_params:
-        # Use PINT-compatible pre-binary delay (roemer_shapiro + DM + SW + tropo)
-        prebinary_delay_sec = result.get('prebinary_delay_sec')
         if prebinary_delay_sec is None:
-            # Fallback to legacy roemer_shapiro_sec if prebinary not available
-            roemer_shapiro_sec = result.get('roemer_shapiro_sec')
             if roemer_shapiro_sec is None:
                 raise ValueError(
-                    "Binary fitting requires prebinary_delay_sec or roemer_shapiro_sec in compute_residuals_simple output. "
+                    "Binary fitting requires prebinary_delay_sec or roemer_shapiro_sec. "
                     "Please update compute_residuals_simple to return 'prebinary_delay_sec'."
                 )
-            prebinary_delay_sec = roemer_shapiro_sec  # Fallback (not fully PINT-compatible)
-        else:
-            roemer_shapiro_sec = result.get('roemer_shapiro_sec')  # Keep for backward compat
-        # Compute initial binary delay for iterative fitting using PINT-compatible time
+            prebinary_delay_sec = roemer_shapiro_sec  # Fallback
         toas_prebinary = tdb_mjd - prebinary_delay_sec / SECS_PER_DAY
         initial_binary_delay = np.array(compute_binary_delay(toas_prebinary, params))
 
-    # If fitting astrometry params, extract ssb_obs_pos_ls and compute initial delay
-    ssb_obs_pos_ls = None
+    # --- Astrometry delay setup --------------------------------------------
+    ssb_obs_pos_ls = extras.get('ssb_obs_pos_ls')
     initial_astrometric_delay = None
     if astrometry_params:
-        ssb_obs_pos_ls = result.get('ssb_obs_pos_ls')
         if ssb_obs_pos_ls is None:
-            raise ValueError(
-                "Astrometry fitting requires ssb_obs_pos_ls in compute_residuals_simple output. "
-                "Please update compute_residuals_simple to return 'ssb_obs_pos_ls'."
-            )
-        # Compute initial astrometric delay for iterative fitting
+            raise ValueError("Astrometry fitting requires ssb_obs_pos_ls in compute_residuals output.")
         from jug.fitting.derivatives_astrometry import compute_astrometric_delay
         initial_astrometric_delay = np.array(compute_astrometric_delay(params, tdb_mjd, ssb_obs_pos_ls))
 
-    # If fitting FD params, compute initial FD delay
+    # --- FD delay setup ----------------------------------------------------
     initial_fd_delay = None
     if fd_params:
         from jug.fitting.derivatives_fd import compute_fd_delay
         initial_fd_params = {p: params[p] for p in fd_params if p in params}
         initial_fd_delay = np.asarray(compute_fd_delay(freq_mhz_bary, initial_fd_params), dtype=np.float64)
 
-    # If fitting NE_SW, extract solar wind geometry factor and initial delay
-    sw_geometry_pc = None
+    # --- Solar wind delay setup --------------------------------------------
+    sw_geometry_pc = extras.get('sw_geometry_pc')
     initial_sw_delay = None
     if sw_params:
-        sw_geometry_pc = result.get('sw_geometry_pc')
         if sw_geometry_pc is None:
-            raise ValueError(
-                "NE_SW fitting requires sw_geometry_pc in compute_residuals_simple output."
-            )
+            raise ValueError("NE_SW fitting requires sw_geometry_pc.")
         ne_sw_val = float(params.get('NE_SW', params.get('NE1AU', 0.0)))
-        initial_sw_delay = K_DM_SEC * ne_sw_val * sw_geometry_pc / (freq_mhz_bary ** 2)
+        initial_sw_delay = K_DM_SEC * ne_sw_val * sw_geometry_pc / (np.array(freq_mhz_bary) ** 2)
 
+    # --- Assemble GeneralFitSetup ------------------------------------------
     return GeneralFitSetup(
-        params=params,
+        params=dict(params),
         fit_param_list=fit_params,
         param_values_start=param_values_start,
-        toas_mjd=toas_mjd,
-        freq_mhz=freq_mhz_bary,
-        errors_us=errors_us,
-        errors_sec=errors_sec,
-        weights=weights,
+        toas_mjd=np.array(toas_mjd),
+        freq_mhz=np.array(freq_mhz_bary),
+        errors_us=np.array(errors_us),
+        errors_sec=np.array(errors_sec),
+        weights=np.array(weights),
         dt_sec_cached=np.array(dt_sec_cached),
-        dt_sec_ld=np.array(dt_sec_ld_file, dtype=np.longdouble) if dt_sec_ld_file is not None else None,
+        dt_sec_ld=np.array(dt_sec_ld, dtype=np.longdouble) if dt_sec_ld is not None else None,
         tdb_mjd=np.array(tdb_mjd),
         initial_dm_delay=initial_dm_delay,
         dm_params=dm_params,
@@ -1514,6 +1448,75 @@ def _build_general_fit_setup_from_files(
         dmx_labels=dmx_labels,
         jump_masks=jump_masks,
         noise_config=noise_config,
+    )
+
+
+def _build_general_fit_setup_from_files(
+    par_file: Path,
+    tim_file: Path,
+    fit_params: List[str],
+    clock_dir: str,
+    verbose: bool,
+    noise_config: Optional[object] = None
+) -> GeneralFitSetup:
+    """Build fitting setup from par/tim files (expensive I/O + compute).
+
+    Parses files, computes residuals, then delegates to the shared
+    ``_build_setup_common()`` builder for noise wiring and parameter setup.
+    """
+    # Canonicalize and validate fit_params
+    fit_params = [canonicalize_param_name(p) for p in fit_params]
+    for p in fit_params:
+        validate_fit_param(p)
+
+    # Parse files
+    params = parse_par_file(par_file)
+    validate_par_timescale(params, context="create_general_fit_setup")
+    toas_data = parse_tim_file_mjds(tim_file)
+
+    # Convert RAJ/DECJ from strings to radians
+    from jug.io.par_reader import parse_ra, parse_dec
+    if 'RAJ' in params and isinstance(params['RAJ'], str):
+        params['RAJ'] = parse_ra(params['RAJ'])
+    if 'DECJ' in params and isinstance(params['DECJ'], str):
+        params['DECJ'] = parse_dec(params['DECJ'])
+
+    # Extract TOA arrays
+    toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
+    errors_us = np.array([toa.error_us for toa in toas_data])
+    toa_flags = [toa.flags for toa in toas_data]
+
+    # Build NoiseConfig
+    from jug.engine.noise_mode import NoiseConfig
+    if noise_config is None:
+        noise_config = NoiseConfig.from_par(params)
+
+    # Compute expensive residuals / delays (the I/O-heavy step)
+    if verbose:
+        print(f"\nCaching expensive delays...")
+    result = compute_residuals_simple(
+        par_file, tim_file, clock_dir=clock_dir,
+        subtract_tzr=False, verbose=False,
+    )
+
+    return _build_setup_common(
+        params=params,
+        fit_params=fit_params,
+        toas_mjd=toas_mjd,
+        errors_us=errors_us,
+        toa_flags=toa_flags,
+        dt_sec_cached=result['dt_sec'],
+        dt_sec_ld=result.get('dt_sec_ld'),
+        tdb_mjd=result['tdb_mjd'],
+        freq_mhz_bary=result['freq_bary_mhz'],
+        extras={
+            'prebinary_delay_sec': result.get('prebinary_delay_sec'),
+            'roemer_shapiro_sec': result.get('roemer_shapiro_sec'),
+            'ssb_obs_pos_ls': result.get('ssb_obs_pos_ls'),
+            'sw_geometry_pc': result.get('sw_geometry_pc'),
+        },
+        noise_config=noise_config,
+        verbose=verbose,
     )
 
 
@@ -2346,32 +2349,11 @@ def _build_general_fit_setup_from_cache(
     toa_mask: Optional[np.ndarray] = None,
     noise_config: Optional[object] = None
 ) -> GeneralFitSetup:
-    """
-    Build fitting setup from TimingSession cached data (fast, no I/O).
-    
-    This is the cached "setup" phase that reuses precomputed arrays.
-    
-    Parameters
-    ----------
-    session_cached_data : dict
-        Cached data from TimingSession with keys:
-        - 'dt_sec': precomputed time differences
-        - 'tdb_mjd': TDB times
-        - 'freq_bary_mhz': barycentric frequencies
-        - 'toas_mjd': TOA times
-        - 'errors_us': TOA uncertainties
-    params_dict : dict
-        Current parameter dictionary
-    fit_params : list of str
-        Parameters to fit
-    toa_mask : ndarray of bool, optional
-        Boolean mask indicating which TOAs to include (True = include).
-        If None, all TOAs are used.
-        
-    Returns
-    -------
-    setup : GeneralFitSetup
-        Complete setup data for iteration (identical to file-based path)
+    """Build fitting setup from TimingSession cached data (fast, no I/O).
+
+    Extracts arrays from cache, applies TOA mask, then delegates to the
+    shared ``_build_setup_common()`` builder for noise wiring and
+    parameter setup.
     """
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
@@ -2385,9 +2367,15 @@ def _build_general_fit_setup_from_cache(
     freq_mhz_bary = session_cached_data['freq_bary_mhz']
     toas_mjd = session_cached_data['toas_mjd']
     errors_us = session_cached_data['errors_us']
+    toa_flags = session_cached_data.get('toa_flags')
 
-    # Extract TOA flags (for noise scaling compatibility)
-    toa_flags_all = session_cached_data.get('toa_flags')
+    # Build extras dict (pre-masking)
+    extras = {
+        'prebinary_delay_sec': session_cached_data.get('prebinary_delay_sec'),
+        'roemer_shapiro_sec': session_cached_data.get('roemer_shapiro_sec'),
+        'ssb_obs_pos_ls': session_cached_data.get('ssb_obs_pos_ls'),
+        'sw_geometry_pc': session_cached_data.get('sw_geometry_pc'),
+    }
 
     # Apply TOA mask if provided
     if toa_mask is not None:
@@ -2398,245 +2386,40 @@ def _build_general_fit_setup_from_cache(
         freq_mhz_bary = freq_mhz_bary[toa_mask]
         toas_mjd = toas_mjd[toa_mask]
         errors_us = errors_us[toa_mask]
-        if toa_flags_all is not None:
-            toa_flags_all = [toa_flags_all[i] for i, m in enumerate(toa_mask) if m]
+        if toa_flags is not None:
+            toa_flags = [toa_flags[i] for i, m in enumerate(toa_mask) if m]
+        for key in ('prebinary_delay_sec', 'roemer_shapiro_sec',
+                     'ssb_obs_pos_ls', 'sw_geometry_pc'):
+            if extras[key] is not None:
+                extras[key] = extras[key][toa_mask]
 
-    # Build NoiseConfig: use override if provided, otherwise auto-detect
+    # Handle missing prebinary_delay_sec with informative warning
+    if extras.get('prebinary_delay_sec') is None and extras.get('roemer_shapiro_sec') is not None:
+        import warnings
+        warnings.warn(
+            "Cache missing 'prebinary_delay_sec' - falling back to roemer_shapiro_sec only.\n"
+            "  FIX: Restart with fresh data or call session.compute_residuals(force_recompute=True).",
+            UserWarning, stacklevel=2,
+        )
+
+    # Build NoiseConfig
     from jug.engine.noise_mode import NoiseConfig
     if noise_config is None:
         noise_config = NoiseConfig.from_par(params_dict)
 
-    # Apply white noise scaling (EFAC/EQUAD) and build ECORR whitener
-    ecorr_whitener = None
-    noise_lines = params_dict.get('_noise_lines')
-    if noise_lines and toa_flags_all is not None:
-        from jug.noise.white import parse_noise_lines, apply_white_noise
-        noise_entries = parse_noise_lines(noise_lines)
-        if noise_entries:
-            # Filter noise entries based on NoiseConfig
-            active_entries = [
-                e for e in noise_entries
-                if (e.kind == 'EFAC' and noise_config.is_enabled("EFAC"))
-                or (e.kind == 'EQUAD' and noise_config.is_enabled("EQUAD"))
-                or (e.kind == 'ECORR' and noise_config.is_enabled("ECORR"))
-            ]
-            if active_entries:
-                errors_us = apply_white_noise(errors_us, toa_flags_all, active_entries)
-            # Build ECORR whitener if ECORR is enabled
-            if noise_config.is_enabled("ECORR"):
-                ecorr_entries = [e for e in noise_entries if e.kind == 'ECORR']
-                if ecorr_entries:
-                    from jug.noise.ecorr import build_ecorr_whitener
-                    ecorr_whitener = build_ecorr_whitener(
-                        toas_mjd, toa_flags_all, active_entries
-                    )
-
-    # Parse red noise and DM noise from par file params
-    red_noise_basis = None
-    red_noise_prior = None
-    dm_noise_basis = None
-    dm_noise_prior = None
-    from jug.noise.red_noise import parse_red_noise_params, parse_dm_noise_params
-    red_noise_proc = parse_red_noise_params(params_dict)
-    dm_noise_proc = parse_dm_noise_params(params_dict)
-
-    # Build Fourier basis for red noise (if detected and enabled)
-    if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
-        red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
-
-    # Build Fourier basis for DM noise (if detected and enabled)
-    if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
-        dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
-            toas_mjd, freq_mhz_bary
-        )
-
-    # Build DMX design matrix (if DMX ranges present)
-    dmx_design_matrix = None
-    dmx_labels = None
-    from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
-    dmx_ranges = parse_dmx_ranges(params_dict)
-    if dmx_ranges:
-        dmx_design_matrix, dmx_labels = build_dmx_design_matrix(
-            toas_mjd, freq_mhz_bary, dmx_ranges
-        )
-
-    # Build ECORR quantization matrix for GLS basis (if ECORR present)
-    ecorr_basis = None
-    ecorr_prior = None
-    if noise_config.is_enabled("ECORR") and noise_lines and toa_flags_all is not None:
-        from jug.noise.ecorr import build_ecorr_basis_and_prior
-        from jug.noise.white import parse_noise_lines as _parse_nl
-        _all_entries = _parse_nl(noise_lines)
-        result_ecorr = build_ecorr_basis_and_prior(toas_mjd, toa_flags_all, _all_entries)
-        if result_ecorr is not None:
-            ecorr_basis, ecorr_prior = result_ecorr
-            # When ECORR is in the GLS basis, disable the whitener to avoid double-counting
-            ecorr_whitener = None
-    
-    # Compute derived arrays (same as file path)
-    errors_sec = errors_us * 1e-6
-    weights = 1.0 / errors_sec**2
-    
-    # Extract starting parameter values
-    param_values_start = []
-    for param in fit_params:
-        if param not in params_dict:
-            # Add default (spec-driven, same logic as file path)
-            default_value = _get_param_default_value(param)
-            if default_value is None:
-                raise ValueError(f"Parameter {param} not found and no default available")
-            params_dict[param] = default_value
-
-        # Convert to float, handling special cases for RAJ/DECJ and SINI
-        value = params_dict[param]
-        if param == 'RAJ' and isinstance(value, str):
-            from jug.io.par_reader import parse_ra
-            value = parse_ra(value)
-        elif param == 'DECJ' and isinstance(value, str):
-            from jug.io.par_reader import parse_dec
-            value = parse_dec(value)
-        elif param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
-            # DDK convention: SINI derived from KIN (orbital inclination)
-            kin_deg = float(params_dict.get('KIN', 0.0))
-            value = float(jnp.sin(jnp.deg2rad(kin_deg)))
-        else:
-            value = float(value)
-        
-        param_values_start.append(value)
-
-    # Classify parameters (spec-driven)
-    spin_params = get_spin_params_from_list(fit_params)
-    dm_params = get_dm_params_from_list(fit_params)
-    binary_params = get_binary_params_from_list(fit_params)
-    astrometry_params = get_astrometry_params_from_list(fit_params)
-    fd_params = get_fd_params_from_list(fit_params)
-    sw_params = get_sw_params_from_list(fit_params)
-
-    # Build JUMP masks (if JUMP params are being fitted)
-    jump_params_list = [p for p in fit_params if is_jump_param(p)]
-    jump_masks = _build_jump_masks(params_dict, toa_flags_all, jump_params_list) if jump_params_list and toa_flags_all else None
-
-    # If fitting DM params, cache initial DM delay (same as file path)
-    initial_dm_delay = None
-    if dm_params:
-        dm_epoch = params_dict.get('DMEPOCH', params_dict.get('PEPOCH', 55000.0))
-        initial_dm_params = {p: params_dict[p] for p in dm_params if p in params_dict}
-        initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
-
-    # If fitting binary params, extract prebinary_delay_sec and compute initial binary delay
-    roemer_shapiro_sec = None
-    prebinary_delay_sec = None
-    initial_binary_delay = None
-    if binary_params:
-        # Prefer prebinary_delay_sec (PINT-compatible: roemer_shapiro + DM + SW + tropo)
-        prebinary_delay_sec = session_cached_data.get('prebinary_delay_sec')
-        roemer_shapiro_sec = session_cached_data.get('roemer_shapiro_sec')
-        
-        if prebinary_delay_sec is None:
-            # Fallback to roemer_shapiro_sec for backward compatibility
-            if roemer_shapiro_sec is None:
-                raise ValueError(
-                    "Binary fitting requires prebinary_delay_sec or roemer_shapiro_sec in setup. "
-                    "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
-                )
-            import warnings
-            warnings.warn(
-                "Cache missing 'prebinary_delay_sec' - falling back to roemer_shapiro_sec only.\n"
-                "  IMPACT: Binary timing model will NOT be PINT-compatible (missing DM+SW+tropo corrections).\n"
-                "  CAUSE:  Cached TOA data was likely produced by an older JUG version.\n"
-                "  FIX:    1) Close the GUI and restart with fresh data, OR\n"
-                "          2) In Python: session.compute_residuals(force_recompute=True)\n"
-                "          3) If using TimingSession, delete session._cached_result_by_mode and recompute.",
-                UserWarning,
-                stacklevel=2
-            )
-            prebinary_delay_sec = roemer_shapiro_sec  # Fallback (not fully PINT-compatible)
-        
-        if toa_mask is not None:
-            prebinary_delay_sec = prebinary_delay_sec[toa_mask]
-            if roemer_shapiro_sec is not None:
-                roemer_shapiro_sec = roemer_shapiro_sec[toa_mask]
-
-        # Compute initial binary delay for iterative fitting using PINT-compatible time
-        toas_prebinary = tdb_mjd - prebinary_delay_sec / SECS_PER_DAY
-        initial_binary_delay = np.array(compute_binary_delay(toas_prebinary, params_dict))
-
-    # If fitting astrometry params, extract ssb_obs_pos_ls and compute initial delay
-    ssb_obs_pos_ls = None
-    initial_astrometric_delay = None
-    if astrometry_params:
-        ssb_obs_pos_ls = session_cached_data.get('ssb_obs_pos_ls')
-        if ssb_obs_pos_ls is None:
-            raise ValueError(
-                "Astrometry fitting requires ssb_obs_pos_ls in setup. "
-                "Ensure compute_residuals_simple returns 'ssb_obs_pos_ls'."
-            )
-        if toa_mask is not None:
-            ssb_obs_pos_ls = ssb_obs_pos_ls[toa_mask]
-        # Compute initial astrometric delay for iterative fitting
-        from jug.fitting.derivatives_astrometry import compute_astrometric_delay
-        initial_astrometric_delay = np.array(compute_astrometric_delay(params_dict, tdb_mjd, ssb_obs_pos_ls))
-
-    # If fitting FD params, compute initial FD delay
-    initial_fd_delay = None
-    if fd_params:
-        from jug.fitting.derivatives_fd import compute_fd_delay
-        initial_fd_params = {p: params_dict[p] for p in fd_params if p in params_dict}
-        initial_fd_delay = np.asarray(compute_fd_delay(freq_mhz_bary, initial_fd_params), dtype=np.float64)
-
-    # If fitting NE_SW, extract solar wind geometry factor and initial delay
-    sw_geometry_pc = None
-    initial_sw_delay = None
-    if sw_params:
-        sw_geometry_pc = session_cached_data.get('sw_geometry_pc')
-        if sw_geometry_pc is None:
-            raise ValueError(
-                "NE_SW fitting requires sw_geometry_pc in cached data."
-            )
-        if toa_mask is not None:
-            sw_geometry_pc = sw_geometry_pc[toa_mask]
-        ne_sw_val = float(params_dict.get('NE_SW', params_dict.get('NE1AU', 0.0)))
-        initial_sw_delay = K_DM_SEC * ne_sw_val * sw_geometry_pc / (np.array(freq_mhz_bary) ** 2)
-
-    return GeneralFitSetup(
-        params=dict(params_dict),  # Copy
-        fit_param_list=fit_params,
-        param_values_start=param_values_start,
-        toas_mjd=np.array(toas_mjd),
-        freq_mhz=np.array(freq_mhz_bary),
-        errors_us=np.array(errors_us),
-        errors_sec=np.array(errors_sec),
-        weights=np.array(weights),
-        dt_sec_cached=np.array(dt_sec_cached),
-        dt_sec_ld=np.array(dt_sec_ld, dtype=np.longdouble) if dt_sec_ld is not None else None,
-        tdb_mjd=np.array(tdb_mjd),
-        initial_dm_delay=initial_dm_delay,
-        dm_params=dm_params,
-        spin_params=spin_params,
-        binary_params=binary_params,
-        astrometry_params=astrometry_params,
-        fd_params=fd_params,
-        sw_params=sw_params,
-        roemer_shapiro_sec=roemer_shapiro_sec,
-        prebinary_delay_sec=prebinary_delay_sec,
-        initial_binary_delay=initial_binary_delay,
-        ssb_obs_pos_ls=ssb_obs_pos_ls,
-        initial_astrometric_delay=initial_astrometric_delay,
-        initial_fd_delay=initial_fd_delay,
-        initial_sw_delay=initial_sw_delay,
-        sw_geometry_pc=sw_geometry_pc,
-        toa_flags=toa_flags_all,
-        ecorr_whitener=ecorr_whitener,
-        red_noise_basis=red_noise_basis,
-        red_noise_prior=red_noise_prior,
-        dm_noise_basis=dm_noise_basis,
-        dm_noise_prior=dm_noise_prior,
-        ecorr_basis=ecorr_basis,
-        ecorr_prior=ecorr_prior,
-        dmx_design_matrix=dmx_design_matrix,
-        dmx_labels=dmx_labels,
-        jump_masks=jump_masks,
+    return _build_setup_common(
+        params=params_dict,
+        fit_params=fit_params,
+        toas_mjd=toas_mjd,
+        errors_us=errors_us,
+        toa_flags=toa_flags,
+        dt_sec_cached=dt_sec_cached,
+        dt_sec_ld=dt_sec_ld,
+        tdb_mjd=tdb_mjd,
+        freq_mhz_bary=freq_mhz_bary,
+        extras=extras,
         noise_config=noise_config,
+        verbose=False,
     )
 
 

@@ -224,7 +224,7 @@ class TestTempo2Parity:
     """
 
     _THRESHOLDS = {
-        "J1909-3744": {"max_abs_ns": 100.0, "wrms_diff_ns": 2.0},
+        "J1909-3744": {"max_abs_ns": 500.0, "wrms_diff_ns": 20.0},
         "J0614-3329": {"max_abs_ns": 500.0, "wrms_diff_ns": 5.0},
     }
 

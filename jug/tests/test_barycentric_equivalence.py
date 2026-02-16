@@ -116,13 +116,11 @@ def test_gcrs_posvel_vs_baseline():
         print("RESULT: GCRS_POSVEL is BIT-FOR-BIT IDENTICAL to baseline")
         print("  -> Safe to adopt as default")
         print("=" * 70)
-        return True
     else:
         print("RESULT: GCRS_POSVEL DIFFERS from baseline")
         print("  -> NOT safe to adopt as default")
         print("  -> Keep baseline method; gcrs_posvel available behind flag only")
         print("=" * 70)
-        return False
 
 
 def test_clock_caching():
@@ -138,7 +136,7 @@ def test_clock_caching():
     
     if not gps_file.exists():
         print(f"SKIP: Clock file not found: {gps_file}")
-        return True
+        return
     
     # Clear cache
     _parse_clock_file_cached.cache_clear()
@@ -160,8 +158,6 @@ def test_clock_caching():
     print(f"✓ Clock file caching works correctly")
     print(f"  Entries: {len(result1['mjd'])}")
     print(f"  Cache info: {_parse_clock_file_cached.cache_info()}")
-    
-    return True
 
 
 def run_all_tests():

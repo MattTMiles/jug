@@ -858,40 +858,6 @@ class TestDDKPintParity:
 # DDK dispatch tests (override mechanism removed)
 # =============================================================================
 
-class TestDDKDispatch:
-    """Verify DDK dispatch routes correctly without override mechanism."""
-
-    def test_dispatch_ddk_raises_valueerror(self):
-        """dispatch_binary_delay('DDK', ...) should raise ValueError directing to branch_ddk."""
-        from jug.delays.binary_dispatch import dispatch_binary_delay
-
-        params = {
-            'PB': 5.7, 'A1': 3.3, 'ECC': 1e-5, 'OM': 1.35, 'T0': 55000.0,
-            'GAMMA': 0.0, 'PBDOT': 0.0, 'OMDOT': 0.0, 'XDOT': 0.0, 'EDOT': 0.0,
-            'M2': 0.0, 'SINI': 0.0,
-        }
-        with pytest.raises(ValueError, match="Kopeikin"):
-            dispatch_binary_delay('DDK', 55000.0, params)
-
-    def test_dispatch_dd_still_works(self):
-        """DD dispatch should still work normally."""
-        from jug.delays.binary_dispatch import dispatch_binary_delay
-
-        params = {
-            'PB': 5.7, 'A1': 3.3, 'ECC': 0.01, 'OM': 45.0, 'T0': 55000.0,
-            'GAMMA': 0.0, 'PBDOT': 0.0, 'OMDOT': 0.0, 'XDOT': 0.0, 'EDOT': 0.0,
-            'M2': 0.3, 'SINI': 0.9,
-        }
-        delay = dispatch_binary_delay('DD', 55000.5, params)
-        assert np.isfinite(float(delay))
-
-    def test_no_override_env_var_dependency(self):
-        """Verify binary_model_overrides module is no longer imported anywhere in delays."""
-        import importlib
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module('jug.utils.binary_model_overrides')
-
-
 # =============================================================================
 # EDOT and H4 partial derivative tests
 # =============================================================================

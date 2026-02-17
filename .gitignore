@@ -68,6 +68,9 @@ jug_updates.patch
 # *.clk
 # eopc04_*
 
+# Pulsar data files (sensitive/large timing data)
+data/pulsars/
+
 # Keep data directory structure but ignore contents
 # data/ephemeris/*
 # !data/ephemeris/.gitkeep

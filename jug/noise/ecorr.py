@@ -176,6 +176,10 @@ class ECORRWhitener:
     _max_n: int = field(default=0, repr=False)
     # Pre-computed inverse diagonal entries for singletons (JAX array)
     _sigma_inv_singletons: Optional[jnp.ndarray] = field(default=None, repr=False)
+    # Flat index arrays for vectorized gather/scatter
+    _flat_gather_idx: Optional[np.ndarray] = field(default=None, repr=False)
+    _flat_block_row: Optional[np.ndarray] = field(default=None, repr=False)
+    _flat_block_col: Optional[np.ndarray] = field(default=None, repr=False)
 
     def prepare(self, sigma_sec: np.ndarray) -> None:
         """Pre-compute batched Cholesky factors from diagonal variances + ECORR.
@@ -198,6 +202,9 @@ class ECORRWhitener:
             self._block_sizes = np.array([], dtype=np.int32)
             self._block_indices = np.empty((0, 0), dtype=np.intp)
             self._max_n = 0
+            self._flat_gather_idx = np.array([], dtype=np.intp)
+            self._flat_block_row = np.array([], dtype=np.intp)
+            self._flat_block_col = np.array([], dtype=np.intp)
             if len(self.singleton_indices) > 0:
                 self._sigma_inv_singletons = jnp.array(
                     1.0 / sigma_sec[self.singleton_indices]
@@ -230,6 +237,19 @@ class ECORRWhitener:
             idx_padded[k, :n] = idx
 
         self._block_indices = idx_padded
+
+        # Pre-compute flat index arrays for vectorized gather/scatter
+        flat_indices = []
+        block_row = []
+        block_col = []
+        for k in range(n_blocks):
+            n = int(sizes[k])
+            flat_indices.extend(idx_padded[k, :n].tolist())
+            block_row.extend([k] * n)
+            block_col.extend(range(n))
+        self._flat_gather_idx = np.array(flat_indices, dtype=np.intp)
+        self._flat_block_row = np.array(block_row, dtype=np.intp)
+        self._flat_block_col = np.array(block_col, dtype=np.intp)
 
         # Batched Cholesky via JAX vmap (JIT-compiled)
         self._L_padded = _batched_cholesky(jnp.array(C_padded))
@@ -266,10 +286,7 @@ class ECORRWhitener:
             r_padded = np.zeros(
                 (len(self.epoch_groups), self._max_n), dtype=np.float64
             )
-            for k, group in enumerate(self.epoch_groups):
-                n = self._block_sizes[k]
-                idx = self._block_indices[k, :n]
-                r_padded[k, :n] = r_sec[idx]
+            r_padded[self._flat_block_row, self._flat_block_col] = r_sec[self._flat_gather_idx]
 
             # Batched triangular solve (JAX JIT + vmap)
             x_padded = np.asarray(
@@ -277,10 +294,7 @@ class ECORRWhitener:
             )
 
             # Scatter results back
-            for k, group in enumerate(self.epoch_groups):
-                n = self._block_sizes[k]
-                idx = self._block_indices[k, :n]
-                r_white[idx] = x_padded[k, :n]
+            r_white[self._flat_gather_idx] = x_padded[self._flat_block_row, self._flat_block_col]
 
         # Singleton TOAs: simple diagonal scaling
         if len(self.singleton_indices) > 0:
@@ -315,10 +329,7 @@ class ECORRWhitener:
             M_padded = np.zeros(
                 (len(self.epoch_groups), self._max_n, n_params), dtype=np.float64
             )
-            for k, group in enumerate(self.epoch_groups):
-                n = self._block_sizes[k]
-                idx = self._block_indices[k, :n]
-                M_padded[k, :n, :] = M[idx, :]
+            M_padded[self._flat_block_row, self._flat_block_col, :] = M[self._flat_gather_idx, :]
 
             # Batched triangular solve (JAX JIT + vmap)
             X_padded = np.asarray(
@@ -326,10 +337,7 @@ class ECORRWhitener:
             )
 
             # Scatter results back
-            for k, group in enumerate(self.epoch_groups):
-                n = self._block_sizes[k]
-                idx = self._block_indices[k, :n]
-                M_white[idx, :] = X_padded[k, :n, :]
+            M_white[self._flat_gather_idx, :] = X_padded[self._flat_block_row, self._flat_block_col, :]
 
         if len(self.singleton_indices) > 0:
             inv = np.asarray(self._sigma_inv_singletons)

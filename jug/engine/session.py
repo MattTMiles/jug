@@ -491,7 +491,8 @@ class TimingSession:
         verbose: Optional[bool] = None,
         toa_mask: Optional[np.ndarray] = None,
         solver_mode: str = "exact",
-        noise_config: Optional[object] = None
+        noise_config: Optional[object] = None,
+        subtract_noise_sec: Optional[np.ndarray] = None
     ) -> Dict[str, Any]:
         """
         Fit timing model parameters.
@@ -516,6 +517,12 @@ class TimingSession:
             "fast" (QR/lstsq, faster but may differ slightly).
         noise_config : NoiseConfig, optional
             Override noise configuration. If None, auto-detected from par file.
+        subtract_noise_sec : ndarray of float, optional
+            Per-TOA noise realization (in seconds) to subtract from dt_sec
+            before fitting. This implements Tempo2-style noise subtraction:
+            after subtracting a noise realization from the displayed residuals,
+            the fitter should work on the cleaned data. If None, no noise
+            subtraction is applied.
 
         Returns
         -------
@@ -596,7 +603,8 @@ class TimingSession:
                 self.params,
                 fit_params,
                 toa_mask=toa_mask,
-                noise_config=noise_config
+                noise_config=noise_config,
+                subtract_noise_sec=subtract_noise_sec
             )
             
             # Run cached fit

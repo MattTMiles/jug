@@ -41,7 +41,6 @@
       "Bash(timeout 3 jug-gui:*)",
       "Bash(timeout 2 jug-gui:*)",
       "Bash(xargs:*)",
-
       "Bash(git checkout:*)",
       "Bash(git cherry-pick:*)",
       "WebSearch",
@@ -63,7 +62,8 @@
       "Bash(source activate:*)",
       "Bash(# Find PINT''s cached clock files find ~/.astropy/cache -name \"\"*bipm2019*\"\" -o -name \"\"*gps2utc*\"\")",
       "Bash(# Find cached PINT clock files by content find ~/.astropy/cache -name \"\"contents\"\" -exec sh -c ''head -1 \"\"{}\"\" | grep -q \"\"bipm\\\\|gps\\\\|clock\"\" && echo \"\"{}\"\"'' \\\\;)",
-      "Bash(# The PINT log showed it loaded bipm2019 and gps2utc from specific paths # Let me search for the actual cached files by checking the url index python -c \"\" import os, glob cache_dir = os.path.expanduser\\(''~/.astropy/cache/download/url/''\\) for d in os.listdir\\(cache_dir\\): contents = os.path.join\\(cache_dir, d, ''contents''\\) if os.path.exists\\(contents\\): with open\\(contents, ''rb''\\) as f: first_line = f.readline\\(\\).decode\\(''utf-8'', errors=''ignore''\\).strip\\(\\) if ''bipm2019'' in first_line.lower\\(\\) or ''gps'' in first_line.lower\\(\\) or ''UTC\\(AO\\)'' in first_line: print\\(d, '':'', first_line[:80]\\) \"\")"
+      "Bash(# The PINT log showed it loaded bipm2019 and gps2utc from specific paths # Let me search for the actual cached files by checking the url index python -c \"\" import os, glob cache_dir = os.path.expanduser\\(''~/.astropy/cache/download/url/''\\) for d in os.listdir\\(cache_dir\\): contents = os.path.join\\(cache_dir, d, ''contents''\\) if os.path.exists\\(contents\\): with open\\(contents, ''rb''\\) as f: first_line = f.readline\\(\\).decode\\(''utf-8'', errors=''ignore''\\).strip\\(\\) if ''bipm2019'' in first_line.lower\\(\\) or ''gps'' in first_line.lower\\(\\) or ''UTC\\(AO\\)'' in first_line: print\\(d, '':'', first_line[:80]\\) \"\")",
+      "Bash(JAX_PLATFORMS=cpu python:*)"
     ],
     "deny": [
       "Bash(git add:*)",

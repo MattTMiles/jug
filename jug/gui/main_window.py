@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QDialog, QTextBrowser, QAbstractItemView, QGroupBox,
     QProgressDialog, QFrame, QScrollArea, QSizePolicy, QApplication, QPushButton, QStatusBar
 )
-from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer, QSize, QRect, QVariantAnimation, QEasingCurve, Slot, Signal
+from PySide6.QtCore import Qt, QThreadPool, QEvent, QPointF, QTimer, QSize, QRect, QVariantAnimation, QEasingCurve, Slot, Signal, QSettings
 from PySide6.QtGui import QFont, QCursor, QPainter, QBrush, QColor, QAction, QIcon, QKeySequence, QActionGroup
 
 # Import custom widgets
@@ -466,6 +466,8 @@ class MainWindow(QMainWindow):
         self._noise_curves: dict = {}
         self._noise_errorbars: dict = {}
         self._noise_realizations: dict = {}
+        # Track which noise realizations have been subtracted (process_name -> realization_us)
+        self._subtracted_noise: dict = {}
 
         # Box zoom state
         self.box_zoom_active = False
@@ -495,7 +497,13 @@ class MainWindow(QMainWindow):
         self.noise_panel = None
 
         # Color mode for scatter plot (none/backend/frequency)
-        self._color_mode = "none"
+        self._color_mode = "backend"  # Default to backend coloring
+        self._backend_brushes_cache = None  # Cache for backend colors
+        self._backend_color_overrides = {}  # User color overrides
+        self._noise_color_overrides = {}  # User noise color overrides
+        
+        # Load color overrides from settings
+        self._load_color_overrides()
 
         # Thread pool for background tasks
         self.thread_pool = QThreadPool()
@@ -1159,12 +1167,12 @@ class MainWindow(QMainWindow):
 
         self._color_none_action = color_by_menu.addAction("None (single color)")
         self._color_none_action.setCheckable(True)
-        self._color_none_action.setChecked(True)
         self._color_none_action.setActionGroup(color_group)
         self._color_none_action.triggered.connect(lambda: self._set_color_mode("none"))
 
         self._color_backend_action = color_by_menu.addAction("Backend/Receiver")
         self._color_backend_action.setCheckable(True)
+        self._color_backend_action.setChecked(True)  # Default to backend coloring
         self._color_backend_action.setActionGroup(color_group)
         self._color_backend_action.triggered.connect(lambda: self._set_color_mode("backend"))
 
@@ -1172,6 +1180,12 @@ class MainWindow(QMainWindow):
         self._color_freq_action.setCheckable(True)
         self._color_freq_action.setActionGroup(color_group)
         self._color_freq_action.triggered.connect(lambda: self._set_color_mode("frequency"))
+
+        color_by_menu.addSeparator()
+        
+        # Customize colors dialog
+        customize_action = color_by_menu.addAction("Customize Colors...")
+        customize_action.triggered.connect(self._open_color_customization_dialog)
 
         view_menu.addSeparator()
 
@@ -1497,6 +1511,9 @@ class MainWindow(QMainWindow):
         self.prefit_unweighted_rms_us = self.unweighted_rms_us
         self.is_fitted = False
         self.fit_results = None
+        
+        # Invalidate backend color cache on data load
+        self._backend_brushes_cache = None
         
         # Store original data for full restart (only on first load)
         if self.original_mjd is None:
@@ -1851,13 +1868,34 @@ class MainWindow(QMainWindow):
         noise_config = None
         if self.noise_panel is not None:
             noise_config = self.noise_panel.get_noise_config()
+            # DEBUG: Log noise config state
+            if noise_config:
+                print(f"[FIT] Noise config object ID: {id(noise_config)}")
+                print(f"[FIT] All noise states: {noise_config.enabled}")
+                enabled = {k: v for k, v in noise_config.enabled.items() if v}
+                print(f"[FIT] Enabled processes: {list(enabled.keys())}")
+            else:
+                print(f"[FIT] Noise config is None")
 
         # Remember which noise was active for the fit report
         self._last_fit_noise_config = noise_config
 
+        # Compute total noise subtraction for Tempo2-style workflow:
+        # If the user has subtracted noise realizations from the displayed
+        # residuals, pass the total subtraction (in seconds) to the fitter
+        # so it works on the cleaned data.
+        subtract_noise_sec = None
+        if self._subtracted_noise:
+            total_noise_us = sum(self._subtracted_noise.values())
+            subtract_noise_sec = np.asarray(total_noise_us, dtype=np.float64) * 1e-6
+            print(f"[FIT] Passing noise subtraction to fitter: "
+                  f"{list(self._subtracted_noise.keys())}, "
+                  f"RMS = {np.std(total_noise_us):.3f} μs")
+
         worker = FitWorker(self.session, fit_params, toa_mask=toa_mask,
                            solver_mode=self.solver_mode,
-                           noise_config=noise_config)
+                           noise_config=noise_config,
+                           subtract_noise_sec=subtract_noise_sec)
         worker.signals.result.connect(self.on_fit_complete)
         worker.signals.error.connect(self.on_fit_error)
         worker.signals.finished.connect(self.on_fit_finished)
@@ -2353,6 +2391,7 @@ class MainWindow(QMainWindow):
             for name in list(self._noise_curves):
                 self._remove_noise_curve(name)
             self._noise_realizations.clear()
+            self._subtracted_noise.clear()
 
             # Reset noise panel toggles to all off
             if self.noise_panel is not None and self.session is not None:
@@ -2496,6 +2535,9 @@ class MainWindow(QMainWindow):
         This modifies the displayed residuals in-place (like tempo2 Shift+K / Shift+F).
         Requires the realization to already be computed (via "Realise" toggle).
         Also updates displayed RMS / wRMS / χ² to reflect the new residuals.
+
+        IMPORTANT: When noise is subtracted, that process is disabled in the noise_config
+        so that subsequent fits do NOT re-apply that noise process to the cleaned data.
         """
         realization_us = self._noise_realizations.get(process_name)
         if realization_us is None or self.residuals_us is None:
@@ -2504,8 +2546,57 @@ class MainWindow(QMainWindow):
 
         if subtract:
             self.residuals_us = self.residuals_us - realization_us
+            # Track the subtracted noise realization for passing to fitter
+            self._subtracted_noise[process_name] = realization_us.copy()
+            # FIX: Disable this noise process in the noise panel's config
+            # so subsequent fits don't re-apply it to the cleaned residuals
+            if self.noise_panel is not None:
+                noise_config = self.noise_panel.get_noise_config()
+                if noise_config:
+                    print(f"[FIX] Disabling {process_name} in noise_config after subtract")
+                    noise_config.disable(process_name)
+                    # Also uncheck the corresponding checkbox in the panel
+                    if process_name in self.noise_panel._rows:
+                        row = self.noise_panel._rows[process_name]
+                        row.toggle_btn.blockSignals(True)
+                        row.toggle_btn.setChecked(False)
+                        row.toggle_btn.blockSignals(False)
+                        row._enabled = False
+                        row._update_opacity()
+
+            # CRITICAL FIX: Invalidate session cache so next fit uses cleaned residuals
+            # The session cache contains original residuals, but we want to fit on
+            # the noise-subtracted ones (Tempo2-style workflow)
+            if self.session:
+                print(f"[FIX] Clearing session cache to force use of subtracted residuals")
+                self.session._cached_result_by_mode.clear()
+                self.session._cached_delays = None
+                self.session._cached_toa_data = None
         else:
             self.residuals_us = self.residuals_us + realization_us
+            # Remove from subtracted noise tracking
+            self._subtracted_noise.pop(process_name, None)
+            # Restore the noise process in the config
+            if self.noise_panel is not None:
+                noise_config = self.noise_panel.get_noise_config()
+                if noise_config:
+                    print(f"[FIX] Re-enabling {process_name} in noise_config after restore")
+                    noise_config.enable(process_name)
+                    # Re-check the checkbox
+                    if process_name in self.noise_panel._rows:
+                        row = self.noise_panel._rows[process_name]
+                        row.toggle_btn.blockSignals(True)
+                        row.toggle_btn.setChecked(True)
+                        row.toggle_btn.blockSignals(False)
+                        row._enabled = True
+                        row._update_opacity()
+
+            # Restore cache when unsubtracting
+            if self.session:
+                print(f"[FIX] Clearing session cache after noise restore")
+                self.session._cached_result_by_mode.clear()
+                self.session._cached_delays = None
+                self.session._cached_toa_data = None
 
         # Recompute and display statistics on the current residuals
         self._refresh_stats_from_residuals()
@@ -2547,12 +2638,6 @@ class MainWindow(QMainWindow):
 
         return None
 
-    # Colour palette for noise realization curves
-    _NOISE_CURVE_COLORS = {
-        "RedNoise": "#e74c3c",   # red
-        "DMNoise":  "#2ecc71",   # green
-    }
-
     def _update_noise_curves(self, x_data, x_label: str):
         """Sync overlay scatter items and error bars with current noise realizations."""
         # Determine which processes should have visible overlays
@@ -2568,15 +2653,24 @@ class MainWindow(QMainWindow):
         if not active_realise:
             return
 
+        # Get theme-aware noise colors
+        from jug.gui.plot_colors import build_noise_colors
+        noise_colors = build_noise_colors(
+            list(active_realise),
+            overrides=getattr(self, '_noise_color_overrides', {})
+        )
+
         for name in active_realise:
             real_us = self._noise_realizations.get(name)
             if real_us is None:
                 continue
             err_us = self._noise_realizations.get(f'{name}_err')
 
-            color = self._NOISE_CURVE_COLORS.get(name, "#3498db")
+            color = noise_colors.get(name, QColor(128, 128, 128, 180))
             if name in self._noise_curves:
                 self._noise_curves[name].setData(x=x_data, y=real_us)
+                # Update color in case theme changed
+                self._noise_curves[name].setBrush(pg.mkBrush(color))
             else:
                 scatter = pg.ScatterPlotItem(
                     x=x_data, y=real_us,
@@ -2894,6 +2988,9 @@ class MainWindow(QMainWindow):
     def _set_color_mode(self, mode: str):
         """Set coloring mode: 'none', 'backend', 'frequency'."""
         self._color_mode = mode
+        
+        # Invalidate backend cache when mode changes
+        self._backend_brushes_cache = None
 
         # Check corresponding action in group
         if self.is_remote:
@@ -2925,44 +3022,35 @@ class MainWindow(QMainWindow):
         brushes = []
         
         if mode == "backend" and self.toa_flags is not None:
-            # Backend coloring: use 'f' flag
-            # We need a stable mapping of backend string -> color
-            # Use 'f' flag or 'i' (instrument) or 'be' (backend)?
-            # Standard is '-f' usually for frontend/backend.
+            # Backend coloring with vectorized implementation
+            from jug.gui.plot_colors import build_backend_brush_array
             
-            # Map unique backends to colors
-            # Get list of flags for all TOAs
-            flags_list = self.toa_flags # List of dicts
+            # Use cache if available and overrides haven't changed
+            if self._backend_brushes_cache is not None:
+                brushes, self._backend_color_map = self._backend_brushes_cache
+                # Verify cache is still valid
+                if len(brushes) == n_points:
+                    self._update_backend_legend(True)
+                    return brushes
             
-            # Extract backend for each point
-            # This might be slow if loop.
-            # But we only do it when switching mode.
+            # Build new brush array (vectorized, no per-TOA loop)
+            brushes, self._backend_color_map = build_backend_brush_array(
+                self.toa_flags,
+                overrides=self._backend_color_overrides
+            )
             
-            from jug.gui.theme import Colors
-            # 8 distinct colors
-            palette = [
-                Colors.ACCENT_PRIMARY, Colors.ACCENT_SECONDARY,
-                "#4CAF50", "#FFC107", "#9C27B0", "#FF5722", "#00BCD4", "#795548"
-            ]
+            # Cache for next update
+            self._backend_brushes_cache = (brushes, self._backend_color_map)
             
-            backend_map = {}
-            next_color_idx = 0
-            
-            for flags in flags_list:
-                be = flags.get('f', flags.get('be', flags.get('i', 'unknown')))
-                if be not in backend_map:
-                    backend_map[be] = pg.mkBrush(palette[next_color_idx % len(palette)])
-                    next_color_idx += 1
-                brushes.append(backend_map[be])
-            
-            # Match length
+            # Match length (defensive)
             if len(brushes) != n_points:
                 if len(brushes) > n_points:
                     brushes = brushes[:n_points]
                 else:
+                    import pyqtgraph as pg
                     brushes.extend([pg.mkBrush(None)] * (n_points - len(brushes)))
 
-            self._update_freq_legend(False)
+            self._update_backend_legend(True)
             return brushes
 
         elif mode == "frequency" and self.toa_freqs is not None:
@@ -3020,9 +3108,55 @@ class MainWindow(QMainWindow):
 
         # mode == "none" → reset to theme default
         self._update_freq_legend(False)
+        self._update_backend_legend(False)
         return None  # Returning None means "use default symbolBrush"
 
 
+
+    def _update_backend_legend(self, show):
+        """Update the backend legend with colored swatches."""
+        from jug.gui.widgets.backend_legend import BackendLegend
+        
+        # Create if not exists
+        if not hasattr(self, 'backend_legend'):
+            self.backend_legend = BackendLegend(offset=(20, 20))
+            
+            # Add to scene
+            scene = self.plot_widget.scene()
+            if scene:
+                scene.addItem(self.backend_legend)
+            
+            # Connect range changes to update position
+            def update_pos(*args):
+                if self.backend_legend.scene() is None and self.plot_widget.scene() is not None:
+                    self.plot_widget.scene().addItem(self.backend_legend)
+                
+                view_box = self.plot_widget.plotItem.getViewBox()
+                self.backend_legend.setAnchor(view_box)
+            
+            self._backend_legend_updater = update_pos
+            view_box = self.plot_widget.plotItem.getViewBox()
+            view_box.sigStateChanged.connect(update_pos)
+            self.plot_widget.plotItem.sigRangeChanged.connect(update_pos)
+            self.plot_widget.plotItem.geometryChanged.connect(update_pos)
+        
+        if show:
+            # Ensure it is in the scene
+            if self.backend_legend.scene() is None and self.plot_widget.scene() is not None:
+                self.plot_widget.scene().addItem(self.backend_legend)
+            
+            # Update with current backend color map
+            if hasattr(self, '_backend_color_map') and self._backend_color_map:
+                self.backend_legend.setItems(self._backend_color_map)
+            
+            self.backend_legend.setVisible(True)
+            # Force update position immediately
+            self.backend_legend.setAnchor(self.plot_widget.plotItem.getViewBox())
+        else:
+            if hasattr(self, 'backend_legend'):
+                self.backend_legend.setVisible(False)
+                if self.backend_legend.scene() is not None:
+                    self.plot_widget.scene().removeItem(self.backend_legend)
 
     def _update_freq_legend(self, show, f_min=0.0, f_max=0.0):
         """Update the frequency pseudo-colorbar legend using SimpleColorBar."""
@@ -3077,6 +3211,99 @@ class MainWindow(QMainWindow):
         else:
             getattr(self, action_attr).setText(text)
 
+    def _load_color_overrides(self):
+        """Load color overrides from QSettings."""
+        settings = QSettings("JUG", "JUG")
+        
+        # Load backend color overrides
+        settings.beginGroup("PlotColors/backends")
+        for backend_name in settings.childKeys():
+            color_hex = settings.value(backend_name)
+            if color_hex:
+                color = QColor(color_hex)
+                if color.isValid():
+                    self._backend_color_overrides[backend_name] = color
+        settings.endGroup()
+        
+        # Load noise color overrides
+        settings.beginGroup("PlotColors/noise")
+        for process_name in settings.childKeys():
+            color_hex = settings.value(process_name)
+            if color_hex:
+                color = QColor(color_hex)
+                if color.isValid():
+                    self._noise_color_overrides[process_name] = color
+        settings.endGroup()
+    
+    def _save_color_overrides(self):
+        """Save color overrides to QSettings."""
+        settings = QSettings("JUG", "JUG")
+        
+        # Save backend color overrides
+        settings.beginGroup("PlotColors/backends")
+        settings.remove("")  # Clear existing
+        for backend_name, color in self._backend_color_overrides.items():
+            settings.setValue(backend_name, color.name(QColor.HexArgb))
+        settings.endGroup()
+        
+        # Save noise color overrides
+        settings.beginGroup("PlotColors/noise")
+        settings.remove("")  # Clear existing
+        for process_name, color in self._noise_color_overrides.items():
+            settings.setValue(process_name, color.name(QColor.HexArgb))
+        settings.endGroup()
+        
+        settings.sync()
+
+    def _open_color_customization_dialog(self):
+        """Open the color customization dialog."""
+        from jug.gui.dialogs.plot_colors_dialog import PlotColorsDialog
+        
+        # Get active noise processes
+        active_noise = []
+        if self.noise_panel is not None:
+            active_noise = list(self.noise_panel.get_realise_processes())
+        
+        # Create dialog
+        dialog = PlotColorsDialog(
+            toa_flags=self.toa_flags,
+            noise_processes=active_noise,
+            parent=self
+        )
+        
+        # Set current overrides
+        dialog.setOverrides(self._backend_color_overrides, self._noise_color_overrides)
+        
+        # Connect for live preview
+        dialog.colorsChanged.connect(self._on_color_overrides_changed)
+        
+        # Show dialog
+        result = dialog.exec()
+        
+        if result == QDialog.Accepted:
+            # Apply final overrides
+            self._backend_color_overrides = dialog.backend_overrides.copy()
+            self._noise_color_overrides = dialog.noise_overrides.copy()
+            self._on_color_overrides_changed(
+                self._backend_color_overrides,
+                self._noise_color_overrides
+            )
+            # Save to settings
+            self._save_color_overrides()
+    
+    def _on_color_overrides_changed(self, backend_overrides: dict, noise_overrides: dict):
+        """Handle color override changes from dialog (for live preview)."""
+        # Update overrides
+        self._backend_color_overrides = backend_overrides
+        self._noise_color_overrides = noise_overrides
+        
+        # Invalidate backend cache
+        self._backend_brushes_cache = None
+        
+        # Update plot
+        if self.scatter_item is not None:
+            self._update_plot(auto_range=False)
+
     def on_toggle_color_variant(self):
         """Toggle data color variant (navy/burgundy in light, classic/scilab in dark)."""
         if is_dark_mode():
@@ -3130,6 +3357,9 @@ class MainWindow(QMainWindow):
 
             # Update pyqtgraph plot widget (doesn't use QSS)
             configure_plot_widget(self.plot_widget)
+            
+            # Invalidate backend color cache (theme-dependent palettes)
+            self._backend_brushes_cache = None
             
             # Explicitly style plot containers (force theme application)
             if hasattr(self, 'plot_container'):

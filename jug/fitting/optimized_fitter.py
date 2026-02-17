@@ -1216,6 +1216,7 @@ def _build_setup_common(
     extras: Dict[str, Any],
     noise_config: object,
     verbose: bool = False,
+    subtract_noise_sec: Optional[np.ndarray] = None,
 ) -> GeneralFitSetup:
     """Shared setup builder for both file-based and cache-based paths.
 
@@ -1234,6 +1235,10 @@ def _build_setup_common(
         ``roemer_shapiro_sec``, ``ssb_obs_pos_ls``, ``sw_geometry_pc``.
     noise_config : NoiseConfig
     verbose : bool
+    subtract_noise_sec : ndarray of float, optional
+        Per-TOA noise realization (in seconds) to subtract from dt_sec_cached
+        before fitting. This implements the Tempo2-style workflow where noise
+        is subtracted from the data and then refit without that noise process.
     """
     # --- White noise scaling (EFAC/EQUAD) and ECORR whitener ---------------
     ecorr_whitener = None
@@ -1280,15 +1285,17 @@ def _build_setup_common(
 
     if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
         red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
+        print(f"[SETUP] Building RED NOISE basis: {red_noise_basis.shape[1]} columns")
         if verbose:
             print(f"  Red noise: log10_A={red_noise_proc.log10_A:.3f}, "
-                  f"gamma={red_noise_proc.gamma:.3f}, "
+                  f"gamma={red_noise_proc.log10_A:.3f}, "
                   f"{red_noise_proc.n_harmonics} harmonics → {red_noise_basis.shape[1]} columns")
 
     if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
         dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
             toas_mjd, freq_mhz_bary
         )
+        print(f"[SETUP] Building DM NOISE basis: {dm_noise_basis.shape[1]} columns")
         if verbose:
             print(f"  DM noise: log10_A={dm_noise_proc.log10_A:.3f}, "
                   f"gamma={dm_noise_proc.gamma:.3f}, "
@@ -1407,6 +1414,15 @@ def _build_setup_common(
             raise ValueError("NE_SW fitting requires sw_geometry_pc.")
         ne_sw_val = float(params.get('NE_SW', params.get('NE1AU', 0.0)))
         initial_sw_delay = K_DM_SEC * ne_sw_val * sw_geometry_pc / (np.array(freq_mhz_bary) ** 2)
+
+    # --- Subtract noise realization from dt_sec (Tempo2-style workflow) ------
+    if subtract_noise_sec is not None:
+        dt_sec_cached = dt_sec_cached - subtract_noise_sec
+        if dt_sec_ld is not None:
+            dt_sec_ld = dt_sec_ld - np.asarray(subtract_noise_sec, dtype=np.longdouble)
+        if verbose:
+            print(f"  Applied noise subtraction to dt_sec: "
+                  f"RMS correction = {np.std(subtract_noise_sec)*1e6:.3f} μs")
 
     # --- Assemble GeneralFitSetup ------------------------------------------
     return GeneralFitSetup(
@@ -1921,52 +1937,44 @@ def _run_general_fit_iterations(
                 )
             M_columns.append(all_derivs[param])
         
-        # Assemble design matrix
-        M = np.column_stack(M_columns)
-        
-        # Track how many columns are timing parameters (before augmentation)
-        n_timing_params = M.shape[1]
-        
-        # Augment with red noise Fourier basis columns (if present)
-        n_red_noise_cols = 0
-        if getattr(setup, 'red_noise_basis', None) is not None:
-            n_red_noise_cols = setup.red_noise_basis.shape[1]
-            M = np.column_stack([M, setup.red_noise_basis])
-        
-        # Augment with DM noise Fourier basis columns (if present)
-        n_dm_noise_cols = 0
-        if getattr(setup, 'dm_noise_basis', None) is not None:
-            n_dm_noise_cols = setup.dm_noise_basis.shape[1]
-            M = np.column_stack([M, setup.dm_noise_basis])
-        
-        # Augment with ECORR quantization matrix columns (if present)
-        n_ecorr_cols = 0
-        if getattr(setup, 'ecorr_basis', None) is not None:
-            n_ecorr_cols = setup.ecorr_basis.shape[1]
-            M = np.column_stack([M, setup.ecorr_basis])
-        
-        # Augment with DMX design matrix columns (if present)
-        n_dmx_cols = 0
-        if getattr(setup, 'dmx_design_matrix', None) is not None:
-            n_dmx_cols = setup.dmx_design_matrix.shape[1]
-            M = np.column_stack([M, setup.dmx_design_matrix])
-        
+        # Count columns first
+        n_timing_params = len(M_columns)
+        n_red_noise_cols = setup.red_noise_basis.shape[1] if getattr(setup, 'red_noise_basis', None) is not None else 0
+        n_dm_noise_cols = setup.dm_noise_basis.shape[1] if getattr(setup, 'dm_noise_basis', None) is not None else 0
+        n_ecorr_cols = setup.ecorr_basis.shape[1] if getattr(setup, 'ecorr_basis', None) is not None else 0
+        n_dmx_cols = setup.dmx_design_matrix.shape[1] if getattr(setup, 'dmx_design_matrix', None) is not None else 0
         n_augmented = n_red_noise_cols + n_dm_noise_cols + n_ecorr_cols + n_dmx_cols
-        
-        # Phase offset handling:
-        # For WLS (no augmentation): mean-subtract timing columns to absorb phase offset.
-        # For GLS (augmented): add explicit Offset column (like PINT) to absorb the
-        # residual mean in the joint solve. Mean subtraction of timing columns only
-        # would be inconsistent with the noise columns.
         has_offset = n_augmented > 0
+        total_cols = (1 if has_offset else 0) + n_timing_params + n_augmented
+
+        # Pre-allocate design matrix
+        M = np.empty((len(toas_mjd), total_cols), dtype=np.float64)
+        col = 0
         if has_offset:
-            offset_col = np.ones((M.shape[0], 1), dtype=np.float64)
-            M = np.column_stack([offset_col, M])
-            n_timing_cols = n_timing_params + 1  # Offset + timing params
-        else:
+            M[:, 0] = 1.0
+            col = 1
+        for i, mc in enumerate(M_columns):
+            M[:, col + i] = np.asarray(mc, dtype=np.float64)
+        col += n_timing_params
+        n_timing_cols = (1 if has_offset else 0) + n_timing_params
+
+        if n_red_noise_cols > 0:
+            M[:, col:col + n_red_noise_cols] = setup.red_noise_basis
+            col += n_red_noise_cols
+        if n_dm_noise_cols > 0:
+            M[:, col:col + n_dm_noise_cols] = setup.dm_noise_basis
+            col += n_dm_noise_cols
+        if n_ecorr_cols > 0:
+            M[:, col:col + n_ecorr_cols] = setup.ecorr_basis
+            col += n_ecorr_cols
+        if n_dmx_cols > 0:
+            M[:, col:col + n_dmx_cols] = setup.dmx_design_matrix
+            col += n_dmx_cols
+
+        # Mean subtraction for WLS (non-augmented) path
+        if not has_offset:
             col_means = (weights @ M) / sum_weights
             M -= col_means[np.newaxis, :]
-            n_timing_cols = n_timing_params
         
         # Solve WLS to get step direction
         # When ECORR whitener is present AND no noise augmentation, pre-whiten
@@ -1990,7 +1998,7 @@ def _run_general_fit_iterations(
             # FAST solver: QR-based lstsq with proper conditioning
             r1 = r_solve / sigma_solve
             M1 = M_solve / sigma_solve[:, None]
-            col_norms = np.sqrt(np.sum(M1**2, axis=0))
+            col_norms = np.asarray(jnp.sqrt(jnp.sum(jnp.array(M1)**2, axis=0)))
             col_norms = np.where(col_norms == 0, 1.0, col_norms)
             M2 = M1 / col_norms[None, :]
             
@@ -2012,15 +2020,17 @@ def _run_general_fit_iterations(
                     offset += n_ecorr_cols
                 # DMX has no prior (flat prior → no regularization)
                 MtM += np.diag(prior_inv)
+                MtM_j = jnp.array(MtM)
+                Mtr_j = jnp.array(Mtr)
                 try:
-                    delta_normalized = np.linalg.solve(MtM, Mtr)
-                except np.linalg.LinAlgError:
-                    delta_normalized = np.linalg.lstsq(MtM, Mtr, rcond=None)[0]
+                    delta_normalized = np.asarray(jnp.linalg.solve(MtM_j, Mtr_j))
+                except Exception:
+                    delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
                 delta_params_all = delta_normalized / col_norms
                 try:
-                    cov_all = np.linalg.inv(MtM)
-                except np.linalg.LinAlgError:
-                    cov_all = np.linalg.pinv(MtM)
+                    cov_all = np.asarray(jnp.linalg.inv(MtM_j))
+                except Exception:
+                    cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
                 cov_all = (cov_all / col_norms).T / col_norms
                 # Extract timing parameters (skip Offset column if present)
                 t0 = 1 if has_offset else 0
@@ -2028,13 +2038,14 @@ def _run_general_fit_iterations(
                 cov = cov_all[t0:n_timing_cols, t0:n_timing_cols]
                 _iter_noise_coeffs = delta_params_all[n_timing_cols:]
             else:
-                delta_normalized, _, _, _ = np.linalg.lstsq(M2, r1, rcond=None)
+                delta_normalized = np.asarray(jnp.linalg.lstsq(jnp.array(M2), jnp.array(r1), rcond=None)[0])
                 delta_params = delta_normalized / col_norms
                 M2tM2 = M2.T @ M2
+                M2tM2_j = jnp.array(M2tM2)
                 try:
-                    cov_normalized = np.linalg.inv(M2tM2)
-                except np.linalg.LinAlgError:
-                    cov_normalized = np.linalg.pinv(M2tM2)
+                    cov_normalized = np.asarray(jnp.linalg.inv(M2tM2_j))
+                except Exception:
+                    cov_normalized = np.asarray(jnp.linalg.pinv(M2tM2_j))
                 cov = (cov_normalized / col_norms).T / col_norms
         else:
             if n_augmented > 0:
@@ -2043,7 +2054,7 @@ def _run_general_fit_iterations(
                 r1 = r_solve / sigma_solve
                 M1 = M_solve / sigma_solve[:, None]
                 # Normalize columns for conditioning (like PINT's normalize_designmatrix)
-                col_norms = np.sqrt(np.sum(M1**2, axis=0))
+                col_norms = np.asarray(jnp.sqrt(jnp.sum(jnp.array(M1)**2, axis=0)))
                 col_norms = np.where(col_norms == 0, 1.0, col_norms)
                 M2 = M1 / col_norms[None, :]
                 # Normal equations: (M^T M + Φ^{-1}) δp = M^T r
@@ -2063,15 +2074,17 @@ def _run_general_fit_iterations(
                     prior_inv[offset:offset + n_ecorr_cols] = 1.0 / (setup.ecorr_prior * col_norms[offset:offset + n_ecorr_cols]**2)
                     offset += n_ecorr_cols
                 MtM += np.diag(prior_inv)
+                MtM_j = jnp.array(MtM)
+                Mtr_j = jnp.array(Mtr)
                 try:
-                    delta_normalized = np.linalg.solve(MtM, Mtr)
-                except np.linalg.LinAlgError:
-                    delta_normalized = np.linalg.lstsq(MtM, Mtr, rcond=None)[0]
+                    delta_normalized = np.asarray(jnp.linalg.solve(MtM_j, Mtr_j))
+                except Exception:
+                    delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
                 delta_params_all = delta_normalized / col_norms
                 try:
-                    cov_all = np.linalg.inv(MtM)
-                except np.linalg.LinAlgError:
-                    cov_all = np.linalg.pinv(MtM)
+                    cov_all = np.asarray(jnp.linalg.inv(MtM_j))
+                except Exception:
+                    cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
                 cov_all = (cov_all / col_norms).T / col_norms
                 # Extract timing parameters (skip Offset column if present)
                 t0 = 1 if has_offset else 0
@@ -2347,13 +2360,20 @@ def _build_general_fit_setup_from_cache(
     params_dict: Dict[str, float],
     fit_params: List[str],
     toa_mask: Optional[np.ndarray] = None,
-    noise_config: Optional[object] = None
+    noise_config: Optional[object] = None,
+    subtract_noise_sec: Optional[np.ndarray] = None
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
     Extracts arrays from cache, applies TOA mask, then delegates to the
     shared ``_build_setup_common()`` builder for noise wiring and
     parameter setup.
+    
+    Parameters
+    ----------
+    subtract_noise_sec : ndarray of float, optional
+        Per-TOA noise realization (in seconds) to subtract from dt_sec_cached.
+        If provided, toa_mask is applied before passing to _build_setup_common.
     """
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
@@ -2388,6 +2408,8 @@ def _build_general_fit_setup_from_cache(
         errors_us = errors_us[toa_mask]
         if toa_flags is not None:
             toa_flags = [toa_flags[i] for i, m in enumerate(toa_mask) if m]
+        if subtract_noise_sec is not None:
+            subtract_noise_sec = subtract_noise_sec[toa_mask]
         for key in ('prebinary_delay_sec', 'roemer_shapiro_sec',
                      'ssb_obs_pos_ls', 'sw_geometry_pc'):
             if extras[key] is not None:
@@ -2405,7 +2427,11 @@ def _build_general_fit_setup_from_cache(
     # Build NoiseConfig
     from jug.engine.noise_mode import NoiseConfig
     if noise_config is None:
+        print(f"[FITTER] noise_config was None, auto-detecting from par file")
         noise_config = NoiseConfig.from_par(params_dict)
+    else:
+        enabled = {k: v for k, v in noise_config.enabled.items() if v}
+        print(f"[FITTER] noise_config received, enabled: {list(enabled.keys())}")
 
     return _build_setup_common(
         params=params_dict,
@@ -2420,6 +2446,7 @@ def _build_general_fit_setup_from_cache(
         extras=extras,
         noise_config=noise_config,
         verbose=False,
+        subtract_noise_sec=subtract_noise_sec,
     )
 
 

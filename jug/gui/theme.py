@@ -221,6 +221,60 @@ class SynthwaveTheme:
 
 
 # =============================================================================
+# CATEGORICAL PALETTES FOR BACKEND COLORING
+# =============================================================================
+
+# Light theme backend palette (12 colors)
+# Muted but distinct colors that work on warm paper background (#FAF8F5)
+# Colorblind-safe, high contrast, not clashing with grid/axis
+BACKEND_PALETTE_LIGHT = [
+    (43, 65, 98, 220),       # Navy (scientific, primary)
+    (94, 24, 3, 220),        # Burgundy (warm red-brown)
+    (31, 77, 74, 220),       # Teal (accent color)
+    (181, 137, 10, 220),     # Warm amber
+    (45, 106, 79, 220),      # Muted green (forest)
+    (158, 42, 43, 220),      # Muted red
+    (88, 57, 114, 220),      # Purple
+    (204, 97, 62, 220),      # Terracotta
+    (65, 105, 225, 200),     # Royal blue
+    (139, 69, 19, 220),      # Saddle brown
+    (70, 130, 180, 200),     # Steel blue
+    (128, 128, 0, 200),      # Olive
+]
+
+# Dark theme backend palette (12 colors)
+# Saturated neon-ish colors that work on dark background (#2a2139)
+# High visibility, distinct hues, colorblind-safe
+BACKEND_PALETTE_DARK = [
+    (54, 249, 246, 220),     # Neon cyan (primary)
+    (255, 126, 219, 220),    # Neon pink
+    (254, 222, 93, 220),     # Neon yellow
+    (249, 126, 114, 220),    # Neon orange
+    (114, 241, 184, 220),    # Neon green
+    (254, 68, 80, 220),      # Neon red
+    (3, 237, 249, 220),      # Electric blue
+    (187, 134, 252, 220),    # Neon purple
+    (255, 184, 108, 220),    # Warm orange
+    (108, 226, 108, 220),    # Lime green
+    (255, 105, 180, 220),    # Hot pink
+    (135, 206, 250, 220),    # Light sky blue
+]
+
+# Theme-aware noise realization colors
+NOISE_COLORS_LIGHT = {
+    "RedNoise": (158, 42, 43, 180),     # Muted red with transparency
+    "DMNoise": (45, 106, 79, 180),      # Muted green with transparency
+    "ECORR": (88, 57, 114, 180),        # Purple with transparency
+}
+
+NOISE_COLORS_DARK = {
+    "RedNoise": (254, 68, 80, 180),     # Neon red with transparency
+    "DMNoise": (114, 241, 184, 180),    # Neon green with transparency
+    "ECORR": (187, 134, 252, 180),      # Neon purple with transparency
+}
+
+
+# =============================================================================
 # SYNTHWAVE VARIANT SYSTEM
 # =============================================================================
 _synthwave_variant = "classic"  # "classic" or "scilab"
@@ -1213,6 +1267,29 @@ class PlotTheme:
         else:
             # Light mode: teal for key metric emphasis
             return LightTheme.ACCENT_PRIMARY  # #1F4D4A teal
+
+    @classmethod
+    def get_backend_palette(cls):
+        """Get categorical color palette for backend coloring.
+        
+        Returns theme-appropriate palette with 12 distinct colors.
+        Each color is an RGBA tuple (R, G, B, A) with values 0-255.
+        """
+        if is_dark_mode():
+            return BACKEND_PALETTE_DARK
+        else:
+            return BACKEND_PALETTE_LIGHT
+
+    @classmethod
+    def get_noise_colors(cls):
+        """Get theme-aware noise realization colors.
+        
+        Returns dict mapping process name to RGBA tuple.
+        """
+        if is_dark_mode():
+            return NOISE_COLORS_DARK.copy()
+        else:
+            return NOISE_COLORS_LIGHT.copy()
 
 
 def get_plot_axis_style():

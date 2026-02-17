@@ -195,7 +195,10 @@ class NoiseProcessRow(QFrame):
             f"border: none; font-size: 10px; padding: 2px 0; text-align: left; }}"
             f"QPushButton:hover {{ color: {Colors.ACCENT_ERROR}; }}"
         )
-        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.process_name))
+        def on_remove_clicked():
+            print(f"[ROW] Remove button clicked for {self.process_name}")
+            self.remove_requested.emit(self.process_name)
+        remove_btn.clicked.connect(on_remove_clicked)
         detail_layout.addWidget(remove_btn)
 
         root.addWidget(self.detail_widget)
@@ -680,12 +683,17 @@ class NoiseControlPanel(QWidget):
         return result
 
     def _on_process_toggled(self, name: str, enabled: bool):
+        print(f"[PANEL] Process toggled: {name} -> {enabled}")
         if self._noise_config is None:
+            print(f"[PANEL] noise_config is None!")
             return
+        print(f"[PANEL] noise_config ID: {id(self._noise_config)}")
+        print(f"[PANEL] Before: {self._noise_config.enabled}")
         if enabled:
             self._noise_config.enable(name)
         else:
             self._noise_config.disable(name)
+        print(f"[PANEL] After: {self._noise_config.enabled}")
         self.noise_config_changed.emit(self._noise_config)
 
     def _on_param_value_changed(self, proc_name: str, key: str, value: str):
@@ -735,14 +743,21 @@ class NoiseControlPanel(QWidget):
 
     def _on_remove_process(self, name: str):
         """Remove a noise process row."""
+        print(f"[PANEL] Removing process: {name}")
         row = self._rows.pop(name, None)
         if row is None:
+            print(f"[PANEL] Row not found for {name}")
             return
         row.setParent(None)
         row.deleteLater()
         if self._noise_config:
+            print(f"[PANEL] Disabling {name} in noise_config (ID: {id(self._noise_config)})")
+            print(f"[PANEL] Before disable: {self._noise_config.enabled}")
             self._noise_config.disable(name)
+            print(f"[PANEL] After disable: {self._noise_config.enabled}")
             self.noise_config_changed.emit(self._noise_config)
+        else:
+            print(f"[PANEL] noise_config is None!")
         self._rebuild_add_list()
 
     def _toggle_add_list(self):

@@ -32,7 +32,8 @@ class FitWorker(QRunnable):
     """
 
     def __init__(self, session, fit_params: list[str], toa_mask: np.ndarray = None,
-                 solver_mode: str = "exact", noise_config=None):
+                 solver_mode: str = "exact", noise_config=None,
+                 subtract_noise_sec: np.ndarray = None):
         """
         Initialize the fit worker.
 
@@ -49,6 +50,9 @@ class FitWorker(QRunnable):
             Solver mode: "exact" (SVD, reproducible) or "fast" (QR, faster).
         noise_config : NoiseConfig, optional
             Noise process configuration (which processes are active).
+        subtract_noise_sec : ndarray of float, optional
+            Per-TOA noise realization (in seconds) to subtract from dt_sec
+            before fitting (Tempo2-style noise subtraction workflow).
         """
         super().__init__()
         self.signals = WorkerSignals()
@@ -60,6 +64,7 @@ class FitWorker(QRunnable):
         if self.solver_mode not in ("exact", "fast"):
             self.solver_mode = "exact"
         self.noise_config = noise_config
+        self.subtract_noise_sec = subtract_noise_sec
         self.is_running = True
 
     @Slot()
@@ -76,7 +81,8 @@ class FitWorker(QRunnable):
                 verbose=False,
                 toa_mask=self.toa_mask,
                 solver_mode=self.solver_mode,
-                noise_config=self.noise_config
+                noise_config=self.noise_config,
+                subtract_noise_sec=self.subtract_noise_sec
             )
 
             # Copy numpy arrays to ensure thread safety

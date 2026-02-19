@@ -369,6 +369,22 @@ def parse_red_noise_params(params: dict) -> Optional[RedNoiseProcess]:
             gamma=float(params["RN_gamma"]),
             n_harmonics=int(params.get("RN_ncoeff", 30)),
         )
+    # Tempo2-native RNAMP/RNIDX convention (from original Tempo)
+    # NOTE: Conversion is NOT trivial — RNAMP has units yr^(3/2) µs
+    # See Tempo2 readParfile.C line 1826 for reference
+    if "RNAMP" in params and "RNIDX" in params:
+        import math
+        rnamp_str = str(params["RNAMP"]).replace("D", "e").replace("d", "e")
+        rnamp = float(rnamp_str)
+        # Tempo2 convention: convert from Tempo amplitude to TempoNest log10_A
+        # log10(2π√3 / (sec_per_yr × 1e6) × RNAMP)
+        _SEC_PER_YR = 86400.0 * 365.25
+        log10_A = math.log10(2.0 * math.pi * math.sqrt(3.0) / (_SEC_PER_YR * 1e6) * rnamp)
+        gamma = -float(params["RNIDX"])  # Sign flip
+        # RNC is the RNAMP/RNIDX analogue of TNRedC (number of Fourier harmonics)
+        # Tempo2 hardcodes 100, but we default to 30 for consistency
+        n_harmonics = int(params.get("RNC", params.get("TNREDC", params.get("TNRedC", 30))))
+        return RedNoiseProcess(log10_A=log10_A, gamma=gamma, n_harmonics=n_harmonics)
     return None
 
 

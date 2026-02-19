@@ -164,6 +164,20 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
                 continue
             entries.append(WhiteNoiseEntry('ECORR', flag_name, flag_value, value))
 
+        elif keyword == 'DMEFAC':
+            # DMEFAC: DM uncertainty scale factor per backend
+            # Format: DMEFAC -f <flag_value> <value>
+            # Identical structure to T2EFAC but applies to DM measurements
+            if len(parts) < 4:
+                continue
+            flag_name = parts[1].lstrip('-')
+            flag_value = parts[2]
+            try:
+                value = float(parts[3])
+            except ValueError:
+                continue
+            entries.append(WhiteNoiseEntry('DMEFAC', flag_name, flag_value, value))
+
         elif keyword == 'TNECORR':
             # TempoNest convention: value is log10(ECORR in seconds)
             if len(parts) < 4:
@@ -266,8 +280,13 @@ def build_backend_mask(
 
     mask = np.zeros(n, dtype=bool)
     for i, flags in enumerate(toa_flags):
-        if flag_name in flags and flags[flag_name] == flag_value:
-            mask[i] = True
+        if flag_name in flags:
+            val = flags[flag_name]
+            if isinstance(val, list):
+                if flag_value in val:
+                    mask[i] = True
+            elif val == flag_value:
+                mask[i] = True
     return mask
 
 

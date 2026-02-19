@@ -68,12 +68,15 @@ def _has_ecorr(params: dict) -> bool:
 
 
 def _has_red_noise(params: dict) -> bool:
-    """Detect red noise parameters (TempoNest or enterprise conventions)."""
+    """Detect red noise parameters (TempoNest, enterprise, or Tempo2 conventions)."""
     if "TNRedAmp" in params and "TNRedGam" in params:
         return True
     if "TNREDAMP" in params and "TNREDGAM" in params:
         return True
     if "RN_log10_A" in params and "RN_gamma" in params:
+        return True
+    # Tempo2-native format
+    if "RNAMP" in params and "RNIDX" in params:
         return True
     return False
 

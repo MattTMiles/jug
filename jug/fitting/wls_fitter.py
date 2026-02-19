@@ -94,6 +94,14 @@ def wls_solve_svd(
     Sigma_ = (VT.T / (Sdiag**2)) @ VT
     Sigma = (Sigma_ / Adiag).T / Adiag
     
+    # Check for NaN in covariance (can occur with ill-conditioned matrices)
+    # If NaN detected, use pseudoinverse approach
+    if jnp.any(jnp.isnan(Sigma)):
+        # Recompute using pseudoinverse: pinv(M2.T @ M2)
+        M2TM2 = M2.T @ M2
+        Sigma_ = jnp.linalg.pinv(M2TM2)
+        Sigma = (Sigma_ / Adiag).T / Adiag
+    
     # Step 7: Compute parameter updates
     # dpars = V S^{-1} U^T r1
     # Then unnormalize: dpars_final = A^{-1} dpars

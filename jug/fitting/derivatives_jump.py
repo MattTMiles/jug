@@ -131,7 +131,11 @@ def create_jump_mask_from_flags(
     """
     mask = np.zeros(len(toa_flags), dtype=bool)
     for i, flags in enumerate(toa_flags):
-        if flags.get(flag_name) == flag_value:
+        val = flags.get(flag_name)
+        if isinstance(val, list):
+            if flag_value in val:
+                mask[i] = True
+        elif val == flag_value:
             mask[i] = True
     return mask
 

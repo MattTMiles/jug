@@ -92,6 +92,21 @@ class TimingSession:
             print(f"Opening session: {self.par_file.name} + {self.tim_file.name}")
         
         self.params = parse_par_file(self.par_file)
+        
+        # Convert TCB→TDB at ingest time so all downstream code sees TDB params
+        from jug.io.par_reader import validate_par_timescale
+        validate_par_timescale(self.params, context="TimingSession", verbose=verbose)
+        
+        # Tempo2's T2 model uses IAU convention for KIN/KOM.
+        # JUG's DDK code (from PINT) uses DT92 convention.
+        # Convert: KIN_DT92 = 180 - KIN_IAU, KOM_DT92 = 90 - KOM_IAU
+        binary = self.params.get('BINARY', '').upper()
+        if binary == 'T2' and ('KIN' in self.params or 'KOM' in self.params):
+            if 'KIN' in self.params:
+                self.params['KIN'] = 180.0 - float(self.params['KIN'])
+            if 'KOM' in self.params:
+                self.params['KOM'] = 90.0 - float(self.params['KOM'])
+        
         self.toas_data = parse_tim_file_mjds(self.tim_file)
         self._initial_params = dict(self.params)  # Copy for comparison
         
@@ -166,6 +181,16 @@ class TimingSession:
                     params['PMBETA'] = ecl['PMBETA']
 
         # Build temp par file with updated params
+        # Convert KIN/KOM from DT92 back to IAU convention for par file
+        # (compute_residuals_simple will apply IAU→DT92 again when reading)
+        binary = params.get('BINARY', '').upper()
+        if binary == 'T2' and ('KIN' in params or 'KOM' in params):
+            params = dict(params)  # avoid mutating caller's dict
+            if 'KIN' in params:
+                params['KIN'] = 180.0 - float(params['KIN'])
+            if 'KOM' in params:
+                params['KOM'] = 90.0 - float(params['KOM'])
+
         with open(self.par_file, 'r') as f:
             original_lines = f.readlines()
 
@@ -197,11 +222,12 @@ class TimingSession:
             else:
                 updated_lines.append(line)
 
-        # Add any new parameters not in original file
+        # Add any new parameters not in original file (skip internal keys)
         for param_name, value in params.items():
-            if param_name not in updated_params:
-                new_line = format_param_value(param_name, value) + '\n'
-                updated_lines.append(new_line)
+            if param_name not in updated_params and not param_name.startswith('_'):
+                if isinstance(value, (int, float, str)):
+                    new_line = format_param_value(param_name, value) + '\n'
+                    updated_lines.append(new_line)
 
         # Write to temporary file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.par', delete=False) as tmp:
@@ -342,6 +368,16 @@ class TimingSession:
                         params['PMLAMBDA'] = ecl['PMLAMBDA']
                     if 'PMBETA' in params:
                         params['PMBETA'] = ecl['PMBETA']
+
+            # Convert KIN/KOM from DT92 back to IAU convention for par file
+            # (compute_residuals_simple will apply IAU→DT92 again when reading)
+            binary = params.get('BINARY', '').upper()
+            if binary == 'T2' and ('KIN' in params or 'KOM' in params):
+                params = dict(params)  # avoid mutating caller's dict
+                if 'KIN' in params:
+                    params['KIN'] = 180.0 - float(params['KIN'])
+                if 'KOM' in params:
+                    params['KOM'] = 90.0 - float(params['KOM'])
 
             # Update parameters
             updated_lines = []
@@ -595,6 +631,7 @@ class TimingSession:
                 'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
                 'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
                 'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
+                'jump_phase': cached_result.get('jump_phase'),
             }
             
             # Build setup from cache (with optional TOA mask)

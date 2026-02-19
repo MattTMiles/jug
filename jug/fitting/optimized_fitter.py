@@ -196,8 +196,13 @@ class GeneralFitSetup:
     # DMX design matrix (Phase 2 integration)
     dmx_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmx_ranges) DMX design matrix
     dmx_labels: Optional[List[str]]          # DMX parameter labels
+    # DMJUMP design matrix
+    dmjump_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmjumps) DMJUMP design matrix
+    dmjump_labels: Optional[List[str]]          # DMJUMP parameter labels
     # JUMP masks {JUMP1: bool_mask, JUMP2: bool_mask, ...}
     jump_masks: Optional[Dict[str, np.ndarray]]
+    # JUMP phase offsets from par file (longdouble, F0 * JUMP_value per TOA)
+    jump_phase: Optional[np.ndarray]
     # Noise configuration (Phase 3 integration)
     noise_config: object  # NoiseConfig or None
 
@@ -783,6 +788,7 @@ def _fit_parameters_jax_incremental(
         dt_sec_ld = np.array(dt_sec_cached, dtype=np.longdouble)
     tdb_mjd = result['tdb_mjd']
     freq_bary_mhz = result['freq_bary_mhz']
+    jump_phase = result.get('jump_phase')
 
     # Cache initial DM delay (for incremental updates)
     initial_dm_params = {'DM': dm, 'DM1': dm1}
@@ -791,7 +797,8 @@ def _fit_parameters_jax_incremental(
     # Compute initial residuals via shared canonical function (longdouble precision)
     from jug.residuals.simple_calculator import compute_phase_residuals
     _, residuals_init = compute_phase_residuals(
-        dt_sec_ld, params, weights, subtract_mean=True
+        dt_sec_ld, params, weights, subtract_mean=True,
+        jump_phase=jump_phase
     )
     
     cache_time = time.time() - cache_start
@@ -1246,6 +1253,8 @@ def _build_setup_common(
     noise_lines = params.get('_noise_lines')
     if noise_lines and toa_flags is not None:
         from jug.noise.white import parse_noise_lines, apply_white_noise
+        
+        # No more unsupported noise keywords to warn about
         noise_entries = parse_noise_lines(noise_lines)
         if noise_entries:
             active_entries = [
@@ -1282,6 +1291,11 @@ def _build_setup_common(
     from jug.noise.red_noise import parse_red_noise_params, parse_dm_noise_params
     red_noise_proc = parse_red_noise_params(params)
     dm_noise_proc = parse_dm_noise_params(params)
+    
+    # Info message if Tempo2-native red noise format detected
+    if "RNAMP" in params and "RNIDX" in params and noise_config.is_enabled("RedNoise"):
+        if red_noise_proc is not None and verbose:
+            print("[SETUP] Converting RNAMP/RNIDX to TNRedAmp/TNRedGam format")
 
     if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
         red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
@@ -1312,6 +1326,69 @@ def _build_setup_common(
         )
         if verbose:
             print(f"  DMX: {len(dmx_ranges)} ranges → {dmx_design_matrix.shape[1]} columns")
+        
+        # Apply DMEFAC scaling to DMX design matrix
+        if noise_lines and toa_flags is not None:
+            from jug.noise.white import parse_noise_lines, build_backend_mask
+            dmefac_lines = [l for l in noise_lines if l.split()[0].upper() == 'DMEFAC']
+            if dmefac_lines:
+                # Parse DMEFAC entries
+                dmefac_entries = parse_noise_lines(dmefac_lines)
+                dmefac_entries = [e for e in dmefac_entries if e.kind == 'DMEFAC']
+                
+                if dmefac_entries:
+                    # Build per-TOA DMEFAC array (default 1.0)
+                    dmefac_array = np.ones(len(toas_mjd), dtype=np.float64)
+                    for entry in dmefac_entries:
+                        mask = build_backend_mask(toa_flags, entry.flag_name, entry.flag_value)
+                        dmefac_array[mask] = entry.value
+                    
+                    # Scale DMX design matrix rows by dividing by DMEFAC
+                    # This reduces DM precision for backends with DMEFAC > 1
+                    dmx_design_matrix = dmx_design_matrix / dmefac_array[:, np.newaxis]
+                    
+                    if verbose:
+                        n_scaled = np.sum(dmefac_array != 1.0)
+                        print(f"  DMEFAC: Applied scaling to {n_scaled}/{len(toas_mjd)} TOAs "
+                              f"({len(dmefac_entries)} backend groups)")
+
+    # --- DMJUMP design matrix ----------------------------------------------
+    dmjump_design_matrix = None
+    dmjump_labels = None
+    if noise_lines and toa_flags is not None:
+        from jug.noise.white import build_backend_mask
+        
+        dmjump_lines = [l for l in noise_lines if l.split()[0].upper() == 'DMJUMP']
+        if dmjump_lines:
+            # Parse DMJUMP lines: DMJUMP -fe <flag_value> <initial_value>
+            dmjump_specs = []
+            for line in dmjump_lines:
+                parts = line.split()
+                if len(parts) >= 4:
+                    flag_name = parts[1].lstrip('-')
+                    flag_value = parts[2]
+                    try:
+                        initial_dm_offset = float(parts[3])
+                    except ValueError:
+                        continue
+                    dmjump_specs.append((flag_name, flag_value, initial_dm_offset))
+            
+            if dmjump_specs:
+                # Build DMJUMP design matrix columns
+                n_dmjumps = len(dmjump_specs)
+                dmjump_design_matrix = np.zeros((len(toas_mjd), n_dmjumps), dtype=np.float64)
+                dmjump_labels = []
+                
+                # DM delay derivative: K_DM / freq^2 (same as DMX columns)
+                dm_deriv = K_DM_SEC / (freq_mhz_bary ** 2)
+                
+                for i, (flag_name, flag_value, initial_offset) in enumerate(dmjump_specs):
+                    mask = build_backend_mask(toa_flags, flag_name, flag_value)
+                    dmjump_design_matrix[mask, i] = dm_deriv[mask]
+                    dmjump_labels.append(f"DMJUMP_{flag_name}_{flag_value}")
+                
+                if verbose:
+                    print(f"  DMJUMP: {n_dmjumps} DM offsets → {n_dmjumps} columns")
 
     # --- ECORR GLS basis (alternative to whitener) -------------------------
     ecorr_basis = None
@@ -1325,6 +1402,31 @@ def _build_setup_common(
             ecorr_whitener = None  # Avoid double-counting
             if verbose:
                 print(f"  ECORR: {ecorr_basis.shape[1]} epoch groups in GLS basis")
+
+    # --- Auto-include fit-flagged JUMPs when correlated noise is active ------
+    # Without JUMP columns in the GLS design matrix, the Fourier noise basis
+    # absorbs per-backend offsets, inflating the noise realization.
+    has_correlated_noise = (red_noise_basis is not None or dm_noise_basis is not None
+                            or ecorr_basis is not None)
+    if has_correlated_noise and toa_flags is not None:
+        from jug.model.parameter_spec import is_jump_param
+        existing_jumps = {p for p in fit_params if is_jump_param(p)}
+        jump_lines = params.get('_jump_lines', [])
+        added_jumps = []
+        for idx, jl in enumerate(jump_lines):
+            jname = f'JUMP{idx + 1}'
+            if jname in existing_jumps:
+                continue
+            jparts = jl.strip().split()
+            try:
+                fit_idx = 5 if jparts[1].upper() == 'MJD' else 4
+                if len(jparts) > fit_idx and int(jparts[fit_idx]) == 1:
+                    fit_params = list(fit_params) + [jname]
+                    added_jumps.append(jname)
+            except (IndexError, ValueError):
+                pass
+        if added_jumps:
+            print(f"[SETUP] Auto-added {len(added_jumps)} fit-flagged JUMPs for GLS noise fit")
 
     # --- Derived weight arrays ---------------------------------------------
     errors_sec = errors_us * 1e-6
@@ -1416,6 +1518,7 @@ def _build_setup_common(
         initial_sw_delay = K_DM_SEC * ne_sw_val * sw_geometry_pc / (np.array(freq_mhz_bary) ** 2)
 
     # --- Subtract noise realization from dt_sec (Tempo2-style workflow) ------
+    jump_phase = extras.get('jump_phase')
     if subtract_noise_sec is not None:
         dt_sec_cached = dt_sec_cached - subtract_noise_sec
         if dt_sec_ld is not None:
@@ -1462,7 +1565,10 @@ def _build_setup_common(
         ecorr_prior=ecorr_prior,
         dmx_design_matrix=dmx_design_matrix,
         dmx_labels=dmx_labels,
+        dmjump_design_matrix=dmjump_design_matrix,
+        dmjump_labels=dmjump_labels,
         jump_masks=jump_masks,
+        jump_phase=jump_phase,
         noise_config=noise_config,
     )
 
@@ -1497,6 +1603,15 @@ def _build_general_fit_setup_from_files(
     if 'DECJ' in params and isinstance(params['DECJ'], str):
         params['DECJ'] = parse_dec(params['DECJ'])
 
+    # Tempo2's T2 model uses IAU convention for KIN/KOM.
+    # JUG's DDK code (from PINT) uses DT92 convention.
+    binary = params.get('BINARY', '').upper()
+    if binary == 'T2' and ('KIN' in params or 'KOM' in params):
+        if 'KIN' in params:
+            params['KIN'] = 180.0 - float(params['KIN'])
+        if 'KOM' in params:
+            params['KOM'] = 90.0 - float(params['KOM'])
+
     # Extract TOA arrays
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
     errors_us = np.array([toa.error_us for toa in toas_data])
@@ -1530,6 +1645,7 @@ def _build_general_fit_setup_from_files(
             'roemer_shapiro_sec': result.get('roemer_shapiro_sec'),
             'ssb_obs_pos_ls': result.get('ssb_obs_pos_ls'),
             'sw_geometry_pc': result.get('sw_geometry_pc'),
+            'jump_phase': result.get('jump_phase'),
         },
         noise_config=noise_config,
         verbose=verbose,
@@ -1620,27 +1736,26 @@ def _compute_full_model_residuals(
         sw_delay_change = new_sw_delay - setup.initial_sw_delay
         dt_sec_np = dt_sec_np - sw_delay_change
 
-    # Apply JUMP delay correction
+    # Update jump_phase for fitted JUMP parameters (JUMPs are phase offsets, not delays)
+    current_jump_phase = setup.jump_phase
     if setup.jump_masks:
         jump_params_list = [p for p in (setup.fit_param_list or []) if is_jump_param(p)]
         if jump_params_list:
-            # Compute current JUMP delay
-            new_jump_delay = np.zeros(len(tdb_mjd))
+            from jug.io.par_reader import get_longdouble
+            base = setup.jump_phase if setup.jump_phase is not None else np.zeros(len(tdb_mjd), dtype=np.longdouble)
+            current_jump_phase = np.array(base, dtype=np.longdouble).copy()
+            F0_ld = get_longdouble(params, 'F0')
             for jp in jump_params_list:
                 mask = setup.jump_masks.get(jp)
                 if mask is not None:
-                    new_jump_delay[mask] += params.get(jp, 0.0)
-            # Compute initial JUMP delay for comparison
-            init_jump_delay = np.zeros(len(tdb_mjd))
-            for jp in jump_params_list:
-                mask = setup.jump_masks.get(jp)
-                if mask is not None:
-                    init_jump_delay[mask] += setup.param_values_start[setup.fit_param_list.index(jp)]
-            dt_sec_np = dt_sec_np - (new_jump_delay - init_jump_delay)
+                    initial_val = setup.param_values_start[setup.fit_param_list.index(jp)]
+                    current_val = params.get(jp, 0.0)
+                    current_jump_phase[mask] += F0_ld * np.longdouble(current_val - initial_val)
 
     # Phase computation via shared canonical function (longdouble precision)
     residuals_us, residuals_sec = compute_phase_residuals(
-        dt_sec_np, params, weights, subtract_mean=True
+        dt_sec_np, params, weights, subtract_mean=True,
+        jump_phase=current_jump_phase
     )
 
     # Compute statistics
@@ -1723,6 +1838,7 @@ def _run_general_fit_iterations(
     initial_sw_delay = setup.initial_sw_delay
     sw_geometry_pc = setup.sw_geometry_pc
     jump_masks = setup.jump_masks
+    jump_phase_arr = setup.jump_phase
 
     # Precompute PINT-compatible pre-binary TOAs for binary fitting (only if needed)
     toas_prebinary_for_binary = None
@@ -1755,15 +1871,7 @@ def _run_general_fit_iterations(
     from jug.fitting.derivatives_fd import compute_fd_delay, compute_fd_derivatives
     from jug.fitting.derivatives_sw import compute_sw_derivatives
     from jug.residuals.simple_calculator import compute_phase_residuals
-
-    # Compute initial JUMP delay for iterative update
-    initial_jump_delay = None
-    if jump_params_list and jump_masks:
-        initial_jump_delay = np.zeros(len(toas_mjd))
-        for jp in jump_params_list:
-            mask = jump_masks.get(jp)
-            if mask is not None:
-                initial_jump_delay[mask] += params.get(jp, 0.0)
+    from jug.io.par_reader import get_longdouble
 
     # Convergence criteria
     xtol = 1e-12
@@ -1839,19 +1947,23 @@ def _run_general_fit_iterations(
             sw_delay_change = new_sw_delay - initial_sw_delay
             dt_sec_np = dt_sec_np - sw_delay_change
 
-        # If fitting JUMP parameters, update dt_sec with new JUMP delay
-        if jump_params_list and jump_masks and initial_jump_delay is not None:
-            new_jump_delay = np.zeros(len(toas_mjd))
+        # Update jump_phase for fitted JUMP parameters (JUMPs are phase offsets, not delays)
+        current_jump_phase = jump_phase_arr
+        if jump_params_list and jump_masks:
+            base = jump_phase_arr if jump_phase_arr is not None else np.zeros(len(toas_mjd), dtype=np.longdouble)
+            current_jump_phase = np.array(base, dtype=np.longdouble).copy()
+            F0_ld = get_longdouble(params, 'F0')
             for jp in jump_params_list:
                 mask = jump_masks.get(jp)
                 if mask is not None:
-                    new_jump_delay[mask] += params.get(jp, 0.0)
-            jump_delay_change = new_jump_delay - initial_jump_delay
-            dt_sec_np = dt_sec_np - jump_delay_change
+                    initial_val = param_values_start[fit_params.index(jp)]
+                    current_val = params.get(jp, 0.0)
+                    current_jump_phase[mask] += F0_ld * np.longdouble(current_val - initial_val)
 
         # Compute phase residuals from updated dt_sec via shared function (longdouble)
         _, residuals = compute_phase_residuals(
-            dt_sec_np, params, weights, subtract_mean=True
+            dt_sec_np, params, weights, subtract_mean=True,
+            jump_phase=current_jump_phase
         )
 
         # Build design matrix - BATCHED derivative computation
@@ -1943,7 +2055,8 @@ def _run_general_fit_iterations(
         n_dm_noise_cols = setup.dm_noise_basis.shape[1] if getattr(setup, 'dm_noise_basis', None) is not None else 0
         n_ecorr_cols = setup.ecorr_basis.shape[1] if getattr(setup, 'ecorr_basis', None) is not None else 0
         n_dmx_cols = setup.dmx_design_matrix.shape[1] if getattr(setup, 'dmx_design_matrix', None) is not None else 0
-        n_augmented = n_red_noise_cols + n_dm_noise_cols + n_ecorr_cols + n_dmx_cols
+        n_dmjump_cols = setup.dmjump_design_matrix.shape[1] if getattr(setup, 'dmjump_design_matrix', None) is not None else 0
+        n_augmented = n_red_noise_cols + n_dm_noise_cols + n_ecorr_cols + n_dmx_cols + n_dmjump_cols
         has_offset = n_augmented > 0
         total_cols = (1 if has_offset else 0) + n_timing_params + n_augmented
 
@@ -1970,6 +2083,9 @@ def _run_general_fit_iterations(
         if n_dmx_cols > 0:
             M[:, col:col + n_dmx_cols] = setup.dmx_design_matrix
             col += n_dmx_cols
+        if n_dmjump_cols > 0:
+            M[:, col:col + n_dmjump_cols] = setup.dmjump_design_matrix
+            col += n_dmjump_cols
 
         # Mean subtraction for WLS (non-augmented) path
         if not has_offset:
@@ -2024,11 +2140,17 @@ def _run_general_fit_iterations(
                 Mtr_j = jnp.array(Mtr)
                 try:
                     delta_normalized = np.asarray(jnp.linalg.solve(MtM_j, Mtr_j))
+                    # Check for NaN - solve() can silently return NaN for singular matrices
+                    if np.any(np.isnan(delta_normalized)):
+                        delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
                 except Exception:
                     delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
                 delta_params_all = delta_normalized / col_norms
                 try:
                     cov_all = np.asarray(jnp.linalg.inv(MtM_j))
+                    # Check for NaN - inv() can silently return NaN for ill-conditioned matrices
+                    if np.any(np.isnan(cov_all)):
+                        cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
                 except Exception:
                     cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
                 cov_all = (cov_all / col_norms).T / col_norms
@@ -2078,11 +2200,17 @@ def _run_general_fit_iterations(
                 Mtr_j = jnp.array(Mtr)
                 try:
                     delta_normalized = np.asarray(jnp.linalg.solve(MtM_j, Mtr_j))
+                    # Check for NaN - solve() can silently return NaN for singular matrices
+                    if np.any(np.isnan(delta_normalized)):
+                        delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
                 except Exception:
                     delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
                 delta_params_all = delta_normalized / col_norms
                 try:
                     cov_all = np.asarray(jnp.linalg.inv(MtM_j))
+                    # Check for NaN - inv() can silently return NaN for ill-conditioned matrices
+                    if np.any(np.isnan(cov_all)):
+                        cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
                 except Exception:
                     cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
                 cov_all = (cov_all / col_norms).T / col_norms
@@ -2154,6 +2282,8 @@ def _run_general_fit_iterations(
                     aug_bases.append(setup.ecorr_basis)
                 if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
                     aug_bases.append(setup.dmx_design_matrix)
+                if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
+                    aug_bases.append(setup.dmjump_design_matrix)
                 if aug_bases:
                     F_aug = np.column_stack(aug_bases)
                     noise_real = F_aug @ (lambda_ * _iter_noise_coeffs)
@@ -2319,6 +2449,14 @@ def _run_general_fit_iterations(
             residuals_final_sec = residuals_final_sec - dmx_realization_sec
             residuals_final_us = residuals_final_sec * 1e6
             offset += n_dmx_cols
+        if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
+            dmjump_coeffs = best_noise_coeffs[offset:offset + n_dmjump_cols]
+            F_dmjump = setup.dmjump_design_matrix
+            # DMJUMP is timing model, not noise — subtract from residuals
+            dmjump_realization_sec = F_dmjump @ dmjump_coeffs
+            residuals_final_sec = residuals_final_sec - dmjump_realization_sec
+            residuals_final_us = residuals_final_sec * 1e6
+            offset += n_dmjump_cols
 
     # Recompute final stats with DMX-absorbed residuals
     # Re-subtract weighted mean (DMX absorption shifts the mean)
@@ -2395,6 +2533,7 @@ def _build_general_fit_setup_from_cache(
         'roemer_shapiro_sec': session_cached_data.get('roemer_shapiro_sec'),
         'ssb_obs_pos_ls': session_cached_data.get('ssb_obs_pos_ls'),
         'sw_geometry_pc': session_cached_data.get('sw_geometry_pc'),
+        'jump_phase': session_cached_data.get('jump_phase'),
     }
 
     # Apply TOA mask if provided
@@ -2411,7 +2550,7 @@ def _build_general_fit_setup_from_cache(
         if subtract_noise_sec is not None:
             subtract_noise_sec = subtract_noise_sec[toa_mask]
         for key in ('prebinary_delay_sec', 'roemer_shapiro_sec',
-                     'ssb_obs_pos_ls', 'sw_geometry_pc'):
+                     'ssb_obs_pos_ls', 'sw_geometry_pc', 'jump_phase'):
             if extras[key] is not None:
                 extras[key] = extras[key][toa_mask]
 

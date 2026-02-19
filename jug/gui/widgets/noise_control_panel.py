@@ -659,15 +659,36 @@ class NoiseControlPanel(QWidget):
                     })
 
         elif proc_name == "RedNoise":
+            # Check for TNRedAmp/TNRedGam (native TempoNest format)
             amp_key = "TNREDAMP" if "TNREDAMP" in params else "TNRedAmp"
             gam_key = "TNREDGAM" if "TNREDGAM" in params else "TNRedGam"
             nc_key = "TNREDC" if "TNREDC" in params else "TNRedC"
+            
             if amp_key in params:
                 result.append({"key": amp_key, "label": "log₁₀(A)", "value": f"{float(params[amp_key]):.4f}", "editable": True})
             if gam_key in params:
                 result.append({"key": gam_key, "label": "γ (spectral)", "value": f"{float(params[gam_key]):.4f}", "editable": True})
             if nc_key in params:
                 result.append({"key": nc_key, "label": "N harmonics", "value": str(int(float(params[nc_key]))), "editable": True})
+            
+            # Check for RNAMP/RNIDX (Tempo2 format) — convert and display
+            if "RNAMP" in params and "RNIDX" in params:
+                import math
+                rnamp_str = str(params["RNAMP"]).replace("D", "e").replace("d", "e")
+                rnamp = float(rnamp_str)
+                # Tempo2 conversion: log10(2π√3 / (sec_per_yr × 1e6) × RNAMP)
+                _SEC_PER_YR = 86400.0 * 365.25
+                log10_A = math.log10(2.0 * math.pi * math.sqrt(3.0) / (_SEC_PER_YR * 1e6) * rnamp)
+                gamma = -float(params["RNIDX"])  # Sign flip
+                n_harmonics = int(params.get("RNC", params.get("TNREDC", params.get("TNRedC", 30))))
+                
+                # Display converted values
+                result.append({"key": "RNAMP_converted", "label": "log₁₀(A) [conv]", "value": f"{log10_A:.4f}", "editable": False})
+                result.append({"key": "RNIDX_converted", "label": "γ [conv]", "value": f"{gamma:.4f}", "editable": False})
+                result.append({"key": "RNC", "label": "N harmonics", "value": str(n_harmonics), "editable": False})
+                # Also show original values for reference
+                result.append({"key": "RNAMP", "label": "RNAMP (orig)", "value": f"{rnamp:.5g}", "editable": True})
+                result.append({"key": "RNIDX", "label": "RNIDX (orig)", "value": f"{float(params['RNIDX']):.4f}", "editable": True})
 
         elif proc_name == "DMNoise":
             amp_key = "TNDMAMP" if "TNDMAMP" in params else "TNDMAmp"

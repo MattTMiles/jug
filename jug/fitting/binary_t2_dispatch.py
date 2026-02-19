@@ -119,5 +119,10 @@ def compute_binary_derivatives_t2(
         from jug.fitting.derivatives_binary import compute_binary_derivatives_ell1
         return compute_binary_derivatives_ell1(params, toas_bary_mjd, fit_params)
     else:
+        # If KOM or KIN present, use DDK derivatives (supports Kopeikin corrections)
+        has_kin_kom = 'KIN' in params or 'KOM' in params
+        if has_kin_kom:
+            from jug.fitting.derivatives_dd import compute_binary_derivatives_ddk
+            return compute_binary_derivatives_ddk(params, toas_bary_mjd, fit_params)
         from jug.fitting.derivatives_dd import compute_binary_derivatives_dd
         return compute_binary_derivatives_dd(params, toas_bary_mjd, fit_params)

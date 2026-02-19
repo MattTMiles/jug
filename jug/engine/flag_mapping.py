@@ -84,6 +84,8 @@ def resolve_backend_for_toa(
     for key in config.candidates:
         if key in toa_flags:
             value = toa_flags[key]
+            if isinstance(value, list):
+                value = value[0]
             return config.aliases.get(value, value)
 
     return config.fallback
@@ -142,5 +144,7 @@ def resolve_flag_for_toa(
     for key in candidates:
         if key in toa_flags:
             value = toa_flags[key]
+            if isinstance(value, list):
+                value = value[0]
             return aliases.get(value, value)
     return fallback

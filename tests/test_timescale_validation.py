@@ -4,7 +4,7 @@ Test script for par file timescale validation.
 
 This script verifies that:
 1. TDB par files work normally
-2. TCB par files trigger a clear NotImplementedError
+2. TCB par files are automatically converted to TDB and work correctly
 
 Environment variables for CI:
     JUG_TEST_J1713_PAR=/path/to/J1713+0747.par
@@ -63,8 +63,8 @@ except Exception as e:
     print(f"   ✗ Unexpected error: {e}")
     sys.exit(1)
 
-# Test 3: Create a fake TCB par file and verify it fails
-print("\n3. Testing TCB par file (should fail with clear error)...")
+# Test 3: Create a fake TCB par file and verify it converts to TDB
+print("\n3. Testing TCB par file (should convert to TDB automatically)...")
 
 # Read the TDB par file and modify it to TCB
 with open(TDB_PAR_FILE) as f:
@@ -86,33 +86,55 @@ try:
     print(f"   UNITS in par file: {params_tcb.get('UNITS', 'not specified')}")
     print(f"   Detected timescale: {timescale_tcb}")
     
-    # This should raise NotImplementedError
-    validate_par_timescale(params_tcb, context="Test TCB")
-    print("   ✗ ERROR: Should have raised NotImplementedError!")
-    sys.exit(1)
-except NotImplementedError as e:
-    print(f"   ✓ Correctly raised NotImplementedError")
-    print(f"\n   Error message preview:")
-    error_lines = str(e).split('\n')
-    for line in error_lines[:8]:
-        print(f"      {line}")
-    if len(error_lines) > 8:
-        print(f"      ... ({len(error_lines) - 8} more lines)")
+    # Save original F0 to verify conversion
+    f0_orig = params_tcb.get('F0')
+    
+    # This should convert TCB to TDB automatically
+    result = validate_par_timescale(params_tcb, context="Test TCB", verbose=False)
+    
+    if result == 'TDB':
+        print(f"   ✓ TCB automatically converted to TDB")
+        
+        # Verify metadata was set
+        if params_tcb.get('_tcb_converted'):
+            print(f"   ✓ Conversion metadata set")
+        else:
+            print(f"   ✗ Conversion metadata missing!")
+            sys.exit(1)
+        
+        # Verify F0 was scaled (if it exists)
+        if f0_orig is not None:
+            from jug.utils.timescales import IFTE_K
+            expected_f0 = f0_orig * float(IFTE_K)
+            if abs(params_tcb['F0'] - expected_f0) < 1e-12:
+                print(f"   ✓ F0 scaled correctly: {f0_orig:.12f} → {params_tcb['F0']:.12f}")
+            else:
+                print(f"   ✗ F0 scaling incorrect!")
+                sys.exit(1)
+    else:
+        print(f"   ✗ Unexpected result: {result}")
+        sys.exit(1)
 except Exception as e:
-    print(f"   ✗ Unexpected error type: {type(e).__name__}: {e}")
+    print(f"   ✗ Unexpected error: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
     sys.exit(1)
 
-# Test 4: Verify compute_residuals_simple fails on TCB
-print("\n4. Testing that compute_residuals_simple fails on TCB par file...")
+# Test 4: Verify compute_residuals_simple works on converted TCB
+print("\n4. Testing that compute_residuals_simple works on TCB par file...")
 
 try:
     result = compute_residuals_simple(tcb_par_file, TIM_FILE, verbose=False)
-    print("   ✗ ERROR: Should have raised NotImplementedError!")
-    sys.exit(1)
-except NotImplementedError as e:
-    print(f"   ✓ Correctly raised NotImplementedError")
+    print(f"   ✓ Residuals computed successfully from TCB par file")
+    print(f"   RMS: {result['rms_us']:.3f} μs, N_TOAs: {result['n_toas']}")
+    
+    # The RMS should be the same as the TDB version (within numerical tolerance)
+    # since it's the same physical model, just converted
+    print(f"   Note: TCB par file converted to TDB internally and processed")
 except Exception as e:
-    print(f"   ✗ Unexpected error type: {type(e).__name__}: {e}")
+    print(f"   ✗ Unexpected error: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
     sys.exit(1)
 
 # Cleanup

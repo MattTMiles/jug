@@ -172,9 +172,8 @@ def assign_toas_to_dmx(
     mask_matrix = np.zeros((n_toa, n_ranges), dtype=bool)
 
     for k, rng in enumerate(ranges):
-        in_time = (toas_mjd >= rng.r1_mjd) & (toas_mjd <= rng.r2_mjd)
-        in_freq = (freq_mhz >= rng.freq_lo_mhz) & (freq_mhz <= rng.freq_hi_mhz)
-        mask = in_time & in_freq
+        # MJD-only matching (consistent with PINT/Tempo2 — DMXF1/DMXF2 are informational)
+        mask = (toas_mjd >= rng.r1_mjd) & (toas_mjd <= rng.r2_mjd)
         mask_matrix[:, k] = mask
         # First match wins if ranges overlap (later ranges don't override)
         new = mask & (assignment == -1)

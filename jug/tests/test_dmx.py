@@ -102,6 +102,8 @@ class TestAssignToasToDMX:
         assert assignment[2] == -1  # not in any range
 
     def test_frequency_filtering(self):
+        """DMX matching is now MJD-only (matching PINT/Tempo2).
+        DMXF1/DMXF2 are informational; they don't filter TOA assignment."""
         ranges = [
             DMXRange(1, 58000.0, 58200.0, freq_lo_mhz=1000.0, freq_hi_mhz=2000.0),
         ]
@@ -109,8 +111,8 @@ class TestAssignToasToDMX:
         freq = np.array([1284.0, 400.0])
 
         assignment, _ = assign_toas_to_dmx(toas, freq, ranges)
-        assert assignment[0] == 0   # 1284 MHz in range
-        assert assignment[1] == -1  # 400 MHz out of range
+        assert assignment[0] == 0   # 1284 MHz in time range
+        assert assignment[1] == 0   # 400 MHz also in time range (freq not filtered)
 
     def test_overlap_first_wins(self):
         ranges = [

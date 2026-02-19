@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict
 import numpy as np
+import erfa
 from astropy.time import Time, TimeDelta
 from astropy.coordinates import EarthLocation
 
@@ -133,13 +134,22 @@ def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
             mjd_int, mjd_frac = parse_mjd_string(mjd_str)
 
             # Parse optional flags (format: -flag value)
+            # Duplicate flag names (e.g. -j MEDUSA_58925 -j MEDUSA_59200) are
+            # stored as lists so JUMP matching can check all values.
             flags = {}
             i = flag_start
             while i < len(parts):
                 if parts[i].startswith('-') and i + 1 < len(parts):
                     flag_name = parts[i][1:]  # Remove leading '-'
                     flag_value = parts[i + 1]
-                    flags[flag_name] = flag_value
+                    if flag_name in flags:
+                        existing = flags[flag_name]
+                        if isinstance(existing, list):
+                            existing.append(flag_value)
+                        else:
+                            flags[flag_name] = [existing, flag_value]
+                    else:
+                        flags[flag_name] = flag_value
                     i += 2
                 else:
                     i += 1
@@ -261,18 +271,36 @@ def compute_tdb_standalone_vectorized(
     if time_offsets is not None:
         total_corrs = total_corrs + np.asarray(time_offsets, dtype=np.float64)
 
-    # Create Time objects in batch (much faster than per-TOA)
-    time_utc = Time(
-        val=np.array(mjd_ints, dtype=np.float64),
-        val2=np.array(mjd_fracs, dtype=np.float64),
-        format='mjd',
-        scale='utc',
-        location=location,
-        precision=9
-    )
+    # Create Time objects using pulsar MJD convention for UTC.
+    # Standard astropy format='mjd' with scale='utc' prorates leap seconds
+    # across the day (e.g., on MJD 54831 = 2008-12-31, a leap second day,
+    # astropy treats 0.293 of a day as 0.293*(86401/86400) days, introducing
+    # a ~0.293 s error). Pulsar TOA MJDs always use 86400 s/day fractions.
+    # We convert fraction -> H:M:S assuming 86400 s/day, then use erfa.dtf2d
+    # to get proper JD values that handle leap seconds correctly (same as
+    # PINT's pulsar_mjd format).
 
-    # Apply clock corrections
-    time_utc = time_utc + TimeDelta(total_corrs, format='sec')
+    int_arr = np.array(mjd_ints, dtype=np.float64)
+    frac_arr = np.array(mjd_fracs, dtype=np.float64)
+
+    # Add clock corrections to the fractional day
+    frac_arr = frac_arr + total_corrs / 86400.0
+
+    # Convert MJD integer+frac to calendar date via ERFA
+    y, mo, d, fd = erfa.jd2cal(erfa.DJM0 + int_arr, frac_arr)
+
+    # Convert fractional day to H:M:S using 86400 s/day (pulsar convention)
+    fd_sec = fd * 86400.0
+    h = np.floor(fd_sec / 3600.0).astype(int)
+    fd_sec -= h * 3600.0
+    m = np.floor(fd_sec / 60.0).astype(int)
+    s = fd_sec - m * 60.0
+
+    # Use erfa.dtf2d to create JD values that properly handle leap seconds
+    jd1, jd2 = erfa.dtf2d("UTC", y, mo, d, h, m, s)
+
+    time_utc = Time(val=jd1, val2=jd2, format='jd', scale='utc',
+                    location=location, precision=9)
 
     # Convert to TDB (vectorized)
     # Return TDB with full precision using double-double representation

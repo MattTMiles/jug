@@ -91,7 +91,7 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
     jump_lines = []   # Collect JUMP lines (multi-token format: JUMP -flag val value)
 
     # Keywords that use multi-token format: T2EFAC -f <val> <num>, etc.
-    _NOISE_KEYWORDS = {'T2EFAC', 'T2EQUAD', 'EFAC', 'EQUAD', 'ECORR', 'TNECORR'}
+    _NOISE_KEYWORDS = {'T2EFAC', 'T2EQUAD', 'EFAC', 'EQUAD', 'ECORR', 'TNECORR', 'DMEFAC', 'DMJUMP'}
 
     path = Path(path)
     par_filename = path.name.lower()
@@ -320,60 +320,62 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
     params['_ecliptic_pm_lat'] = pm_lat
 
 
-def validate_par_timescale(params: Dict[str, Any], context: str = "JUG") -> str:
-    """Validate that the par file timescale is supported.
+def validate_par_timescale(params: Dict[str, Any], context: str = "JUG", 
+                           verbose: bool = False) -> str:
+    """Validate and convert par file timescale to TDB if needed.
     
     Parameters
     ----------
     params : dict
-        Parameter dictionary from parse_par_file()
+        Parameter dictionary from parse_par_file() (modified in place if TCB)
     context : str
         Description of where this validation is happening (for error messages)
+    verbose : bool
+        If True, print conversion details
         
     Returns
     -------
     str
-        The validated timescale ('TDB')
+        The validated/converted timescale (always 'TDB')
         
     Raises
     ------
     NotImplementedError
-        If the timescale is TCB or TT (not yet supported)
+        If the timescale is TT (not yet supported)
     
     Notes
     -----
-    JUG currently only supports TDB par files. TCB support would require:
+    JUG internally works in TDB (Barycentric Dynamical Time). If a TCB
+    (Barycentric Coordinate Time) par file is provided, this function
+    automatically converts all parameters to TDB following the Irwin &
+    Fukushima (1999) convention:
     
-    1. Transforming all epoch parameters (PEPOCH, T0, TASC, etc.) from TCB to TDB
-    2. Applying the IAU-defined scaling factor L_B = 1.550519768e-8 to transform
-       frequency-like parameters (F0, F1, F2, PB, FB0, etc.)
-    3. Properly handling the TDB-TCB offset (~17 seconds per year since 1977)
+    1. Epoch parameters (PEPOCH, T0, TASC, etc.) are transformed from TCB to TDB
+    2. Frequency/DM/orbital parameters are scaled by IFTE_K factors
+    3. The conversion is applied in-place and logged if verbose=True
     
-    Until this is implemented, users should convert TCB par files to TDB using
-    PINT or Tempo2 before using them with JUG.
+    The conversion matches PINT and Tempo2 behavior.
     """
-    timescale = params.get('_par_timescale', 'TDB')
+    from jug.utils.timescales import convert_par_params_to_tdb, parse_timescale
+    
+    timescale = parse_timescale(params)
     
     if timescale == 'TDB':
         return timescale
     elif timescale == 'TCB':
-        raise NotImplementedError(
-            f"{context}: TCB par files are not yet supported.\n\n"
-            f"The par file has UNITS=TCB, indicating epochs and parameters are in "
-            f"Barycentric Coordinate Time (TCB).\n\n"
-            f"TCB support requires more than just epoch conversion - it also requires:\n"
-            f"  1. Applying the IAU scaling factor L_B = 1.550519768e-8 to transform\n"
-            f"     spin parameters (F0, F1, F2) and binary periods (PB, FB0, etc.)\n"
-            f"  2. Converting epochs (PEPOCH, T0, TASC, TZRMJD, etc.) from TCB to TDB\n"
-            f"  3. Properly accounting for the ~17 s/year drift between TCB and TDB\n\n"
-            f"Workaround: Convert your par file to TDB using PINT or Tempo2:\n"
-            f"  - PINT: model.as_parfile(units='TDB')\n"
-            f"  - Tempo2: tempo2 -output par -units TDB -f <parfile> <timfile>\n"
-        )
+        # Convert TCB to TDB in place
+        _, log = convert_par_params_to_tdb(params, verbose=verbose)
+        
+        if verbose:
+            print(f"{context}: Detected TCB par file, converting to internal TDB representation")
+            for msg in log:
+                print(f"  {msg}")
+        
+        return 'TDB'
     elif timescale == 'TT':
         raise NotImplementedError(
             f"{context}: TT (Terrestrial Time) par files are not yet supported.\n\n"
-            f"The par file has UNITS=TT. JUG currently only supports TDB par files.\n\n"
+            f"The par file has UNITS=TT. JUG currently only supports TDB/TCB par files.\n\n"
             f"Workaround: Convert your par file to TDB using PINT or Tempo2.\n"
         )
     else:

@@ -36,7 +36,9 @@ def combined_delays(
     # K96 proper motion parameters (Kopeikin 1996)
     k96=True, pmra_rad_per_sec=0.0, pmdec_rad_per_sec=0.0,
     # Tropospheric delay (for PINT-compatible pre-binary time)
-    tropo_sec=None
+    tropo_sec=None,
+    # DMX delay (for PINT-compatible pre-binary time)
+    dmx_sec=None
 ):
     """Combined delay calculation - single JAX kernel for maximum performance.
 
@@ -73,7 +75,7 @@ def combined_delays(
     sin_rho = jnp.maximum(jnp.sin(rho), 1e-10)
     geometry_pc = AU_PC * rho / (r_au * sin_rho)
     dm_sw = ne_sw * geometry_pc
-    sw_sec = jnp.where(ne_sw > 0, K_DM_SEC * dm_sw / (freq_bary ** 2), 0.0)
+    sw_sec = jnp.where(ne_sw != 0, K_DM_SEC * dm_sw / (freq_bary ** 2), 0.0)
 
     # === FD Delay ===
     log_freq = jnp.log(freq_bary / 1000.0)
@@ -90,25 +92,32 @@ def combined_delays(
         tropo_sec
     ) if tropo_sec is not None else jnp.zeros_like(tdbld)
 
+    # Handle DMX array - use zeros if not provided
+    dmx_arr = jnp.where(
+        dmx_sec is None,
+        jnp.zeros_like(tdbld),
+        dmx_sec
+    ) if dmx_sec is not None else jnp.zeros_like(tdbld)
+
     # === Universal Binary Delay Dispatch ===
     def compute_binary_universal(args):
-        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val) = args
+        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val, dmx_val) = args
 
         # Binary evaluation time: PINT-compatible "pre-binary" time
         #
         # PINT's delay component order is:
         #   AstrometryEquatorial -> TroposphereDelay -> SolarSystemShapiro ->
-        #   SolarWindDispersion -> DispersionDM -> BinaryDD -> FD
+        #   SolarWindDispersion -> DispersionDM -> DispersionDMX -> BinaryDD -> FD
         #
         # So PINT evaluates BinaryDD at:
         #   t_prebinary = tdbld - (all delays before BinaryDD) / 86400
         #
-        # This includes: Roemer (astrometry), Troposphere, SS Shapiro, Solar Wind, DM
+        # This includes: Roemer (astrometry), Troposphere, SS Shapiro, Solar Wind, DM, DMX
         # but NOT FD (which comes after BinaryDD).
         #
         # roemer_shapiro_val includes: Roemer + SS Shapiro (Sun + planets)
-        # We add: DM, Solar Wind, Troposphere
-        t_prebinary = tdbld_val - (roemer_shapiro_val + dm_val + sw_val + tropo_val) / SECS_PER_DAY
+        # We add: DM, DMX, Solar Wind, Troposphere
+        t_prebinary = tdbld_val - (roemer_shapiro_val + dm_val + dmx_val + sw_val + tropo_val) / SECS_PER_DAY
 
         # Branch 0: None
         def branch_none(t): return 0.0
@@ -191,23 +200,45 @@ def combined_delays(
             binary_roemer = Dre * (1.0 - n0*Drep + (n0*Drep)**2 + 0.5*n0**2*Dre*Drepp)
 
             einstein_binary = jnp.where(gamma != 0.0, gamma * sin_Phi, 0.0)
-            shapiro_binary = jnp.where(
+            
+            # ELL1H Shapiro delay (Freire & Wex 2010)
+            # When STIG is set, use the orthometric lsc formula that separates
+            # harmonics absorbed by other orbital parameters:
+            #   fs = 1 + stig^2 - 2*stig*sin(Phi)
+            #   lsc = log(fs) + 2*stig*sin(Phi) - stig^2*cos(2*Phi)
+            #   ds = -2*(H3/stig^3)*lsc
+            # This matches Tempo2 ELL1Hmodel.C mode 1.
+            fs = 1.0 + stig**2 - 2.0 * stig * sin_Phi
+            lsc = jnp.log(fs) + 2.0 * stig * sin_Phi - stig**2 * cos_2Phi
+            r_ell1h = h3 / jnp.maximum(stig**3, 1e-30)
+            shapiro_ell1h = -2.0 * r_ell1h * lsc
+            
+            # Standard log formula for M2/SINI (non-ELL1H)
+            shapiro_standard = jnp.where(
                 (r_shap > 0.0) & (s_shap > 0.0),
                 -2.0 * r_shap * jnp.log(1.0 - s_shap * sin_Phi),
                 0.0
             )
             # Orthometric H3-only Shapiro delay (Freire & Wex 2010 Eq. 19)
-            # When r_shap=0 and s_shap=0 but h3>0, use harmonic expansion.
-            # Leading non-absorbed harmonic is the 3rd:
-            #   Δ_S = -(4/3)*H3*sin(3Φ)
-            # Coefficient 4/3 = 2 * (2/3) from Fourier basis factor 2/k for k=3.
-            # Matches Tempo2 ELL1Hmodel.C mode 0 and PINT ELL1H_model.py.
             shapiro_h3only = jnp.where(
-                (r_shap == 0.0) & (s_shap == 0.0) & (h3 > 0.0),
+                (r_shap == 0.0) & (s_shap == 0.0) & (h3 > 0.0) & (stig == 0.0) & (h4 == 0.0),
                 -(4.0 / 3.0) * h3 * sin_3Phi,
                 0.0
             )
-            shapiro_binary = shapiro_binary + shapiro_h3only
+            # ELL1H mode 2: H3/H4 harmonic expansion (Freire & Wex 2010, nharm=4)
+            # ds = -4/3*H3*sin(3Φ) + H4*cos(4Φ)
+            cos_4Phi = jnp.cos(4.0 * Phi)
+            shapiro_h3h4 = jnp.where(
+                (h4 != 0.0) & (stig == 0.0),
+                -(4.0 / 3.0) * h3 * sin_3Phi + h4 * cos_4Phi,
+                0.0
+            )
+            # Select: ELL1H lsc if stig != 0, else h3h4/h3only/standard
+            shapiro_binary = jnp.where(
+                stig != 0.0,
+                shapiro_ell1h,
+                shapiro_standard + shapiro_h3only + shapiro_h3h4
+            )
             return binary_roemer + einstein_binary + shapiro_binary
 
         # Branch 2: DD / DDK
@@ -360,7 +391,7 @@ def combined_delays(
 
     binary_sec = jnp.where(
         has_binary,
-        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr)),
+        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr, dmx_arr)),
         0.0
     )
 
@@ -383,7 +414,9 @@ def compute_total_delay_jax(
     # K96 proper motion parameters (Kopeikin 1996)
     k96=True, pmra_rad_per_sec=0.0, pmdec_rad_per_sec=0.0,
     # Tropospheric delay (for PINT-compatible pre-binary time)
-    tropo_sec=None
+    tropo_sec=None,
+    # DMX delay (for PINT-compatible pre-binary time)
+    dmx_sec=None
 ):
     """Compute total delay in a single JAX kernel.
 
@@ -404,6 +437,10 @@ def compute_total_delay_jax(
     Tropospheric delay:
     - tropo_sec: Tropospheric delay in seconds (for PINT-compatible pre-binary time)
                  If None, zeros are used internally.
+    
+    DMX delay:
+    - dmx_sec: DMX delay in seconds (for PINT-compatible pre-binary time)
+               If None, zeros are used internally.
     """
     combined_sec = combined_delays(
         tdbld, freq_bary, obs_sun, L_hat,
@@ -415,7 +452,8 @@ def compute_total_delay_jax(
         fb_coeffs, fb_factorials, fb_epoch, use_fb,
         obs_pos_ls, px, sin_ra, cos_ra, sin_dec, cos_dec,
         k96, pmra_rad_per_sec, pmdec_rad_per_sec,
-        tropo_sec
+        tropo_sec,
+        dmx_sec
     )
 
     return roemer_shapiro + combined_sec

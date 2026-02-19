@@ -504,9 +504,20 @@ def estimate_noise_parameters(
         toa_flags, noise_entries
     )
 
-    # If no backends found, create a single "default" backend
+    # If no backends found from noise lines, auto-discover from TOA -f flags
     if not backend_masks:
-        backend_masks = {"default": np.ones(len(toas_mjd), dtype=bool)}
+        from jug.noise.white import build_backend_mask
+        unique_f = {}
+        for i, flags in enumerate(toa_flags):
+            fval = flags.get('f')
+            if fval is not None:
+                unique_f.setdefault(fval, []).append(i)
+        if unique_f:
+            for fval in sorted(unique_f):
+                backend_masks[fval] = build_backend_mask(toa_flags, 'f', fval)
+            logger.info(f"Auto-discovered {len(backend_masks)} backends from TOA -f flags")
+        else:
+            backend_masks = {"default": np.ones(len(toas_mjd), dtype=bool)}
 
     # If ECORR requested but no ECORR entries exist, use EFAC/EQUAD backends
     if include_ecorr and not ecorr_masks:

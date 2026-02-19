@@ -40,14 +40,50 @@ _OLD_EPHEM_URL = (
 )
 _OLD_EPHEMERIDES = {'de200', 'de405', 'de410', 'de414', 'de421', 'de423', 'de430'}
 
+# Ephemerides available from JPL SSD server (not NAIF)
+_SSD_EPHEMERIDES = {
+    'de436': 'https://ssd.jpl.nasa.gov/ftp/eph/planets/bsp/de436.bsp',
+    'de441': 'https://ssd.jpl.nasa.gov/ftp/eph/planets/bsp/de441.bsp',
+}
+
+# Current recommended default
+_DEFAULT_EPHEMERIS = 'de440'
+
 
 def _resolve_ephemeris(name: str) -> str:
     """Resolve ephemeris name to a value astropy can use.
 
     For old JPL ephemerides that have been moved on the NAIF server,
     downloads from the archive URL and returns the cached file path.
+    
+    For ephemerides available on JPL SSD server (e.g., DE436, DE441),
+    downloads from SSD and returns the cached file path.
+    
+    Falls back to DE440 if download fails.
     """
     import re
+    import sys
+    
+    # Check if ephemeris is available from SSD server
+    if name.lower() in _SSD_EPHEMERIDES:
+        from astropy.utils.data import download_file, is_url_in_cache
+        url = _SSD_EPHEMERIDES[name.lower()]
+        try:
+            if not is_url_in_cache(url):
+                print(f"Downloading {name.upper()} from JPL SSD server...", file=sys.stderr)
+                path = download_file(url, cache=True)
+                print(f"✓ {name.upper()} downloaded successfully.", file=sys.stderr)
+            else:
+                path = download_file(url, cache=True)
+            return path
+        except Exception as e:
+            print(f"\n{'='*70}", file=sys.stderr)
+            print(f"WARNING: Could not download {name.upper()} from JPL SSD server.", file=sys.stderr)
+            print(f"         Error: {e}", file=sys.stderr)
+            print(f"         Falling back to {_DEFAULT_EPHEMERIS.upper()}.", file=sys.stderr)
+            print(f"{'='*70}\n", file=sys.stderr)
+            return _DEFAULT_EPHEMERIS
+    
     if not re.match(r'de\d{3}s?$', name.lower()):
         return name
     if name.lower() not in _OLD_EPHEMERIDES:
@@ -65,11 +101,16 @@ def _resolve_ephemeris(name: str) -> str:
         path = download_file(url, cache=True)
         return path
     except Exception:
-        return name  # fall back, let caller handle error
+        # If old ephemeris download fails, fall back to default with warning
+        print(f"\n{'='*70}", file=sys.stderr)
+        print(f"WARNING: Could not download ephemeris {name.upper()}.", file=sys.stderr)
+        print(f"         Falling back to {_DEFAULT_EPHEMERIS.upper()}.", file=sys.stderr)
+        print(f"{'='*70}\n", file=sys.stderr)
+        return _DEFAULT_EPHEMERIS
 
 
 def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
-                            tzr_phase=None):
+                            tzr_phase=None, tdb_sec_ld=None, jump_phase=None):
     """Compute phase residuals from emission-time offsets (canonical implementation).
 
     This is the single shared function used by both the evaluate-only and fitter
@@ -89,6 +130,9 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     tzr_phase : float or longdouble, optional
         Phase at the TZR reference point. If provided, subtracted from each
         TOA's phase before wrapping to ensure correct pulse numbering.
+    tdb_sec_ld : np.ndarray (longdouble), optional
+        TDB times in seconds (longdouble). Required for glitch computation.
+        If None, glitch contributions are not computed.
 
     Returns
     -------
@@ -107,6 +151,45 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
 
     # Phase using Horner's method (longdouble precision)
     phase = dt * (F0 + dt * (F1_half + dt * F2_sixth))
+
+    # Glitch contributions
+    # Glitch phase is computed at TDB (not emission time) following PINT/Tempo2 convention.
+    PEPOCH = get_longdouble(params, 'PEPOCH')
+    PEPOCH_sec = PEPOCH * np.longdouble(86400.0)
+    glitch_idx = 1
+    while f'GLEP_{glitch_idx}' in params:
+        glep = get_longdouble(params, f'GLEP_{glitch_idx}')
+        glep_sec = glep * np.longdouble(86400.0)
+        glph = get_longdouble(params, f'GLPH_{glitch_idx}', default=0.0)
+        glf0 = get_longdouble(params, f'GLF0_{glitch_idx}', default=0.0)
+        glf1 = get_longdouble(params, f'GLF1_{glitch_idx}', default=0.0)
+        glf0d = get_longdouble(params, f'GLF0D_{glitch_idx}', default=0.0)
+        gltd = get_longdouble(params, f'GLTD_{glitch_idx}', default=0.0)
+
+        # dt_glitch is time since PEPOCH (matching PINT's convention)
+        # The glitch activates for t > GLEP
+        dt_glitch = dt  # emission time relative to PEPOCH
+        glep_dt = (glep_sec - PEPOCH_sec)  # GLEP offset from PEPOCH
+        active = dt_glitch > glep_dt
+        dt_since_glep = np.where(active, dt_glitch - glep_dt, np.longdouble(0.0))
+
+        glitch_phase = (glph
+                       + glf0 * dt_since_glep
+                       + np.longdouble(0.5) * glf1 * dt_since_glep**2)
+
+        # Exponential recovery term
+        if gltd != 0.0 and glf0d != 0.0:
+            gltd_sec = gltd * np.longdouble(86400.0)
+            glitch_phase += glf0d * gltd_sec * (
+                np.longdouble(1.0) - np.exp(-dt_since_glep / gltd_sec)
+            )
+
+        phase += np.where(active, glitch_phase, np.longdouble(0.0))
+        glitch_idx += 1
+
+    # Add JUMP phase offsets (applied as phase shifts, not delay subtractions)
+    if jump_phase is not None:
+        phase = phase + np.asarray(jump_phase, dtype=np.longdouble)
 
     # Subtract TZR phase before wrapping for correct pulse numbering
     if tzr_phase is not None:
@@ -202,8 +285,8 @@ def compute_residuals_simple(
     if verbose: print(f"\n1. Loading files...")
     params = parse_par_file(par_file)
     
-    # Validate par file timescale (fail fast on TCB)
-    par_timescale = validate_par_timescale(params, context="compute_residuals_simple")
+    # Validate par file timescale and convert TCB to TDB if needed
+    par_timescale = validate_par_timescale(params, context="compute_residuals_simple", verbose=verbose)
     if verbose: print(f"   Par file timescale: {par_timescale}")
     
     toas = parse_tim_file_mjds(tim_file)
@@ -329,7 +412,7 @@ def compute_residuals_simple(
 
     roemer_shapiro = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
 
-    # Barycentric frequency
+    # Barycentric frequency (used for DM/SW/FD delays by both Tempo2 and PINT)
     freq_mhz = np.array([toa.freq_mhz for toa in toas])
     freq_bary_mhz = compute_barycentric_freq(freq_mhz, ssb_obs_vel_km_s, L_hat)
 
@@ -379,7 +462,26 @@ def compute_residuals_simple(
         elif binary_model in ('DD', 'DDH', 'DDGR'):
             model_id = 2
         elif binary_model == 'T2':
-            model_id = 3
+            # T2 is Tempo2's universal model — dispatch based on parameters
+            # If TASC/EPS1/EPS2 present → ELL1-style (matches PINT/Tempo2)
+            # If KOM/KIN present → DDK (Kopeikin corrections)
+            # If T0/ECC/OM present → DD-style Keplerian
+            has_tasc = 'TASC' in params and float(params.get('TASC', 0.0)) != 0.0
+            has_eps = 'EPS1' in params or 'EPS2' in params
+            has_kin_kom = 'KIN' in params or 'KOM' in params
+            if has_tasc or has_eps:
+                model_id = 1  # ELL1
+            elif has_kin_kom:
+                model_id = 5  # DDK
+                # Tempo2's T2 model uses IAU convention for KIN/KOM.
+                # JUG's DDK code (from PINT) uses DT92 convention.
+                # Convert: KIN_DT92 = 180 - KIN_IAU, KOM_DT92 = 90 - KOM_IAU
+                if 'KIN' in params:
+                    params['KIN'] = 180.0 - float(params['KIN'])
+                if 'KOM' in params:
+                    params['KOM'] = 90.0 - float(params['KOM'])
+            else:
+                model_id = 2  # DD
         elif binary_model in ('BT', 'BTX'):
             model_id = 4
         elif binary_model == 'DDK':
@@ -479,19 +581,44 @@ def compute_residuals_simple(
     stig_val = float(params.get('STIG', 0.0))
     
     # Shapiro M2/SINI vs H3/STIG
+    # For ELL1 models (model_id=1), r_shap and s_shap are used directly in
+    # -2*r*log(1-s*sin(Phi)). When H3/STIG are provided, we must convert to
+    # physical r=T_SUN*M2 and s=sini using orthometric relations (Freire & Wex 2010):
+    #   sini = 2*STIG/(1+STIG^2),  M2 = H3/(STIG^3 * T_SUN)
+    # This avoids log(negative) when STIG > 1.
     r_shap_val = 0.0
     s_shap_val = 0.0
-    if 'H3' in params and 'STIG' in params:
-        r_shap_val = h3_val
-        s_shap_val = stig_val
+    if 'H3' in params and 'STIG' in params and stig_val != 0.0:
+        # ELL1H mode 1: H3/STIG handled directly in kernel using lsc formula.
+        # Don't convert to r_shap/s_shap — the kernel uses h3 and stig directly.
+        r_shap_val = 0.0
+        s_shap_val = 0.0
+    elif 'H3' in params and 'H4' in params and h4_val != 0.0:
+        # ELL1H mode 2: H3/H4 handled directly in kernel using harmonic expansion
+        # ds = -4/3*H3*sin(3Φ) + H4*cos(4Φ)  (Freire & Wex 2010, nharm=4)
+        r_shap_val = 0.0
+        s_shap_val = 0.0
+    elif 'H3' in params and h3_val != 0.0 and stig_val == 0.0 and h4_val == 0.0:
+        # H3-only: handled by the h3-only branch in the ELL1 delay code
+        r_shap_val = 0.0
+        s_shap_val = 0.0
     elif 'M2' in params:
         r_shap_val = T_SUN_SEC * m2_val
         s_shap_val = sini_val
 
     # FB Parameters
-    use_fb = 'FB0' in params and 'PB' not in params
+    # Activate FB mode when: (a) FB0 is explicitly present, or
+    # (b) PB is present AND higher-order FBn (n>=1) terms exist.
+    # In case (b), derive FB0 = 1/PB (Tempo2 convention).
+    has_fb0 = 'FB0' in params
+    has_higher_fb = any(f'FB{i}' in params for i in range(1, 13))
+    use_fb = has_fb0 or (has_higher_fb and 'PB' in params)
     if use_fb:
         fb_coeffs = []
+        if not has_fb0 and 'PB' in params:
+            # Derive FB0 from PB (seconds)
+            pb_sec = float(params['PB']) * 86400.0
+            params['FB0'] = 1.0 / pb_sec
         fb_idx = 0
         while f'FB{fb_idx}' in params:
             fb_coeffs.append(float(params[f'FB{fb_idx}']))
@@ -500,8 +627,9 @@ def compute_residuals_simple(
         fb_factorials_jax = jnp.array([float(math.factorial(i)) for i in range(len(fb_coeffs))], dtype=jnp.float64)
         fb_epoch_jax = jnp.array(float(params.get('TASC', params.get('T0', params['PEPOCH']))))
         use_fb_jax = jnp.array(True)
-        # Dummy PB to avoid div/0 in non-FB branches if they run (switch mostly handles this)
-        pb_val = 1.0 
+        # Keep PB for non-FB branches (dummy if needed)
+        if pb_val == 0.0:
+            pb_val = 1.0
     else:
         fb_coeffs_jax = jnp.array([0.0], dtype=jnp.float64)
         fb_factorials_jax = jnp.array([1.0], dtype=jnp.float64)
@@ -633,9 +761,23 @@ def compute_residuals_simple(
     
     tropo_jax = jnp.array(tropo_delay_sec, dtype=jnp.float64)
 
+    # Compute DMX delay BEFORE the kernel call so it can be included in
+    # the pre-binary time (PINT evaluates DMX before the binary model)
+    from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
+    dmx_ranges = parse_dmx_ranges(params)
+    dmx_delay_sec = np.zeros(len(tdb_mjd), dtype=np.float64)
+    if dmx_ranges:
+        # Use site arrival MJDs for DMX range matching (consistent with PINT/Tempo2)
+        dmx_matrix, dmx_labels = build_dmx_design_matrix(np.array(mjd_utc, dtype=np.float64), freq_bary_mhz, dmx_ranges)
+        dmx_values = np.array([r.value for r in dmx_ranges])
+        dmx_delay_sec = np.asarray(dmx_matrix @ dmx_values, dtype=np.float64)
+        if verbose: print(f"   Computed {len(dmx_ranges)} DMX ranges for pre-binary time")
+    dmx_jax = jnp.array(dmx_delay_sec, dtype=jnp.float64)
+
     # Compute total delay (DM + SW + FD + binary)
-    # Note: Troposphere is passed to kernel for PINT-compatible pre-binary time calculation,
-    # but is also added to total delay separately (kernel only uses it for binary time).
+    # Note: Troposphere and DMX are passed to kernel for PINT-compatible pre-binary time
+    # calculation, but are also added to total delay separately (kernel only uses them for
+    # binary time).
     if verbose: print(f"\n6. Running JAX delay kernel...")
     total_delay_jax = compute_total_delay_jax(
         tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
@@ -650,7 +792,9 @@ def compute_residuals_simple(
         # K96 proper motion parameters (Kopeikin 1996)
         k96_jax, pmra_rad_per_sec_jax, pmdec_rad_per_sec_jax,
         # Tropospheric delay (for PINT-compatible pre-binary time)
-        tropo_jax
+        tropo_jax,
+        # DMX delay (for PINT-compatible pre-binary time)
+        dmx_jax
     ).block_until_ready()
     
     # Add external binary delay if we used dispatcher
@@ -668,21 +812,44 @@ def compute_residuals_simple(
     dm_delay_sec = K_DM_SEC * dm_eff / (freq_bary_mhz ** 2)
 
     # Add DMX contribution to total delay and DM delay
-    from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
-    dmx_ranges = parse_dmx_ranges(params)
+    # DMX was already computed before the kernel call (for pre-binary time);
+    # now add it to total_delay_sec (kernel doesn't include it in its sum)
     if dmx_ranges:
-        # Use site arrival MJDs for DMX range matching (consistent with PINT/Tempo2)
-        dmx_matrix, dmx_labels = build_dmx_design_matrix(np.array(mjd_utc, dtype=np.float64), freq_bary_mhz, dmx_ranges)
-        dmx_values = np.array([r.value for r in dmx_ranges])
-        dmx_delay_sec = dmx_matrix @ dmx_values  # Already in seconds (matrix has K_DM/freq^2)
-        # Add DMX delay to total delay and DM delay (not included in JAX kernel)
         total_delay_sec += np.asarray(dmx_delay_sec, dtype=np.float64)
         dm_delay_sec = dm_delay_sec + dmx_delay_sec
         if verbose: print(f"   Applied {len(dmx_ranges)} DMX ranges to DM delay")
 
-    # Add JUMP delays (backend/receiver offsets from par file)
+    # Exponential dip model (Tempo2 EXPEP/EXPPH/EXPTAU/EXPINDEX)
+    # Adds frequency-dependent exponential decay delays for DM events.
+    # Formula: delay += EXPPH * (freq_SSB/1.4GHz)^EXPINDEX * exp(-(t-EXPEP)/EXPTAU)
+    # Only applied for t > EXPEP. EXPINDEX defaults to -2 if not set.
+    exp_idx = 1
+    while f'EXPEP_{exp_idx}' in params:
+        expep = float(params[f'EXPEP_{exp_idx}'])
+        expph = float(params.get(f'EXPPH_{exp_idx}', 0.0))
+        exptau = float(params.get(f'EXPTAU_{exp_idx}', 1.0))
+        expindex = float(params.get(f'EXPINDEX_{exp_idx}', -2.0))
+        
+        dt_exp = np.array(tdb_mjd, dtype=np.float64) - expep
+        active = dt_exp > 0
+        if np.any(active):
+            freq_norm = np.array(freq_bary_mhz, dtype=np.float64) / 1400.0
+            exp_delay = np.zeros(len(tdb_mjd), dtype=np.float64)
+            exp_delay[active] = expph * (freq_norm[active] ** expindex) * np.exp(-dt_exp[active] / exptau)
+            total_delay_sec -= exp_delay
+            if verbose:
+                print(f"   Applied EXP dip {exp_idx}: epoch={expep:.1f}, amp={expph:.3e} s, tau={exptau:.1f} d")
+        exp_idx += 1
+
+    # Apply JUMPs as phase offsets (not delay subtractions).
+    # Tempo2 treats JUMPs as phase shifts: delta_phase = F0 * JUMP_value.
+    # Subtracting JUMP from total_delay creates an F1*dt*JUMP cross-term in the
+    # spindown polynomial that corrupts residuals for large JUMPs (>1 s).
+    # Phase offsets avoid this entirely and match Tempo2 to <0.1 μs.
+    jump_phase = np.zeros(len(toas), dtype=np.longdouble)
     jump_lines = params.get('_jump_lines', [])
     if jump_lines:
+        F0_jump = get_longdouble(params, 'F0')
         from jug.fitting.derivatives_jump import parse_jump_from_par_line, create_jump_mask_from_flags
         n_jumps_applied = 0
         for jline in jump_lines:
@@ -693,7 +860,7 @@ def compute_residuals_simple(
                     jinfo['flag_name'], jinfo['flag_value']
                 )
                 if np.any(mask):
-                    total_delay_sec[mask] -= jinfo['value']
+                    jump_phase[mask] += F0_jump * np.longdouble(jinfo['value'])
                     n_jumps_applied += 1
                     if verbose:
                         print(f"   JUMP {jinfo['flag_name']}={jinfo['flag_value']}: "
@@ -702,13 +869,17 @@ def compute_residuals_simple(
                 toas_mjd_arr = np.array([t.mjd_int + t.mjd_frac for t in toas])
                 mask = (toas_mjd_arr >= jinfo['mjd_start']) & (toas_mjd_arr <= jinfo['mjd_end'])
                 if np.any(mask):
-                    total_delay_sec[mask] -= jinfo['value']
+                    jump_phase[mask] += F0_jump * np.longdouble(jinfo['value'])
                     n_jumps_applied += 1
                     if verbose:
                         print(f"   JUMP MJD {jinfo['mjd_start']}-{jinfo['mjd_end']}: "
                               f"{jinfo['value']*1e6:.3f} μs applied to {np.sum(mask)} TOAs")
         if verbose and n_jumps_applied:
-            print(f"   Applied {n_jumps_applied} JUMPs from par file")
+            print(f"   Applied {n_jumps_applied} JUMPs as phase offsets")
+
+    # NOTE: DMJUMP is NOT applied in prefit residuals.
+    # Neither Tempo2 nor PINT apply DMJUMP as a delay in prefit;
+    # it is only used as design-matrix columns in the fitter.
 
     # Solar wind geometry (always computed for caching; cost is negligible)
     ne_sw = float(params.get('NE_SW', 0.0))
@@ -722,7 +893,7 @@ def compute_residuals_simple(
     rho = np.pi - elong
     sin_rho = np.maximum(np.sin(rho), 1e-10)
     sw_geometry_pc = AU_PC * rho / (r_au * sin_rho)
-    if ne_sw > 0:
+    if ne_sw != 0:
         dm_sw = ne_sw * sw_geometry_pc
         sw_delay_sec = K_DM_SEC * dm_sw / (freq_bary_mhz ** 2)
     else:
@@ -847,6 +1018,19 @@ def compute_residuals_simple(
         # TZR observer position in light-seconds for DDK
         tzr_obs_pos_ls_jax = jnp.array(tzr_ssb_obs_pos / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
 
+        # Compute TZR DMX delay for pre-binary time
+        tzr_dmx_ranges = parse_dmx_ranges(params)
+        tzr_dmx_delay = 0.0
+        if tzr_dmx_ranges:
+            tzr_dmx_matrix, _ = build_dmx_design_matrix(
+                np.array([float(TZRMJD_raw)], dtype=np.float64),
+                np.array([tzr_freq_bary]),
+                tzr_dmx_ranges
+            )
+            tzr_dmx_values = np.array([r.value for r in tzr_dmx_ranges])
+            tzr_dmx_delay = float((tzr_dmx_matrix @ tzr_dmx_values)[0])
+        tzr_dmx_jax = jnp.array([tzr_dmx_delay], dtype=jnp.float64)
+
         # Compute TZR delay
         tzr_total_delay_jax = compute_total_delay_jax(
             tzr_tdb_jax, tzr_freq_bary_jax, tzr_obs_sun_jax, tzr_L_hat_jax,
@@ -859,23 +1043,15 @@ def compute_residuals_simple(
             # DDK Kopeikin parameters
             tzr_obs_pos_ls_jax, px_jax, sin_ra_jax, cos_ra_jax, sin_dec_jax, cos_dec_jax,
             # K96 proper motion parameters
-            k96_jax, pmra_rad_per_sec_jax, pmdec_rad_per_sec_jax
+            k96_jax, pmra_rad_per_sec_jax, pmdec_rad_per_sec_jax,
+            # Tropospheric and DMX delays (for PINT-compatible pre-binary time)
+            None, tzr_dmx_jax
         ).block_until_ready()
         
         tzr_delay = np.longdouble(float(tzr_total_delay_jax[0]))
         
-        # Add DMX delay to TZR (not included in JAX kernel, same as main TOAs)
-        from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
-        tzr_dmx_ranges = parse_dmx_ranges(params)
-        tzr_dmx_delay = 0.0
-        if tzr_dmx_ranges:
-            tzr_dmx_matrix, _ = build_dmx_design_matrix(
-                np.array([float(TZRMJD_raw)], dtype=np.float64),
-                np.array([tzr_freq_bary]),
-                tzr_dmx_ranges
-            )
-            tzr_dmx_values = np.array([r.value for r in tzr_dmx_ranges])
-            tzr_dmx_delay = float((tzr_dmx_matrix @ tzr_dmx_values)[0])
+        # Add DMX delay to TZR total (kernel only uses it for binary time, not in sum)
+        if tzr_dmx_delay != 0.0:
             tzr_delay += np.longdouble(tzr_dmx_delay)
             if verbose: print(f"   TZR DMX delay: {tzr_dmx_delay:.9f} s")
         
@@ -889,7 +1065,7 @@ def compute_residuals_simple(
         
         # Solar wind
         ne_sw = float(params.get('NE_SW', 0.0))
-        if ne_sw > 0:
+        if ne_sw != 0:
             r_km = np.sqrt(np.sum(tzr_obs_sun**2))
             r_au = r_km / 1.495978707e8
             sun_dir = tzr_obs_sun / r_km
@@ -944,7 +1120,8 @@ def compute_residuals_simple(
     weights = 1.0 / (errors_us ** 2)
     residuals_us, _ = compute_phase_residuals(
         dt_sec, params, weights, subtract_mean=True,
-        tzr_phase=tzr_phase if subtract_tzr else None
+        tzr_phase=tzr_phase if subtract_tzr else None,
+        jump_phase=jump_phase
     )
 
     # Compute weighted RMS using raw errors
@@ -1028,6 +1205,8 @@ def compute_residuals_simple(
         'total_delay_sec': np.array(total_delay_sec, dtype=np.float64),
         'freq_bary_mhz': np.array(freq_bary_mhz, dtype=np.float64),
         'tzr_phase': float(tzr_phase),
+        # JUMP phase offsets (longdouble, for fitter to use)
+        'jump_phase': np.array(jump_phase, dtype=np.longdouble),
         # Emission time offset from PEPOCH (longdouble for phase precision)
         'dt_sec_ld': np.array(dt_sec, dtype=np.longdouble),
         # Also float64 for backward compatibility
@@ -1044,4 +1223,5 @@ def compute_residuals_simple(
         # SSB to observatory position in light-seconds (needed for astrometry derivatives)
         'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),
         'orbital_phase': orbital_phase,
+        'toa_flags': [toa.flags for toa in toas],
     }

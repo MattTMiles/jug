@@ -497,7 +497,7 @@ class MainWindow(QMainWindow):
         self.noise_panel = None
 
         # Color mode for scatter plot (none/backend/frequency)
-        self._color_mode = "backend"  # Default to backend coloring
+        self._color_mode = "none"  # Will auto-switch to "backend" on data load if multiple backends
         self._backend_brushes_cache = None  # Cache for backend colors
         self._backend_color_overrides = {}  # User color overrides
         self._noise_color_overrides = {}  # User noise color overrides
@@ -1167,17 +1167,19 @@ class MainWindow(QMainWindow):
 
         self._color_none_action = color_by_menu.addAction("None (single color)")
         self._color_none_action.setCheckable(True)
+        self._color_none_action.setChecked(self._color_mode == "none")
         self._color_none_action.setActionGroup(color_group)
         self._color_none_action.triggered.connect(lambda: self._set_color_mode("none"))
 
         self._color_backend_action = color_by_menu.addAction("Backend/Receiver")
         self._color_backend_action.setCheckable(True)
-        self._color_backend_action.setChecked(True)  # Default to backend coloring
+        self._color_backend_action.setChecked(self._color_mode == "backend")
         self._color_backend_action.setActionGroup(color_group)
         self._color_backend_action.triggered.connect(lambda: self._set_color_mode("backend"))
 
         self._color_freq_action = color_by_menu.addAction("Frequency (continuous)")
         self._color_freq_action.setCheckable(True)
+        self._color_freq_action.setChecked(self._color_mode == "frequency")
         self._color_freq_action.setActionGroup(color_group)
         self._color_freq_action.triggered.connect(lambda: self._set_color_mode("frequency"))
 
@@ -1338,9 +1340,9 @@ class MainWindow(QMainWindow):
         m.add_action("Theme: Light", self.on_toggle_theme, name="theme")
         m.add_action("Data Color: Navy", self.on_toggle_color_variant, name="variant")
         m.add_submenu_group("Color By", [
-            ("None (single color)", lambda: self._set_color_mode("none"), True),
-            ("Backend/Receiver", lambda: self._set_color_mode("backend"), False),
-            ("Frequency (continuous)", lambda: self._set_color_mode("frequency"), False),
+            ("None (single color)", lambda: self._set_color_mode("none"), self._color_mode == "none"),
+            ("Backend/Receiver", lambda: self._set_color_mode("backend"), self._color_mode == "backend"),
+            ("Frequency (continuous)", lambda: self._set_color_mode("frequency"), self._color_mode == "frequency"),
         ], group_name="color_by")
         m.add_separator()
         m.add_action("Show Noise Panel", self._on_toggle_noise_panel,
@@ -1514,6 +1516,18 @@ class MainWindow(QMainWindow):
         
         # Invalidate backend color cache on data load
         self._backend_brushes_cache = None
+
+        # Auto-select color mode: backend if multiple backends, else none
+        if self.toa_flags is not None:
+            from jug.engine.flag_mapping import resolve_backends
+            n_backends = len(set(resolve_backends(self.toa_flags)))
+            if n_backends > 1:
+                self._color_mode = "backend"
+            else:
+                self._color_mode = "none"
+        else:
+            self._color_mode = "none"
+        self._sync_color_mode_ui()
         
         # Store original data for full restart (only on first load)
         if self.original_mjd is None:
@@ -1673,7 +1687,15 @@ class MainWindow(QMainWindow):
             if (self.residuals_us is not None
                     and len(self.residuals_us) > 0
                     and np.any(np.isfinite(self.residuals_us))):
-                self.plot_widget.autoRange()
+                # Use explicit range from actual data so stale overlay items
+                # (error bars, noise curves, ROI rects) don't influence bounds.
+                x_vals = x_data[np.isfinite(x_data)] if len(x_data) else x_data
+                y_vals = y_data[np.isfinite(y_data)] if len(y_data) else y_data
+                if len(x_vals) > 0 and len(y_vals) > 0:
+                    self.plot_widget.setXRange(float(np.min(x_vals)), float(np.max(x_vals)), padding=0.02)
+                    self.plot_widget.setYRange(float(np.min(y_vals)), float(np.max(y_vals)), padding=0.05)
+                else:
+                    self.plot_widget.autoRange()
             else:
                 # Fallback: set a sensible default range so the plot isn't blank
                 self.plot_widget.setYRange(-1, 1)
@@ -1954,31 +1976,51 @@ class MainWindow(QMainWindow):
         self.thread_pool.start(worker)
     
     def on_postfit_compute_complete(self, result):
-        """Handle postfit residual computation completion."""
-        # Get full data from fitter result
-        full_mjd = result['tdb_mjd']
-        full_residuals = result['residuals_us']
+        """Handle postfit residual computation completion.
+
+        Called from two paths:
+          1. on_fit_complete – result comes from the fitter which already
+             applied toa_mask, so arrays are already filtered.  Result does
+             NOT contain freq_bary_mhz / orbital_phase / toa_flags.
+          2. _compute_postfit_residuals via ComputeWorker – result is
+             full-size (no mask).  Contains all auxiliary arrays.
+
+        We detect which path by comparing result size to _keep_mask.
+        """
+        n_result = len(result['tdb_mjd'])
+        need_mask = (self.deleted_indices
+                     and self._keep_mask is not None
+                     and n_result > int(np.sum(self._keep_mask)))
+
+        self.mjd = result['tdb_mjd']
+        self.residuals_us = result['residuals_us']
+        self.postfit_residuals_us = result['residuals_us'].copy()
         full_errors = result.get('errors_us', None)
-        
-        # Filter out deleted TOAs if any have been deleted
-        if self.deleted_indices and len(self.deleted_indices) > 0:
-            # Use pre-computed boolean mask (O(1) vs O(N) Python loop)
-            keep_mask = self._keep_mask
-            self.mjd = full_mjd[keep_mask]
-            self.residuals_us = full_residuals[keep_mask]
-            self.postfit_residuals_us = full_residuals[keep_mask].copy()
-            self.prefit_residuals_us = self.prefit_residuals_us  # Keep current prefit (already filtered)
-            if full_errors is not None:
-                self.errors_us = full_errors[keep_mask]
-            else:
-                self.errors_us = None
-        else:
-            # No deletions - use all data
-            self.mjd = full_mjd
-            self.residuals_us = full_residuals
-            self.postfit_residuals_us = full_residuals.copy()
-            if full_errors is not None:
-                self.errors_us = full_errors
+        self.errors_us = full_errors if full_errors is not None else None
+
+        # Update auxiliary arrays only when the result provides them
+        if result.get('freq_bary_mhz') is not None:
+            self.toa_freqs = result['freq_bary_mhz']
+        if result.get('orbital_phase') is not None:
+            self.orbital_phase = result['orbital_phase']
+        if result.get('toa_flags') is not None:
+            self.toa_flags = result['toa_flags']
+
+        # Re-apply deletion mask when result arrays are full-size
+        if need_mask:
+            km = self._keep_mask
+            self.mjd = self.mjd[km]
+            self.residuals_us = self.residuals_us[km]
+            self.postfit_residuals_us = self.postfit_residuals_us[km]
+            if self.errors_us is not None:
+                self.errors_us = self.errors_us[km]
+            if self.toa_freqs is not None:
+                self.toa_freqs = self.toa_freqs[km]
+            if self.orbital_phase is not None:
+                self.orbital_phase = self.orbital_phase[km]
+            if self.toa_flags is not None:
+                self.toa_flags = [f for f, k in zip(self.toa_flags, km) if k]
+        self._backend_brushes_cache = None
 
         # Compute stats from the actual stored residuals/errors
         self._refresh_stats_from_residuals()
@@ -1993,10 +2035,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_pending_fit_result'):
             nr = self._pending_fit_result.get('noise_realizations', {})
             if nr:
-                # Apply TOA mask if needed
-                keep = self._keep_mask if self.deleted_indices else None
+                # Noise realizations from the fitter are already masked
                 for name, real in nr.items():
-                    self._noise_realizations[name] = real[keep] if keep is not None else real.copy()
+                    self._noise_realizations[name] = real.copy()
 
         self._update_plot(auto_range=True)
         self._update_plot_title()
@@ -2840,29 +2881,47 @@ class MainWindow(QMainWindow):
 
                 # Rebuild _noise_lines so populate_from_params can find
                 # the estimated EFAC/EQUAD/ECORR values.
+                # When backend is 'default' (single-backend model), expand to
+                # per-backend lines using actual TOA -f flag values so the
+                # white noise module can match them.
                 existing = list(self.session.params.get('_noise_lines', []))
+
+                # Collect unique -f flag values from TOAs for 'default' expansion
+                unique_f_backends = None
+                for key in result.params:
+                    if key.endswith('_default') and key.split('_')[0] in ('EFAC', 'EQUAD', 'ECORR'):
+                        if unique_f_backends is None:
+                            unique_f_backends = sorted({
+                                t.flags['f'] for t in self.session.toas_data
+                                if 'f' in t.flags
+                            })
+                        break
+
                 for key, val in result.params.items():
                     if key.startswith('EFAC_'):
                         backend = key[len('EFAC_'):]
-                        line = f"EFAC -f {backend} {val}"
+                        backends = unique_f_backends if backend == 'default' and unique_f_backends else [backend]
                         existing = [l for l in existing
                                     if not (l.strip().startswith(('EFAC','T2EFAC'))
-                                            and backend in l)]
-                        existing.append(line)
+                                            and any(b in l for b in backends))]
+                        for b in backends:
+                            existing.append(f"T2EFAC -f {b} {val}")
                     elif key.startswith('EQUAD_'):
                         backend = key[len('EQUAD_'):]
-                        line = f"EQUAD -f {backend} {val}"
+                        backends = unique_f_backends if backend == 'default' and unique_f_backends else [backend]
                         existing = [l for l in existing
                                     if not (l.strip().startswith(('EQUAD','T2EQUAD'))
-                                            and backend in l)]
-                        existing.append(line)
+                                            and any(b in l for b in backends))]
+                        for b in backends:
+                            existing.append(f"T2EQUAD -f {b} {val}")
                     elif key.startswith('ECORR_'):
                         backend = key[len('ECORR_'):]
-                        line = f"ECORR -f {backend} {val}"
+                        backends = unique_f_backends if backend == 'default' and unique_f_backends else [backend]
                         existing = [l for l in existing
                                     if not (l.strip().startswith(('ECORR','TNECORR'))
-                                            and backend in l)]
-                        existing.append(line)
+                                            and any(b in l for b in backends))]
+                        for b in backends:
+                            existing.append(f"ECORR -f {b} {val}")
                 self.session.params['_noise_lines'] = existing
 
             # Refresh the noise panel to show updated values
@@ -2985,6 +3044,25 @@ class MainWindow(QMainWindow):
 
     # -- Phase 4.4: Color-by-backend/frequency --------------------------
 
+    def _sync_color_mode_ui(self):
+        """Update menu check state to match self._color_mode."""
+        mode = self._color_mode
+        if self.is_remote:
+            mode_map = {"none": "None (single color)",
+                        "backend": "Backend/Receiver",
+                        "frequency": "Frequency (continuous)"}
+            if hasattr(self, '_view_overlay'):
+                for m, label in mode_map.items():
+                    self._view_overlay.set_item_checked(f"color_by_{label}", m == mode)
+        else:
+            if hasattr(self, '_color_none_action'):
+                if mode == "none":
+                    self._color_none_action.setChecked(True)
+                elif mode == "backend":
+                    self._color_backend_action.setChecked(True)
+                elif mode == "frequency":
+                    self._color_freq_action.setChecked(True)
+
     def _set_color_mode(self, mode: str):
         """Set coloring mode: 'none', 'backend', 'frequency'."""
         self._color_mode = mode
@@ -2992,21 +3070,7 @@ class MainWindow(QMainWindow):
         # Invalidate backend cache when mode changes
         self._backend_brushes_cache = None
 
-        # Check corresponding action in group
-        if self.is_remote:
-            # Update overlay submenu check states
-            mode_map = {"none": "None (single color)",
-                        "backend": "Backend/Receiver",
-                        "frequency": "Frequency (continuous)"}
-            for m, label in mode_map.items():
-                self._view_overlay.set_item_checked(f"color_by_{label}", m == mode)
-        else:
-            if mode == "none":
-                self._color_none_action.setChecked(True)
-            elif mode == "backend":
-                self._color_backend_action.setChecked(True)
-            elif mode == "frequency":
-                self._color_freq_action.setChecked(True)
+        self._sync_color_mode_ui()
 
         # Re-plot to apply changes efficiently
         if self.scatter_item is not None:
@@ -3015,6 +3079,7 @@ class MainWindow(QMainWindow):
     # Renamed from _apply_point_colors
     def _get_point_brushes(self, n_points):
         """Return list of brushes for current coloring mode, or None for default."""
+        import pyqtgraph as pg
         if not hasattr(self, 'scatter_item') or self.scatter_item is None:
             return None
 
@@ -3030,6 +3095,7 @@ class MainWindow(QMainWindow):
                 brushes, self._backend_color_map = self._backend_brushes_cache
                 # Verify cache is still valid
                 if len(brushes) == n_points:
+                    self._update_freq_legend(False)
                     self._update_backend_legend(True)
                     return brushes
             
@@ -3047,9 +3113,9 @@ class MainWindow(QMainWindow):
                 if len(brushes) > n_points:
                     brushes = brushes[:n_points]
                 else:
-                    import pyqtgraph as pg
                     brushes.extend([pg.mkBrush(None)] * (n_points - len(brushes)))
 
+            self._update_freq_legend(False)
             self._update_backend_legend(True)
             return brushes
 
@@ -3103,6 +3169,7 @@ class MainWindow(QMainWindow):
                      brushes.extend([pg.mkBrush(None)] * (n_points - len(brushes)))
             
             # Show legend
+            self._update_backend_legend(False)
             self._update_freq_legend(True, f_min, f_max)
             return brushes
 
@@ -4180,21 +4247,27 @@ class MainWindow(QMainWindow):
         x_max = x_min + size.x()
         y_max = y_min + size.y()
         
+        # Clean up the ROI overlay *before* deleting/re-plotting so the
+        # rectangle item doesn't influence pyqtgraph's autoRange bounds.
+        self._cancel_box_delete()
+
         # Only delete if we have a meaningful rectangle
         if size.x() > 0 and size.y() > 0:
             self._delete_points_in_box(x_min, x_max, y_min, y_max)
-        
-        self._cancel_box_delete()
 
     def _delete_points_in_box(self, x_min, x_max, y_min, y_max):
         """Delete data points within the specified box region."""
         if self.mjd is None or self.residuals_us is None:
             return
         
+        # Use the actual displayed x/y data for hit testing
+        x_data, _ = self._get_x_data()
+        y_data, _ = self._get_y_data()
+
         # Find points inside the box
         inside_mask = (
-            (self.mjd >= x_min) & (self.mjd <= x_max) &
-            (self.residuals_us >= y_min) & (self.residuals_us <= y_max)
+            (x_data >= x_min) & (x_data <= x_max) &
+            (y_data >= y_min) & (y_data <= y_max)
         )
         
         n_delete = np.sum(inside_mask)
@@ -4220,14 +4293,22 @@ class MainWindow(QMainWindow):
         self.prefit_residuals_us = self.prefit_residuals_us[keep_mask]
         if self.errors_us is not None:
             self.errors_us = self.errors_us[keep_mask]
+        if hasattr(self, 'toa_freqs') and self.toa_freqs is not None:
+            self.toa_freqs = self.toa_freqs[keep_mask]
+        if hasattr(self, 'orbital_phase') and self.orbital_phase is not None:
+            self.orbital_phase = self.orbital_phase[keep_mask]
+        if hasattr(self, 'toa_flags') and self.toa_flags is not None:
+            self.toa_flags = [f for f, k in zip(self.toa_flags, keep_mask) if k]
+        # Invalidate backend color cache so it's rebuilt for the new TOA count
+        self._backend_brushes_cache = None
         
         # Recalculate RMS using canonical engine stats
         from jug.engine.stats import compute_residual_stats
         stats = compute_residual_stats(self.residuals_us, self.errors_us)
         self._update_rms_from_stats(stats)
 
-        # Update plot
-        self._update_plot()
+        # Update plot (auto-range to fit remaining data)
+        self._update_plot(auto_range=True)
         self._update_plot_title()
 
         # Update statistics

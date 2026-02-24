@@ -6,7 +6,29 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_mbar=1013.25):
+def _pressure_from_height(height_m):
+    """Compute surface pressure from observatory height using US Standard Atmosphere.
+
+    Matches PINT's TroposphereDelay.pressure_from_altitude (CRC Handbook Ch14 p19).
+
+    Parameters
+    ----------
+    height_m : float
+        Height above ellipsoid in meters.
+
+    Returns
+    -------
+    pressure_mbar : float
+        Estimated surface pressure in mbar.
+    """
+    EARTH_R_m = 6356766.0  # mean Earth radius (m)
+    gph = EARTH_R_m * height_m / (EARTH_R_m + height_m)  # geopotential height
+    T = 288.15 - 0.0065 * height_m  # temperature lapse (K)
+    p_kPa = 101.325 * (288.15 / T) ** (-5.25575)
+    return p_kPa * 10.0  # kPa -> mbar
+
+
+def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_mbar=None):
     """
     Compute tropospheric delay (hydrostatic + wet) usually used in pulsar timing (e.g. Tempo2).
     
@@ -14,7 +36,8 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     - Zenith Hydrostatic Delay (ZHD): Davis et al. (1985)
     - Mapping Function: Niell Mapping Function (NMF), Niell (1996)
     
-    Default pressure is 1013.25 mbar (standard atmosphere) if no met data provided.
+    Pressure is derived from observatory height via the US Standard Atmosphere
+    (matching PINT) unless explicitly overridden.
     
     NOTE: Not JIT'd because of Python-level np.interp calls for NMF coefficient
     interpolation (scalar operations on the station latitude). The main array
@@ -31,8 +54,8 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
         Geodetic latitude of observatory (degrees).
     mjd : array_like
         Modified Julian Date of observation (for NMF seasonal variation).
-    pressure_mbar : float
-        Surface pressure (mbar), default 1013.25 (standard atm).
+    pressure_mbar : float, optional
+        Surface pressure (mbar). If None, computed from height_m.
         
     Returns
     -------
@@ -40,6 +63,9 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
         Tropospheric delay in seconds.
     """
     
+    if pressure_mbar is None:
+        pressure_mbar = _pressure_from_height(height_m)
+
     # Ensure inputs are JAX arrays
     elevation_deg = jnp.asarray(elevation_deg, dtype=jnp.float64)
     mjd = jnp.asarray(mjd, dtype=jnp.float64)

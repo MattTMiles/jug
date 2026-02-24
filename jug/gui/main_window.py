@@ -1441,6 +1441,7 @@ class MainWindow(QMainWindow):
         worker.signals.error.connect(self.on_session_error)
         worker.signals.progress.connect(self.on_session_progress)
         worker.signals.finished.connect(self.on_session_finished)
+        worker.signals.warnings.connect(self.on_session_warnings)
         
         # Start in thread pool
         self.thread_pool.start(worker)
@@ -1466,6 +1467,32 @@ class MainWindow(QMainWindow):
         # Now compute initial residuals
         self._compute_initial_residuals()
     
+    def on_session_warnings(self, issues: list):
+        """Handle non-fatal clock/EOP warnings from the session worker.
+
+        Errors are shown as a bold-red message box; warnings are shown in the
+        status bar so they don't interrupt the workflow.
+        """
+        errors   = [i for i in issues if i.get('severity') == 'error']
+        warnings = [i for i in issues if i.get('severity') == 'warning']
+
+        if errors:
+            error_text = "\n\n".join(i['message'] for i in errors)
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Clock File Error")
+            msg.setIcon(QMessageBox.Warning)
+            msg.setText(
+                "<b style='color:red;'>⚠️  Clock file problem detected!</b><br><br>"
+                + error_text.replace('\n', '<br>')
+                + "<br><br>Residuals may be inaccurate until clock files are corrected."
+            )
+            msg.setTextFormat(Qt.RichText)
+            msg.exec()
+        elif warnings:
+            # Just show in status bar so it's visible but non-blocking
+            first = warnings[0]['message']
+            self.status_bar.showMessage(f"⚠️  {first}", 10000)
+
     def on_session_error(self, error_msg):
         """Handle session creation error."""
         QMessageBox.critical(self, "Session Error", f"Failed to load files:\n\n{error_msg}")

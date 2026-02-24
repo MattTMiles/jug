@@ -343,15 +343,17 @@ def compute_residuals_simple(
     if verbose: print(f"   Loaded GPS and {bipm_version.upper()} clock files")
 
     # Validate clock file coverage
-    from jug.io.clock import check_clock_files
+    from jug.io.clock import check_clock_files, check_iers_coverage
     mjd_utc = np.array([toa.mjd_int + toa.mjd_frac for toa in toas])
     mjd_start = np.min(mjd_utc)
     mjd_end = np.max(mjd_utc)
 
     if verbose: print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
-    clock_ok = check_clock_files(mjd_start, mjd_end, obs_clock, gps_clock, bipm_clock, verbose=verbose)
-    if not clock_ok:
-        if verbose: print(f"   ⚠️  Clock file validation found issues (see above)")
+    clock_ok, clock_issues = check_clock_files(
+        mjd_start, mjd_end, obs_clock, gps_clock, bipm_clock,
+        verbose=verbose, clock_dir=str(clock_dir)
+    )
+    check_iers_coverage(mjd_start, mjd_end, verbose=verbose)
 
     location = EarthLocation.from_geocentric(
         obs_itrf_km[0] * u.km,
@@ -668,19 +670,50 @@ def compute_residuals_simple(
     s_shap_jax = jnp.array(s_shap_val)
 
     # DDK Kopeikin parameters
-    # Observer position in light-seconds (convert from km)
+    # Detect ecliptic coordinate frame (affects DDK Kopeikin formulas).
+    # KOM/KIN are defined relative to the ecliptic frame, so all DDK quantities
+    # (proper motion, position angles, observer position) must be in ecliptic
+    # coordinates for ecliptic pulsars like J1713+0747.
+    is_ecliptic = bool(params.get('_ecliptic_coords', False))
+
+    # Observer position in light-seconds (convert from km).
+    # For ecliptic pulsars, rotate ICRS obs_pos to ecliptic frame (rotation
+    # about x-axis by +obliquity ε, inverse of the ecliptic→equatorial rotation).
     SPEED_OF_LIGHT_KM_S = 299792.458
-    obs_pos_ls_jax = jnp.array(ssb_obs_pos_km / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
+    ecl_obl_cos = 1.0  # Default: identity (equatorial)
+    ecl_obl_sin = 0.0
+    if is_ecliptic and model_id == 5:
+        from jug.io.par_reader import OBLIQUITY_ARCSEC
+        ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010')).upper()
+        _obl_rad = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC['IERS2010']) * np.pi / (180.0 * 3600.0)
+        ecl_obl_cos = np.cos(_obl_rad)
+        ecl_obl_sin = np.sin(_obl_rad)
+        _x = ssb_obs_pos_km[:, 0]
+        _y = ssb_obs_pos_km[:, 1] * ecl_obl_cos + ssb_obs_pos_km[:, 2] * ecl_obl_sin
+        _z = -ssb_obs_pos_km[:, 1] * ecl_obl_sin + ssb_obs_pos_km[:, 2] * ecl_obl_cos
+        obs_pos_for_ddk = np.column_stack([_x, _y, _z])
+    else:
+        obs_pos_for_ddk = ssb_obs_pos_km
+    obs_pos_ls_jax = jnp.array(obs_pos_for_ddk / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
 
     # Parallax in milliarcseconds
     px_jax = jnp.array(parallax_mas)
 
-    # Pulsar coordinates for Kopeikin projections
-    # ra_rad and dec_rad are already defined earlier
-    sin_ra_jax = jnp.array(np.sin(ra_rad))
-    cos_ra_jax = jnp.array(np.cos(ra_rad))
-    sin_dec_jax = jnp.array(np.sin(dec_rad))
-    cos_dec_jax = jnp.array(np.cos(dec_rad))
+    # Pulsar coordinates for Kopeikin K95 projections (delta_I0, delta_J0).
+    # For ecliptic pulsars, use ecliptic longitude/latitude instead of RA/DEC
+    # so that the projections are consistent with the ecliptic KOM frame.
+    if is_ecliptic and model_id == 5:
+        _ecl_lon_rad = np.radians(params['_ecliptic_lon_deg'])
+        _ecl_lat_rad = np.radians(params['_ecliptic_lat_deg'])
+        sin_ra_jax = jnp.array(np.sin(_ecl_lon_rad))
+        cos_ra_jax = jnp.array(np.cos(_ecl_lon_rad))
+        sin_dec_jax = jnp.array(np.sin(_ecl_lat_rad))
+        cos_dec_jax = jnp.array(np.cos(_ecl_lat_rad))
+    else:
+        sin_ra_jax = jnp.array(np.sin(ra_rad))
+        cos_ra_jax = jnp.array(np.cos(ra_rad))
+        sin_dec_jax = jnp.array(np.sin(dec_rad))
+        cos_dec_jax = jnp.array(np.cos(dec_rad))
 
     # K96 proper motion parameters (Kopeikin 1996)
     # K96 flag: default True for DDK, can be disabled via par file
@@ -695,20 +728,19 @@ def compute_residuals_simple(
             k96_flag = bool(k96_param)
     k96_jax = jnp.array(k96_flag)
 
-    # Convert proper motion from mas/yr to radians/second
-    # PMRA in par files is typically μ_α * cos(δ) in mas/yr
-    # For K96, we need μ_long = PMRA / cos(DEC) (actual angular velocity in RA)
-    # and μ_lat = PMDEC
+    # Convert proper motion from mas/yr to radians/second.
+    # For ecliptic pulsars, use PMELONG/PMELAT (stored as _ecliptic_pm_lon/lat)
+    # so that the K96 formula uses the same coordinate frame as KOM.
+    # For equatorial pulsars, use PMRA/PMDEC directly.
     MAS_PER_YR_TO_RAD_PER_SEC = (np.pi / 180.0 / 3600.0 / 1000.0) / (365.25 * 86400.0)
 
-    pmra_mas_yr = float(params.get('PMRA', 0.0))  # This is μ_α * cos(δ)
-    pmdec_mas_yr = float(params.get('PMDEC', 0.0))
+    if is_ecliptic and model_id == 5:
+        pmra_mas_yr = float(params.get('_ecliptic_pm_lon', 0.0))   # PMELONG
+        pmdec_mas_yr = float(params.get('_ecliptic_pm_lat', 0.0))  # PMELAT
+    else:
+        pmra_mas_yr = float(params.get('PMRA', 0.0))
+        pmdec_mas_yr = float(params.get('PMDEC', 0.0))
 
-    # For K96, we need μ_long = PMRA / cos(DEC)
-    # But PINT uses PMRA directly (which is already μ_α * cos(δ))
-    # Looking at PINT's DDK_model.py, it uses PMLONG_DDK and PMLAT_DDK
-    # which are set equal to PMRA and PMDEC by default
-    # So we should use PMRA and PMDEC directly
     pmra_rad_per_sec = pmra_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
     pmdec_rad_per_sec = pmdec_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
 
@@ -716,9 +748,10 @@ def compute_residuals_simple(
     pmdec_rad_per_sec_jax = jnp.array(pmdec_rad_per_sec)
 
     if verbose and model_id == 5:
-        print(f"   DDK model with Kopeikin corrections:")
+        _pm_label = "PMELONG/PMELAT" if is_ecliptic else "PMRA/PMDEC"
+        print(f"   DDK model with Kopeikin corrections (frame: {'ecliptic' if is_ecliptic else 'equatorial'}):")
         print(f"     KIN={kin_val:.3f}°, KOM={kom_val:.3f}°, PX={parallax_mas:.3f} mas")
-        print(f"     K96={k96_flag}, PMRA={pmra_mas_yr:.3f} mas/yr, PMDEC={pmdec_mas_yr:.3f} mas/yr")
+        print(f"     K96={k96_flag}, {_pm_label}=({pmra_mas_yr:.3f}, {pmdec_mas_yr:.3f}) mas/yr")
 
     # === Tropospheric Delay (compute BEFORE kernel for PINT-compatible pre-binary time) ===
     # Check CORRECT_TROPOSPHERE flag (usually 'Y' or 'T')
@@ -1015,8 +1048,17 @@ def compute_residuals_simple(
         tzr_L_hat_jax = jnp.array(tzr_L_hat)
         tzr_roemer_shapiro_jax = jnp.array([tzr_roemer_shapiro])
 
-        # TZR observer position in light-seconds for DDK
-        tzr_obs_pos_ls_jax = jnp.array(tzr_ssb_obs_pos / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
+        # TZR observer position in light-seconds for DDK.
+        # For ecliptic pulsars, rotate ICRS obs_pos to ecliptic frame using
+        # the same obliquity computed above (ecl_obl_cos / ecl_obl_sin).
+        if is_ecliptic and model_id == 5:
+            _x = tzr_ssb_obs_pos[:, 0]
+            _y = tzr_ssb_obs_pos[:, 1] * ecl_obl_cos + tzr_ssb_obs_pos[:, 2] * ecl_obl_sin
+            _z = -tzr_ssb_obs_pos[:, 1] * ecl_obl_sin + tzr_ssb_obs_pos[:, 2] * ecl_obl_cos
+            tzr_obs_pos_for_ddk = np.column_stack([_x, _y, _z])
+        else:
+            tzr_obs_pos_for_ddk = tzr_ssb_obs_pos
+        tzr_obs_pos_ls_jax = jnp.array(tzr_obs_pos_for_ddk / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
 
         # Compute TZR DMX delay for pre-binary time
         tzr_dmx_ranges = parse_dmx_ranges(params)
@@ -1224,4 +1266,6 @@ def compute_residuals_simple(
         'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),
         'orbital_phase': orbital_phase,
         'toa_flags': [toa.flags for toa in toas],
+        # Clock / EOP issues collected during loading (for GUI warnings)
+        'clock_issues': clock_issues,
     }

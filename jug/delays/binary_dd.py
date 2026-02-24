@@ -142,18 +142,13 @@ def dd_binary_delay(
     dt_sec = dt_days * SECS_PER_DAY
     tt0 = dt_sec  # Time since T0 in seconds (PINT convention)
 
-    # Apply periastron advance: omega(t) = OM + OMDOT * (t - T0) / 1 year
-    dt_years = dt_days / 365.25
-    omega_current_deg = omega_deg + omdot_deg_yr * dt_years
-    omega_rad = jnp.deg2rad(omega_current_deg)
-
     # Mean anomaly calculation following PINT's exact formula
     # PINT uses: orbits = tt0/PB - 0.5 * PBDOT * (tt0/PB)^2
     # then wraps to fractional orbit before computing M = (frac_orbits) * 2π
     # This properly accounts for orbital period evolution
     pb_sec = pb_days * SECS_PER_DAY
     orbits = tt0 / pb_sec - 0.5 * pbdot * (tt0 / pb_sec)**2
-    
+
     # CRITICAL: Wrap orbits to [0, 1) BEFORE multiplying by 2π
     # This avoids precision loss for large number of orbits
     # PINT does: (orbits - floor(orbits)) * 2π
@@ -167,6 +162,19 @@ def dd_binary_delay(
 
     # Solve Kepler's equation for eccentric anomaly E
     E = solve_kepler(mean_anomaly, ecc_current)
+
+    # Periastron advance: D&D 1986 eq [25]: ω = ω₀ + k·Ae
+    # k = OMDOT / n (dimensionless); Ae = accumulated true anomaly (radians)
+    # Differs from linear dt formula for eccentric orbits; matches PINT's implementation.
+    half_E = E / 2.0
+    nu = 2.0 * jnp.arctan2(
+        jnp.sqrt(1.0 + ecc_current) * jnp.sin(half_E),
+        jnp.sqrt(1.0 - ecc_current) * jnp.cos(half_E)
+    )
+    Ae = 2.0 * jnp.pi * norbits + nu  # accumulated true anomaly
+    # k = OMDOT_deg_yr / (360 deg/orbit) / (365.25/pb_days orbits/yr) = OMDOT*pb_days/(360*365.25)
+    k_omdot = omdot_deg_yr * pb_days / (360.0 * 365.25)
+    omega_rad = jnp.deg2rad(omega_deg) + k_omdot * Ae
 
     # Trigonometric functions
     sinE = jnp.sin(E)

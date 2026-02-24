@@ -202,6 +202,7 @@ def compute_dd_einstein_delay(
 
 @jax.jit
 def compute_dd_shapiro_delay(
+    E: jnp.ndarray,
     theta: jnp.ndarray,
     om_rad: float,
     ecc: float,
@@ -209,17 +210,18 @@ def compute_dd_shapiro_delay(
     m2: float
 ) -> jnp.ndarray:
     """Compute Shapiro delay for DD model.
-    
-    Shapiro delay = -2 * r * log(1 - e*cos(E) - s*sin(omega + theta))
-    where r = T_SUN * M2 and s = SINI
-    
-    In terms of true anomaly:
-    Shapiro = -2 * r * log(1 - s * sin(omega + theta))
-    
+
+    Implements Damour & Deruelle (1986) equation [26]:
+        Shapiro = -2 * r * log(1 - e*cos(E) - s*(sin(ω)*(cos(E)-e) + sqrt(1-e²)*cos(ω)*sin(E)))
+
+    where r = T_SUN * M2 and s = SINI.
+
     Parameters
     ----------
+    E : jnp.ndarray
+        Eccentric anomaly in radians
     theta : jnp.ndarray
-        True anomaly in radians
+        True anomaly in radians (unused, kept for clarity)
     om_rad : float
         Longitude of periastron in radians
     ecc : float
@@ -228,20 +230,24 @@ def compute_dd_shapiro_delay(
         Sine of orbital inclination
     m2 : float
         Companion mass in solar masses
-        
+
     Returns
     -------
     shapiro : jnp.ndarray
         Shapiro delay in seconds
     """
     r = T_SUN * m2  # Range parameter
-    
-    # sin(omega + theta) = sin_omega*cos_theta + cos_omega*sin_theta
-    sin_omega_plus_theta = jnp.sin(om_rad + theta)
-    
-    arg = 1 - sini * sin_omega_plus_theta
-    arg = jnp.maximum(arg, 1e-10)  # Avoid log(0)
-    
+
+    sin_omega = jnp.sin(om_rad)
+    cos_omega = jnp.cos(om_rad)
+    cos_E = jnp.cos(E)
+    sin_E = jnp.sin(E)
+    sqrt_1_e2 = jnp.sqrt(1 - ecc**2)
+
+    # D&D 1986 eq. [26]: argument of log
+    arg = 1 - ecc * cos_E - sini * (sin_omega * (cos_E - ecc) + sqrt_1_e2 * cos_omega * sin_E)
+    arg = jnp.maximum(arg, 1e-10)  # Avoid log(0) for edge-on orbits
+
     return -2 * r * jnp.log(arg)
 
 
@@ -309,46 +315,51 @@ def compute_dd_binary_delay(
             )
 
     omdot = float(params.get('OMDOT', 0.0))  # deg/yr
-    
-    # Apply periastron advance
-    dt_yr = (toas_bary_mjd - t0) / 365.25
-    om_rad = (om_deg + omdot * dt_yr) * DEG_TO_RAD
-    
+
     return _compute_dd_binary_delay_jit(
         jnp.asarray(toas_bary_mjd),
-        a1, pb, t0, ecc, om_rad, pbdot, gamma, float(sini), m2
+        a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, float(sini), m2
     )
 
 
 @jax.jit
 def _compute_dd_binary_delay_jit(
     toas_bary_mjd: jnp.ndarray,
-    a1: float, pb: float, t0: float, ecc: float, om_rad: jnp.ndarray,
+    a1: float, pb: float, t0: float, ecc: float, om_deg: float, omdot_deg_yr: float,
     pbdot: float, gamma: float, sini: float, m2: float
 ) -> jnp.ndarray:
     """JIT-compiled DD binary delay computation."""
     # Mean anomaly
     M = compute_mean_anomaly_dd(toas_bary_mjd, pb, t0, pbdot)
-    
+
     # Solve Kepler's equation for eccentric anomaly
     E = solve_kepler(M, ecc)
-    
+
     # True anomaly
     theta = compute_true_anomaly(E, ecc)
-    
+
+    # Periastron advance: D&D 1986 eq [25]: ω = ω₀ + k·Ae
+    # k = OMDOT / n (dimensionless); Ae = accumulated true anomaly
+    dt = toas_bary_mjd - t0  # days
+    orbits = dt / pb - 0.5 * pbdot * (dt / pb) ** 2
+    norbits = jnp.floor(orbits)
+    Ae = 2.0 * jnp.pi * norbits + theta  # accumulated true anomaly
+    k_omdot = omdot_deg_yr * pb / (360.0 * 365.25)
+    om_rad = jnp.deg2rad(om_deg) + k_omdot * Ae
+
     # Roemer delay
     roemer = compute_dd_roemer_delay(E, theta, a1, ecc, om_rad)
-    
+
     # Einstein delay
     einstein = compute_dd_einstein_delay(E, gamma, ecc)
-    
+
     # Shapiro delay
     shapiro = jnp.where(
         (sini > 0) & (m2 > 0),
-        compute_dd_shapiro_delay(theta, om_rad, ecc, sini, m2),
+        compute_dd_shapiro_delay(E, theta, om_rad, ecc, sini, m2),
         0.0
     )
-    
+
     return roemer + einstein + shapiro
 
 

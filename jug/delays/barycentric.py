@@ -399,7 +399,13 @@ def compute_roemer_delay(
         re_sqr = np.sum(ssb_obs_pos_km**2, axis=1)
 
         # Parallax delay: 0.5 * r^2 / L * (1 - cos^2(theta)) / c
-        parallax_sec = 0.5 * (re_sqr / L_km) * (1.0 - re_dot_L**2 / re_sqr) / C_KM_S
+        # Guard against re_sqr = 0 (observer at SSB) to avoid 0/0 NaN
+        with np.errstate(invalid='ignore'):
+            parallax_sec = np.where(
+                re_sqr > 0,
+                0.5 * (re_sqr / L_km) * (1.0 - re_dot_L**2 / re_sqr) / C_KM_S,
+                0.0
+            )
 
         roemer_sec = roemer_sec + parallax_sec
 

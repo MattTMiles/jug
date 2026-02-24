@@ -293,14 +293,21 @@ def compute_residuals_simple(
     if verbose: print(f"   Loaded {len(toas)} TOAs from {Path(tim_file).name}")
     if verbose: print(f"   Loaded timing model from {Path(par_file).name}")
 
-    # Observatory location - auto-detect from TOAs if not explicitly set
+    # Observatory location - auto-detect from TOAs if not explicitly set.
+    # Collect all unique observatories in the dataset for multi-obs support.
     if observatory == "auto" and toas:
         observatory = toas[0].observatory
-        if verbose: print(f"   Auto-detected observatory: {observatory}")
+        if verbose: print(f"   Auto-detected primary observatory: {observatory}")
     obs_itrf_km = OBSERVATORIES.get(observatory.lower())
     if obs_itrf_km is None:
         raise ValueError(f"Unknown observatory: {observatory}. "
                          f"Known: {', '.join(sorted(set(OBSERVATORIES.keys())))}")
+
+    # Detect all unique observatories in the TOA list
+    all_obs_codes = sorted(set(toa.observatory.lower() for toa in toas))
+    is_multi_obs = len(all_obs_codes) > 1
+    if is_multi_obs and verbose:
+        print(f"   Multi-observatory dataset: {all_obs_codes}")
 
     # Load clock files
     if verbose: print(f"\n2. Loading clock corrections...")
@@ -315,7 +322,7 @@ def compute_residuals_simple(
         'ef': 'eff2gps.clk', 'eff': 'eff2gps.clk', 'effelsberg': 'eff2gps.clk', 'g': 'eff2gps.clk',
         'nc': 'ncy2gps.clk', 'ncy': 'ncy2gps.clk', 'nancay': 'ncy2gps.clk', 'f': 'ncy2gps.clk',
         'wsrt': 'wsrt2gps.clk', 'we': 'wsrt2gps.clk', 'i': 'wsrt2gps.clk',
-        'vla': 'vla2gps.clk',
+        'vla': 'vla2gps.clk', 'vl': 'vla2gps.clk',
     }
     obs_clock_file = OBS_CLOCK_FILES.get(observatory.lower())
     if obs_clock_file and (clock_dir / obs_clock_file).exists():
@@ -324,6 +331,20 @@ def compute_residuals_simple(
     else:
         obs_clock = {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
         if verbose: print(f"   No observatory clock file for '{observatory}' (assuming zero correction)")
+
+    # Pre-load clock files for all observatories in the dataset (multi-obs support)
+    obs_clocks = {observatory.lower(): obs_clock}
+    if is_multi_obs:
+        for obs_code in all_obs_codes:
+            if obs_code == observatory.lower():
+                continue
+            clk_file = OBS_CLOCK_FILES.get(obs_code)
+            if clk_file and (clock_dir / clk_file).exists():
+                obs_clocks[obs_code] = parse_clock_file(clock_dir / clk_file)
+                if verbose: print(f"   Loaded clock for {obs_code}: {clk_file}")
+            else:
+                obs_clocks[obs_code] = {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
+                if verbose: print(f"   No clock file for '{obs_code}' (assuming zero correction)")
     gps_clock = parse_clock_file(clock_dir / "gps2utc.clk")
 
     # Select BIPM clock version from par file CLK parameter
@@ -372,11 +393,31 @@ def compute_residuals_simple(
     if n_to > 0 and verbose:
         print(f"   Applying -to time offsets to {n_to} TOAs")
 
-    tdb_mjd = compute_tdb_standalone_vectorized(
-        mjd_ints, mjd_fracs,
-        obs_clock, gps_clock, bipm_clock,
-        location, time_offsets=time_offsets
-    )
+    if not is_multi_obs:
+        tdb_mjd = compute_tdb_standalone_vectorized(
+            mjd_ints, mjd_fracs,
+            obs_clock, gps_clock, bipm_clock,
+            location, time_offsets=time_offsets
+        )
+    else:
+        # Multi-observatory: compute TDB per observatory, then reassemble
+        tdb_mjd = np.zeros(len(toas), dtype=np.longdouble)
+        for obs_code in all_obs_codes:
+            idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
+            obs_loc_km = OBSERVATORIES.get(obs_code)
+            if obs_loc_km is None:
+                if verbose: print(f"   ⚠️  Unknown observatory '{obs_code}', using primary")
+                obs_loc_km = obs_itrf_km
+            obs_loc = EarthLocation.from_geocentric(
+                obs_loc_km[0] * u.km, obs_loc_km[1] * u.km, obs_loc_km[2] * u.km
+            )
+            clk = obs_clocks.get(obs_code, obs_clock)
+            tdb_mjd[idxs] = compute_tdb_standalone_vectorized(
+                [mjd_ints[i] for i in idxs], [mjd_fracs[i] for i in idxs],
+                clk, gps_clock, bipm_clock, obs_loc,
+                time_offsets=time_offsets[idxs]
+            )
+        if verbose: print(f"   Computed TDB per observatory: {all_obs_codes}")
     if verbose: print(f"   Computed TDB for {len(tdb_mjd)} TOAs")
 
     # Astrometry
@@ -389,7 +430,18 @@ def compute_residuals_simple(
     posepoch = params.get('POSEPOCH', params['PEPOCH'])
     parallax_mas = params.get('PX', 0.0)
 
-    ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(tdb_mjd, obs_itrf_km, ephemeris=ephem)
+    if not is_multi_obs:
+        ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(tdb_mjd, obs_itrf_km, ephemeris=ephem)
+    else:
+        # Multi-observatory: compute SSB-obs position per observatory
+        ssb_obs_pos_km = np.zeros((len(toas), 3))
+        ssb_obs_vel_km_s = np.zeros((len(toas), 3))
+        for obs_code in all_obs_codes:
+            idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
+            obs_loc_km = OBSERVATORIES.get(obs_code, obs_itrf_km)
+            pos, vel = compute_ssb_obs_pos_vel(tdb_mjd[idxs], obs_loc_km, ephemeris=ephem)
+            ssb_obs_pos_km[idxs] = pos
+            ssb_obs_vel_km_s[idxs] = vel
     L_hat = compute_pulsar_direction(ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day, posepoch, tdb_mjd)
 
     # Roemer and Shapiro delays
@@ -560,7 +612,7 @@ def compute_residuals_simple(
     
     gamma_val = float(params.get('GAMMA', 0.0))
     pbdot_val = float(params.get('PBDOT', 0.0))
-    xdot_val = float(params.get('XDOT', 0.0))
+    xdot_val = float(params.get('XDOT', params.get('A1DOT', 0.0)))  # A1DOT is an alias for XDOT
     omdot_val = float(params.get('OMDOT', 0.0))
     edot_val = float(params.get('EDOT', 0.0))
     
@@ -767,28 +819,34 @@ def compute_residuals_simple(
         if verbose: print(f"   Calculating tropospheric delay (Davis ZHD + Niell MF)...")
         from jug.delays.troposphere import compute_tropospheric_delay
         
-        loc_height_m = location.height.to(u.m).value
-        loc_lat_deg = location.lat.deg
-        
         # Source coordinate (J2000)
         source_coord = SkyCoord(ra=ra_rad*u.rad, dec=dec_rad*u.rad, frame='icrs')
         
-        # Observation times (UTC)
         mjd_utc_arr = np.array([t.mjd_int + t.mjd_frac for t in toas])
-        obs_times = Time(mjd_utc_arr, format='mjd', scale='utc')
         
-        # Transform to AltAz
-        topocentric_frame = AltAz(obstime=obs_times, location=location)
-        source_altaz = source_coord.transform_to(topocentric_frame)
-        elevation_deg = source_altaz.alt.deg
-        
-        # Calculate delay
-        tropo_delay_sec = np.asarray(compute_tropospheric_delay(
-            elevation_deg=elevation_deg,
-            height_m=loc_height_m,
-            lat_deg=loc_lat_deg,
-            mjd=mjd_utc_arr
-        ), dtype=np.float64)
+        # Multi-observatory: compute tropospheric delay per observatory using correct location
+        for obs_code in all_obs_codes:
+            idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
+            obs_loc_km = OBSERVATORIES.get(obs_code, obs_itrf_km)
+            obs_loc = EarthLocation.from_geocentric(
+                obs_loc_km[0] * u.km, obs_loc_km[1] * u.km, obs_loc_km[2] * u.km
+            )
+            loc_height_m = obs_loc.height.to(u.m).value
+            loc_lat_deg = obs_loc.lat.deg
+            
+            mjd_obs = mjd_utc_arr[idxs]
+            obs_times = Time(mjd_obs, format='mjd', scale='utc')
+            topocentric_frame = AltAz(obstime=obs_times, location=obs_loc)
+            source_altaz = source_coord.transform_to(topocentric_frame)
+            elevation_deg = source_altaz.alt.deg
+            
+            tropo_obs = np.asarray(compute_tropospheric_delay(
+                elevation_deg=elevation_deg,
+                height_m=loc_height_m,
+                lat_deg=loc_lat_deg,
+                mjd=mjd_obs
+            ), dtype=np.float64)
+            tropo_delay_sec[idxs] = tropo_obs
         
         if verbose: print(f"   Tropospheric delay: mean={np.mean(tropo_delay_sec)*1e6:.3f} μs, range=[{np.min(tropo_delay_sec)*1e6:.3f}, {np.max(tropo_delay_sec)*1e6:.3f}] μs")
     
@@ -962,10 +1020,17 @@ def compute_residuals_simple(
         
         # Handle TZRSITE - use the TZR site for TZR-specific calculations
         # TZRSITE can be a string (e.g., 'ao', 'gbt') or a tempo-style numeric code (e.g., 1 for Arecibo)
+        # Special case: 'ssb' means the reference TOA is already in barycentric (TDB) frame
         tzr_site_raw = params.get('TZRSITE', observatory)
         tzr_site = str(tzr_site_raw).lower() if tzr_site_raw is not None else observatory.lower()
+        tzr_is_ssb = tzr_site in ('ssb', '@', 'coe')  # barycentric reference TOA
         tzr_obs_itrf_km = OBSERVATORIES.get(tzr_site)
-        if tzr_obs_itrf_km is None:
+        if tzr_is_ssb:
+            # SSB reference: TZRMJD is already TDB, Roemer delay = 0, no clock correction
+            tzr_obs_itrf_km = np.array([0.0, 0.0, 0.0])
+            tzr_location = EarthLocation.from_geocentric(0 * u.km, 0 * u.km, 0 * u.km)
+            if verbose: print(f"   TZRSITE=ssb: barycentric reference TOA (no clock/Roemer correction)")
+        elif tzr_obs_itrf_km is None:
             if verbose: print(f"   ⚠️  Unknown TZRSITE '{tzr_site}', falling back to '{observatory}'")
             tzr_obs_itrf_km = obs_itrf_km
             tzr_location = location
@@ -979,26 +1044,18 @@ def compute_residuals_simple(
         # Resolve TZRMJD timescale
         # TZRMJD is always a site arrival time (like any TOA) and must be
         # converted from observatory local time (UTC) to TDB via the clock chain.
-        # This is consistent with PINT and Tempo2 behavior.
+        # Exception: TZRSITE=ssb means TZRMJD is already in TDB/barycentric frame.
         tzrmjd_scale_upper = tzrmjd_scale.upper()
         
-        if tzrmjd_scale_upper == "AUTO":
+        if tzr_is_ssb:
+            # Barycentric reference: TZRMJD is already in TDB (no conversion needed)
+            TZRMJD_TDB = TZRMJD_raw
+            delta_tzr_sec = 0.0
+            if verbose: print(f"   TZRMJD treated as TDB (TZRSITE=ssb, barycentric)")
+        elif tzrmjd_scale_upper == "AUTO":
             # TZRMJD is a site arrival time — always convert from UTC to TDB
             tzrmjd_scale_resolved = "UTC"
             if verbose: print(f"   TZRMJD scale: AUTO -> UTC (site arrival time, converting to TDB)")
-        elif tzrmjd_scale_upper in ("TDB", "UTC"):
-            tzrmjd_scale_resolved = tzrmjd_scale_upper
-            if verbose: print(f"   TZRMJD scale: {tzrmjd_scale_resolved} (explicit override)")
-        else:
-            raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'AUTO', 'TDB', or 'UTC'.")
-        
-        # Apply the resolved timescale
-        if tzrmjd_scale_resolved == "TDB":
-            # Explicit override: trust that TZRMJD is already in TDB
-            TZRMJD_TDB = TZRMJD_raw
-            delta_tzr_sec = 0.0
-            if verbose: print(f"   TZRMJD treated as TDB (no conversion)")
-        elif tzrmjd_scale_resolved == "UTC":
             # Standard: convert site arrival time to TDB via clock chain
             TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
                 [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
@@ -1007,12 +1064,34 @@ def compute_residuals_simple(
             TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
             delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * 86400.0
             if verbose: print(f"   TZRMJD converted from UTC to TDB (delta = {delta_tzr_sec:.3f} s)")
+        elif tzrmjd_scale_upper == "TDB":
+            # Explicit override: trust that TZRMJD is already in TDB
+            TZRMJD_TDB = TZRMJD_raw
+            delta_tzr_sec = 0.0
+            if verbose: print(f"   TZRMJD treated as TDB (no conversion)")
+        elif tzrmjd_scale_upper == "UTC":
+            tzrmjd_scale_resolved = "UTC"
+            if verbose: print(f"   TZRMJD scale: {tzrmjd_scale_resolved} (explicit override)")
+            TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
+                [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
+                obs_clock, gps_clock, bipm_clock, tzr_location
+            )[0]
+            TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
+            delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * 86400.0
+            if verbose: print(f"   TZRMJD converted from UTC to TDB (delta = {delta_tzr_sec:.3f} s)")
+        else:
+            raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'AUTO', 'TDB', or 'UTC'.")
         
         # Compute all delays at TZRMJD to get the TZR delay
         tzr_tdb_arr = np.array([float(TZRMJD_TDB)])
         
         # Astrometry at TZR (using TZR site location)
-        tzr_ssb_obs_pos, tzr_ssb_obs_vel = compute_ssb_obs_pos_vel(tzr_tdb_arr, tzr_obs_itrf_km, ephemeris=ephem)
+        if tzr_is_ssb:
+            # Barycentric reference: obs position = SSB = 0, no Roemer delay
+            tzr_ssb_obs_pos = np.zeros((1, 3))
+            tzr_ssb_obs_vel = np.zeros((1, 3))
+        else:
+            tzr_ssb_obs_pos, tzr_ssb_obs_vel = compute_ssb_obs_pos_vel(tzr_tdb_arr, tzr_obs_itrf_km, ephemeris=ephem)
         tzr_L_hat = compute_pulsar_direction(ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day, posepoch, tzr_tdb_arr)
         tzr_roemer = compute_roemer_delay(tzr_ssb_obs_pos, tzr_L_hat, parallax_mas)[0]
         
@@ -1036,7 +1115,9 @@ def compute_residuals_simple(
         
         # Barycentric frequency at TZR
         if 'TZRFRQ' in params:
-            tzr_freq = float(params['TZRFRQ'])
+            tzr_freq_raw = float(params['TZRFRQ'])
+            # TZRFRQ=inf means barycentric reference TOA with no DM correction
+            tzr_freq = tzr_freq_raw if np.isfinite(tzr_freq_raw) else 1e12  # use 1 THz as "infinite" proxy
         else:
             tzr_freq = 1400.0  # Default
         tzr_freq_bary = compute_barycentric_freq(np.array([tzr_freq]), tzr_ssb_obs_vel, tzr_L_hat)[0]

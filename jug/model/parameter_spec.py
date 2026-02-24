@@ -237,7 +237,7 @@ _ASTROMETRY_PARAMS = [
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         par_codec_name="raj",
-        aliases=("LAMBDA", "ELONG"),  # Ecliptic longitude (converted at parse time)
+        aliases=("LAMBDA",),  # ELONG is a separate param (ecliptic fitting)
     ),
     ParameterSpec(
         name="DECJ",
@@ -249,7 +249,7 @@ _ASTROMETRY_PARAMS = [
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         par_codec_name="decj",
-        aliases=("BETA", "ELAT"),  # Ecliptic latitude (converted at parse time)
+        aliases=("BETA",),  # ELAT is a separate param (ecliptic fitting)
     ),
     ParameterSpec(
         name="PMRA",
@@ -258,7 +258,7 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMRAC", "PMLAMBDA", "PMELONG"),  # PM in RA*cos(DEC) + ecliptic aliases
+        aliases=("PMRAC", "PMLAMBDA"),  # PM in RA*cos(DEC); PMELONG is separate
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
     ),
@@ -269,7 +269,7 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMBETA", "PMELAT"),  # Ecliptic proper motion latitude
+        aliases=("PMBETA",),  # PMELAT is a separate param (ecliptic fitting)
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
     ),
@@ -282,6 +282,46 @@ _ASTROMETRY_PARAMS = [
         par_unit_str="mas",
         aliases=("PARALLAX",),
         component_name="AstrometryComponent",
+    ),
+    ParameterSpec(
+        name="ELONG",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="deg",
+        par_unit_str="degrees",
+        component_name="AstrometryComponent",
+        requires=("POSEPOCH",),
+    ),
+    ParameterSpec(
+        name="ELAT",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="deg",
+        par_unit_str="degrees",
+        component_name="AstrometryComponent",
+        requires=("POSEPOCH",),
+    ),
+    ParameterSpec(
+        name="PMELONG",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="mas/yr",
+        par_unit_str="mas/yr",
+        component_name="AstrometryComponent",
+        requires=("POSEPOCH",),
+    ),
+    ParameterSpec(
+        name="PMELAT",
+        group="astrometry",
+        derivative_group=DerivativeGroup.ASTROMETRY,
+        dtype="float64",
+        internal_unit="mas/yr",
+        par_unit_str="mas/yr",
+        component_name="AstrometryComponent",
+        requires=("POSEPOCH",),
     ),
     ParameterSpec(
         name="POSEPOCH",

@@ -115,6 +115,8 @@ class TimingSession:
         self._cached_result_by_mode: Dict[bool, Dict[str, Any]] = {}  # {subtract_tzr: result}
         self._cached_delays: Optional[Dict[str, Any]] = None  # For fast postfit
         self._cached_toa_data: Optional[Dict[str, Any]] = None  # For ultra-fast postfit
+        # Clock / EOP issues collected during first residual computation (for GUI)
+        self.clock_issues: list = []
         
         if self.verbose:
             print(f"  Loaded {len(self.toas_data)} TOAs")
@@ -497,6 +499,9 @@ class TimingSession:
         
         # Cache the result (only for original params), keyed by subtract_tzr
         self._cached_result_by_mode[subtract_tzr] = result
+        # Capture clock issues from first load for the GUI
+        if not self.clock_issues and result.get('clock_issues'):
+            self.clock_issues = result['clock_issues']
         
         # Cache TOA data for fast postfit (enables 30x speedup!)
         if 'dt_sec' in result and 'tdb_mjd' in result:

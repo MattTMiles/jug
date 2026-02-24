@@ -24,6 +24,10 @@ class SessionWorkerSignals(QObject):
     # Progress updates
     progress = Signal(str)  # Status message
 
+    # Emitted when non-fatal warnings are detected (e.g. clock file issues)
+    # Payload: list of dicts with keys 'severity' ('error'/'warning') and 'message'
+    warnings = Signal(list)
+
 
 class SessionWorker(QRunnable):
     """
@@ -62,7 +66,7 @@ class SessionWorker(QRunnable):
             from jug.engine import open_session
 
             self.signals.progress.emit("Loading files...")
-            
+
             # Create session (this parses files and caches data)
             session = open_session(
                 par_file=self.par_file,
@@ -73,6 +77,10 @@ class SessionWorker(QRunnable):
             
             self.signals.progress.emit(f"Loaded {session.get_toa_count()} TOAs")
             
+            # Emit clock/EOP warnings before emitting the session itself
+            if session.clock_issues:
+                self.signals.warnings.emit(session.clock_issues)
+
             # Emit session object
             self.signals.result.emit(session)
             

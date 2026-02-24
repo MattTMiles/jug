@@ -1059,10 +1059,17 @@ def compute_binary_derivatives_ddk(
     
     px_mas = float(params.get('PX', 0.0))
     
-    # Proper motion (for K96)
+    # Proper motion (for K96).
+    # For ecliptic pulsars, use PMELONG/PMELAT (stored as _ecliptic_pm_lon/lat)
+    # so that the K96 formula uses the same coordinate frame as KOM.
     MAS_PER_YR_TO_RAD_PER_SEC = (jnp.pi / 180.0 / 3600.0 / 1000.0) / (365.25 * 86400.0)
-    pmra_mas_yr = float(params.get('PMRA', 0.0))
-    pmdec_mas_yr = float(params.get('PMDEC', 0.0))
+    _is_ecliptic = bool(params.get('_ecliptic_coords', False))
+    if _is_ecliptic:
+        pmra_mas_yr = float(params.get('_ecliptic_pm_lon', 0.0))   # PMELONG
+        pmdec_mas_yr = float(params.get('_ecliptic_pm_lat', 0.0))  # PMELAT
+    else:
+        pmra_mas_yr = float(params.get('PMRA', 0.0))
+        pmdec_mas_yr = float(params.get('PMDEC', 0.0))
     pmra_rad_per_sec = pmra_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
     pmdec_rad_per_sec = pmdec_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
     
@@ -1089,31 +1096,52 @@ def compute_binary_derivatives_ddk(
     dt_days = toas_bary_mjd - t0
     tt0_sec = dt_days * SECS_PER_DAY
     
-    # Observer position for Kopeikin projections
+    # Observer position for Kopeikin projections.
+    # For ecliptic pulsars, rotate ICRS obs_pos to ecliptic frame.
     if obs_pos_ls is None:
         obs_pos_ls = jnp.zeros((n_toas, 3))
     obs_pos_ls = jnp.asarray(obs_pos_ls)
-    
-    # Get pulsar position for projections
-    # Handle both radians (float) and sexagesimal strings
-    from jug.io.par_reader import parse_ra, parse_dec
-    raj_val = params.get('RAJ', 0.0)
-    decj_val = params.get('DECJ', 0.0)
-    
-    if isinstance(raj_val, str) and ':' in raj_val:
-        ra_rad = parse_ra(raj_val)
+    if _is_ecliptic:
+        from jug.io.par_reader import OBLIQUITY_ARCSEC
+        _ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010')).upper()
+        _obl_rad = OBLIQUITY_ARCSEC.get(_ecl_frame, OBLIQUITY_ARCSEC['IERS2010']) * float(jnp.pi) / (180.0 * 3600.0)
+        _cos_obl = jnp.cos(_obl_rad)
+        _sin_obl = jnp.sin(_obl_rad)
+        _x = obs_pos_ls[:, 0]
+        _y = obs_pos_ls[:, 1] * _cos_obl + obs_pos_ls[:, 2] * _sin_obl
+        _z = -obs_pos_ls[:, 1] * _sin_obl + obs_pos_ls[:, 2] * _cos_obl
+        obs_pos_ls = jnp.column_stack([_x, _y, _z])
+
+    # Get pulsar position for K95 projections (delta_I0, delta_J0).
+    # For ecliptic pulsars, use ecliptic lon/lat instead of RA/DEC so that
+    # the projections are consistent with the ecliptic KOM frame.
+    if _is_ecliptic:
+        _ecl_lon_rad = float(jnp.pi) / 180.0 * float(params.get('_ecliptic_lon_deg', 0.0))
+        _ecl_lat_rad = float(jnp.pi) / 180.0 * float(params.get('_ecliptic_lat_deg', 0.0))
+        sin_ra = jnp.sin(_ecl_lon_rad)
+        cos_ra = jnp.cos(_ecl_lon_rad)
+        sin_dec = jnp.sin(_ecl_lat_rad)
+        cos_dec = jnp.cos(_ecl_lat_rad)
     else:
-        ra_rad = float(raj_val)
-        
-    if isinstance(decj_val, str) and ':' in decj_val:
-        dec_rad = parse_dec(decj_val)
-    else:
-        dec_rad = float(decj_val)
-        
-    sin_ra = jnp.sin(ra_rad)
-    cos_ra = jnp.cos(ra_rad)
-    sin_dec = jnp.sin(dec_rad)
-    cos_dec = jnp.cos(dec_rad)
+        # Handle both radians (float) and sexagesimal strings
+        from jug.io.par_reader import parse_ra, parse_dec
+        raj_val = params.get('RAJ', 0.0)
+        decj_val = params.get('DECJ', 0.0)
+
+        if isinstance(raj_val, str) and ':' in raj_val:
+            ra_rad = parse_ra(raj_val)
+        else:
+            ra_rad = float(raj_val)
+
+        if isinstance(decj_val, str) and ':' in decj_val:
+            dec_rad = parse_dec(decj_val)
+        else:
+            dec_rad = float(decj_val)
+
+        sin_ra = jnp.sin(ra_rad)
+        cos_ra = jnp.cos(ra_rad)
+        sin_dec = jnp.sin(dec_rad)
+        cos_dec = jnp.cos(dec_rad)
     
     # Kopeikin projection terms (per-TOA)
     x = obs_pos_ls[:, 0]

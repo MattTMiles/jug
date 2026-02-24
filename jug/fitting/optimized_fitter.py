@@ -58,6 +58,7 @@ from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.fitting.wls_fitter import wls_solve_svd
 from jug.fitting.binary_registry import compute_binary_delay, compute_binary_derivatives
+import scipy.linalg as _scipy_linalg
 
 # Import ParameterSpec system for spec-driven routing
 from jug.model.parameter_spec import (
@@ -93,6 +94,10 @@ def _update_param(params: Dict, param: str, value: float) -> None:
     of the fitted value, causing phase-computation errors of order 100 ns for
     F0 over multi-year data spans.
 
+    For ecliptic parameters (ELONG, ELAT, PMELONG, PMELAT), update the
+    internal ``_ecliptic_*`` keys and reconvert to equatorial coordinates
+    so that delay models (which use RAJ/DECJ) stay consistent.
+
     Parameters
     ----------
     params : dict
@@ -102,11 +107,80 @@ def _update_param(params: Dict, param: str, value: float) -> None:
     value : float
         New parameter value (float64).
     """
+    param_upper = param.upper()
+
+    if param_upper == 'ELONG':
+        params['ELONG'] = value
+        params['_ecliptic_lon_deg'] = value
+        _reconvert_ecliptic_to_equatorial(params)
+        return
+    elif param_upper == 'ELAT':
+        params['ELAT'] = value
+        params['_ecliptic_lat_deg'] = value
+        _reconvert_ecliptic_to_equatorial(params)
+        return
+    elif param_upper == 'PMELONG':
+        params['PMELONG'] = value
+        params['_ecliptic_pm_lon'] = value
+        _reconvert_ecliptic_to_equatorial(params)
+        return
+    elif param_upper == 'PMELAT':
+        params['PMELAT'] = value
+        params['_ecliptic_pm_lat'] = value
+        _reconvert_ecliptic_to_equatorial(params)
+        return
+
     params[param] = value
     hp = params.get('_high_precision')
-    if hp is not None and param.upper() in HIGH_PRECISION_PARAMS:
+    if hp is not None and param_upper in HIGH_PRECISION_PARAMS:
         # Use repr() to preserve all float64 significant digits
         hp[param] = repr(float(value))
+
+
+def _reconvert_ecliptic_to_equatorial(params: Dict) -> None:
+    """Reconvert ecliptic coords to equatorial after an ecliptic param update."""
+    from jug.io.par_reader import (
+        OBLIQUITY_ARCSEC, format_ra, format_dec
+    )
+    import numpy as np_
+
+    ecl_lon_deg = params.get('_ecliptic_lon_deg', 0.0)
+    ecl_lat_deg = params.get('_ecliptic_lat_deg', 0.0)
+    ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010'))
+    obl_rad = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC['IERS2010']) * np_.pi / (180.0 * 3600.0)
+
+    lon_rad = np_.radians(ecl_lon_deg)
+    lat_rad = np_.radians(ecl_lat_deg)
+    cos_lon, sin_lon = np_.cos(lon_rad), np_.sin(lon_rad)
+    cos_lat, sin_lat = np_.cos(lat_rad), np_.sin(lat_rad)
+    cos_obl, sin_obl = np_.cos(obl_rad), np_.sin(obl_rad)
+
+    x = cos_lon * cos_lat
+    y = sin_lon * cos_lat * cos_obl - sin_lat * sin_obl
+    z = sin_lon * cos_lat * sin_obl + sin_lat * cos_obl
+
+    ra_rad = np_.arctan2(y, x) % (2 * np_.pi)
+    dec_rad = np_.arctan2(z, np_.sqrt(x**2 + y**2))
+
+    params['RAJ'] = format_ra(ra_rad)
+    params['DECJ'] = format_dec(dec_rad)
+
+    # Reconvert proper motions if present
+    pm_lon = params.get('_ecliptic_pm_lon', 0.0)
+    pm_lat = params.get('_ecliptic_pm_lat', 0.0)
+    if pm_lon != 0.0 or pm_lat != 0.0:
+        dx = -sin_lon * pm_lon - cos_lon * sin_lat * pm_lat
+        dy = cos_lon * pm_lon - sin_lon * sin_lat * pm_lat
+        dz = cos_lat * pm_lat
+
+        dx_eq = dx
+        dy_eq = dy * cos_obl - dz * sin_obl
+        dz_eq = dy * sin_obl + dz * cos_obl
+
+        cos_ra, sin_ra = np_.cos(ra_rad), np_.sin(ra_rad)
+        cos_dec, sin_dec = np_.cos(dec_rad), np_.sin(dec_rad)
+        params['PMRA'] = -sin_ra * dx_eq + cos_ra * dy_eq
+        params['PMDEC'] = -cos_ra * sin_dec * dx_eq - sin_ra * sin_dec * dy_eq + cos_dec * dz_eq
 
 
 @dataclass
@@ -203,6 +277,8 @@ class GeneralFitSetup:
     jump_masks: Optional[Dict[str, np.ndarray]]
     # JUMP phase offsets from par file (longdouble, F0 * JUMP_value per TOA)
     jump_phase: Optional[np.ndarray]
+    # TZR phase for correct pulse numbering (longdouble scalar)
+    tzr_phase: Optional[float]
     # Noise configuration (Phase 3 integration)
     noise_config: object  # NoiseConfig or None
 
@@ -1434,14 +1510,28 @@ def _build_setup_common(
 
     # --- Extract starting parameter values ---------------------------------
     param_values_start = []
-    for param in fit_params:
+    for idx, param in enumerate(fit_params):
         if param not in params:
-            default_value = _get_param_default_value(param)
-            if default_value is None:
-                raise ValueError(f"Parameter {param} not found in .par file and no default available")
-            params[param] = default_value
-            if verbose:
-                print(f"Warning: {param} not in .par file, using default value: {default_value}")
+            # Try canonical name and aliases (e.g., A1DOT ↔ XDOT)
+            canonical = canonicalize_param_name(param)
+            if canonical != param and canonical in params:
+                params[param] = params[canonical]
+            else:
+                # Try all aliases
+                from jug.model.parameter_spec import get_spec
+                spec = get_spec(param)
+                if spec and spec.aliases:
+                    for alias in spec.aliases:
+                        if alias in params:
+                            params[param] = params[alias]
+                            break
+            if param not in params:
+                default_value = _get_param_default_value(param)
+                if default_value is None:
+                    raise ValueError(f"Parameter {param} not found in .par file and no default available")
+                params[param] = default_value
+                if verbose:
+                    print(f"Warning: {param} not in .par file, using default value: {default_value}")
 
         value = params[param]
         if param == 'RAJ' and isinstance(value, str):
@@ -1450,6 +1540,14 @@ def _build_setup_common(
         elif param == 'DECJ' and isinstance(value, str):
             from jug.io.par_reader import parse_dec
             value = parse_dec(value)
+        elif param == 'ELONG':
+            value = float(params.get('_ecliptic_lon_deg', params.get('ELONG', 0.0)))
+        elif param == 'ELAT':
+            value = float(params.get('_ecliptic_lat_deg', params.get('ELAT', 0.0)))
+        elif param == 'PMELONG':
+            value = float(params.get('_ecliptic_pm_lon', params.get('PMELONG', 0.0)))
+        elif param == 'PMELAT':
+            value = float(params.get('_ecliptic_pm_lat', params.get('PMELAT', 0.0)))
         elif param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
             kin_deg = float(params.get('KIN', 0.0))
             value = float(jnp.sin(jnp.deg2rad(kin_deg)))
@@ -1519,6 +1617,7 @@ def _build_setup_common(
 
     # --- Subtract noise realization from dt_sec (Tempo2-style workflow) ------
     jump_phase = extras.get('jump_phase')
+    tzr_phase = extras.get('tzr_phase')
     if subtract_noise_sec is not None:
         dt_sec_cached = dt_sec_cached - subtract_noise_sec
         if dt_sec_ld is not None:
@@ -1569,6 +1668,7 @@ def _build_setup_common(
         dmjump_labels=dmjump_labels,
         jump_masks=jump_masks,
         jump_phase=jump_phase,
+        tzr_phase=tzr_phase,
         noise_config=noise_config,
     )
 
@@ -1755,6 +1855,7 @@ def _compute_full_model_residuals(
     # Phase computation via shared canonical function (longdouble precision)
     residuals_us, residuals_sec = compute_phase_residuals(
         dt_sec_np, params, weights, subtract_mean=True,
+        tzr_phase=setup.tzr_phase,
         jump_phase=current_jump_phase
     )
 
@@ -1891,6 +1992,11 @@ def _run_general_fit_iterations(
     best_chi2 = current_chi2
     best_param_values = param_values_curr.copy()
     best_noise_coeffs = None  # Fourier/DMX coefficients from augmented solve
+    # Save solver data for linear postfit (needed for augmented fits)
+    _saved_residuals_sec = None
+    _saved_M = None
+    _saved_delta_all = None
+    _saved_lambda = 1.0
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
@@ -1963,6 +2069,7 @@ def _run_general_fit_iterations(
         # Compute phase residuals from updated dt_sec via shared function (longdouble)
         _, residuals = compute_phase_residuals(
             dt_sec_np, params, weights, subtract_mean=True,
+            tzr_phase=setup.tzr_phase,
             jump_phase=current_jump_phase
         )
 
@@ -2119,11 +2226,10 @@ def _run_general_fit_iterations(
             M2 = M1 / col_norms[None, :]
             
             if n_augmented > 0:
-                # Regularized solve: (M^T M + Φ^{-1}) δp = M^T r
-                MtM = M2.T @ M2
-                Mtr = M2.T @ r1
-                # Build prior inverse diagonal (only for augmented columns)
-                prior_inv = np.zeros(MtM.shape[0])
+                # SVD-based regularized solve via augmented system.
+                # Avoids squaring the condition number that normal equations cause.
+                n_cols = M2.shape[1]
+                prior_inv = np.zeros(n_cols)
                 offset = n_timing_cols
                 if n_red_noise_cols > 0:
                     prior_inv[offset:offset + n_red_noise_cols] = 1.0 / (setup.red_noise_prior * col_norms[offset:offset + n_red_noise_cols]**2)
@@ -2135,26 +2241,25 @@ def _run_general_fit_iterations(
                     prior_inv[offset:offset + n_ecorr_cols] = 1.0 / (setup.ecorr_prior * col_norms[offset:offset + n_ecorr_cols]**2)
                     offset += n_ecorr_cols
                 # DMX has no prior (flat prior → no regularization)
-                MtM += np.diag(prior_inv)
-                MtM_j = jnp.array(MtM)
-                Mtr_j = jnp.array(Mtr)
-                try:
-                    delta_normalized = np.asarray(jnp.linalg.solve(MtM_j, Mtr_j))
-                    # Check for NaN - solve() can silently return NaN for singular matrices
-                    if np.any(np.isnan(delta_normalized)):
-                        delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
-                except Exception:
-                    delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
+                has_prior = np.any(prior_inv > 0)
+                if has_prior:
+                    sqrt_prior_inv = np.sqrt(prior_inv)
+                    M_aug = np.vstack([M2, np.diag(sqrt_prior_inv)])
+                    r_aug = np.concatenate([r1, np.zeros(n_cols)])
+                else:
+                    M_aug = M2
+                    r_aug = r1
+                U, Sdiag, VT = _scipy_linalg.svd(M_aug, full_matrices=False)
+                threshold = 1e-14 * max(M_aug.shape)
+                Smax = Sdiag[0]
+                Sdiag_inv = np.where(Sdiag > threshold * Smax, 1.0 / Sdiag, 0.0)
+                delta_normalized = VT.T @ (Sdiag_inv * (U.T @ r_aug))
                 delta_params_all = delta_normalized / col_norms
-                try:
-                    cov_all = np.asarray(jnp.linalg.inv(MtM_j))
-                    # Check for NaN - inv() can silently return NaN for ill-conditioned matrices
-                    if np.any(np.isnan(cov_all)):
-                        cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
-                except Exception:
-                    cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
-                cov_all = (cov_all / col_norms).T / col_norms
-                # Extract timing parameters (skip Offset column if present)
+                cov_normalized = (VT.T * Sdiag_inv**2) @ VT
+                if np.any(np.isnan(cov_normalized)):
+                    MtM = M_aug.T @ M_aug
+                    cov_normalized = np.asarray(jnp.linalg.pinv(jnp.array(MtM)))
+                cov_all = (cov_normalized / col_norms).T / col_norms
                 t0 = 1 if has_offset else 0
                 delta_params = delta_params_all[t0:n_timing_cols]
                 cov = cov_all[t0:n_timing_cols, t0:n_timing_cols]
@@ -2171,20 +2276,14 @@ def _run_general_fit_iterations(
                 cov = (cov_normalized / col_norms).T / col_norms
         else:
             if n_augmented > 0:
-                # EXACT solver with prior regularization via normal equations
-                # Weight the system: r̃ = r/σ, M̃ = M/σ
+                # EXACT solver: SVD on augmented system (avoids condition squaring)
                 r1 = r_solve / sigma_solve
                 M1 = M_solve / sigma_solve[:, None]
-                # Normalize columns for conditioning (like PINT's normalize_designmatrix)
                 col_norms = np.asarray(jnp.sqrt(jnp.sum(jnp.array(M1)**2, axis=0)))
                 col_norms = np.where(col_norms == 0, 1.0, col_norms)
                 M2 = M1 / col_norms[None, :]
-                # Normal equations: (M^T M + Φ^{-1}) δp = M^T r
-                MtM = M2.T @ M2
-                Mtr = M2.T @ r1
-                # Build prior inverse diagonal
-                # Offset and timing params have zero prior (flat/unconstrained)
-                prior_inv = np.zeros(MtM.shape[0])
+                n_cols = M2.shape[1]
+                prior_inv = np.zeros(n_cols)
                 offset = n_timing_cols
                 if n_red_noise_cols > 0:
                     prior_inv[offset:offset + n_red_noise_cols] = 1.0 / (setup.red_noise_prior * col_norms[offset:offset + n_red_noise_cols]**2)
@@ -2195,26 +2294,25 @@ def _run_general_fit_iterations(
                 if n_ecorr_cols > 0:
                     prior_inv[offset:offset + n_ecorr_cols] = 1.0 / (setup.ecorr_prior * col_norms[offset:offset + n_ecorr_cols]**2)
                     offset += n_ecorr_cols
-                MtM += np.diag(prior_inv)
-                MtM_j = jnp.array(MtM)
-                Mtr_j = jnp.array(Mtr)
-                try:
-                    delta_normalized = np.asarray(jnp.linalg.solve(MtM_j, Mtr_j))
-                    # Check for NaN - solve() can silently return NaN for singular matrices
-                    if np.any(np.isnan(delta_normalized)):
-                        delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
-                except Exception:
-                    delta_normalized = np.asarray(jnp.linalg.lstsq(MtM_j, Mtr_j, rcond=None)[0])
+                has_prior = np.any(prior_inv > 0)
+                if has_prior:
+                    sqrt_prior_inv = np.sqrt(prior_inv)
+                    M_aug = np.vstack([M2, np.diag(sqrt_prior_inv)])
+                    r_aug = np.concatenate([r1, np.zeros(n_cols)])
+                else:
+                    M_aug = M2
+                    r_aug = r1
+                U, Sdiag, VT = _scipy_linalg.svd(M_aug, full_matrices=False)
+                threshold = 1e-14 * max(M_aug.shape)
+                Smax = Sdiag[0]
+                Sdiag_inv = np.where(Sdiag > threshold * Smax, 1.0 / Sdiag, 0.0)
+                delta_normalized = VT.T @ (Sdiag_inv * (U.T @ r_aug))
                 delta_params_all = delta_normalized / col_norms
-                try:
-                    cov_all = np.asarray(jnp.linalg.inv(MtM_j))
-                    # Check for NaN - inv() can silently return NaN for ill-conditioned matrices
-                    if np.any(np.isnan(cov_all)):
-                        cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
-                except Exception:
-                    cov_all = np.asarray(jnp.linalg.pinv(MtM_j))
-                cov_all = (cov_all / col_norms).T / col_norms
-                # Extract timing parameters (skip Offset column if present)
+                cov_normalized = (VT.T * Sdiag_inv**2) @ VT
+                if np.any(np.isnan(cov_normalized)):
+                    MtM = M_aug.T @ M_aug
+                    cov_normalized = np.asarray(jnp.linalg.pinv(jnp.array(MtM)))
+                cov_all = (cov_normalized / col_norms).T / col_norms
                 t0 = 1 if has_offset else 0
                 delta_params = delta_params_all[t0:n_timing_cols]
                 cov = cov_all[t0:n_timing_cols, t0:n_timing_cols]
@@ -2313,6 +2411,13 @@ def _run_general_fit_iterations(
                 if _iter_noise_coeffs is not None:
                     best_noise_coeffs = _iter_noise_coeffs.copy()
                 
+                # Save solver data for linear postfit computation
+                if n_augmented > 0:
+                    _saved_residuals_sec = residuals.copy()
+                    _saved_M = M.copy()
+                    _saved_delta_all = delta_params_all.copy()
+                    _saved_lambda = lambda_
+                
                 # Track best state
                 if trial_chi2 < best_chi2:
                     best_chi2 = trial_chi2
@@ -2375,18 +2480,45 @@ def _run_general_fit_iterations(
     # making chi2 comparisons across iterations unreliable. Use the converged
     # (last-accepted) parameters instead of best_chi2 intermediate.
     if n_augmented > 0:
-        # GLS: use converged parameters and their noise coefficients
-        for i, param in enumerate(fit_params):
-            _update_param(params, param, param_values_curr[i])
+        # GLS/augmented: use full-step (undamped) parameter values.
+        # The damped param_values_curr may be only a fraction of the solver
+        # step due to the broken nonlinear validation rejecting good steps.
+        # Use param_start + delta_params (full step) for consistency with the
+        # linear postfit residuals (r - M @ delta).
+        if _saved_delta_all is not None and len(fit_params) <= len(_saved_delta_all):
+            # Skip offset column: _saved_delta_all includes offset at index 0
+            # when has_offset is True, but fit_params does not.
+            t0_saved = 1 if has_offset else 0
+            for i, param in enumerate(fit_params):
+                _update_param(params, param, param_values_start[i] + float(_saved_delta_all[t0_saved + i]))
+                param_values_curr[i] = param_values_start[i] + float(_saved_delta_all[t0_saved + i])
+        else:
+            for i, param in enumerate(fit_params):
+                _update_param(params, param, param_values_curr[i])
     else:
         # WLS: use best_chi2 parameters (standard safeguard)
         param_values_curr = best_param_values
         for i, param in enumerate(fit_params):
             _update_param(params, param, param_values_curr[i])
     
-    # Compute final TRUE residuals using full model
-    residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = _compute_full_model_residuals(params, setup)
-    residuals_final_us = residuals_final_sec * 1e6
+    # Compute final residuals.
+    # For augmented fits (DMX/noise basis columns), use LINEAR postfit residuals
+    # (r_pre - M @ delta). The nonlinear recompute + separate DMX subtraction
+    # introduces an offset mismatch because the solver jointly optimizes timing,
+    # DMX, and an offset column, but the split approach doesn't correctly account
+    # for the joint offset. The linear postfit is exact for single-iteration WLS
+    # and matches PINT's behavior.
+    if n_augmented > 0 and _saved_residuals_sec is not None:
+        # Use full step (lambda=1.0) for linear postfit. The damped lambda from the
+        # iteration loop is unreliable for augmented fits because the nonlinear
+        # validation path (which drives damping) doesn't correctly handle the joint
+        # offset+DMX+timing optimization. The linear postfit r - M@delta is exact.
+        linear_correction = _saved_M @ _saved_delta_all
+        residuals_final_sec = _saved_residuals_sec - linear_correction
+        residuals_final_us = residuals_final_sec * 1e6
+    else:
+        residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = _compute_full_model_residuals(params, setup)
+        residuals_final_us = residuals_final_sec * 1e6
     
     # Compute prefit residuals
     for i, param in enumerate(fit_params):
@@ -2445,17 +2577,20 @@ def _run_general_fit_iterations(
             dmx_coeffs = best_noise_coeffs[offset:offset + n_dmx_cols]
             F_dmx = setup.dmx_design_matrix
             # DMX is timing model, not noise — subtract from residuals
-            dmx_realization_sec = F_dmx @ dmx_coeffs
-            residuals_final_sec = residuals_final_sec - dmx_realization_sec
-            residuals_final_us = residuals_final_sec * 1e6
+            # (only needed for nonlinear path; linear postfit already includes DMX)
+            if _saved_residuals_sec is None:
+                dmx_realization_sec = F_dmx @ dmx_coeffs
+                residuals_final_sec = residuals_final_sec - dmx_realization_sec
+                residuals_final_us = residuals_final_sec * 1e6
             offset += n_dmx_cols
         if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
             dmjump_coeffs = best_noise_coeffs[offset:offset + n_dmjump_cols]
             F_dmjump = setup.dmjump_design_matrix
             # DMJUMP is timing model, not noise — subtract from residuals
-            dmjump_realization_sec = F_dmjump @ dmjump_coeffs
-            residuals_final_sec = residuals_final_sec - dmjump_realization_sec
-            residuals_final_us = residuals_final_sec * 1e6
+            if _saved_residuals_sec is None:
+                dmjump_realization_sec = F_dmjump @ dmjump_coeffs
+                residuals_final_sec = residuals_final_sec - dmjump_realization_sec
+                residuals_final_us = residuals_final_sec * 1e6
             offset += n_dmjump_cols
 
     # Recompute final stats with DMX-absorbed residuals
@@ -2534,6 +2669,7 @@ def _build_general_fit_setup_from_cache(
         'ssb_obs_pos_ls': session_cached_data.get('ssb_obs_pos_ls'),
         'sw_geometry_pc': session_cached_data.get('sw_geometry_pc'),
         'jump_phase': session_cached_data.get('jump_phase'),
+        'tzr_phase': session_cached_data.get('tzr_phase'),
     }
 
     # Apply TOA mask if provided

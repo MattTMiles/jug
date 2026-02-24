@@ -637,6 +637,7 @@ class TimingSession:
                 'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
                 'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
                 'jump_phase': cached_result.get('jump_phase'),
+                'tzr_phase': cached_result.get('tzr_phase'),
             }
             
             # Build setup from cache (with optional TOA mask)

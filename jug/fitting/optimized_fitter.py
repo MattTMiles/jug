@@ -1625,6 +1625,21 @@ def _build_setup_common(
     jump_params_list = [p for p in fit_params if is_jump_param(p)]
     jump_masks = _build_jump_masks(params, toa_flags, jump_params_list) if jump_params_list and toa_flags else None
 
+    # Drop JUMPs whose mask is empty (no matching TOAs) — matches Tempo2 behaviour
+    if jump_masks:
+        empty_jumps = [jp for jp in jump_params_list if not jump_masks.get(jp, np.zeros(1, dtype=bool)).any()]
+        if empty_jumps:
+            # Build index set of params to keep
+            remove_set = set(empty_jumps)
+            keep_indices = [i for i, p in enumerate(fit_params) if p not in remove_set]
+            fit_params = [fit_params[i] for i in keep_indices]
+            param_values_start = [param_values_start[i] for i in keep_indices]
+            for jp in empty_jumps:
+                jump_masks.pop(jp, None)
+            jump_params_list = [p for p in jump_params_list if p not in remove_set]
+            if verbose:
+                print(f"  Skipped {len(empty_jumps)} JUMPs with no matching TOAs: {empty_jumps}")
+
     # --- DM delay cache ----------------------------------------------------
     initial_dm_delay = None
     if dm_params:
@@ -2221,6 +2236,13 @@ def _run_general_fit_iterations(
         n_dmx_cols = setup.dmx_design_matrix.shape[1] if getattr(setup, 'dmx_design_matrix', None) is not None else 0
         n_dmjump_cols = setup.dmjump_design_matrix.shape[1] if getattr(setup, 'dmjump_design_matrix', None) is not None else 0
         n_augmented = n_red_noise_cols + n_dm_noise_cols + n_ecorr_cols + n_dmx_cols + n_dmjump_cols
+        # Always include offset column to absorb weighted mean (matches Tempo2's
+        # GLOBAL OFFSET). This is essential when subtract_mean=True is used in
+        # the residuals, so that the design matrix derivative for JUMPs and other
+        # parameters correctly accounts for the mean redistribution.
+        # For GLS (augmented) fits, include an offset column to absorb the mean.
+        # For WLS fits, the design matrix columns are mean-subtracted instead,
+        # which is mathematically equivalent and avoids numerical issues.
         has_offset = n_augmented > 0
         total_cols = (1 if has_offset else 0) + n_timing_params + n_augmented
 
@@ -2273,6 +2295,7 @@ def _run_general_fit_iterations(
             sigma_solve = errors_sec
 
         _iter_noise_coeffs = None  # noise Fourier/DMX coefficients this iteration
+        _wls_delta_all = None  # full delta including offset for WLS linearized RMS
 
         if solver_mode == "fast":
             # FAST solver: QR-based lstsq with proper conditioning
@@ -2299,14 +2322,19 @@ def _run_general_fit_iterations(
                     _solve_augmented_cholesky(M2, r1, prior_inv, col_norms, n_timing_cols, has_offset)
             else:
                 delta_normalized = np.asarray(jnp.linalg.lstsq(jnp.array(M2), jnp.array(r1), rcond=None)[0])
-                delta_params = delta_normalized / col_norms
+                delta_all = delta_normalized / col_norms
                 M2tM2 = M2.T @ M2
                 M2tM2_j = jnp.array(M2tM2)
                 try:
                     cov_normalized = np.asarray(jnp.linalg.inv(M2tM2_j))
                 except Exception:
                     cov_normalized = np.asarray(jnp.linalg.pinv(M2tM2_j))
-                cov = (cov_normalized / col_norms).T / col_norms
+                cov_all = (cov_normalized / col_norms).T / col_norms
+                # Strip offset column from delta_params and cov
+                t0 = 1 if has_offset else 0
+                delta_params = delta_all[t0:]
+                cov = cov_all[t0:, t0:]
+                _wls_delta_all = delta_all
         else:
             if n_augmented > 0:
                 r1 = r_solve / sigma_solve
@@ -2330,110 +2358,123 @@ def _run_general_fit_iterations(
                     _solve_augmented_cholesky(M2, r1, prior_inv, col_norms, n_timing_cols, has_offset)
             else:
                 # EXACT solver: SVD-based (bit-for-bit reproducible, no augmentation)
-                delta_params, cov, _ = wls_solve_svd(
+                delta_all, cov_all, _ = wls_solve_svd(
                     residuals=r_solve,
                     sigma=sigma_solve,
                     M=M_solve,
                     threshold=1e-14,
                     negate_dpars=False
                 )
-                delta_params = np.array(delta_params)
-                cov = np.array(cov)
+                delta_all = np.array(delta_all)
+                cov_all = np.array(cov_all)
+                # Strip offset column
+                t0 = 1 if has_offset else 0
+                delta_params = delta_all[t0:]
+                cov = cov_all[t0:, t0:]
+                _wls_delta_all = delta_all
         
-        # PINT-style damping: validate step against full model
-        # When noise augmentation is present (GLS solve), subtract the noise
-        # realization from trial residuals before computing chi2. Without this,
-        # the validation sees total residuals (noise included) and thinks the
-        # timing parameter step made things worse.
+        # Step acceptance strategy depends on fit type:
+        # - WLS (n_augmented == 0): Take the full Newton-Gauss step unconditionally,
+        #   matching Tempo2's approach. Re-linearization at the next iteration handles
+        #   nonlinear effects. The offset column ensures the step is consistent.
+        # - GLS (n_augmented > 0): Validate step against full model with damping,
+        #   subtracting the noise realization before chi2 comparison.
         lambda_ = 1.0
         step_accepted = False
         chi2_decrease = 0
         
-        while lambda_ >= min_lambda:
-            # Trial parameters with scaled step
+        if n_augmented == 0:
+            # WLS: accept full step unconditionally (Tempo2-style)
             trial_param_values = [
-                param_values_curr[i] + lambda_ * delta_params[i]
+                param_values_curr[i] + delta_params[i]
                 for i in range(len(fit_params))
             ]
-            
-            # Check for NaN/Inf in trial parameters
-            if any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
-                lambda_ /= 2
-                continue
-            
-            # Update params dict with trial values
-            trial_params = params.copy()
-            # Deep-copy _high_precision so trial updates don't leak back
-            if '_high_precision' in trial_params:
-                trial_params['_high_precision'] = dict(trial_params['_high_precision'])
-            for i, param in enumerate(fit_params):
-                _update_param(trial_params, param, trial_param_values[i])
-            
-            # Compute full-model residuals with trial parameters
-            try:
-                trial_resid_sec, trial_chi2, trial_rms_us, _ = _compute_full_model_residuals(trial_params, setup)
-            except Exception:
-                # If evaluation fails, reduce step
-                lambda_ /= 2
-                continue
-
-            # When noise augmentation is present, subtract the noise realization
-            # from the trial residuals before computing chi2. Without this, the
-            # validation sees total residuals (noise included) and rejects steps
-            # that are jointly optimal with the noise.
-            if _iter_noise_coeffs is not None and n_augmented > 0:
-                aug_bases = []
-                if n_red_noise_cols > 0 and setup.red_noise_basis is not None:
-                    aug_bases.append(setup.red_noise_basis)
-                if n_dm_noise_cols > 0 and setup.dm_noise_basis is not None:
-                    aug_bases.append(setup.dm_noise_basis)
-                if n_ecorr_cols > 0 and setup.ecorr_basis is not None:
-                    aug_bases.append(setup.ecorr_basis)
-                if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
-                    aug_bases.append(setup.dmx_design_matrix)
-                if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
-                    aug_bases.append(setup.dmjump_design_matrix)
-                if aug_bases:
-                    F_aug = np.column_stack(aug_bases)
-                    noise_real = F_aug @ (lambda_ * _iter_noise_coeffs)
-                    trial_resid_sec = trial_resid_sec - noise_real
-                # Subtract optimal phase offset (Offset column equivalent)
-                if has_offset:
-                    trial_offset = np.sum(trial_resid_sec * weights) / sum_weights
-                    trial_resid_sec = trial_resid_sec - trial_offset
-                if aug_bases or has_offset:
-                    trial_chi2 = np.sum((trial_resid_sec / errors_sec) ** 2)
-                    trial_rms_us = np.sqrt(np.mean(trial_resid_sec**2)) * 1e6
-            
-            # Check if chi2 improved (or didn't worsen too much)
-            chi2_decrease = current_chi2 - trial_chi2
-            max_chi2_increase = max_chi2_increase_frac * current_chi2
-
-            if chi2_decrease < -max_chi2_increase:
-                lambda_ /= 2
-            else:
-                # Step accepted
+            if not any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
                 step_accepted = True
                 param_values_curr = trial_param_values
-                current_chi2 = trial_chi2
-                current_rms_us = trial_rms_us
+                best_param_values = trial_param_values.copy()
+                # Compute linearized RMS for convergence tracking
+                r_lin = residuals - M @ _wls_delta_all
+                current_rms_us = np.sqrt(np.sum(r_lin**2 * weights) / sum_weights) * 1e6
+                current_chi2 = np.sum((r_lin / errors_sec) ** 2)
+                best_chi2 = current_chi2
+                # Save linearized postfit residuals for WLS
+                # (delta-based nonlinear evaluation accumulates cross-term errors)
+                _saved_residuals_sec = residuals.copy()
+                _saved_M = M.copy()
+                _saved_delta_all = _wls_delta_all.copy()
+                _saved_lambda = 1.0
+        else:
+            # GLS: damping with full-model validation
+            while lambda_ >= min_lambda:
+                trial_param_values = [
+                    param_values_curr[i] + lambda_ * delta_params[i]
+                    for i in range(len(fit_params))
+                ]
                 
-                # Always save noise coefficients from accepted steps
+                if any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
+                    lambda_ /= 2
+                    continue
+                
+                trial_params = params.copy()
+                if '_high_precision' in trial_params:
+                    trial_params['_high_precision'] = dict(trial_params['_high_precision'])
+                for i, param in enumerate(fit_params):
+                    _update_param(trial_params, param, trial_param_values[i])
+                
+                try:
+                    trial_resid_sec, trial_chi2, trial_rms_us, _ = _compute_full_model_residuals(trial_params, setup)
+                except Exception:
+                    lambda_ /= 2
+                    continue
+
+                # Subtract noise realization and offset from trial residuals
                 if _iter_noise_coeffs is not None:
-                    best_noise_coeffs = _iter_noise_coeffs.copy()
+                    aug_bases = []
+                    if n_red_noise_cols > 0 and setup.red_noise_basis is not None:
+                        aug_bases.append(setup.red_noise_basis)
+                    if n_dm_noise_cols > 0 and setup.dm_noise_basis is not None:
+                        aug_bases.append(setup.dm_noise_basis)
+                    if n_ecorr_cols > 0 and setup.ecorr_basis is not None:
+                        aug_bases.append(setup.ecorr_basis)
+                    if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
+                        aug_bases.append(setup.dmx_design_matrix)
+                    if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
+                        aug_bases.append(setup.dmjump_design_matrix)
+                    if aug_bases:
+                        F_aug = np.column_stack(aug_bases)
+                        noise_real = F_aug @ (lambda_ * _iter_noise_coeffs)
+                        trial_resid_sec = trial_resid_sec - noise_real
+                    if has_offset:
+                        trial_offset = np.sum(trial_resid_sec * weights) / sum_weights
+                        trial_resid_sec = trial_resid_sec - trial_offset
+                    if aug_bases or has_offset:
+                        trial_chi2 = np.sum((trial_resid_sec / errors_sec) ** 2)
+                        trial_rms_us = np.sqrt(np.mean(trial_resid_sec**2)) * 1e6
                 
-                # Save solver data for linear postfit computation
-                if n_augmented > 0:
+                chi2_decrease = current_chi2 - trial_chi2
+                max_chi2_increase = max_chi2_increase_frac * current_chi2
+
+                if chi2_decrease < -max_chi2_increase:
+                    lambda_ /= 2
+                else:
+                    step_accepted = True
+                    param_values_curr = trial_param_values
+                    current_chi2 = trial_chi2
+                    current_rms_us = trial_rms_us
+                    
+                    if _iter_noise_coeffs is not None:
+                        best_noise_coeffs = _iter_noise_coeffs.copy()
+                    
                     _saved_residuals_sec = residuals.copy()
                     _saved_M = M.copy()
                     _saved_delta_all = delta_params_all.copy()
                     _saved_lambda = lambda_
-                
-                # Track best state
-                if trial_chi2 < best_chi2:
-                    best_chi2 = trial_chi2
-                    best_param_values = trial_param_values.copy()
-                break
+                    
+                    if trial_chi2 < best_chi2:
+                        best_chi2 = trial_chi2
+                        best_param_values = trial_param_values.copy()
+                    break
         
         if not step_accepted:
             # Couldn't improve even with very small steps
@@ -2507,8 +2548,7 @@ def _run_general_fit_iterations(
             for i, param in enumerate(fit_params):
                 _update_param(params, param, param_values_curr[i])
     else:
-        # WLS: use best_chi2 parameters (standard safeguard)
-        param_values_curr = best_param_values
+        # WLS: use converged parameters (Tempo2-style, no damping)
         for i, param in enumerate(fit_params):
             _update_param(params, param, param_values_curr[i])
     
@@ -2519,16 +2559,22 @@ def _run_general_fit_iterations(
     # DMX, and an offset column, but the split approach doesn't correctly account
     # for the joint offset. The linear postfit is exact for single-iteration WLS
     # and matches PINT's behavior.
-    if n_augmented > 0 and _saved_residuals_sec is not None:
-        # Subtract only the timing model correction (timing params + offset + DMX +
-        # DMJUMP) from the prefit residuals.  Noise realizations (RedNoise, DMNoise,
-        # ECORR) are left in the residuals so the user can subtract them via the GUI
-        # (Tempo2-style workflow: fit with noise → subtract realization → whitened).
-        delta_model_only = _saved_delta_all.copy()
-        noise_start = n_timing_cols
-        noise_end = n_timing_cols + n_red_noise_cols + n_dm_noise_cols + n_ecorr_cols
-        delta_model_only[noise_start:noise_end] = 0.0
-        linear_correction = _saved_M @ delta_model_only
+    # For WLS fits, the delta-based nonlinear evaluation accumulates cross-term
+    # errors over iterations; the linearized postfit from the final iteration is
+    # more accurate (matching Tempo2's approach).
+    if _saved_residuals_sec is not None:
+        if n_augmented > 0:
+            # GLS: Subtract only the timing model correction (timing params + offset
+            # + DMX + DMJUMP). Noise realizations (RedNoise, DMNoise, ECORR) are left
+            # in the residuals for GUI subtract-realization workflow.
+            delta_model_only = _saved_delta_all.copy()
+            noise_start = n_timing_cols
+            noise_end = n_timing_cols + n_red_noise_cols + n_dm_noise_cols + n_ecorr_cols
+            delta_model_only[noise_start:noise_end] = 0.0
+            linear_correction = _saved_M @ delta_model_only
+        else:
+            # WLS: Subtract full linearized correction
+            linear_correction = _saved_M @ _saved_delta_all
         residuals_final_sec = _saved_residuals_sec - linear_correction
         residuals_final_us = residuals_final_sec * 1e6
     else:

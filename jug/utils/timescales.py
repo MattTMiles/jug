@@ -345,7 +345,9 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                     # Use high-precision string if available
                     if param_pattern in hp:
                         old_ld = np.longdouble(hp[param_pattern].replace('D', 'E').replace('d', 'e'))
-                        new_ld = np.longdouble(scale_parameter_tcb_to_tdb(float(old_ld), eff_dim))
+                        # Scale in longdouble to preserve full precision
+                        factor_ld = IFTE_K ** (-eff_dim)
+                        new_ld = old_ld * factor_ld
                         new_val = float(new_ld)
                     else:
                         new_val = scale_parameter_tcb_to_tdb(float(old_val), eff_dim)
@@ -372,12 +374,15 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                     # DMX has same dimensionality as DM (eff_dim = -1)
                     if key in hp:
                         old_ld = np.longdouble(hp[key].replace('D', 'E').replace('d', 'e'))
-                        new_val = scale_parameter_tcb_to_tdb(float(old_ld), -1)
+                        # Scale in longdouble to preserve full precision
+                        factor_ld = IFTE_K  # eff_dim=-1, so factor = IFTE_K^1
+                        new_ld = old_ld * factor_ld
+                        new_val = float(new_ld)
                     else:
                         new_val = scale_parameter_tcb_to_tdb(float(old_val), -1)
                     params[key] = new_val
                     if hp is not None and key in hp:
-                        hp[key] = f"{np.longdouble(new_val):.20g}"
+                        hp[key] = f"{new_ld:.20g}"
                     rel_change = abs((new_val - old_val) / old_val) if old_val != 0 else 0
                     if rel_change > 1e-10:
                         scaled_converted.append(f"{key}: {old_val:.9e} → {new_val:.9e}")

@@ -2509,11 +2509,15 @@ def _run_general_fit_iterations(
     # for the joint offset. The linear postfit is exact for single-iteration WLS
     # and matches PINT's behavior.
     if n_augmented > 0 and _saved_residuals_sec is not None:
-        # Use full step (lambda=1.0) for linear postfit. The damped lambda from the
-        # iteration loop is unreliable for augmented fits because the nonlinear
-        # validation path (which drives damping) doesn't correctly handle the joint
-        # offset+DMX+timing optimization. The linear postfit r - M@delta is exact.
-        linear_correction = _saved_M @ _saved_delta_all
+        # Subtract only the timing model correction (timing params + offset + DMX +
+        # DMJUMP) from the prefit residuals.  Noise realizations (RedNoise, DMNoise,
+        # ECORR) are left in the residuals so the user can subtract them via the GUI
+        # (Tempo2-style workflow: fit with noise → subtract realization → whitened).
+        delta_model_only = _saved_delta_all.copy()
+        noise_start = n_timing_cols
+        noise_end = n_timing_cols + n_red_noise_cols + n_dm_noise_cols + n_ecorr_cols
+        delta_model_only[noise_start:noise_end] = 0.0
+        linear_correction = _saved_M @ delta_model_only
         residuals_final_sec = _saved_residuals_sec - linear_correction
         residuals_final_us = residuals_final_sec * 1e6
     else:

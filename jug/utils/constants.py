@@ -86,10 +86,12 @@ coordinates in kilometers
 
 # === Parameter Precision Handling ===
 
-HIGH_PRECISION_PARAMS = {
-    'F0', 'F1', 'F2', 'F3',
-    'PEPOCH', 'TZRMJD', 'POSEPOCH', 'DMEPOCH'
-}
+from jug.model.parameter_spec import get_high_precision_params as _get_hp
+
+# Derived from the ParameterSpec registry (single source of truth).
+# TZRMJD is always high-precision but is not a fittable parameter in the
+# registry, so we add it explicitly here.
+HIGH_PRECISION_PARAMS = _get_hp() | {'TZRMJD'}
 """Parameters that require np.longdouble precision
 
 These parameters must be parsed with maximum precision to maintain

@@ -201,8 +201,9 @@ class PlotColorsDialog(QDialog):
         self.noise_swatches = {}
         noise_colors = PlotTheme.get_noise_colors()
         
-        # Include common noise processes even if not in current dataset
-        all_processes = set(self.noise_processes) | {"RedNoise", "DMNoise", "ECORR"}
+        # Include all registered noise processes even if not in current dataset
+        from jug.engine.noise_mode import get_all_noise_names
+        all_processes = set(self.noise_processes) | get_all_noise_names()
         
         for process in sorted(all_processes):
             row = QHBoxLayout()

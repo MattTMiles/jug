@@ -650,6 +650,7 @@ class MainWindow(QMainWindow):
         self.noise_panel.realise_changed.connect(self._on_noise_realise_changed)
         self.noise_panel.subtract_changed.connect(self._on_noise_subtract_changed)
         self.noise_panel.estimate_noise_requested.connect(self._on_estimate_noise)
+        self.noise_panel.param_value_changed.connect(self._on_noise_param_changed)
         self.noise_panel.show_residuals_changed.connect(self._on_toggle_residuals)
         self.noise_panel.show_uncertainties_changed.connect(self._on_toggle_uncertainties)
         main_layout.addWidget(self.noise_panel)
@@ -1588,6 +1589,9 @@ class MainWindow(QMainWindow):
             f"Loaded {len(self.mjd)} TOAs, Prefit {rms_label} = {self.rms_us:.6f} μs"
         )
 
+        # Tempo2-style prefit summary to console
+        self._print_prefit_summary()
+
         # Schedule JAX warmup in background (avoids first-fit lag)
         self._schedule_jax_warmup()
     
@@ -1917,14 +1921,6 @@ class MainWindow(QMainWindow):
         noise_config = None
         if self.noise_panel is not None:
             noise_config = self.noise_panel.get_noise_config()
-            # DEBUG: Log noise config state
-            if noise_config:
-                print(f"[FIT] Noise config object ID: {id(noise_config)}")
-                print(f"[FIT] All noise states: {noise_config.enabled}")
-                enabled = {k: v for k, v in noise_config.enabled.items() if v}
-                print(f"[FIT] Enabled processes: {list(enabled.keys())}")
-            else:
-                print(f"[FIT] Noise config is None")
 
         # Remember which noise was active for the fit report
         self._last_fit_noise_config = noise_config
@@ -1937,9 +1933,6 @@ class MainWindow(QMainWindow):
         if self._subtracted_noise:
             total_noise_us = sum(self._subtracted_noise.values())
             subtract_noise_sec = np.asarray(total_noise_us, dtype=np.float64) * 1e-6
-            print(f"[FIT] Passing noise subtraction to fitter: "
-                  f"{list(self._subtracted_noise.keys())}, "
-                  f"RMS = {np.std(total_noise_us):.3f} μs")
 
         worker = FitWorker(self.session, fit_params, toa_mask=toa_mask,
                            solver_mode=self.solver_mode,
@@ -2100,6 +2093,9 @@ class MainWindow(QMainWindow):
                 f"{fit_result['iterations']} iterations | "
                 f"{'converged' if fit_result['converged'] else 'not converged'}"
             )
+
+            # Tempo2-style postfit summary to console
+            self._print_postfit_summary(fit_result)
             
             # Clear pending result
             delattr(self, '_pending_fit_result')
@@ -2167,13 +2163,14 @@ class MainWindow(QMainWindow):
         Returns (param, new_val_str, prev_val_str, change_str, unc_str, unit).
         """
         from jug.io.par_reader import parse_ra, parse_dec, format_ra, format_dec
-        from jug.model.parameter_spec import get_display_unit
+        from jug.model.parameter_spec import get_display_unit, get_spec
 
         new_value = result['final_params'][param]
         uncertainty = result['uncertainties'][param]
         prev_value = self.initial_params.get(param, 0.0)
         unit = get_display_unit(param)
 
+        # Special cases requiring custom logic (sexagesimal, KIN→SINI)
         if param == 'RAJ':
             prev_value_rad = parse_ra(prev_value) if isinstance(prev_value, str) else prev_value
             change = new_value - prev_value_rad
@@ -2188,62 +2185,6 @@ class MainWindow(QMainWindow):
             prev_val_str = format_dec(prev_value_rad) if isinstance(prev_value, str) else str(prev_value)
             change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
             unit = "Δ arcsec"
-        elif param == 'F0':
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.15f}"
-            prev_val_str = f"{prev_value:.15f}"
-            change_str = f"{change:+.15f}"
-        elif param.startswith('F') and param[1:].isdigit():
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.6e}"
-            prev_val_str = f"{prev_value:.6e}"
-            change_str = f"{change:+.6e}"
-        elif param.startswith('DM') and param != 'DMEPOCH':
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.10f}"
-            prev_val_str = f"{prev_value:.10f}"
-            change_str = f"{change:+.10f}"
-        elif param in ['PMRA', 'PMDEC', 'PX']:
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.6f}"
-            prev_val_str = f"{prev_value:.6f}"
-            change_str = f"{change:+.6f}"
-        elif param == 'PB':
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.15f}"
-            prev_val_str = f"{prev_value:.15f}"
-            change_str = f"{change:+.6e}"
-        elif param == 'A1':
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.10f}"
-            prev_val_str = f"{prev_value:.10f}"
-            change_str = f"{change:+.10f}"
-        elif param in ['T0', 'TASC']:
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.12f}"
-            prev_val_str = f"{prev_value:.12f}"
-            change_str = f"{change:+.6e}"
-        elif param in ['ECC', 'EPS1', 'EPS2']:
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.12e}"
-            prev_val_str = f"{prev_value:.12e}"
-            change_str = f"{change:+.6e}"
-        elif param in ['PBDOT', 'XDOT', 'OMDOT', 'EDOT', 'GAMMA',
-                       'H3', 'H4', 'STIG'] or param.startswith('FD'):
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.6e}"
-            prev_val_str = f"{prev_value:.6e}"
-            change_str = f"{change:+.6e}"
-        elif param in ['OM', 'KIN', 'KOM']:
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.10f}"
-            prev_val_str = f"{prev_value:.10f}"
-            change_str = f"{change:+.6e}"
-        elif param == 'M2':
-            change = new_value - prev_value
-            new_val_str = f"{new_value:.12f}"
-            prev_val_str = f"{prev_value:.12f}"
-            change_str = f"{change:+.6e}"
         elif param == 'SINI':
             if isinstance(prev_value, str) and prev_value.upper() == 'KIN':
                 kin_deg = float(self.initial_params.get('KIN', 0.0))
@@ -2255,10 +2196,21 @@ class MainWindow(QMainWindow):
             prev_val_str = f"{prev_value_num:.12f}"
             change_str = f"{change:+.6e}"
         else:
-            change = new_value - float(prev_value) if isinstance(prev_value, (int, float)) else 0.0
-            new_val_str = f"{new_value:.6g}"
-            prev_val_str = f"{prev_value}"
-            change_str = f"{change:+.6g}"
+            # Registry-driven formatting
+            spec = get_spec(param)
+            fmt = spec.display_format if spec else ".6g"
+            try:
+                prev_float = float(prev_value)
+            except (TypeError, ValueError):
+                prev_float = 0.0
+            change = new_value - prev_float
+            new_val_str = f"{new_value:{fmt}}"
+            prev_val_str = f"{prev_float:{fmt}}"
+            # Use .6e for change on binary/epoch params (value changes are small)
+            if spec and spec.group in ('binary', 'epoch') and fmt != '.6e':
+                change_str = f"{change:+.6e}"
+            else:
+                change_str = f"{change:+{fmt}}"
 
         unc_str = f"\u00b1{uncertainty:.2e}"
         return (param, new_val_str, prev_val_str, change_str, unc_str, unit)
@@ -2331,8 +2283,8 @@ class MainWindow(QMainWindow):
             noise_lbl = QLabel("Noise in fit:")
             noise_lbl.setStyleSheet(f"color: {text_muted}; font-size: 12px;")
             nf_layout.addWidget(noise_lbl)
-            from jug.gui.widgets.noise_control_panel import _PROCESS_INFO
-            names = [_PROCESS_INFO.get(p, {}).get("label", p) for p in active_noise]
+            from jug.engine.noise_mode import get_noise_label
+            names = [get_noise_label(p) for p in active_noise]
             noise_val = QLabel(", ".join(names))
             noise_val.setStyleSheet(
                 f"color: {accent}; font-size: 13px; font-weight: bold;"
@@ -2561,6 +2513,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_view_overlay'):
             self._view_overlay.set_item_checked("noise_panel", visible)
 
+    def _on_noise_param_changed(self, proc_name: str, field_name: str, value: str):
+        """Write GUI-edited noise parameter back to session.params."""
+        if self.session is None:
+            return
+        from jug.engine.noise_mode import write_noise_params
+        write_noise_params(proc_name, {field_name: value}, self.session.params)
+
     def _on_noise_realise_changed(self, process_name: str, show: bool):
         """Handle toggling noise realization overlay for a process.
 
@@ -2602,11 +2561,31 @@ class MainWindow(QMainWindow):
 
         This modifies the displayed residuals in-place (like tempo2 Shift+K / Shift+F).
         Requires the realization to already be computed (via "Realise" toggle).
+        For deterministic signals (CW, BWM, ChromaticEvent), the waveform is
+        computed automatically — no prior "Realise" step is needed.
         Also updates displayed RMS / wRMS / χ² to reflect the new residuals.
 
         IMPORTANT: When noise is subtracted, that process is disabled in the noise_config
         so that subsequent fits do NOT re-apply that noise process to the cleaned data.
         """
+        # For deterministic signals, compute the waveform on the fly
+        if process_name not in self._noise_realizations and subtract:
+            from jug.signals.base import SIGNAL_REGISTRY
+            sig_cls = SIGNAL_REGISTRY.get(process_name)
+            if sig_cls is not None and self.session is not None:
+                try:
+                    params = self.session.params
+                    sig = sig_cls.from_par(params)
+                    toas_mjd = np.asarray(self.session.toa_data.toas_mjd)
+                    freqs = getattr(self.session.toa_data, 'freqs_mhz', None)
+                    if freqs is not None:
+                        freqs = np.asarray(freqs)
+                    waveform_sec = np.asarray(sig.compute_waveform(toas_mjd, freqs))
+                    self._noise_realizations[process_name] = waveform_sec * 1e6
+                except Exception as e:
+                    self.status_bar.showMessage(f"Failed to compute {process_name} waveform: {e}")
+                    return
+
         realization_us = self._noise_realizations.get(process_name)
         if realization_us is None or self.residuals_us is None:
             self.status_bar.showMessage(f"No {process_name} realization to subtract")
@@ -2621,7 +2600,6 @@ class MainWindow(QMainWindow):
             if self.noise_panel is not None:
                 noise_config = self.noise_panel.get_noise_config()
                 if noise_config:
-                    print(f"[FIX] Disabling {process_name} in noise_config after subtract")
                     noise_config.disable(process_name)
                     # Also uncheck the corresponding checkbox in the panel
                     if process_name in self.noise_panel._rows:
@@ -2636,7 +2614,6 @@ class MainWindow(QMainWindow):
             # The session cache contains original residuals, but we want to fit on
             # the noise-subtracted ones (Tempo2-style workflow)
             if self.session:
-                print(f"[FIX] Clearing session cache to force use of subtracted residuals")
                 self.session._cached_result_by_mode.clear()
                 self.session._cached_delays = None
                 self.session._cached_toa_data = None
@@ -2648,7 +2625,6 @@ class MainWindow(QMainWindow):
             if self.noise_panel is not None:
                 noise_config = self.noise_panel.get_noise_config()
                 if noise_config:
-                    print(f"[FIX] Re-enabling {process_name} in noise_config after restore")
                     noise_config.enable(process_name)
                     # Re-check the checkbox
                     if process_name in self.noise_panel._rows:
@@ -2661,7 +2637,6 @@ class MainWindow(QMainWindow):
 
             # Restore cache when unsubtracting
             if self.session:
-                print(f"[FIX] Clearing session cache after noise restore")
                 self.session._cached_result_by_mode.clear()
                 self.session._cached_delays = None
                 self.session._cached_toa_data = None
@@ -2676,34 +2651,24 @@ class MainWindow(QMainWindow):
         )
 
     def _compute_noise_realization_fallback(self, process_name: str):
-        """Wiener filter fallback when GLS realization isn't available."""
+        """Wiener filter fallback when GLS realization isn't available.
+
+        Delegates to the central noise registry — no per-process branching needed.
+        """
+        from jug.engine.noise_mode import compute_noise_realization
+
         params = self.session.params
-        mjd = self.mjd
-        current_res_us = self.residuals_us.copy()
         errors_us = self.errors_us
         if errors_us is None:
             return None
 
-        if process_name == "RedNoise":
-            from jug.noise.red_noise import realize_red_noise, parse_red_noise_params
-            rn = parse_red_noise_params(params)
-            if rn is not None:
-                real_sec = realize_red_noise(
-                    mjd, current_res_us * 1e-6, errors_us * 1e-6,
-                    rn.log10_A, rn.gamma, rn.n_harmonics,
-                )
-                return real_sec * 1e6
-
-        elif process_name == "DMNoise":
-            from jug.noise.red_noise import realize_dm_noise, parse_dm_noise_params
-            dm = parse_dm_noise_params(params)
-            if dm is not None and self.toa_freqs is not None:
-                real_sec = realize_dm_noise(
-                    mjd, self.toa_freqs, current_res_us * 1e-6,
-                    errors_us * 1e-6, dm.log10_A, dm.gamma, dm.n_harmonics,
-                )
-                return real_sec * 1e6
-
+        real_sec = compute_noise_realization(
+            process_name, params,
+            self.mjd, self.residuals_us.copy() * 1e-6, errors_us * 1e-6,
+            freq_mhz=self.toa_freqs,
+        )
+        if real_sec is not None:
+            return real_sec * 1e6
         return None
 
     def _update_noise_curves(self, x_data, x_label: str):
@@ -2897,10 +2862,6 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(
                 f"Noise estimation complete: {len(result.params)} parameters"
             )
-            # Log the estimated parameters
-            for key, val in sorted(result.params.items()):
-                print(f"  MAP estimate: {key} = {val}")
-
             # Update session params with estimated noise values
             if self.session is not None:
                 for key, val in result.params.items():
@@ -3068,6 +3029,83 @@ class MainWindow(QMainWindow):
             chi2 = float(np.sum((r / self.errors_us) ** 2))
             chi2_dof = chi2 / dof
             self.chi2_label.setText(f"{chi2_dof:.2f}")
+
+    def _print_prefit_summary(self):
+        """Print Tempo2-style prefit summary to console."""
+        name = getattr(self, 'pulsar_name', None) or 'Unknown'
+        n = len(self.mjd) if self.mjd is not None else 0
+        span = float(self.mjd[-1] - self.mjd[0]) / 365.25 if n > 1 else 0.0
+        wrms = self.weighted_rms_us or 0.0
+        rms = self.unweighted_rms_us or 0.0
+        print(f"\n{'='*60}")
+        print(f" Pre-fit summary for {name}")
+        print(f"{'='*60}")
+        print(f" Number of TOAs:    {n}")
+        print(f" MJD range:         {self.mjd[0]:.1f} – {self.mjd[-1]:.1f}" if n > 1 else "")
+        print(f" Time span (yr):    {span:.2f}")
+        print(f" RMS residual:      {rms:.4f} μs")
+        print(f" Weighted RMS:      {wrms:.4f} μs")
+        print(f"{'='*60}\n")
+
+    def _print_postfit_summary(self, fit_result):
+        """Print Tempo2-style postfit summary to console."""
+        name = getattr(self, 'pulsar_name', None) or 'Unknown'
+        n = len(self.mjd) if self.mjd is not None else 0
+        wrms = self.weighted_rms_us or 0.0
+        rms = self.unweighted_rms_us or 0.0
+        n_params = len(fit_result.get('final_params', {}))
+        dof = max(n - n_params, 1)
+        chi2_dof = 0.0
+        if self.errors_us is not None and self.residuals_us is not None:
+            chi2 = float(np.sum((self.residuals_us / self.errors_us) ** 2))
+            chi2_dof = chi2 / dof
+
+        pre_wrms = getattr(self, 'prefit_weighted_rms_us', None)
+
+        print(f"\n{'='*60}")
+        print(f" Post-fit summary for {name}")
+        print(f"{'='*60}")
+        print(f" Fit parameters:    {n_params}")
+        print(f" Iterations:        {fit_result.get('iterations', '?')}")
+        print(f" Converged:         {'yes' if fit_result.get('converged') else 'no'}")
+        print(f" RMS residual:      {rms:.4f} μs")
+        print(f" Weighted RMS:      {wrms:.4f} μs", end="")
+        if pre_wrms is not None:
+            print(f"  (pre-fit: {pre_wrms:.4f} μs)")
+        else:
+            print()
+        print(f" χ²/dof:            {chi2_dof:.2f}  ({n} TOAs, {dof} dof)")
+        print(f"{'-'*60}")
+
+        # Parameter table
+        final = fit_result.get('final_params', {})
+        uncert = fit_result.get('uncertainties', {})
+        initial = getattr(self, 'initial_params', {})
+        if final:
+            from jug.io.par_reader import parse_ra, parse_dec, format_ra, format_dec
+            print(f" {'Parameter':<16s} {'Pre-fit value':>22s} {'Post-fit value':>22s} {'Uncertainty':>14s} {'Difference':>14s}")
+            print(f" {'-'*16} {'-'*22} {'-'*22} {'-'*14} {'-'*14}")
+            for p in final:
+                val = final[p]
+                unc = uncert.get(p, 0.0)
+                pre = initial.get(p, '')
+                if p == 'RAJ':
+                    pre_rad = parse_ra(pre) if isinstance(pre, str) else pre
+                    diff = (val - pre_rad) * 180 / np.pi * 3600
+                    print(f" {p:<16s} {format_ra(pre_rad):>22s} {format_ra(val):>22s} {unc:>14.4e} {diff:>+14.6e}")
+                elif p == 'DECJ':
+                    pre_rad = parse_dec(pre) if isinstance(pre, str) else pre
+                    diff = (val - pre_rad) * 180 / np.pi * 3600
+                    print(f" {p:<16s} {format_dec(pre_rad):>22s} {format_dec(val):>22s} {unc:>14.4e} {diff:>+14.6e}")
+                else:
+                    try:
+                        pre_f = float(pre)
+                    except (TypeError, ValueError):
+                        pre_f = 0.0
+                    diff = val - pre_f
+                    print(f" {p:<16s} {pre_f:>22.15g} {val:>22.15g} {unc:>14.4e} {diff:>+14.6e}")
+
+        print(f"{'='*60}\n")
 
     # -- Phase 4.4: Color-by-backend/frequency --------------------------
 
@@ -3832,8 +3870,7 @@ class MainWindow(QMainWindow):
                                     pass
                             found_params[lookup_name] = has_fit_flag
 
-        except Exception as e:
-            print(f"Error parsing par file: {e}")
+        except Exception:
             return {}
 
         # Add consolidated DMX entry if any DMX ranges were found
@@ -3859,8 +3896,7 @@ class MainWindow(QMainWindow):
             
             # Extract pulsar name (PSRJ or PSR)
             self.pulsar_name = params.get('PSRJ', params.get('PSR', 'Unknown'))
-        except Exception as e:
-            print(f"Error loading initial parameter values: {e}")
+        except Exception:
             self.initial_params = {}
             self.pulsar_name = 'Unknown'
 
@@ -3902,8 +3938,10 @@ class MainWindow(QMainWindow):
                 # Par file has fit flag "1" for this parameter
                 should_check = True
             elif not self.cmdline_fit_params and not any(params_in_file.values()):
-                # Fallback: if no fit flags at all and no --fit args, default F0/F1
-                if param in ['F0', 'F1']:
+                # Fallback: if no fit flags at all, use ParameterSpec defaults
+                from jug.model.parameter_spec import get_spec
+                spec = get_spec(param)
+                if spec and spec.default_fit:
                     should_check = True
             
             checkbox.setChecked(should_check)

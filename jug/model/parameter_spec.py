@@ -108,6 +108,19 @@ class ParameterSpec:
     gui_visible: bool = True
     requires: Tuple[str, ...] = ()
     par_codec_name: str = "float"
+    # Display formatting for GUI fit reports
+    display_format: str = ".6g"
+    """Format specifier for displaying parameter values in fit reports.
+    E.g. '.15f' for F0, '.6e' for small quantities, '.10f' for moderate precision."""
+    # TCB→TDB conversion metadata (single source of truth)
+    tcb_scaling_dim: Optional[int] = None
+    """Effective time dimensionality for TCB→TDB scaling.
+    None = no scaling needed. n means: x_tdb = x_tcb * IFTE_K^(-n).
+    E.g. F0 (frequency) = -1, A1 (time) = 1, PBDOT (dimensionless) = 0."""
+    is_epoch: bool = False
+    """True for MJD epoch parameters that need TCB→TDB epoch conversion."""
+    high_precision: bool = False
+    """True for parameters requiring np.longdouble precision in par reader."""
 
 
 # =============================================================================
@@ -127,6 +140,9 @@ _SPIN_PARAMS = [
         component_name="SpinComponent",
         default_fit=True,
         requires=("PEPOCH",),
+        display_format=".15f",
+        tcb_scaling_dim=-1,
+        high_precision=True,
     ),
     ParameterSpec(
         name="F1",
@@ -140,6 +156,9 @@ _SPIN_PARAMS = [
         component_name="SpinComponent",
         default_fit=True,
         requires=("PEPOCH",),
+        display_format=".6e",
+        tcb_scaling_dim=-2,
+        high_precision=True,
     ),
     ParameterSpec(
         name="F2",
@@ -151,6 +170,9 @@ _SPIN_PARAMS = [
         display_unit="Hz/s²",
         component_name="SpinComponent",
         requires=("PEPOCH",),
+        display_format=".6e",
+        tcb_scaling_dim=-3,
+        high_precision=True,
     ),
     ParameterSpec(
         name="F3",
@@ -162,6 +184,9 @@ _SPIN_PARAMS = [
         display_unit="Hz/s³",
         component_name="SpinComponent",
         requires=("PEPOCH",),
+        display_format=".6e",
+        tcb_scaling_dim=-4,
+        high_precision=True,
     ),
     ParameterSpec(
         name="PEPOCH",
@@ -173,6 +198,8 @@ _SPIN_PARAMS = [
         component_name="SpinComponent",
         gui_visible=False,
         par_codec_name="epoch_mjd",
+        is_epoch=True,
+        high_precision=True,
     ),
 ]
 
@@ -189,6 +216,8 @@ _DM_PARAMS = [
         aliases=("DM0",),
         component_name="DispersionComponent",
         default_fit=True,
+        display_format=".10f",
+        tcb_scaling_dim=-1,
     ),
     ParameterSpec(
         name="DM1",
@@ -200,6 +229,8 @@ _DM_PARAMS = [
         display_unit="pc/cm³/yr",
         component_name="DispersionComponent",
         requires=("DMEPOCH",),
+        display_format=".10f",
+        tcb_scaling_dim=-2,
     ),
     ParameterSpec(
         name="DM2",
@@ -211,6 +242,8 @@ _DM_PARAMS = [
         display_unit="pc/cm³/yr²",
         component_name="DispersionComponent",
         requires=("DMEPOCH",),
+        display_format=".10f",
+        tcb_scaling_dim=-3,
     ),
     ParameterSpec(
         name="DMEPOCH",
@@ -222,6 +255,8 @@ _DM_PARAMS = [
         component_name="DispersionComponent",
         gui_visible=False,
         par_codec_name="epoch_mjd",
+        is_epoch=True,
+        high_precision=True,
     ),
 ]
 
@@ -258,9 +293,10 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMRAC", "PMLAMBDA"),  # PM in RA*cos(DEC); PMELONG is separate
+        aliases=("PMRAC", "PMLAMBDA"),
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
+        display_format=".6f",
     ),
     ParameterSpec(
         name="PMDEC",
@@ -269,19 +305,21 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMBETA",),  # PMELAT is a separate param (ecliptic fitting)
+        aliases=("PMBETA",),
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
+        display_format=".6f",
     ),
     ParameterSpec(
         name="PX",
         group="astrometry",
         derivative_group=DerivativeGroup.ASTROMETRY,
         dtype="float64",
-        internal_unit="rad",  # arcsec -> rad
+        internal_unit="rad",
         par_unit_str="mas",
         aliases=("PARALLAX",),
         component_name="AstrometryComponent",
+        display_format=".6f",
     ),
     ParameterSpec(
         name="ELONG",
@@ -312,6 +350,7 @@ _ASTROMETRY_PARAMS = [
         par_unit_str="mas/yr",
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
+        display_format=".6f",
     ),
     ParameterSpec(
         name="PMELAT",
@@ -322,6 +361,7 @@ _ASTROMETRY_PARAMS = [
         par_unit_str="mas/yr",
         component_name="AstrometryComponent",
         requires=("POSEPOCH",),
+        display_format=".6f",
     ),
     ParameterSpec(
         name="POSEPOCH",
@@ -333,6 +373,8 @@ _ASTROMETRY_PARAMS = [
         component_name="AstrometryComponent",
         gui_visible=False,
         par_codec_name="epoch_mjd",
+        is_epoch=True,
+        high_precision=True,
     ),
 ]
 
@@ -348,6 +390,8 @@ _BINARY_PARAMS = [
         display_unit="days",
         aliases=("PORB",),
         component_name="BinaryComponent",
+        display_format=".15f",
+        tcb_scaling_dim=1,
     ),
     ParameterSpec(
         name="A1",
@@ -358,6 +402,8 @@ _BINARY_PARAMS = [
         par_unit_str="lt-s",
         aliases=("ASINI",),
         component_name="BinaryComponent",
+        display_format=".10f",
+        tcb_scaling_dim=1,
     ),
     ParameterSpec(
         name="ECC",
@@ -368,6 +414,8 @@ _BINARY_PARAMS = [
         par_unit_str="",
         aliases=("E",),
         component_name="BinaryComponent",
+        display_format=".12e",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="OM",
@@ -378,6 +426,8 @@ _BINARY_PARAMS = [
         par_unit_str="deg",
         aliases=("OMEGA",),
         component_name="BinaryComponent",
+        display_format=".10f",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="T0",
@@ -388,6 +438,8 @@ _BINARY_PARAMS = [
         par_unit_str="MJD",
         component_name="BinaryComponent",
         par_codec_name="epoch_mjd",
+        display_format=".12f",
+        is_epoch=True,
     ),
     # ELL1 parameters
     ParameterSpec(
@@ -399,6 +451,8 @@ _BINARY_PARAMS = [
         par_unit_str="MJD",
         component_name="BinaryComponent",
         par_codec_name="epoch_mjd",
+        display_format=".12f",
+        is_epoch=True,
     ),
     ParameterSpec(
         name="EPS1",
@@ -408,6 +462,8 @@ _BINARY_PARAMS = [
         internal_unit="",
         par_unit_str="",
         component_name="BinaryComponent",
+        display_format=".12e",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="EPS2",
@@ -417,6 +473,8 @@ _BINARY_PARAMS = [
         internal_unit="",
         par_unit_str="",
         component_name="BinaryComponent",
+        display_format=".12e",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="EPS1DOT",
@@ -426,6 +484,8 @@ _BINARY_PARAMS = [
         internal_unit="1/s",
         par_unit_str="1/s",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=-1,
     ),
     ParameterSpec(
         name="EPS2DOT",
@@ -435,6 +495,8 @@ _BINARY_PARAMS = [
         internal_unit="1/s",
         par_unit_str="1/s",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=-1,
     ),
     # Post-Keplerian / Shapiro parameters
     ParameterSpec(
@@ -445,6 +507,8 @@ _BINARY_PARAMS = [
         internal_unit="",
         par_unit_str="",
         component_name="BinaryComponent",
+        display_format=".12f",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="M2",
@@ -455,6 +519,8 @@ _BINARY_PARAMS = [
         par_unit_str="Msun",
         display_unit="M☉",
         component_name="BinaryComponent",
+        display_format=".12f",
+        tcb_scaling_dim=0,
     ),
     # Time derivatives
     ParameterSpec(
@@ -466,6 +532,8 @@ _BINARY_PARAMS = [
         par_unit_str="s/s",
         display_unit="s/s",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="XDOT",
@@ -476,6 +544,8 @@ _BINARY_PARAMS = [
         par_unit_str="lt-s/s",
         aliases=("A1DOT",),
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=0,
     ),
     # Periastron advance (DD model)
     ParameterSpec(
@@ -486,6 +556,8 @@ _BINARY_PARAMS = [
         internal_unit="deg/yr",
         par_unit_str="deg/yr",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=-1,
     ),
     # Time dilation + gravitational redshift (DD model)
     ParameterSpec(
@@ -496,6 +568,8 @@ _BINARY_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=1,
     ),
     # Eccentricity derivative (T2 model)
     ParameterSpec(
@@ -506,6 +580,8 @@ _BINARY_PARAMS = [
         internal_unit="1/s",
         par_unit_str="",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=-1,
     ),
     # Orthometric Shapiro parameters (ELL1H model)
     ParameterSpec(
@@ -516,6 +592,8 @@ _BINARY_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="H4",
@@ -525,6 +603,8 @@ _BINARY_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="STIG",
@@ -535,6 +615,8 @@ _BINARY_PARAMS = [
         par_unit_str="",
         aliases=("STIGMA",),
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=0,
     ),
     # DD model relativistic deformation parameters
     ParameterSpec(
@@ -545,6 +627,8 @@ _BINARY_PARAMS = [
         internal_unit="",
         par_unit_str="",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="DTH",
@@ -555,6 +639,8 @@ _BINARY_PARAMS = [
         par_unit_str="",
         aliases=("DTHETA",),
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=0,
     ),
     # Aberration parameters (DD model)
     ParameterSpec(
@@ -565,6 +651,8 @@ _BINARY_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=1,
     ),
     ParameterSpec(
         name="B0",
@@ -574,6 +662,8 @@ _BINARY_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="BinaryComponent",
+        display_format=".6e",
+        tcb_scaling_dim=1,
     ),
     # Kopeikin annual orbital parallax parameters (DDK model)
     ParameterSpec(
@@ -584,6 +674,8 @@ _BINARY_PARAMS = [
         internal_unit="deg",
         par_unit_str="deg",
         component_name="BinaryComponent",
+        display_format=".10f",
+        tcb_scaling_dim=0,
     ),
     ParameterSpec(
         name="KOM",
@@ -593,6 +685,8 @@ _BINARY_PARAMS = [
         internal_unit="deg",
         par_unit_str="deg",
         component_name="BinaryComponent",
+        display_format=".10f",
+        tcb_scaling_dim=0,
     ),
 ]
 
@@ -607,6 +701,8 @@ for i in range(21):
             internal_unit=f"Hz/s^{i}" if i > 0 else "Hz",
             par_unit_str="",
             component_name="BinaryComponent",
+            display_format=".6e",
+            tcb_scaling_dim=-(i + 1),
         )
     )
 
@@ -620,6 +716,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
     ParameterSpec(
         name="FD2",
@@ -629,6 +726,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
     ParameterSpec(
         name="FD3",
@@ -638,6 +736,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
     ParameterSpec(
         name="FD4",
@@ -647,6 +746,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
     ParameterSpec(
         name="FD5",
@@ -656,6 +756,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
     ParameterSpec(
         name="FD6",
@@ -665,6 +766,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
     ParameterSpec(
         name="FD7",
@@ -674,6 +776,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
     ParameterSpec(
         name="FD8",
@@ -683,6 +786,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
     ParameterSpec(
         name="FD9",
@@ -692,6 +796,7 @@ _FD_PARAMS = [
         internal_unit="s",
         par_unit_str="s",
         component_name="FDComponent",
+        display_format=".6e",
     ),
 ]
 
@@ -718,6 +823,33 @@ for spec in _SPIN_PARAMS + _DM_PARAMS + _ASTROMETRY_PARAMS + _BINARY_PARAMS + _F
     PARAMETER_REGISTRY[spec.name] = spec
     for alias in spec.aliases:
         _ALIAS_MAP[alias] = spec.name
+
+
+# =============================================================================
+# Derived TCB/TDB conversion lists (generated from registry)
+# =============================================================================
+
+def get_scaled_parameters() -> list:
+    """Return (param_name, effective_dim) pairs from the registry.
+
+    This replaces the hardcoded SCALED_PARAMETERS list in timescales.py
+    for all parameters that are in the registry.
+    """
+    result = []
+    for spec in PARAMETER_REGISTRY.values():
+        if spec.tcb_scaling_dim is not None:
+            result.append((spec.name, spec.tcb_scaling_dim))
+    return result
+
+
+def get_epoch_parameters() -> set:
+    """Return the set of epoch parameter names from the registry."""
+    return {spec.name for spec in PARAMETER_REGISTRY.values() if spec.is_epoch}
+
+
+def get_high_precision_params() -> set:
+    """Return the set of parameter names requiring longdouble precision."""
+    return {spec.name for spec in PARAMETER_REGISTRY.values() if spec.high_precision}
 
 
 # =============================================================================

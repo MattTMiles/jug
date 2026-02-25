@@ -38,9 +38,6 @@ Examples:
   # Fit F0 and F1 (default: CPU)
   jug-fit J1909.par J1909.tim --fit F0 F1
   
-  # Use JAX incremental fitting (0.001 ns precision)
-  jug-fit J1909.par J1909.tim --fit F0 F1 DM DM1 --alljax
-  
   # Force GPU usage
   jug-fit J1909.par J1909.tim --fit F0 F1 --device gpu
   
@@ -58,10 +55,6 @@ Device Selection:
   gpu  : Use GPU (recommended for >100k TOAs or >20 parameters)
   auto : Automatic selection based on problem size
 
-Fitting Methods:
-  --alljax : JAX incremental fitting (longdouble precision with JAX speed)
-             Achieves 0.001 ns RMS precision, converges in ~4 iterations
-  
 Environment Variable:
   JUG_DEVICE : Override device selection (cpu, gpu, auto)
   Example: export JUG_DEVICE=gpu
@@ -89,8 +82,6 @@ Environment Variable:
                        help='Maximum fitting iterations (default: 25)')
     parser.add_argument('--threshold', type=float, default=1e-14,
                        help='Convergence threshold (default: 1e-14)')
-    parser.add_argument('--alljax', action='store_true',
-                       help='Use JAX incremental fitting (breakthrough method with 0.001 ns precision)')
     
     # Clock files
     parser.add_argument('--clock-dir', type=str, default=None,
@@ -197,7 +188,6 @@ Environment Variable:
                 clock_dir=args.clock_dir,
                 verbose=not args.quiet,
                 device=args.device,
-                alljax=args.alljax
             )
             result['no_fit_mode'] = False
     except Exception as e:

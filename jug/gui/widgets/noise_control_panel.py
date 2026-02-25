@@ -17,22 +17,12 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QDoubleValidator
 
 from jug.gui.theme import Colors, Typography
+from jug.engine.noise_mode import (
+    NOISE_REGISTRY, get_noise_label, get_noise_tooltip, get_noise_display_order,
+)
 
 if TYPE_CHECKING:
     from jug.engine.noise_mode import NoiseConfig
-
-
-# Canonical display names and icons for each noise process
-_PROCESS_INFO = {
-    "EFAC":     {"label": "EFAC",           "tip": "Error scale factor per backend"},
-    "EQUAD":    {"label": "EQUAD",          "tip": "Added variance per backend (μs)"},
-    "ECORR":    {"label": "ECORR",          "tip": "Correlated noise within epochs (μs)"},
-    "RedNoise": {"label": "Achr. Red Noise", "tip": "Achromatic red noise (power-law)"},
-    "DMNoise":  {"label": "DM Noise",       "tip": "Chromatic DM noise (power-law)"},
-}
-
-# Order for display
-_DISPLAY_ORDER = ["EFAC", "EQUAD", "ECORR", "RedNoise", "DMNoise"]
 
 
 class NoiseProcessRow(QFrame):
@@ -67,7 +57,7 @@ class NoiseProcessRow(QFrame):
         self._params = params
         self._param_edits: Dict[str, QLineEdit] = {}
 
-        info = _PROCESS_INFO.get(name, {"label": name, "tip": ""})
+        info = {"label": get_noise_label(name), "tip": get_noise_tooltip(name)}
 
         self.setObjectName("noiseProcessRow")
         self.setFrameShape(QFrame.NoFrame)
@@ -196,7 +186,6 @@ class NoiseProcessRow(QFrame):
             f"QPushButton:hover {{ color: {Colors.ACCENT_ERROR}; }}"
         )
         def on_remove_clicked():
-            print(f"[ROW] Remove button clicked for {self.process_name}")
             self.remove_requested.emit(self.process_name)
         remove_btn.clicked.connect(on_remove_clicked)
         detail_layout.addWidget(remove_btn)
@@ -288,8 +277,8 @@ class NoiseControlPanel(QWidget):
     show_residuals_changed = Signal(bool)     # user toggled "Show Residuals" checkbox
     show_uncertainties_changed = Signal(bool)  # user toggled "Show Uncertainties" checkbox
 
-    # Processes that support subtract-from-residuals (those with realizations)
-    _SUBTRACTABLE = {"RedNoise", "DMNoise"}
+    # Processes that support subtract-from-residuals
+    _SUBTRACTABLE = {"RedNoise", "DMNoise", "ChromaticNoise", "CW", "BWM", "ChromaticEvent"}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -540,11 +529,11 @@ class NoiseControlPanel(QWidget):
         noise_lines = params.get("_noise_lines", [])
         entries = parse_noise_lines(noise_lines) if noise_lines else []
 
-        for proc_name in _DISPLAY_ORDER:
+        for proc_name in get_noise_display_order():
             detected = self._noise_config.is_enabled(proc_name)
             proc_params = self._extract_params(proc_name, params, entries)
 
-            if not detected and not proc_params:
+            if not detected:
                 continue
 
             can_sub = proc_name in self._SUBTRACTABLE
@@ -639,9 +628,12 @@ class NoiseControlPanel(QWidget):
 
     def _extract_params(self, proc_name: str, params: dict, entries) -> List[dict]:
         """Extract displayable parameter entries for a noise process."""
+        from jug.engine.noise_mode import get_impl_param_defs
+
         result = []
 
         if proc_name in ("EFAC", "EQUAD", "ECORR"):
+            # White noise uses per-backend entries from noise lines — special case
             for e in entries:
                 if e.kind.upper() == proc_name.upper() or \
                    (proc_name == "EFAC" and e.kind.upper() in ("EFAC", "T2EFAC")) or \
@@ -658,63 +650,34 @@ class NoiseControlPanel(QWidget):
                         "editable": True,
                     })
 
-        elif proc_name == "RedNoise":
-            # Check for TNRedAmp/TNRedGam (native TempoNest format)
-            amp_key = "TNREDAMP" if "TNREDAMP" in params else "TNRedAmp"
-            gam_key = "TNREDGAM" if "TNREDGAM" in params else "TNRedGam"
-            nc_key = "TNREDC" if "TNREDC" in params else "TNRedC"
-            
-            if amp_key in params:
-                result.append({"key": amp_key, "label": "log₁₀(A)", "value": f"{float(params[amp_key]):.4f}", "editable": True})
-            if gam_key in params:
-                result.append({"key": gam_key, "label": "γ (spectral)", "value": f"{float(params[gam_key]):.4f}", "editable": True})
-            if nc_key in params:
-                result.append({"key": nc_key, "label": "N harmonics", "value": str(int(float(params[nc_key]))), "editable": True})
-            
-            # Check for RNAMP/RNIDX (Tempo2 format) — convert and display
-            if "RNAMP" in params and "RNIDX" in params:
-                import math
-                rnamp_str = str(params["RNAMP"]).replace("D", "e").replace("d", "e")
-                rnamp = float(rnamp_str)
-                # Tempo2 conversion: log10(2π√3 / (sec_per_yr × 1e6) × RNAMP)
-                _SEC_PER_YR = 86400.0 * 365.25
-                log10_A = math.log10(2.0 * math.pi * math.sqrt(3.0) / (_SEC_PER_YR * 1e6) * rnamp)
-                gamma = -float(params["RNIDX"])  # Sign flip
-                n_harmonics = int(params.get("RNC", params.get("TNREDC", params.get("TNRedC", 30))))
-                
-                # Display converted values
-                result.append({"key": "RNAMP_converted", "label": "log₁₀(A) [conv]", "value": f"{log10_A:.4f}", "editable": False})
-                result.append({"key": "RNIDX_converted", "label": "γ [conv]", "value": f"{gamma:.4f}", "editable": False})
-                result.append({"key": "RNC", "label": "N harmonics", "value": str(n_harmonics), "editable": False})
-                # Also show original values for reference
-                result.append({"key": "RNAMP", "label": "RNAMP (orig)", "value": f"{rnamp:.5g}", "editable": True})
-                result.append({"key": "RNIDX", "label": "RNIDX (orig)", "value": f"{float(params['RNIDX']):.4f}", "editable": True})
+        elif proc_name == "RedNoise" and "RNAMP" in params and "RNIDX" in params:
+            # Tempo2 RNAMP/RNIDX format — show converted + original values
+            import math
+            rnamp_str = str(params["RNAMP"]).replace("D", "e").replace("d", "e")
+            rnamp = float(rnamp_str)
+            _SEC_PER_YR = 86400.0 * 365.25
+            log10_A = math.log10(2.0 * math.pi * math.sqrt(3.0) / (_SEC_PER_YR * 1e6) * rnamp)
+            gamma = -float(params["RNIDX"])
+            n_harmonics = int(params.get("RNC", params.get("TNREDC", params.get("TNRedC", 30))))
+            result.append({"key": "RNAMP_converted", "label": "log₁₀(A) [conv]", "value": f"{log10_A:.4f}", "editable": False})
+            result.append({"key": "RNIDX_converted", "label": "γ [conv]", "value": f"{gamma:.4f}", "editable": False})
+            result.append({"key": "RNC", "label": "N harmonics", "value": str(n_harmonics), "editable": False})
+            result.append({"key": "RNAMP", "label": "RNAMP (orig)", "value": f"{rnamp:.5g}", "editable": True})
+            result.append({"key": "RNIDX", "label": "RNIDX (orig)", "value": f"{float(params['RNIDX']):.4f}", "editable": True})
 
-        elif proc_name == "DMNoise":
-            amp_key = "TNDMAMP" if "TNDMAMP" in params else "TNDMAmp"
-            gam_key = "TNDMGAM" if "TNDMGAM" in params else "TNDMGam"
-            nc_key = "TNDMC" if "TNDMC" in params else "TNDMC"
-            if amp_key in params:
-                result.append({"key": amp_key, "label": "log₁₀(A)", "value": f"{float(params[amp_key]):.4f}", "editable": True})
-            if gam_key in params:
-                result.append({"key": gam_key, "label": "γ (spectral)", "value": f"{float(params[gam_key]):.4f}", "editable": True})
-            if nc_key in params:
-                result.append({"key": nc_key, "label": "N harmonics", "value": str(int(float(params[nc_key]))), "editable": True})
+        else:
+            # Generic: derive from impl class via the registry
+            result = get_impl_param_defs(proc_name, params)
 
         return result
 
     def _on_process_toggled(self, name: str, enabled: bool):
-        print(f"[PANEL] Process toggled: {name} -> {enabled}")
         if self._noise_config is None:
-            print(f"[PANEL] noise_config is None!")
             return
-        print(f"[PANEL] noise_config ID: {id(self._noise_config)}")
-        print(f"[PANEL] Before: {self._noise_config.enabled}")
         if enabled:
             self._noise_config.enable(name)
         else:
             self._noise_config.disable(name)
-        print(f"[PANEL] After: {self._noise_config.enabled}")
         self.noise_config_changed.emit(self._noise_config)
 
     def _on_param_value_changed(self, proc_name: str, key: str, value: str):
@@ -764,21 +727,14 @@ class NoiseControlPanel(QWidget):
 
     def _on_remove_process(self, name: str):
         """Remove a noise process row."""
-        print(f"[PANEL] Removing process: {name}")
         row = self._rows.pop(name, None)
         if row is None:
-            print(f"[PANEL] Row not found for {name}")
             return
         row.setParent(None)
         row.deleteLater()
         if self._noise_config:
-            print(f"[PANEL] Disabling {name} in noise_config (ID: {id(self._noise_config)})")
-            print(f"[PANEL] Before disable: {self._noise_config.enabled}")
             self._noise_config.disable(name)
-            print(f"[PANEL] After disable: {self._noise_config.enabled}")
             self.noise_config_changed.emit(self._noise_config)
-        else:
-            print(f"[PANEL] noise_config is None!")
         self._rebuild_add_list()
 
     def _toggle_add_list(self):
@@ -796,11 +752,10 @@ class NoiseControlPanel(QWidget):
                 item.widget().deleteLater()
 
         any_available = False
-        for name in _DISPLAY_ORDER:
+        for name in get_noise_display_order():
             if name not in self._rows:
                 any_available = True
-                info = _PROCESS_INFO[name]
-                btn = QPushButton(info["label"])
+                btn = QPushButton(get_noise_label(name))
                 btn.setCursor(Qt.PointingHandCursor)
                 btn.setStyleSheet(
                     f"QPushButton {{ background: transparent; color: {Colors.TEXT_SECONDARY}; "
@@ -828,24 +783,18 @@ class NoiseControlPanel(QWidget):
         if self._noise_config is None:
             self._noise_config = NoiseConfig()
 
-        defaults = {
+        from jug.engine.noise_mode import get_impl_param_defs
+
+        # White noise has special per-backend defaults
+        _white_defaults = {
             "EFAC": [{"key": "EFAC_default", "label": "global", "value": "1.0", "editable": True}],
             "EQUAD": [{"key": "EQUAD_default", "label": "global", "value": "0.0", "editable": True}],
             "ECORR": [{"key": "ECORR_default", "label": "global", "value": "0.0", "editable": True}],
-            "RedNoise": [
-                {"key": "TNREDAMP", "label": "log₁₀(A)", "value": "-14.0", "editable": True},
-                {"key": "TNREDGAM", "label": "γ (spectral)", "value": "3.0", "editable": True},
-                {"key": "TNREDC", "label": "N harmonics", "value": "30", "editable": True},
-            ],
-            "DMNoise": [
-                {"key": "TNDMAMP", "label": "log₁₀(A)", "value": "-14.0", "editable": True},
-                {"key": "TNDMGAM", "label": "γ (spectral)", "value": "3.0", "editable": True},
-                {"key": "TNDMC", "label": "N harmonics", "value": "30", "editable": True},
-            ],
         }
 
         can_sub = name in self._SUBTRACTABLE
-        proc_params = defaults.get(name, [])
+        # Use registry defaults for any process with an impl class, else white noise defaults
+        proc_params = _white_defaults.get(name) or get_impl_param_defs(name)
         row = NoiseProcessRow(name, False, proc_params, can_subtract=can_sub)
         row.toggled.connect(self._on_process_toggled)
         row.param_changed.connect(self._on_param_value_changed)
@@ -858,3 +807,7 @@ class NoiseControlPanel(QWidget):
         idx = self._content_layout.count() - 1
         self._content_layout.insertWidget(idx, row)
         self._rebuild_add_list()
+
+        # Write default values to session.params via the same signal
+        for p in proc_params:
+            self.param_value_changed.emit(name, p["key"], p["value"])

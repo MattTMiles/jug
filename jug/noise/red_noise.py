@@ -225,6 +225,19 @@ class RedNoiseProcess:
     gamma: float
     n_harmonics: int = 30
 
+    _gui_labels = {"log10_A": "log_{10}(A)", "gamma": r"\gamma (spectral)", "n_harmonics": "N harmonics"}
+    _par_keys = {
+        "log10_A": ["TNREDAMP", "TNRedAmp", "RN_log10_A"],
+        "gamma": ["TNREDGAM", "TNRedGam", "RN_gamma"],
+        "n_harmonics": ["TNREDC", "TNRedC", "RN_ncoeff"],
+    }
+    _gui_defaults = {"log10_A": -14.0, "gamma": 3.0}
+    _needs_freqs = False
+
+    @classmethod
+    def from_par(cls, params: dict) -> Optional["RedNoiseProcess"]:
+        return parse_red_noise_params(params)
+
     def spectrum(self, freqs_hz: np.ndarray) -> np.ndarray:
         """Evaluate PSD at given frequencies."""
         return powerlaw_spectrum(freqs_hz, self.log10_A, self.gamma)
@@ -285,6 +298,19 @@ class DMNoiseProcess:
     gamma: float
     n_harmonics: int = 30
 
+    _gui_labels = {"log10_A": "log_{10}(A)", "gamma": r"\gamma (spectral)", "n_harmonics": "N harmonics"}
+    _par_keys = {
+        "log10_A": ["TNDMAMP", "TNDMAmp", "DM_log10_A"],
+        "gamma": ["TNDMGAM", "TNDMGam", "DM_gamma"],
+        "n_harmonics": ["TNDMC", "DM_ncoeff"],
+    }
+    _gui_defaults = {"log10_A": -14.0, "gamma": 3.0}
+    _needs_freqs = True
+
+    @classmethod
+    def from_par(cls, params: dict) -> Optional["DMNoiseProcess"]:
+        return parse_dm_noise_params(params)
+
     def spectrum(self, freqs_hz: np.ndarray) -> np.ndarray:
         """Evaluate PSD at given frequencies."""
         return powerlaw_spectrum(freqs_hz, self.log10_A, self.gamma)
@@ -334,6 +360,96 @@ class DMNoiseProcess:
         phi = np.repeat(phi_per_harmonic, 2)
         return F_dm, phi
 
+
+@dataclass
+class ChromaticNoiseProcess:
+    """Chromatic noise (scales as 1/ν^\beta).
+
+    The chromatic noise Fourier basis is identical to red noise but each
+    column is multiplied by the DM-delay chromatic weight:
+    ``K_DM / ν²`` (in seconds per DM unit).
+
+    Attributes
+    ----------
+    log10_A : float
+        Log10 spectral amplitude [DM units].
+    gamma : float
+        Spectral index.
+    chrom_idx : float
+        Chromatic index β (e.g. 2 for DM-like chromaticity).
+    n_harmonics : int
+        Number of Fourier harmonics.
+    """
+    log10_A: float
+    gamma: float
+    chrom_idx: float = 4.0
+    n_harmonics: int = 30
+
+    _gui_labels = {
+        "log10_A": "log_{10}(A)", "gamma": r"\gamma (spectral)",
+        "chrom_idx": r"Chrom. index \beta", "n_harmonics": "N harmonics",
+    }
+    _par_keys = {
+        "log10_A": ["TNCHROMAMP", "TNChromAmp", "CHROM_log10_A"],
+        "gamma": ["TNCHROMGAM", "TNChromGam", "CHROM_gamma"],
+        "chrom_idx": ["TNCHROMIDX", "TNChromIdx", "CHROM_idx"],
+        "n_harmonics": ["TNCHROMC", "TNChromC", "CHROM_ncoeff"],
+    }
+    _gui_defaults = {"log10_A": -14.0, "gamma": 3.0}
+    _needs_freqs = True
+
+    @classmethod
+    def from_par(cls, params: dict) -> Optional["ChromaticNoiseProcess"]:
+        return parse_chromatic_noise_params(params)
+
+    def spectrum(self, freqs_hz: np.ndarray) -> np.ndarray:
+        """Evaluate PSD at given frequencies."""
+        return powerlaw_spectrum(freqs_hz, self.log10_A, self.gamma)
+
+    def build_basis_and_prior(
+        self,
+        toas_mjd: np.ndarray,
+        freq_mhz: np.ndarray,
+        Tspan_days: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Build chromatic Fourier basis F_dm and diagonal prior φ.
+
+        The achromatic Fourier basis is scaled column-wise by
+        ``(1400 / freq_mhz)^\beta`` to impart the ν⁻β chromatic signature.
+
+        Uses the enterprise convention for per-coefficient variance:
+
+        .. math::
+
+            \\phi_k = \\frac{A^2}{12\\pi^2} f_{\\rm yr}^{\\gamma-3} f_k^{-\\gamma} \\Delta f
+
+        Parameters
+        ----------
+        toas_mjd : (n_toa,)
+        freq_mhz : (n_toa,)
+            Observing frequencies in MHz.
+        Tspan_days : float, optional
+
+        Returns
+        -------
+        F_dm : (n_toa, 2 * n_harmonics)
+        phi : (2 * n_harmonics,)
+            Prior variance for each Fourier coefficient (s²).
+        """
+        F, freqs = build_fourier_design_matrix(
+            toas_mjd, self.n_harmonics, Tspan_days
+        )
+        # Chromatic weighting: (1400 / ν)^\beta
+        # Using 1400 MHz as normalisation keeps numerical values ≈ O(1)
+        chromatic_weight = (1400.0 / freq_mhz) ** self.chrom_idx
+        F_dm = F * chromatic_weight[:, None]
+        # Enterprise convention for per-coefficient variance
+        df = freqs[0]  # = 1/T_span
+        A = 10.0 ** self.log10_A
+        phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
+            _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
+        phi = np.repeat(phi_per_harmonic, 2)
+        return F_dm, phi
 
 # ---------------------------------------------------------------------------
 # Parsing helpers (for par-file integration)
@@ -418,6 +534,50 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
         )
     return None
 
+def parse_chromatic_noise_params(params: dict) -> Optional[ChromaticNoiseProcess]:
+    """Extract a ChromaticNoiseProcess from a par file dict, if present.
+
+    Looks for ``TNChromAmp`` / ``TNChromGam`` / ``TNChromC`` (TempoNest)
+    or ``CHROM_log10_A`` / ``CHROM_gamma`` conventions.
+    Handles both mixed-case and uppercase keys (par reader uppercases).
+    """
+    # TempoNest convention (mixed case)
+    if "TNChromAmp" in params and "TNChromGam" in params:
+        if not "TNChromIdx" in params:
+            chrom_idx = 4.0  # Default chromatic index (e.g. 4 for scattering-like chromaticity)
+        else:
+            chrom_idx = float(params["TNChromIdx"])
+        return ChromaticNoiseProcess(
+            log10_A=float(params["TNChromAmp"]),
+            gamma=float(params["TNChromGam"]),
+            chrom_idx=chrom_idx,
+            n_harmonics=int(params.get("TNChromC", 30)),
+        )
+    # TempoNest convention (uppercase)
+    if "TNCHROMAMP" in params and "TNCHROMGAM" in params:
+        if not "TNCHROMIDX" in params:
+            chrom_idx = 4.0  # Default chromatic index (e.g. 4 for scattering-like chromaticity)
+        else:
+            chrom_idx = float(params["TNCHROMIDX"])
+        return ChromaticNoiseProcess(
+            log10_A=float(params["TNCHROMAMP"]),
+            gamma=float(params["TNCHROMGAM"]),
+            chrom_idx=chrom_idx,
+            n_harmonics=int(params.get("TNCHROMC", 30)),
+        )
+    # Alternative convention
+    if "CHROM_log10_A" in params and "CHROM_gamma" in params:
+        if not "CHROM_idx" in params:
+            chrom_idx = 4.0  # Default chromatic index (e.g. 4 for scattering-like chromaticity)
+        else:
+            chrom_idx = float(params["CHROM_idx"])
+        return ChromaticNoiseProcess(
+            log10_A=float(params["CHROM_log10_A"]),
+            gamma=float(params["CHROM_gamma"]),
+            n_harmonics=int(params.get("CHROM_ncoeff", 30)),
+        )
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Noise realization — compute MAP (maximum a-posteriori) realization
@@ -469,6 +629,28 @@ def realize_dm_noise(
     F, phi = proc.build_basis_and_prior(toas_mjd, freq_mhz, Tspan_days)
     return _wiener_filter(F, phi, residuals_sec, errors_sec)
 
+def realize_chromatic_noise(
+    toas_mjd: np.ndarray,
+    freq_mhz: np.ndarray,
+    residuals_sec: np.ndarray,
+    errors_sec: np.ndarray,
+    log10_A: float,
+    gamma: float,
+    chrom_idx: float = 4.0,
+    n_harmonics: int = 30,
+    Tspan_days: Optional[float] = None,
+) -> np.ndarray:
+    """Compute MAP realization of chromatic DM noise.
+
+    Returns
+    -------
+    realization_sec : (n_toa,)
+        MAP noise realization in seconds.
+    """
+    proc = ChromaticNoiseProcess(log10_A, gamma, chrom_idx=chrom_idx, n_harmonics=n_harmonics)
+    F, phi = proc.build_basis_and_prior(toas_mjd, freq_mhz, Tspan_days)
+    return _wiener_filter(F, phi, residuals_sec, errors_sec)
+
 
 def _wiener_filter(
     F: np.ndarray,
@@ -484,3 +666,37 @@ def _wiener_filter(
     A = np.diag(phi_inv) + FtNiF
     coeffs = np.linalg.solve(A, FtNir)
     return F @ coeffs
+
+
+def realize_noise_generic(
+    proc,
+    toas_mjd: np.ndarray,
+    residuals_sec: np.ndarray,
+    errors_sec: np.ndarray,
+    freq_mhz: Optional[np.ndarray] = None,
+    Tspan_days: Optional[float] = None,
+) -> np.ndarray:
+    """Compute MAP realization for any noise process.
+
+    Uses ``proc._needs_freqs`` to determine whether ``build_basis_and_prior``
+    requires observing frequencies.
+
+    Parameters
+    ----------
+    proc : RedNoiseProcess | DMNoiseProcess | ChromaticNoiseProcess
+        Constructed noise process instance.
+    toas_mjd, residuals_sec, errors_sec : (n_toa,)
+    freq_mhz : (n_toa,), optional
+        Required when ``proc._needs_freqs`` is True.
+
+    Returns
+    -------
+    realization_sec : (n_toa,)
+    """
+    if getattr(proc, '_needs_freqs', False):
+        if freq_mhz is None:
+            raise ValueError(f"{type(proc).__name__} requires freq_mhz")
+        F, phi = proc.build_basis_and_prior(toas_mjd, freq_mhz, Tspan_days)
+    else:
+        F, phi = proc.build_basis_and_prior(toas_mjd, Tspan_days)
+    return _wiener_filter(F, phi, residuals_sec, errors_sec)

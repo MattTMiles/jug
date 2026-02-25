@@ -8,6 +8,11 @@ Key concepts:
 - TDB (Barycentric Dynamical Time): approximation to TCB with rate 1-L_B slower
 - IFTE_K = 1 + 1.55051979176e-8: the scale factor between TCB and TDB rates
 
+TCB metadata (tcb_scaling_dim, is_epoch) is defined in the ParameterSpec registry
+(parameter_spec.py) as the single source of truth. This module derives its
+conversion lists from that registry, supplemented by indexed/pattern parameters
+(glitch, exponential dip, multi-companion) that are not individually registered.
+
 Reference: Irwin & Fukushima (1999), A&A 348, 642-652
 """
 
@@ -33,97 +38,54 @@ IFTE_MJD0 = np.longdouble("43144.0003725")  # Reference epoch MJD
 IFTE_KM1 = np.longdouble("1.55051979176e-8")  # L_B: rate difference
 IFTE_K = np.longdouble(1.0) + IFTE_KM1  # Scale factor ≈ 1.0000000155051979176
 
-# Parameters that are MJD epochs and need time transformation
-# (from jug/io/par_reader.py EPOCH_PARAMETERS)
-EPOCH_PARAMETERS = {
-    'PEPOCH', 'POSEPOCH', 'DMEPOCH', 'T0', 'TASC', 'START', 'FINISH',
-    'PBEPOCH', 'GLEP_1', 'GLEP_2', 'GLEP_3', 'GLEP_4', 'GLEP_5',
-    'T0_2', 'TASC_2', 'T0_3', 'TASC_3',  # Multiple companions
-    'EXPEP_1', 'EXPEP_2', 'EXPEP_3', 'EXPEP_4', 'EXPEP_5',
-    'EXPEP_6', 'EXPEP_7', 'EXPEP_8', 'EXPEP_9', 'EXPEP_10',
-    'GAUSEP_1', 'GAUSEP_2', 'GAUSEP_3', 'GAUSEP_4', 'GAUSEP_5',
+# ---------------------------------------------------------------------------
+# Build EPOCH_PARAMETERS and SCALED_PARAMETERS from the ParameterSpec registry
+# supplemented by indexed/pattern params not in the registry.
+# ---------------------------------------------------------------------------
+from jug.model.parameter_spec import (
+    get_scaled_parameters as _registry_scaled,
+    get_epoch_parameters as _registry_epochs,
+)
+
+# Indexed epoch parameters (glitch, exponential dip, multi-companion)
+_INDEXED_EPOCH_PARAMS = {
+    'START', 'FINISH', 'PBEPOCH',
+    *(f'GLEP_{i}' for i in range(1, 6)),
+    'T0_2', 'TASC_2', 'T0_3', 'TASC_3',
+    *(f'EXPEP_{i}' for i in range(1, 11)),
+    *(f'GAUSEP_{i}' for i in range(1, 6)),
 }
 
-# Parameters that need scaling based on effective dimensionality
-# Format: (param_name_pattern, effective_dimensionality)
-# effective_dimensionality n means: x_tdb = x_tcb * IFTE_K^(-n)
-SCALED_PARAMETERS = [
-    # Spin frequency derivatives (inverse time dimensions)
-    ('F0', -1),  # frequency (1/time)
-    ('F1', -2),  # frequency derivative (1/time^2)
-    ('F2', -3),  # 2nd frequency derivative (1/time^3)
-    ('F3', -4),
-    ('F4', -5),
-    ('F5', -6),
-    ('F6', -7),
-    ('F7', -8),
-    ('F8', -9),
-    ('F9', -10),
-    ('F10', -11),
-    ('F11', -12),
-    ('F12', -13),
-    
-    # Dispersion measure and derivatives (frequency dimension)
-    ('DM', -1),   # DM appears as DM*K_DM with frequency dimension
-    ('DM1', -2),  # DM derivative
-    ('DM2', -3),
+# Indexed scaled parameters (glitch, exponential dip, multi-companion, high F-deriv)
+_INDEXED_SCALED_PARAMS = [
+    # Higher spin frequency derivatives (F4–F12)
+    *((f'F{i}', -(i + 1)) for i in range(4, 13)),
+    # DM3 (not in registry)
     ('DM3', -4),
-    
-    # Binary orbital parameters
-    ('A1', 1),     # semi-major axis (time dimension: appears as A1/c)
-    ('PB', 1),     # orbital period (time)
-    ('FB0', -1),   # orbital frequency (1/time)
-    ('FB1', -2),
-    ('FB2', -3),
-    ('FB3', -4),
-    ('FB4', -5),
-    ('FB5', -6),
-    ('FB6', -7),
-    ('FB7', -8),
-    ('FB8', -9),
-    ('FB9', -10),
-    ('FB10', -11),
-    ('FB11', -12),
-    ('FB12', -13),
-    ('GAMMA', 1),  # time dimension
-    ('OMDOT', -1), # deg/yr (1/time)
-    ('EDOT', -1),  # 1/time
-    ('XDOT', 0),   # dimensionless (computed PBDOT-like effect)
-    ('PBDOT', 0),  # dimensionless (Pb_dot/Pb has time/time)
-    
-    # Glitch parameters (frequency jumps)
-    ('GLF0_1', -1), ('GLF0_2', -1), ('GLF0_3', -1), ('GLF0_4', -1), ('GLF0_5', -1),
-    ('GLF1_1', -2), ('GLF1_2', -2), ('GLF1_3', -2), ('GLF1_4', -2), ('GLF1_5', -2),
-    ('GLF0D_1', -1), ('GLF0D_2', -1), ('GLF0D_3', -1), ('GLF0D_4', -1), ('GLF0D_5', -1),
-    
-    # Multiple companions (same patterns)
-    ('A1_2', 1),
-    ('PB_2', 1),
-    ('FB0_2', -1),
-    ('FB1_2', -2),
-    ('GAMMA_2', 1),
-    ('OMDOT_2', -1),
-    ('A1_3', 1),
-    ('PB_3', 1),
-    
-    # Dimensionless binary parameters (no scaling)
-    ('ECC', 0),
-    ('ECC_2', 0),
-    ('OM', 0),  # angle
-    ('OM_2', 0),
-    ('SINI', 0),
-    ('M2', 0),  # mass
-    ('M2_2', 0),
-    ('EPS1', 0),
-    ('EPS2', 0),
-    ('EPS1_2', 0),
-    ('EPS2_2', 0),
-    
-    # Exponential dip parameters (EXPPH has time dimension, EXPTAU has time dimension)
-    ('EXPPH_1', 1), ('EXPPH_2', 1), ('EXPPH_3', 1), ('EXPPH_4', 1), ('EXPPH_5', 1),
-    ('EXPPH_6', 1), ('EXPPH_7', 1), ('EXPPH_8', 1), ('EXPPH_9', 1), ('EXPPH_10', 1),
-    ('EXPTAU_1', 1), ('EXPTAU_2', 1), ('EXPTAU_3', 1), ('EXPTAU_4', 1), ('EXPTAU_5', 1),
-    ('EXPTAU_6', 1), ('EXPTAU_7', 1), ('EXPTAU_8', 1), ('EXPTAU_9', 1), ('EXPTAU_10', 1),
+    # Glitch frequency parameters
+    *((f'GLF0_{i}', -1) for i in range(1, 6)),
+    *((f'GLF1_{i}', -2) for i in range(1, 6)),
+    *((f'GLF0D_{i}', -1) for i in range(1, 6)),
+    # Multi-companion binary
+    ('A1_2', 1), ('PB_2', 1), ('FB0_2', -1), ('FB1_2', -2),
+    ('GAMMA_2', 1), ('OMDOT_2', -1),
+    ('ECC_2', 0), ('OM_2', 0), ('SINI_2', 0), ('M2_2', 0),
+    ('EPS1_2', 0), ('EPS2_2', 0),
+    ('A1_3', 1), ('PB_3', 1),
+    # Exponential dip parameters
+    *((f'EXPPH_{i}', 1) for i in range(1, 11)),
+    *((f'EXPTAU_{i}', 1) for i in range(1, 11)),
+]
+
+# Combine registry + indexed params
+EPOCH_PARAMETERS = _registry_epochs() | _INDEXED_EPOCH_PARAMS
+
+_registry_scaled_list = _registry_scaled()
+_all_scaled_names = {p[0] for p in _registry_scaled_list}
+# Append indexed params, skipping any already covered by the registry
+SCALED_PARAMETERS = _registry_scaled_list + [
+    (name, dim) for name, dim in _INDEXED_SCALED_PARAMS
+    if name not in _all_scaled_names
 ]
 
 # Parameters NOT converted (per PINT convention)

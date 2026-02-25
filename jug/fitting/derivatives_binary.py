@@ -908,7 +908,18 @@ def compute_ell1_binary_delay(
     m2 = float(params.get('M2', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
     h3 = float(params.get('H3', 0.0))
+    h4 = float(params.get('H4', 0.0))
     stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
+
+    # Convert orthometric Shapiro parameters to SINI/M2
+    if sini == 0.0 and m2 == 0.0 and h3 != 0.0:
+        if stig != 0.0:
+            sini = min(2.0 * stig / (1.0 + stig**2), 1.0)
+            m2 = h3 / (stig**3 * T_SUN)
+        elif h4 != 0.0:
+            h3h4_denom = h3**2 + h4**2
+            sini = min(2.0 * h3 * h4 / h3h4_denom, 1.0)
+            m2 = h3**4 / (h4**3 * T_SUN)
 
     # Extract FB parameters (FB0, FB1, ...)
     fb_coeffs_list = []
@@ -1370,21 +1381,44 @@ def compute_binary_derivatives_ell1(
         # H3 derivative (orthometric Shapiro - ELL1H model)
         # =================================================================
         elif param_upper == 'H3':
-            # Orthometric parameterization: M2 = H3 / (STIG^3 * T_SUN)
-            # d(delay)/d(H3) = d(delay)/d(M2) * d(M2)/d(H3)
-            #                = d(delay)/d(M2) / (STIG^3 * T_SUN)
             h3_val = float(params.get('H3', 0.0))
+            h4_val = float(params.get('H4', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
             
             if stig_val != 0:
-                # Compute SINI from STIG for the Shapiro delay
+                # H3/STIG parameterization
                 sini_from_stig = 2 * stig_val / (1 + stig_val**2)
                 dM2_dH3 = 1.0 / (stig_val**3 * T_SUN)
                 derivatives[param] = d_shapiro_d_M2(phi, sini_from_stig) * dM2_dH3
+            elif h4_val != 0 and h3_val != 0:
+                # H3/H4 parameterization (Freire & Wex 2010)
+                h3h4_denom = h3_val**2 + h4_val**2
+                sini_h3h4 = min(2.0 * h3_val * h4_val / h3h4_denom, 1.0)
+                m2_h3h4 = h3_val**4 / (h4_val**3 * T_SUN)
+                dM2_dH3 = 4.0 * h3_val**3 / (h4_val**3 * T_SUN)
+                dSINI_dH3 = 2.0 * h4_val * (h4_val**2 - h3_val**2) / h3h4_denom**2
+                derivatives[param] = (d_shapiro_d_M2(phi, sini_h3h4) * dM2_dH3 +
+                                      d_shapiro_d_SINI(phi, sini_h3h4, m2_h3h4) * dSINI_dH3)
             else:
-                # ELL1H H3-only: Δ_S = -(4/3)*H3*sin(3*Phi)
-                # d(delay)/d(H3) = -(4/3)*sin(3*Phi)
+                # H3-only: Δ_S = -(4/3)*H3*sin(3*Phi)
                 derivatives[param] = -(4.0 / 3.0) * jnp.sin(3.0 * phi)
+        
+        # =================================================================
+        # H4 derivative (orthometric Shapiro - H3/H4 parameterization)
+        # =================================================================
+        elif param_upper == 'H4':
+            h3_val = float(params.get('H3', 0.0))
+            h4_val = float(params.get('H4', 0.0))
+            if h3_val != 0 and h4_val != 0:
+                h3h4_denom = h3_val**2 + h4_val**2
+                sini_h3h4 = min(2.0 * h3_val * h4_val / h3h4_denom, 1.0)
+                m2_h3h4 = h3_val**4 / (h4_val**3 * T_SUN)
+                dM2_dH4 = -3.0 * m2_h3h4 / h4_val
+                dSINI_dH4 = 2.0 * h3_val * (h3_val**2 - h4_val**2) / h3h4_denom**2
+                derivatives[param] = (d_shapiro_d_M2(phi, sini_h3h4) * dM2_dH4 +
+                                      d_shapiro_d_SINI(phi, sini_h3h4, m2_h3h4) * dSINI_dH4)
+            else:
+                derivatives[param] = jnp.zeros(n_toas)
         
         # =================================================================
         # STIG derivative (orthometric Shapiro - ELL1H model)

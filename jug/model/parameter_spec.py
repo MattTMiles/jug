@@ -418,6 +418,24 @@ _BINARY_PARAMS = [
         par_unit_str="",
         component_name="BinaryComponent",
     ),
+    ParameterSpec(
+        name="EPS1DOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="1/s",
+        par_unit_str="1/s",
+        component_name="BinaryComponent",
+    ),
+    ParameterSpec(
+        name="EPS2DOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="1/s",
+        par_unit_str="1/s",
+        component_name="BinaryComponent",
+    ),
     # Post-Keplerian / Shapiro parameters
     ParameterSpec(
         name="SINI",

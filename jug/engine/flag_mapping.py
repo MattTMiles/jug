@@ -7,7 +7,7 @@ observatories and data releases.
 
 Design
 ------
-* Setup-time / Python only — not on the hot path.
+* Setup-time / Python only -- not on the hot path.
 * A ``FlagMappingConfig`` stores ordered candidate flag keys and an
   optional explicit alias table.
 * ``resolve_backend_for_toa`` walks the candidates and returns the first
@@ -34,7 +34,7 @@ class FlagMappingConfig:
         Ordered list of flag keys to try (without leading ``'-'``).
         The first key found in a TOA's flags dict wins.
         Default: ``["f", "be", "backend"]``.
-    aliases : dict of str → str, optional
+    aliases : dict of str -> str, optional
         Explicit value aliases.  Applied *after* the candidate key is
         resolved.  Example: ``{"KAT": "MKBF"}`` maps the value
         ``"KAT"`` to ``"MKBF"``.
@@ -120,7 +120,7 @@ def resolve_flag_for_toa(
     aliases: Optional[Dict[str, str]] = None,
     fallback: str = "__unknown__",
 ) -> str:
-    """Generic flag resolver — like ``resolve_backend_for_toa`` for any
+    """Generic flag resolver -- like ``resolve_backend_for_toa`` for any
     semantic concept (frequency band, receiver, etc.).
 
     Parameters

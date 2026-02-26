@@ -63,9 +63,9 @@ def _build_numpyro_model(
     Uses the marginalized likelihood that analytically integrates over
     Fourier coefficients. The covariance is:
 
-        C = N + F Φ F^T
+        C = N + F Phi F^T
 
-    where N includes EFAC/EQUAD/ECORR white noise and F Φ F^T captures
+    where N includes EFAC/EQUAD/ECORR white noise and F Phi F^T captures
     the red/DM noise power spectrum.
 
     Parameters
@@ -116,9 +116,9 @@ def _build_numpyro_model(
     if include_dm_noise and n_dm_harmonics > 0:
         from jug.noise.red_noise import build_fourier_design_matrix
         F_dm_time, _ = build_fourier_design_matrix(toas_mjd, n_dm_harmonics)
-        # DM noise scales as 1/freq^2 (K_DM = 4.149 GHz^2 pc^-1 cm^3 s)
-        K_DM = 4.148808e3  # MHz^2 s pc^-1 cm^-3
-        dm_scale = K_DM / (freq_mhz ** 2)
+        # DM noise scales as 1/freq^2
+        from jug.utils.constants import K_DM_SEC
+        dm_scale = K_DM_SEC / (freq_mhz ** 2)
         F_dm = F_dm_time * dm_scale[:, None]
         n_dm_cols = F_dm.shape[1]
         F_columns.append(jnp.array(F_dm))
@@ -136,8 +136,8 @@ def _build_numpyro_model(
         name: jnp.array(mask) for name, mask in backend_masks.items()
     }
 
-    # Pre-compute ECORR structures: U matrix (n_toa × n_epochs)
-    # and mapping of backend → epoch column indices
+    # Pre-compute ECORR structures: U matrix (n_toa * n_epochs)
+    # and mapping of backend -> epoch column indices
     ecorr_names = sorted(ecorr_masks.keys()) if include_ecorr else []
     U_matrix = None
     n_ecorr_epochs = 0
@@ -214,12 +214,12 @@ def _build_numpyro_model(
                 dist.Uniform(0.0, 7.0)
             )
             A_red = 10.0 ** log10_A_red
-            # Power-law spectrum: P(f) = A^2/(12π^2) * (f/f_yr)^(-γ) * T_span
+            # Power-law spectrum: P(f) = A^2/(12pi^2) * (f/f_yr)^(-gamma) * T_span
             # Diagonal prior variance for each pair [cos, sin]
             rn_freqs = freqs[:n_red_harmonics]
             rn_psd = (A_red ** 2 / (12.0 * jnp.pi ** 2)) * \
                      (rn_freqs / f_yr) ** (-gamma_red) / T_span
-            # Each harmonic has cos and sin → duplicate
+            # Each harmonic has cos and sin -> duplicate
             rn_prior = jnp.repeat(rn_psd, 2)
             phi_diag = phi_diag.at[:n_red_cols].set(rn_prior)
 
@@ -240,7 +240,7 @@ def _build_numpyro_model(
             phi_diag = phi_diag.at[n_red_cols:n_red_cols + n_dm_cols].set(dm_prior)
 
         # --- Marginalized log-likelihood ---
-        # C = N + U J U^T + F Φ F^T
+        # C = N + U J U^T + F Phi F^T
         # Use Woodbury: C^{-1} and log|C| computed efficiently
 
         N_inv = 1.0 / N_diag
@@ -297,14 +297,14 @@ def _build_numpyro_model(
             Cinv_r = Ninv_r - correction
             rCr_full = jnp.dot(r, Cinv_r)
 
-            # log|C| += log|Φ| + log|S_fourier|
+            # log|C| += log|Phi| + log|S_fourier|
             log_det_phi = jnp.sum(jnp.log(phi_diag_safe))
             sign_f, log_det_Sf = jnp.linalg.slogdet(S_fourier)
             log_det_C = log_det_C + log_det_phi + log_det_Sf
         else:
             rCr_full = rNr
 
-        # log L = -0.5 * (r^T C^{-1} r + log|C| + n*log(2π))
+        # log L = -0.5 * (r^T C^{-1} r + log|C| + n*log(2pi))
         log_like = -0.5 * (rCr_full + log_det_C + n_toa * jnp.log(2 * jnp.pi))
 
         numpyro.factor("log_likelihood", log_like)
@@ -361,7 +361,7 @@ def _build_backend_masks(
                 ecorr_epoch_groups[key] = []
                 continue
 
-            # Need MJDs for grouping — pass externally or compute
+            # Need MJDs for grouping -- pass externally or compute
             ecorr_epoch_groups[key] = []  # filled by caller
 
     return backend_masks, ecorr_masks, ecorr_epoch_groups
@@ -629,7 +629,7 @@ def _convert_to_jug_format(
             result[f"ECORR_{name}"] = 10.0 ** estimated[ecorr_key] * 1e6
 
     if "log10_A_red" in estimated:
-        # TNRedAmp in par files is log10(A) — the enterprise convention
+        # TNRedAmp in par files is log10(A) -- the enterprise convention
         result["TNREDAMP"] = estimated["log10_A_red"]
         result["TNREDGAM"] = estimated.get("gamma_red", 0.0)
         result["TNREDC"] = float(n_red_harmonics)

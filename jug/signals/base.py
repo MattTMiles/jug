@@ -41,10 +41,10 @@ class DeterministicSignal(ABC):
 
     Subclasses must define:
 
-    * :attr:`signal_name` — unique string identifier (e.g. ``"CW"``).
-    * :meth:`compute_waveform` — return ``(n_toa,)`` delay in **seconds**.
-    * :meth:`from_par` — construct an instance from parsed par parameters.
-    * :meth:`required_par_keys` — return the par keys that trigger detection.
+    * :attr:`signal_name` -- unique string identifier (e.g. ``"CW"``).
+    * :meth:`compute_waveform` -- return ``(n_toa,)`` delay in **seconds**.
+    * :meth:`from_par` -- construct an instance from parsed par parameters.
+    * :meth:`required_par_keys` -- return the par keys that trigger detection.
     """
 
     signal_name: str = ""

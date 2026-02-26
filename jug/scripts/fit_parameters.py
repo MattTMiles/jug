@@ -208,14 +208,14 @@ Environment Variable:
         if param.startswith('F'):
             # Format for frequency parameters
             if param == 'F0':
-                print(f"  {param} = {value:.15e} ± {unc:.3e} Hz")
+                print(f"  {param} = {value:.15e} +/- {unc:.3e} Hz")
             else:
-                print(f"  {param} = {value:.15e} ± {unc:.3e} Hz/s^{int(param[1:])}")
+                print(f"  {param} = {value:.15e} +/- {unc:.3e} Hz/s^{int(param[1:])}")
         else:
-            print(f"  {param} = {value:.15e} ± {unc:.3e}")
+            print(f"  {param} = {value:.15e} +/- {unc:.3e}")
     
     print(f"\nFit quality:")
-    print(f"  RMS: {result['final_rms']:.6f} μs")
+    print(f"  RMS: {result['final_rms']:.6f} mus")
     print(f"  Iterations: {result['iterations']}")
     print(f"  Converged: {result['converged']}")
     
@@ -284,8 +284,8 @@ Environment Variable:
             
             ax.axhline(0, color='k', linestyle='--', linewidth=0.8, alpha=0.5)
             ax.set_xlabel('Time (MJD, TDB)', fontsize=12)
-            ax.set_ylabel('Timing Residual (μs)', fontsize=12)
-            ax.set_title(f'Timing Residuals (No Fitting)\nWeighted RMS = {rms:.3f} μs', fontsize=14)
+            ax.set_ylabel('Timing Residual (mus)', fontsize=12)
+            ax.set_title(f'Timing Residuals (No Fitting)\nWeighted RMS = {rms:.3f} mus', fontsize=14)
             ax.legend()
             ax.grid(True, alpha=0.3)
             
@@ -310,8 +310,8 @@ Environment Variable:
                 ax1.plot(tdb_mjd, prefit_res, 'o', markersize=2, alpha=0.5, color='red', label='Prefit')
             
             ax1.axhline(0, color='k', linestyle='--', linewidth=0.8, alpha=0.5)
-            ax1.set_ylabel('Timing Residual (μs)', fontsize=12)
-            ax1.set_title(f'Prefit Residuals\nWeighted RMS = {prefit_rms:.3f} μs', fontsize=12)
+            ax1.set_ylabel('Timing Residual (mus)', fontsize=12)
+            ax1.set_title(f'Prefit Residuals\nWeighted RMS = {prefit_rms:.3f} mus', fontsize=12)
             ax1.legend()
             ax1.grid(True, alpha=0.3)
             
@@ -328,8 +328,8 @@ Environment Variable:
             
             ax2.axhline(0, color='k', linestyle='--', linewidth=0.8, alpha=0.5)
             ax2.set_xlabel('Time (MJD, TDB)', fontsize=12)
-            ax2.set_ylabel('Timing Residual (μs)', fontsize=12)
-            ax2.set_title(f'Postfit Residuals\nWeighted RMS = {postfit_rms:.3f} μs', fontsize=12)
+            ax2.set_ylabel('Timing Residual (mus)', fontsize=12)
+            ax2.set_title(f'Postfit Residuals\nWeighted RMS = {postfit_rms:.3f} mus', fontsize=12)
             ax2.legend()
             ax2.grid(True, alpha=0.3)
             

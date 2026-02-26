@@ -1,8 +1,10 @@
-"""Parser for Tempo2-style .par files.
+"""Parser for pulsar timing .par files.
 
 This module handles parsing of pulsar timing model parameters from .par files
-with special handling for high-precision parameters that require np.longdouble
-to maintain microsecond-level timing accuracy.
+(Tempo2, PINT, and NANOGrav conventions) with special handling for high-precision
+parameters that require np.longdouble to maintain microsecond-level timing accuracy.
+
+TCB par files are automatically detected and converted to TDB internally.
 
 Ecliptic coordinate support
 ---------------------------
@@ -60,7 +62,7 @@ def _parse_float(value_str: str) -> float:
 
 
 def parse_par_file(path: Path | str) -> Dict[str, Any]:
-    """Parse tempo2-style .par file with high precision for timing-critical parameters.
+    """Parse a pulsar timing .par file with high precision for timing-critical parameters.
 
     Parameters
     ----------
@@ -100,19 +102,20 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
         for line in f:
             line = line.strip()
             # Skip comments and empty lines
-            if not line or line.startswith('#'):
+            # '#' is standard; 'C ' is a Tempo/Tempo2 comment convention
+            if not line or line.startswith('#') or line.upper().startswith('C '):
                 continue
 
             parts = line.split()
             if len(parts) >= 2:
                 key = parts[0].upper()
 
-                # Noise parameters have multi-token format — store raw line
+                # Noise parameters have multi-token format -- store raw line
                 if key in _NOISE_KEYWORDS:
                     noise_lines.append(line)
                     continue
 
-                # JUMP parameters have multi-token format — store raw line
+                # JUMP parameters have multi-token format -- store raw line
                 if key == 'JUMP':
                     jump_lines.append(line)
                     continue
@@ -195,7 +198,7 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
     the ecliptic, matching the ``PulsarEcliptic`` frame in PINT/Tempo2.
 
     The obliquity is determined by the ``ECL`` keyword in the par file
-    (default: IERS2010, ε = 84381.406″ = 23°26′21.406″).
+    (default: IERS2010, epsilon = 84381.406" = 23deg26'21.406").
 
     Parameters
     ----------
@@ -205,8 +208,8 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
     Notes
     -----
     PINT convention for proper motions:
-    - PMLAMBDA = dλ·cos(β)  [mas/yr]  (ecliptic)
-    - PMRA     = dα·cos(δ)  [mas/yr]  (equatorial)
+    - PMLAMBDA = dlambda_*cos(beta)  [mas/yr]  (ecliptic)
+    - PMRA     = dalpha*cos(delta)  [mas/yr]  (equatorial)
     Both include the cos(lat) factor.
     """
     # Determine which ecliptic keywords are present (LAMBDA/BETA or ELONG/ELAT)
@@ -214,7 +217,7 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
     has_elong = 'ELONG' in params
 
     if not has_lambda and not has_elong:
-        return  # Equatorial — nothing to do
+        return  # Equatorial -- nothing to do
 
     # If RAJ/DECJ are already present, prefer them (ecliptic is informational)
     if 'RAJ' in params:
@@ -244,7 +247,7 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
 
     obl_rad = OBLIQUITY_ARCSEC[ecl_frame] * np.pi / (180.0 * 3600.0)
 
-    # --- Position conversion: ecliptic → equatorial ---
+    # --- Position conversion: ecliptic -> equatorial ---
     lon_rad = np.radians(ecl_lon_deg)
     lat_rad = np.radians(ecl_lat_deg)
 
@@ -260,7 +263,7 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
     y = sin_lon * cos_lat
     z = sin_lat
 
-    # Rotate about x-axis by -ε (ecliptic → equatorial)
+    # Rotate about x-axis by -epsilon (ecliptic -> equatorial)
     x_eq = x
     y_eq = y * cos_obl - z * sin_obl
     z_eq = y * sin_obl + z * cos_obl
@@ -272,22 +275,22 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
     params['RAJ'] = format_ra(ra_rad)
     params['DECJ'] = format_dec(dec_rad)
 
-    # --- Proper motion conversion: ecliptic → equatorial ---
+    # --- Proper motion conversion: ecliptic -> equatorial ---
     pm_lon = params.get(pm_lon_key, 0.0)  # mas/yr, includes cos(lat)
     pm_lat = params.get(pm_lat_key, 0.0)  # mas/yr
 
     if pm_lon != 0.0 or pm_lat != 0.0:
         # The PM vector in ecliptic spherical coords (cos-lat already included):
-        #   v_lon = pm_lon  (= dλ·cos(β))
-        #   v_lat = pm_lat  (= dβ)
+        #   v_lon = pm_lon  (= dlambda_*cos(beta))
+        #   v_lat = pm_lat  (= dbeta)
         # Convert to Cartesian velocity:
-        #   ∂r/∂λ = (-sin(λ)cos(β), cos(λ)cos(β), 0) / cos(β) [for cos-lat PM]
-        #   ∂r/∂β = (-cos(λ)sin(β), -sin(λ)sin(β), cos(β))
+        #   dr/dlambda_ = (-sin(lambda_)cos(beta), cos(lambda_)cos(beta), 0) / cos(beta) [for cos-lat PM]
+        #   dr/dbeta = (-cos(lambda_)sin(beta), -sin(lambda_)sin(beta), cos(beta))
 
-        # Jacobian columns for (dλ·cos(β), dβ) → Cartesian
-        # For dλ·cos(β): divide by cos(β) to get dλ, multiply by ∂r/∂λ
-        # ∂r/∂λ = (-sin(λ)cos(β), cos(λ)cos(β), 0)
-        # So (dλ·cos(β)) × (∂r/∂λ / cos(β)) = dλ·cos(β) × (-sin(λ), cos(λ), 0)
+        # Jacobian columns for (dlambda_*cos(beta), dbeta) -> Cartesian
+        # For dlambda_*cos(beta): divide by cos(beta) to get dlambda_, multiply by dr/dlambda_
+        # dr/dlambda_ = (-sin(lambda_)cos(beta), cos(lambda_)cos(beta), 0)
+        # So (dlambda_*cos(beta)) * (dr/dlambda_ / cos(beta)) = dlambda_*cos(beta) * (-sin(lambda_), cos(lambda_), 0)
         dx = -sin_lon * pm_lon - cos_lon * sin_lat * pm_lat
         dy = cos_lon * pm_lon - sin_lon * sin_lat * pm_lat
         dz = cos_lat * pm_lat
@@ -303,8 +306,8 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
         cos_dec = np.cos(dec_rad)
         sin_dec = np.sin(dec_rad)
 
-        # pm_ra·cos(dec) = -sin(ra)·dx_eq + cos(ra)·dy_eq
-        # pm_dec = -cos(ra)·sin(dec)·dx_eq - sin(ra)·sin(dec)·dy_eq + cos(dec)·dz_eq
+        # pm_ra*cos(dec) = -sin(ra)*dx_eq + cos(ra)*dy_eq
+        # pm_dec = -cos(ra)*sin(dec)*dx_eq - sin(ra)*sin(dec)*dy_eq + cos(dec)*dz_eq
         pmra = -sin_ra * dx_eq + cos_ra * dy_eq
         pmdec = -cos_ra * sin_dec * dx_eq - sin_ra * sin_dec * dy_eq + cos_dec * dz_eq
 
@@ -409,8 +412,7 @@ The par file timescale is determined by:
 1. The UNITS keyword (TDB or TCB) if present
 2. Default to TDB if UNITS is not specified
 
-IMPORTANT: JUG currently only supports TDB par files. TCB par files will
-trigger a NotImplementedError via validate_par_timescale().
+TCB par files are automatically converted to TDB via validate_par_timescale().
 """
 
 
@@ -537,6 +539,16 @@ def format_ra(ra_rad: float) -> str:
     m = int(m_frac)
     s = (m_frac - m) * 60.0
     
+    # Guard against floating-point rounding producing 60.0 seconds
+    if s >= 59.999999995:
+        s = 0.0
+        m += 1
+        if m >= 60:
+            m = 0
+            h += 1
+            if h >= 24:
+                h = 0
+    
     return f"{h:02d}:{m:02d}:{s:011.8f}"
 
 
@@ -562,6 +574,14 @@ def format_dec(dec_rad: float) -> str:
     m = int(m_frac)
     s = (m_frac - m) * 60.0
     
+    # Guard against floating-point rounding producing 60.0 seconds
+    if s >= 59.99999995:
+        s = 0.0
+        m += 1
+        if m >= 60:
+            m = 0
+            d += 1
+    
     return f"{sign}{d:02d}:{m:02d}:{s:010.7f}"
 
 
@@ -574,7 +594,7 @@ def convert_equatorial_to_ecliptic(
 ) -> Dict[str, float]:
     """Convert equatorial coordinates to ecliptic.
 
-    Inverse of the ecliptic→equatorial conversion in
+    Inverse of the ecliptic->equatorial conversion in
     ``_convert_ecliptic_to_equatorial``.
 
     Parameters
@@ -610,7 +630,7 @@ def convert_equatorial_to_ecliptic(
     y = sin_ra * cos_dec
     z = sin_dec
 
-    # Rotate about x-axis by +ε (equatorial → ecliptic)
+    # Rotate about x-axis by +epsilon (equatorial -> ecliptic)
     x_ecl = x
     y_ecl = y * cos_obl + z * sin_obl
     z_ecl = -y * sin_obl + z * cos_obl
@@ -636,7 +656,7 @@ def convert_equatorial_to_ecliptic(
         dy_ecl = dy * cos_obl + dz * sin_obl
         dz_ecl = -dy * sin_obl + dz * cos_obl
 
-        # Project to spherical: pm_lon·cos(lat) and pm_lat
+        # Project to spherical: pm_lon*cos(lat) and pm_lat
         cos_lon = np.cos(lon_rad)
         sin_lon = np.sin(lon_rad)
         cos_lat = np.cos(lat_rad)

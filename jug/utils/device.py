@@ -126,9 +126,9 @@ def estimate_computation_cost(n_toas: int, n_params: int) -> float:
     - WLS solve (SVD): O(n_toas * n_params^2 + n_params^3)
     
     For typical pulsar timing:
-    - Small: 10k TOAs, 2 params → ~0.4M FLOPs
-    - Medium: 50k TOAs, 10 params → ~50M FLOPs
-    - Large: 100k TOAs, 50 params → ~2.5B FLOPs
+    - Small: 10k TOAs, 2 params -> ~0.4M FLOPs
+    - Medium: 50k TOAs, 10 params -> ~50M FLOPs
+    - Large: 100k TOAs, 50 params -> ~2.5B FLOPs
     """
     # Rough FLOP estimate (order of magnitude)
     phase_flops = n_toas * n_params

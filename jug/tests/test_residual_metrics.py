@@ -1,4 +1,4 @@
-"""Tests for Phase 3.2–3.3: residual representations and fit summary metrics."""
+"""Tests for Phase 3.2-3.3: residual representations and fit summary metrics."""
 
 import numpy as np
 import pytest
@@ -12,7 +12,7 @@ from jug.engine.stats import (
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.2 — Residual representations
+# Phase 3.2 -- Residual representations
 # ---------------------------------------------------------------------------
 
 class TestNormalizedResiduals:
@@ -30,7 +30,7 @@ class TestNormalizedResiduals:
         np.testing.assert_allclose(norm, [2.0, 2.0])
 
     def test_zero_error_gives_zero(self):
-        """Zero errors should not produce NaN/Inf — produce 0 instead."""
+        """Zero errors should not produce NaN/Inf -- produce 0 instead."""
         r = np.array([1.0, 2.0])
         e = np.array([0.0, 1.0])
         norm = compute_normalized_residuals(r, e)
@@ -56,10 +56,10 @@ class TestWhitenedResiduals:
         np.testing.assert_allclose(w, norm)
 
     def test_with_noise_cov(self):
-        """σ_eff = sqrt(σ² + C_diag), so whitened = r / σ_eff."""
+        """sigma_eff = sqrt(sigma^2 + C_diag), so whitened = r / sigma_eff."""
         r = np.array([6.0])
-        e = np.array([3.0])  # σ² = 9
-        cov = np.array([16.0])  # total_var = 25, σ_eff = 5
+        e = np.array([3.0])  # sigma^2 = 9
+        cov = np.array([16.0])  # total_var = 25, sigma_eff = 5
         w = compute_whitened_residuals(r, e, cov)
         np.testing.assert_allclose(w, [6.0 / 5.0])
 
@@ -96,14 +96,14 @@ class TestBuildResidualRepresentations:
     def test_with_noise(self):
         pre = np.array([10.0])
         post = np.array([6.0])
-        err = np.array([3.0])   # σ² = 9
-        cov = np.array([16.0])  # total = 25 → σ_eff = 5
+        err = np.array([3.0])   # sigma^2 = 9
+        cov = np.array([16.0])  # total = 25 -> sigma_eff = 5
         reps = build_residual_representations(pre, post, err, cov)
         np.testing.assert_allclose(reps["whitened"], [6.0 / 5.0])
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.3 — Fit summary
+# Phase 3.3 -- Fit summary
 # ---------------------------------------------------------------------------
 
 class TestFitSummary:

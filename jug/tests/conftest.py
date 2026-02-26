@@ -40,7 +40,7 @@ def _pulsar_paths(name: str) -> tuple:
 def j1909_session():
     """A TimingSession for J1909-3744 (ELL1, 10 408 TOAs).
 
-    Cached at session scope — reusable across all tests.
+    Cached at session scope -- reusable across all tests.
     """
     from jug.engine.session import TimingSession
 

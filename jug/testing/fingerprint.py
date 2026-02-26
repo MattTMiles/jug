@@ -1,4 +1,4 @@
-"""Configuration fingerprinting for Tempo2 ↔ JUG parity checks.
+"""Configuration fingerprinting for Tempo2 <-> JUG parity checks.
 
 Extracts and compares timing-model configuration from par files to ensure
 both codes run with compatible settings before comparing residuals.
@@ -239,8 +239,8 @@ def fingerprint_report(par_path: Path) -> str:
         lines.append(f"  {key:25s} = {val}")
 
     ok, issues = validate_jug_compatible(fp)
-    lines.append(f"\nJUG Compatibility: {'✓ OK' if ok else '✗ FAIL'}")
+    lines.append(f"\nJUG Compatibility: {'[x] OK' if ok else '[ ] FAIL'}")
     for issue in issues:
-        lines.append(f"  ✗ {issue}")
+        lines.append(f"  [ ] {issue}")
 
     return '\n'.join(lines)

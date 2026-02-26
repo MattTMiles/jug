@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Benchmark the fitting pipeline — profile where time is spent.
+"""Benchmark the fitting pipeline -- profile where time is spent.
 
 Usage:
     JAX_PLATFORMS=cpu conda run -n discotech python jug/tests/benchmark_fit.py
@@ -17,7 +17,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from collections import defaultdict
 
-# ── Data paths ───────────────────────────────────────────────────────────
+# -- Data paths -----------------------------------------------------------
 PAR = Path("/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/"
            "32ch_tdb_ads/J0125-2327_tdb.par")
 TIM = Path("/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/"
@@ -31,7 +31,7 @@ if not PAR.exists():
 assert PAR.exists(), f"Par file not found: {PAR}"
 assert TIM.exists(), f"Tim file not found: {TIM}"
 
-# ── Timer utility ────────────────────────────────────────────────────────
+# -- Timer utility --------------------------------------------------------
 timings = defaultdict(list)
 
 @contextmanager
@@ -67,7 +67,7 @@ def print_timings(title=""):
     print(f"{'TOTAL':<45} {total_all*1000:>7.1f}ms")
 
 
-# ── 1. Setup phase (one-off) ────────────────────────────────────────────
+# -- 1. Setup phase (one-off) --------------------------------------------
 print(f"Pulsar: {PAR.stem}")
 print(f"Tim:    {TIM}")
 
@@ -82,8 +82,8 @@ with timed("compute_residuals"):
 n_toas = len(result['residuals_us'])
 print(f"N_TOAs: {n_toas}")
 
-# ── 2. Get the fit parameters the user would be fitting ──────────────────
-# Read directly from par file — parameters with fit flag "1" after value
+# -- 2. Get the fit parameters the user would be fitting ------------------
+# Read directly from par file -- parameters with fit flag "1" after value
 fit_params = []
 with open(PAR) as f:
     for line in f:
@@ -99,7 +99,7 @@ if not fit_params:
 
 print(f"Fit params ({len(fit_params)}): {fit_params}")
 
-# ── 3. Full fit timing (end-to-end) ─────────────────────────────────────
+# -- 3. Full fit timing (end-to-end) -------------------------------------
 print("\n--- Warmup fit (JIT compilation) ---")
 with timed("fit_warmup"):
     session.fit_parameters(fit_params=fit_params, max_iter=1, verbose=False)
@@ -113,7 +113,7 @@ with timed("fit_3iter"):
     r = session.fit_parameters(fit_params=fit_params, max_iter=3, verbose=False)
 print(f"  Final RMS: {r.get('rms_us', r.get('final_rms', '?'))}")
 
-# ── 4. Profile individual components ────────────────────────────────────
+# -- 4. Profile individual components ------------------------------------
 # Re-import internals to profile them directly
 from jug.fitting.optimized_fitter import (
     _compute_full_model_residuals,
@@ -291,4 +291,4 @@ for rep in range(-N_WARMUP, N_REPS):
         _compute_full_model_residuals(params_dict, setup)
 
 
-print_timings(f"Fitting Profile — {PAR.stem} ({n_toas} TOAs, {len(fit_params)} params)")
+print_timings(f"Fitting Profile -- {PAR.stem} ({n_toas} TOAs, {len(fit_params)} params)")

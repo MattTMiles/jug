@@ -6,7 +6,7 @@ parameters: if the par file contains the relevant keywords, that process
 starts enabled.
 
 The ``NOISE_REGISTRY`` is the single source of truth for noise process
-metadata — canonical names, display labels, tooltips, ordering, and detection
+metadata -- canonical names, display labels, tooltips, ordering, and detection
 logic.  The GUI derives all display information from here.
 
 Usage
@@ -122,7 +122,7 @@ def _has_chromatic_event(params: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# NoiseProcessSpec — single source of truth for each noise process
+# NoiseProcessSpec -- single source of truth for each noise process
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -133,7 +133,7 @@ class NoiseProcessSpec:
     GUI never needs its own hardcoded copies.
 
     If ``impl_class`` is set, the GUI can introspect its dataclass fields to
-    auto-generate editable parameter rows — no hardcoded param lists needed.
+    auto-generate editable parameter rows -- no hardcoded param lists needed.
     """
     name: str
     label: str
@@ -154,12 +154,12 @@ _NOISE_SPECS = [
     ),
     NoiseProcessSpec(
         name=EQUAD, label="EQUAD",
-        tooltip="Added variance per backend (μs)",
+        tooltip="Added variance per backend (mus)",
         display_order=1, detector=_has_equad,
     ),
     NoiseProcessSpec(
         name=ECORR, label="ECORR",
-        tooltip="Correlated noise within epochs (μs)",
+        tooltip="Correlated noise within epochs (mus)",
         display_order=2, detector=_has_ecorr,
     ),
     NoiseProcessSpec(
@@ -234,21 +234,21 @@ def get_all_noise_names() -> set:
     return set(NOISE_REGISTRY.keys())
 
 
-# LaTeX-style markup → Unicode rendering
+# LaTeX-style markup -> Unicode rendering
 import re as _re
 
 _GREEK = {
-    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ",
-    "epsilon": "ε", "zeta": "ζ", "eta": "η", "theta": "θ",
-    "iota": "ι", "kappa": "κ", "lambda": "λ", "mu": "μ",
-    "nu": "ν", "xi": "ξ", "pi": "π", "rho": "ρ",
-    "sigma": "σ", "tau": "τ", "upsilon": "υ", "phi": "φ",
-    "chi": "χ", "psi": "ψ", "omega": "ω",
-    "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ", "Lambda": "Λ",
-    "Pi": "Π", "Sigma": "Σ", "Phi": "Φ", "Psi": "Ψ", "Omega": "Ω",
+    "alpha": "\u03b1", "beta": "\u03b2", "gamma": "\u03b3", "delta": "\u03b4",
+    "epsilon": "\u03b5", "zeta": "\u03b6", "eta": "\u03b7", "theta": "\u03b8",
+    "iota": "\u03b9", "kappa": "\u03ba", "lambda": "\u03bb", "mu": "\u03bc",
+    "nu": "\u03bd", "xi": "\u03be", "pi": "\u03c0", "rho": "\u03c1",
+    "sigma": "\u03c3", "tau": "\u03c4", "upsilon": "\u03c5", "phi": "\u03c6",
+    "chi": "\u03c7", "psi": "\u03c8", "omega": "\u03c9",
+    "Gamma": "\u0393", "Delta": "\u0394", "Theta": "\u0398", "Lambda": "\u039b",
+    "Pi": "\u03a0", "Sigma": "\u03a3", "Phi": "\u03a6", "Psi": "\u03a8", "Omega": "\u03a9",
 }
-_SUBSCRIPT_DIGITS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
-_SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+_SUBSCRIPT_DIGITS = str.maketrans("0123456789", "\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089")
+_SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079")
 
 
 def render_label(text: str) -> str:
@@ -258,25 +258,25 @@ def render_label(text: str) -> str:
     ``_gui_labels`` can be written in plain ASCII::
 
         >>> render_label(r"\gamma (spectral)")
-        'γ (spectral)'
+        '\u03b3 (spectral)'
         >>> render_label("log_{10}(A)")
-        'log₁₀(A)'
+        'log\u2081\u2080(A)'
         >>> render_label(r"Chrom. index \beta")
-        'Chrom. index β'
+        'Chrom. index \u03b2'
     """
-    # Greek letters: \alpha → α
+    # Greek letters: \alpha -> unicode
     text = _re.sub(
         r"\\([A-Za-z]+)",
         lambda m: _GREEK.get(m.group(1), m.group(0)),
         text,
     )
-    # Subscripts: _{10} → ₁₀
+    # Subscripts: _{10} -> unicode subscript digits
     text = _re.sub(
         r"_\{([0-9]+)\}",
         lambda m: m.group(1).translate(_SUBSCRIPT_DIGITS),
         text,
     )
-    # Superscripts: ^{2} → ²
+    # Superscripts: ^{2} -> unicode superscript digits
     text = _re.sub(
         r"\^\{([0-9]+)\}",
         lambda m: m.group(1).translate(_SUPERSCRIPT_DIGITS),
@@ -354,7 +354,7 @@ def get_par_key_for_field(proc_name: str, field_name: str) -> Optional[str]:
 def write_noise_params(proc_name: str, field_values: dict, params: dict) -> None:
     """Write noise field values into a par-params dict using canonical par keys.
 
-    This is the inverse of ``from_par()`` — given GUI field names and values,
+    This is the inverse of ``from_par()`` -- given GUI field names and values,
     it writes them into the session params dict so ``from_par()`` can read them.
 
     Parameters
@@ -362,7 +362,7 @@ def write_noise_params(proc_name: str, field_values: dict, params: dict) -> None
     proc_name : str
         Registry name (e.g. ``"ChromaticNoise"``).
     field_values : dict
-        ``{field_name: value}`` — field names as returned by
+        ``{field_name: value}`` -- field names as returned by
         ``get_impl_param_defs()``, values as strings or numbers.
     params : dict
         The mutable session params dict to update in-place.

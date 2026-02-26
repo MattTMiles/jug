@@ -3,20 +3,20 @@
 Computes the Earth-term timing residual induced by a monochromatic
 gravitational wave source, following the enterprise convention:
 
-    s(t) = F_plus(θ,φ,ψ) * s_plus(t) + F_cross(θ,φ,ψ) * s_cross(t)
+    s(t) = F_plus(theta,phi,psi) * s_plus(t) + F_cross(theta,phi,psi) * s_cross(t)
 
 where F_plus/F_cross are antenna pattern functions and s_plus/s_cross
 are the GW-induced timing residuals for the two polarisations.
 
 Enterprise-compatible par parameters:
 
-    CW_log10_h      — log10 of GW strain amplitude
-    CW_cos_gwtheta  — cosine of GW source polar angle (ecliptic)
-    CW_gwphi        — GW source azimuthal angle (rad)
-    CW_log10_fgw    — log10 of GW frequency (Hz)
-    CW_phase0       — initial GW phase (rad)
-    CW_cos_inc      — cosine of orbital inclination
-    CW_psi          — GW polarisation angle (rad)
+    CW_log10_h      -- log10 of GW strain amplitude
+    CW_cos_gwtheta  -- cosine of GW source polar angle (ecliptic)
+    CW_gwphi        -- GW source azimuthal angle (rad)
+    CW_log10_fgw    -- log10 of GW frequency (Hz)
+    CW_phase0       -- initial GW phase (rad)
+    CW_cos_inc      -- cosine of orbital inclination
+    CW_psi          -- GW polarisation angle (rad)
 
 Reference: Ellis et al. (2012), ApJ 756, 175; enterprise CW model.
 """
@@ -28,6 +28,8 @@ from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
+
+from jug.utils.constants import SECS_PER_DAY
 import numpy as np
 
 from jug.signals.base import DeterministicSignal, register_signal
@@ -188,7 +190,7 @@ class ContinuousWaveSignal(DeterministicSignal):
     ) -> np.ndarray:
         """Compute CW timing residual at each TOA epoch."""
         # Convert MJD to seconds from first TOA
-        toas_sec = jnp.asarray((toas_mjd - toas_mjd[0]) * 86400.0)
+        toas_sec = jnp.asarray((toas_mjd - toas_mjd[0]) * SECS_PER_DAY)
 
         result = _cw_delay(
             toas_sec,

@@ -1,4 +1,4 @@
-"""Tests for jug.engine.noise_mode — per-process noise toggles."""
+"""Tests for jug.engine.noise_mode -- per-process noise toggles."""
 
 import pytest
 
@@ -90,7 +90,7 @@ class TestFromPar:
         assert len(nc.active_processes()) == 5
 
     def test_red_noise_partial_not_detected(self):
-        """Only one of the red noise pair — should NOT detect."""
+        """Only one of the red noise pair -- should NOT detect."""
         params = {"TNRedAmp": -13.5}  # missing TNRedGam
         nc = NoiseConfig.from_par(params)
         assert not nc.is_enabled(RED_NOISE)

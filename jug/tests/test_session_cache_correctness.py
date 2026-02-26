@@ -35,14 +35,14 @@ def test_subtract_tzr_cache_separation():
     result_tzr_true = session.compute_residuals(subtract_tzr=True)
     residuals_tzr_true = result_tzr_true['residuals_us'].copy()
     rms_tzr_true = result_tzr_true['rms_us']
-    print(f"   RMS (subtract_tzr=True): {rms_tzr_true:.6f} μs")
+    print(f"   RMS (subtract_tzr=True): {rms_tzr_true:.6f} mus")
     
     # Compute with subtract_tzr=False
     print("\n2. Computing residuals with subtract_tzr=False...")
     result_tzr_false = session.compute_residuals(subtract_tzr=False)
     residuals_tzr_false = result_tzr_false['residuals_us'].copy()
     rms_tzr_false = result_tzr_false['rms_us']
-    print(f"   RMS (subtract_tzr=False): {rms_tzr_false:.6f} μs")
+    print(f"   RMS (subtract_tzr=False): {rms_tzr_false:.6f} mus")
     
     # Verify they differ (they should!)
     print("\n3. Verifying results differ...")
@@ -50,7 +50,7 @@ def test_subtract_tzr_cache_separation():
         raise AssertionError("Results are identical - cache is not separating subtract_tzr modes!")
     
     max_diff = np.max(np.abs(residuals_tzr_true - residuals_tzr_false))
-    print(f"   ✓ Results differ (max diff: {max_diff:.6f} μs)")
+    print(f"   [x] Results differ (max diff: {max_diff:.6f} mus)")
     
     # Now request again with subtract_tzr=True (should use cache)
     print("\n4. Re-requesting subtract_tzr=True (should use cache)...")
@@ -59,7 +59,7 @@ def test_subtract_tzr_cache_separation():
     
     if not np.array_equal(residuals_tzr_true, residuals_tzr_true_again):
         raise AssertionError("Cached result differs from original - cache broken!")
-    print(f"   ✓ Cache returned correct result (subtract_tzr=True)")
+    print(f"   [x] Cache returned correct result (subtract_tzr=True)")
     
     # Request again with subtract_tzr=False (should use different cache entry)
     print("\n5. Re-requesting subtract_tzr=False (should use cache)...")
@@ -68,14 +68,14 @@ def test_subtract_tzr_cache_separation():
     
     if not np.array_equal(residuals_tzr_false, residuals_tzr_false_again):
         raise AssertionError("Cached result differs from original - cache broken!")
-    print(f"   ✓ Cache returned correct result (subtract_tzr=False)")
+    print(f"   [x] Cache returned correct result (subtract_tzr=False)")
     
     # Final check: ensure they still differ
     if np.array_equal(residuals_tzr_true_again, residuals_tzr_false_again):
         raise AssertionError("Cache contamination detected!")
     
     print("\n" + "="*80)
-    print("✓ ALL TESTS PASSED: Cache correctly separates subtract_tzr modes!")
+    print("[x] ALL TESTS PASSED: Cache correctly separates subtract_tzr modes!")
     print("="*80)
 
 

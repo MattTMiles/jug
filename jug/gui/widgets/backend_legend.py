@@ -31,11 +31,11 @@ class _BackendLegendOriginal(QGraphicsObject):
         self._max_width = 180  # Maximum width before wrapping
     
     def setItems(self, backend_color_map):
-        """Set legend items from backend_name → QColor dict.
+        """Set legend items from backend_name -> QColor dict.
         
         Parameters
         ----------
-        backend_color_map : dict of str → QColor
+        backend_color_map : dict of str -> QColor
             Mapping of backend names to colors.
         """
         # Sort alphabetically for stable display
@@ -138,7 +138,7 @@ class BackendLegend(QGraphicsObject):
     """
     Collapsible drop-down legend for backends/receivers.
 
-    Shows a small "Backends / Receivers ▼" button in the top-right corner.
+    Shows a small "Backends / Receivers v" button in the top-right corner.
     Clicking it toggles a semi-transparent panel listing the backend colour
     swatches (identical to the old always-visible legend).
     """
@@ -163,7 +163,7 @@ class BackendLegend(QGraphicsObject):
     # ---- public API (same as original) --------------------------------
 
     def setItems(self, backend_color_map):
-        """Set legend items from backend_name → QColor dict."""
+        """Set legend items from backend_name -> QColor dict."""
         self._items = sorted(backend_color_map.items())
         self.prepareGeometryChange()
         self.update()

@@ -1,4 +1,4 @@
-"""Noise Control Panel — interactive panel for toggling and editing noise processes.
+"""Noise Control Panel -- interactive panel for toggling and editing noise processes.
 
 Shows noise processes detected from the .par file (EFAC, EQUAD, ECORR,
 Red Noise, DM Noise) as toggleable rows. Active processes affect
@@ -177,7 +177,7 @@ class NoiseProcessRow(QFrame):
 
             detail_layout.addLayout(row)
 
-        # A4: "× Remove" link at bottom of detail section
+        # A4: "* Remove" link at bottom of detail section
         remove_btn = QPushButton("× Remove")
         remove_btn.setCursor(Qt.PointingHandCursor)
         remove_btn.setStyleSheet(
@@ -302,7 +302,7 @@ class NoiseControlPanel(QWidget):
             }}
         """)
 
-        # Header — clickable "Noise ▶" button that collapses the panel
+        # Header -- clickable "Noise >" button that collapses the panel
         self._header_btn = QPushButton("Noise ▶")
         self._header_btn.setCursor(Qt.PointingHandCursor)
         self._header_btn.setToolTip("Collapse noise panel")
@@ -322,13 +322,44 @@ class NoiseControlPanel(QWidget):
         sep.setStyleSheet(f"background-color: {Colors.SURFACE_BORDER}; border: none;")
         outer.addWidget(sep)
 
-        # "Estimate Noise" — expandable dropdown with process checkboxes
+        # Units toggle -- mus vs log10(s) for EQUAD/ECORR display
+        self._units_mode = 0  # 0 = mus, 1 = log10(s)
+        _main_units_labels = ["mus", "log10(s)"]
+        self._main_units_btn = QPushButton(f"Units: {_main_units_labels[0]}  v")
+        self._main_units_btn.setCursor(Qt.PointingHandCursor)
+        self._main_units_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {Colors.TEXT_MUTED}; "
+            f"border: none; font-size: 10px; padding: 4px 12px 2px 12px; text-align: left; }}"
+            f"QPushButton:hover {{ color: {Colors.TEXT_PRIMARY}; }}"
+        )
+        self._main_units_btn.clicked.connect(self._toggle_main_units_list)
+        outer.addWidget(self._main_units_btn)
+
+        self._main_units_list = QWidget()
+        self._main_units_list.setVisible(False)
+        mul_layout = QVBoxLayout(self._main_units_list)
+        mul_layout.setContentsMargins(20, 0, 0, 0)
+        mul_layout.setSpacing(0)
+        mu_opt_style = (
+            f"QPushButton {{ background: transparent; color: {Colors.TEXT_MUTED}; "
+            f"border: none; font-size: 10px; padding: 2px 0; text-align: left; }}"
+            f"QPushButton:hover {{ color: {Colors.ACCENT_PRIMARY}; }}"
+        )
+        for idx, label in enumerate(_main_units_labels):
+            opt = QPushButton(label)
+            opt.setCursor(Qt.PointingHandCursor)
+            opt.setStyleSheet(mu_opt_style)
+            opt.clicked.connect(lambda checked=False, i=idx, l=label: self._select_main_units(i, l))
+            mul_layout.addWidget(opt)
+        outer.addWidget(self._main_units_list)
+
+        # "Estimate Noise" -- expandable dropdown with process checkboxes
         self._estimate_section = QWidget()
         est_layout = QVBoxLayout(self._estimate_section)
         est_layout.setContentsMargins(0, 0, 0, 0)
         est_layout.setSpacing(0)
 
-        # Toggle button (like "Parameters to Fit ▾")
+        # Toggle button (like "Parameters to Fit v")
         self._estimate_toggle_btn = QPushButton("⚡ Estimate Noise  ▾")
         self._estimate_toggle_btn.setCursor(Qt.PointingHandCursor)
         self._estimate_toggle_btn.setToolTip(
@@ -381,40 +412,8 @@ class NoiseControlPanel(QWidget):
         self._est_cb_dm.setStyleSheet(cb_style)
         el_layout.addWidget(self._est_cb_dm)
 
-        # Units selector — toggle button + option list (same pattern as "Parameters to Fit")
-        self._units_mode = 0  # 0 = μs, 1 = log₁₀(s)
-        _units_labels = ["μs", "log₁₀(s)"]
-
-        self._units_btn = QPushButton(f"Units: {_units_labels[0]}  ▾")
-        self._units_btn.setCursor(Qt.PointingHandCursor)
-        self._units_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; color: {Colors.TEXT_MUTED}; "
-            f"border: none; font-size: 10px; padding: 4px 0 2px 0; text-align: left; }}"
-            f"QPushButton:hover {{ color: {Colors.TEXT_PRIMARY}; }}"
-        )
-        self._units_btn.clicked.connect(self._toggle_units_list)
-        el_layout.addWidget(self._units_btn)
-
-        self._units_list = QWidget()
-        self._units_list.setVisible(False)
-        ul_layout = QVBoxLayout(self._units_list)
-        ul_layout.setContentsMargins(8, 0, 0, 0)
-        ul_layout.setSpacing(0)
-        opt_style = (
-            f"QPushButton {{ background: transparent; color: {Colors.TEXT_MUTED}; "
-            f"border: none; font-size: 10px; padding: 2px 0; text-align: left; }}"
-            f"QPushButton:hover {{ color: {Colors.ACCENT_PRIMARY}; }}"
-        )
-        for idx, label in enumerate(_units_labels):
-            opt = QPushButton(label)
-            opt.setCursor(Qt.PointingHandCursor)
-            opt.setStyleSheet(opt_style)
-            opt.clicked.connect(lambda checked=False, i=idx, l=label: self._select_units(i, l))
-            ul_layout.addWidget(opt)
-        el_layout.addWidget(self._units_list)
-
         # "Estimate" action button
-        self._est_run_btn = QPushButton("▶  Estimate")
+        self._est_run_btn = QPushButton(">  Estimate")
         self._est_run_btn.setCursor(Qt.PointingHandCursor)
         self._est_run_btn.setStyleSheet(
             f"QPushButton {{ background: {Colors.ACCENT_PRIMARY}; "
@@ -476,7 +475,7 @@ class NoiseControlPanel(QWidget):
         self._show_uncertainties_cb.toggled.connect(self.show_uncertainties_changed.emit)
         outer.addWidget(self._show_uncertainties_cb)
 
-        # "Add Noise Process" — foldable list (A3: list unfurls above button)
+        # "Add Noise Process" -- foldable list (A3: list unfurls above button)
         self._add_section = QWidget()
         add_layout = QVBoxLayout(self._add_section)
         add_layout.setContentsMargins(0, 0, 0, 0)
@@ -537,7 +536,7 @@ class NoiseControlPanel(QWidget):
                 continue
 
             can_sub = proc_name in self._SUBTRACTABLE
-            # Default OFF — user must explicitly enable before fitting
+            # Default OFF -- user must explicitly enable before fitting
             row = NoiseProcessRow(proc_name, False, proc_params,
                                   can_subtract=can_sub)
             row.toggled.connect(self._on_process_toggled)
@@ -593,22 +592,22 @@ class NoiseControlPanel(QWidget):
 
     @property
     def _use_log_units(self) -> bool:
-        """True when EQUAD/ECORR should be displayed as log₁₀(seconds)."""
+        """True when EQUAD/ECORR should be displayed as log_1_0(seconds)."""
         return self._units_mode == 1
 
-    def _toggle_units_list(self):
-        """Toggle the units option list."""
-        vis = not self._units_list.isVisible()
-        self._units_list.setVisible(vis)
-        current = "μs" if self._units_mode == 0 else "log₁₀(s)"
-        chevron = "▴" if vis else "▾"
-        self._units_btn.setText(f"Units: {current}  {chevron}")
+    def _toggle_main_units_list(self):
+        """Toggle the main units option list."""
+        vis = not self._main_units_list.isVisible()
+        self._main_units_list.setVisible(vis)
+        current = "mus" if self._units_mode == 0 else "log10(s)"
+        chevron = "^" if vis else "v"
+        self._main_units_btn.setText(f"Units: {current}  {chevron}")
 
-    def _select_units(self, index: int, label: str):
+    def _select_main_units(self, index: int, label: str):
         """Select a units mode and collapse the list."""
         self._units_mode = index
-        self._units_list.setVisible(False)
-        self._units_btn.setText(f"Units: {label}  ▾")
+        self._main_units_list.setVisible(False)
+        self._main_units_btn.setText(f"Units: {label}  v")
         self._on_units_changed(index)
 
     def _on_units_changed(self, _index: int):
@@ -623,7 +622,7 @@ class NoiseControlPanel(QWidget):
             val_sec = value_us * 1e-6
             if val_sec > 0:
                 return f"{math.log10(val_sec):.4f}"
-            return "−∞"
+            return "-inf"
         return f"{value_us:.6g}"
 
     def _extract_params(self, proc_name: str, params: dict, entries) -> List[dict]:
@@ -633,7 +632,7 @@ class NoiseControlPanel(QWidget):
         result = []
 
         if proc_name in ("EFAC", "EQUAD", "ECORR"):
-            # White noise uses per-backend entries from noise lines — special case
+            # White noise uses per-backend entries from noise lines -- special case
             for e in entries:
                 if e.kind.upper() == proc_name.upper() or \
                    (proc_name == "EFAC" and e.kind.upper() in ("EFAC", "T2EFAC")) or \
@@ -651,16 +650,17 @@ class NoiseControlPanel(QWidget):
                     })
 
         elif proc_name == "RedNoise" and "RNAMP" in params and "RNIDX" in params:
-            # Tempo2 RNAMP/RNIDX format — show converted + original values
+            # Tempo2 RNAMP/RNIDX format -- show converted + original values
             import math
             rnamp_str = str(params["RNAMP"]).replace("D", "e").replace("d", "e")
             rnamp = float(rnamp_str)
-            _SEC_PER_YR = 86400.0 * 365.25
+            from jug.utils.constants import SECS_PER_YEAR
+            _SEC_PER_YR = SECS_PER_YEAR
             log10_A = math.log10(2.0 * math.pi * math.sqrt(3.0) / (_SEC_PER_YR * 1e6) * rnamp)
             gamma = -float(params["RNIDX"])
             n_harmonics = int(params.get("RNC", params.get("TNREDC", params.get("TNRedC", 30))))
-            result.append({"key": "RNAMP_converted", "label": "log₁₀(A) [conv]", "value": f"{log10_A:.4f}", "editable": False})
-            result.append({"key": "RNIDX_converted", "label": "γ [conv]", "value": f"{gamma:.4f}", "editable": False})
+            result.append({"key": "RNAMP_converted", "label": "log_1_0(A) [conv]", "value": f"{log10_A:.4f}", "editable": False})
+            result.append({"key": "RNIDX_converted", "label": "gamma [conv]", "value": f"{gamma:.4f}", "editable": False})
             result.append({"key": "RNC", "label": "N harmonics", "value": str(n_harmonics), "editable": False})
             result.append({"key": "RNAMP", "label": "RNAMP (orig)", "value": f"{rnamp:.5g}", "editable": True})
             result.append({"key": "RNIDX", "label": "RNIDX (orig)", "value": f"{float(params['RNIDX']):.4f}", "editable": True})
@@ -681,7 +681,7 @@ class NoiseControlPanel(QWidget):
         self.noise_config_changed.emit(self._noise_config)
 
     def _on_param_value_changed(self, proc_name: str, key: str, value: str):
-        # Convert log₁₀(s) edits back to μs before emitting
+        # Convert log_1_0(s) edits back to mus before emitting
         if self._use_log_units and proc_name in ("EQUAD", "ECORR"):
             try:
                 value = str(10 ** float(value) * 1e6)
@@ -702,13 +702,13 @@ class NoiseControlPanel(QWidget):
         """Toggle the estimate noise checklist dropdown."""
         vis = not self._estimate_list.isVisible()
         self._estimate_list.setVisible(vis)
-        chevron = "▴" if vis else "▾"
-        self._estimate_toggle_btn.setText(f"⚡ Estimate Noise  {chevron}")
+        chevron = "^" if vis else "v"
+        self._estimate_toggle_btn.setText(f"* Estimate Noise  {chevron}")
 
     def _on_estimate_clicked(self):
         """Emit signal to run MAP noise estimation with selected processes."""
         self._est_run_btn.setEnabled(False)
-        self._est_run_btn.setText("⏳ Estimating...")
+        self._est_run_btn.setText("* Estimating...")
         self._estimate_toggle_btn.setEnabled(False)
         selections = {
             'include_efac': self._est_cb_efac.isChecked(),
@@ -722,7 +722,7 @@ class NoiseControlPanel(QWidget):
     def set_estimate_complete(self, success: bool = True):
         """Re-enable the estimate button after estimation completes."""
         self._est_run_btn.setEnabled(True)
-        self._est_run_btn.setText("▶  Estimate")
+        self._est_run_btn.setText(">  Estimate")
         self._estimate_toggle_btn.setEnabled(True)
 
     def _on_remove_process(self, name: str):
@@ -741,7 +741,7 @@ class NoiseControlPanel(QWidget):
         """Toggle the foldable add-process list."""
         visible = not self._add_list.isVisible()
         self._add_list.setVisible(visible)
-        self._add_btn.setText("− Add Noise Process" if visible else "+ Add Noise Process")
+        self._add_btn.setText("- Add Noise Process" if visible else "+ Add Noise Process")
 
     def _rebuild_add_list(self):
         """Rebuild the list of addable processes."""

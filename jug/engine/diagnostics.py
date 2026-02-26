@@ -6,7 +6,7 @@ debugging par files and catching configuration issues before fitting.
 
 Design
 ------
-* Setup-time / Python only — not on the hot path.
+* Setup-time / Python only -- not on the hot path.
 * Consumes the parsed noise entries (``WhiteNoiseEntry``) and per-TOA flags.
 * Returns both a human-readable text summary and a structured ``dict``
   so the GUI can display it programmatically.
@@ -58,11 +58,11 @@ def build_noise_diagnostics(
             ``"kind"``, ``"flag_name"``, ``"flag_value"``, ``"value"``,
             ``"matched_count"``, ``"matched_indices"`` (list of int).
         ``"unmatched_toas"`` : dict[str, list of int]
-            Per-noise-entry key → list of *unmatched* TOA indices.
+            Per-noise-entry key -> list of *unmatched* TOA indices.
         ``"override_semantics"`` : str
             Description of how overlapping entries are resolved.
         ``"effective_coverage"`` : dict
-            ``"any_efac_count"``, ``"any_equad_count"``, ``"any_ecorr_count"`` —
+            ``"any_efac_count"``, ``"any_equad_count"``, ``"any_ecorr_count"`` --
             how many TOAs are covered by at least one entry of each kind.
     """
     n_toas = len(toa_flags)
@@ -155,7 +155,7 @@ def format_noise_report(diag: Dict) -> str:
     for ed in diag["noise_entries"]:
         lines.append(
             f"  {ed['kind']:6s} -{ed['flag_name']} {ed['flag_value']:20s} "
-            f"= {ed['value']:12.6g}  →  {ed['matched_count']} TOAs matched"
+            f"= {ed['value']:12.6g}  ->  {ed['matched_count']} TOAs matched"
         )
 
     # Unmatched

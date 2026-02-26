@@ -1,5 +1,5 @@
 """
-Optimized Fitter — general-purpose timing model parameter fitting.
+Optimized Fitter -- general-purpose timing model parameter fitting.
 ==================================================================
 
 Fits any combination of timing model parameters (spin, DM, astrometry,
@@ -17,15 +17,15 @@ Entry Points
 
 Internal Structure
 ------------------
-1. **Setup** — ``_build_setup_common`` / ``_build_general_fit_setup_from_files`` /
+1. **Setup** -- ``_build_setup_common`` / ``_build_general_fit_setup_from_files`` /
    ``_build_general_fit_setup_from_cache`` compute all expensive delays once and
    bundle them into a ``GeneralFitSetup`` dataclass.
 
-2. **Iteration** — ``_run_general_fit_iterations`` takes a setup and runs the
+2. **Iteration** -- ``_run_general_fit_iterations`` takes a setup and runs the
    WLS + damping loop: build design matrix, solve, validate step against full
    nonlinear model, repeat until convergence.
 
-3. **Helpers** — ``_update_param``, ``_reconvert_ecliptic_to_equatorial``,
+3. **Helpers** -- ``_update_param``, ``_reconvert_ecliptic_to_equatorial``,
    ``compute_dm_delay_fast``, ``_solve_augmented_cholesky``, ``_build_jump_masks``,
    ``_compute_full_model_residuals``.
 
@@ -37,7 +37,7 @@ Usage Example
 ...     fit_params=['F0', 'F1', 'RAJ', 'DECJ']
 ... )
 >>> print(f"Fitted F0: {result['final_params']['F0']:.15f} Hz")
->>> print(f"Final RMS: {result['final_rms']:.6f} μs")
+>>> print(f"Final RMS: {result['final_rms']:.6f} mus")
 """
 
 # Ensure JAX is configured for x64 precision
@@ -76,8 +76,6 @@ from jug.model.parameter_spec import (
     validate_fit_param,
 )
 from jug.utils.constants import HIGH_PRECISION_PARAMS
-# Lazy import to avoid circular dependency with components
-# get_component is imported where needed in functions below
 
 
 def _update_param(params: Dict, param: str, value: float) -> None:
@@ -263,7 +261,7 @@ class GeneralFitSetup:
     chromatic_noise_basis: Optional[np.ndarray]   # (n_toa, 2*n_harmonics) chromatic Fourier design matrix
     chromatic_noise_prior: Optional[np.ndarray]   # (2*n_harmonics,) diagonal prior variances
     ecorr_basis: Optional[np.ndarray]      # (n_toa, n_epochs) quantization matrix
-    ecorr_prior: Optional[np.ndarray]      # (n_epochs,) ECORR² prior variances (s²)
+    ecorr_prior: Optional[np.ndarray]      # (n_epochs,) ECORR^2 prior variances (s^2)
     # DMX design matrix (Phase 2 integration)
     dmx_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmx_ranges) DMX design matrix
     dmx_labels: Optional[List[str]]          # DMX parameter labels
@@ -337,7 +335,7 @@ def _format_param_value_for_print(param: str, value: float, uncertainty: float =
     """
     if is_spin_param(param) and abs(value) < 1e-10:
         if uncertainty is not None:
-            return f"  {param} = {value:.20e} ± {uncertainty:.6e}"
+            return f"  {param} = {value:.20e} +/- {uncertainty:.6e}"
         else:
             if value != 0:
                 return f"  {param} = {value:.20e}"
@@ -345,12 +343,12 @@ def _format_param_value_for_print(param: str, value: float, uncertainty: float =
                 return f"  {param} = {value:.15f}"
     elif is_dm_param(param):
         if uncertainty is not None:
-            return f"  {param} = {value:.10f} ± {uncertainty:.6e} pc cm⁻³"
+            return f"  {param} = {value:.10f} +/- {uncertainty:.6e} pc cm^-^3"
         else:
-            return f"  {param} = {value:.10f} pc cm⁻³"
+            return f"  {param} = {value:.10f} pc cm^-^3"
     else:
         if uncertainty is not None:
-            return f"  {param} = {value:.15f} ± {uncertainty:.6e}"
+            return f"  {param} = {value:.15f} +/- {uncertainty:.6e}"
         else:
             return f"  {param} = {value:.15f}"
 
@@ -400,44 +398,88 @@ def compute_dm_delay_fast(tdb_mjd: np.ndarray, freq_mhz: np.ndarray,
     for i, (coeff, factorial) in enumerate(zip(dm_coeffs, dm_factorials)):
         dm_eff += coeff * (dt_years ** i) / factorial
 
-    # Compute DM delay: τ_DM = K_DM × DM(t) / freq²
+    # Compute DM delay: tau_DM = K_DM * DM(t) / freq^2
     dm_delay_sec = K_DM_SEC * dm_eff / (freq_mhz ** 2)
 
     return dm_delay_sec
 
 
-@jax.jit
+def _has_gpu():
+    """Check whether JAX has a GPU backend available (cached)."""
+    if not hasattr(_has_gpu, '_result'):
+        _has_gpu._result = jax.default_backend() != 'cpu'
+    return _has_gpu._result
+
+
 def _solve_augmented_cholesky(M2, r1, prior_inv, col_norms, n_timing_cols, has_offset):
     """Solve the augmented (GLS) WLS system via normal equations + Cholesky.
 
-    Equivalent to the SVD-on-augmented-system approach but ~70× faster for
-    large design matrices.  Falls back to SVD if Cholesky fails.
+    Equivalent to the SVD-on-augmented-system approach but ~70x faster for
+    large design matrices.  Auto-dispatches: uses JAX on GPU for the
+    normal-equation matmul and Cholesky (1.7x faster than CPU scipy for
+    59k-TOA problems); uses scipy LAPACK on CPU where it is faster.
+    Falls back to scipy SVD if Cholesky fails.
 
     Parameters
     ----------
-    M2 : (n_toa, n_cols) — column-normalised, weight-scaled design matrix
-    r1 : (n_toa,)        — weight-scaled residuals
-    prior_inv : (n_cols,) — diagonal prior inverse (0 for unregularised cols)
-    col_norms : (n_cols,) — column norms used for preconditioning
-    n_timing_cols : int   — number of timing model columns (incl. offset)
-    has_offset : bool     — whether column 0 is an offset column
+    M2 : (n_toa, n_cols) -- column-normalised, weight-scaled design matrix
+    r1 : (n_toa,)        -- weight-scaled residuals
+    prior_inv : (n_cols,) -- diagonal prior inverse (0 for unregularised cols)
+    col_norms : (n_cols,) -- column norms used for preconditioning
+    n_timing_cols : int   -- number of timing model columns (incl. offset)
+    has_offset : bool     -- whether column 0 is an offset column
 
     Returns
     -------
     delta_params, cov, delta_params_all, cov_all, noise_coeffs
     """
     n_cols = M2.shape[1]
-    # Normal equations: (M^T M + P) x = M^T r
-    MtM = M2.T @ M2
-    Mtr = M2.T @ r1
-    MtM[np.diag_indices(n_cols)] += prior_inv  # add prior to diagonal
 
-    try:
-        L = _scipy_linalg.cho_factor(MtM, lower=True, check_finite=False)
-        delta_normalized = _scipy_linalg.cho_solve(L, Mtr, check_finite=False)
-        cov_normalized = _scipy_linalg.cho_solve(L, np.eye(n_cols), check_finite=False)
-    except _scipy_linalg.LinAlgError:
-        # Cholesky failed — fall back to SVD on the augmented system
+    if _has_gpu():
+        # GPU path: JAX matmul + Cholesky on device
+        import jax.scipy.linalg as _jax_linalg
+
+        M2_j = jnp.asarray(M2)
+        r1_j = jnp.asarray(r1)
+
+        MtM_j = M2_j.T @ M2_j
+        Mtr_j = M2_j.T @ r1_j
+        MtM_j = MtM_j.at[jnp.diag_indices(n_cols)].add(jnp.asarray(prior_inv))
+
+        L_j = _jax_linalg.cho_factor(MtM_j, lower=True)
+        delta_normalized_j = _jax_linalg.cho_solve(L_j, Mtr_j)
+        cov_normalized_j = _jax_linalg.cho_solve(L_j, jnp.eye(n_cols))
+
+        # JAX returns NaN (not an exception) when Cholesky fails
+        cholesky_ok = not jnp.any(jnp.isnan(delta_normalized_j))
+
+        if cholesky_ok:
+            delta_normalized = np.asarray(delta_normalized_j)
+            cov_normalized = np.asarray(cov_normalized_j)
+            MtM = np.asarray(MtM_j)
+        else:
+            MtM = np.asarray(MtM_j)
+            cholesky_ok = False  # fall through to SVD below
+    else:
+        # CPU path: scipy LAPACK (faster than JAX XLA on CPU)
+        MtM = np.array(M2.T @ M2)
+        Mtr = np.array(M2.T @ r1)
+        MtM[np.diag_indices(n_cols)] += prior_inv
+
+        try:
+            L = _scipy_linalg.cho_factor(MtM, lower=True, check_finite=False)
+            delta_normalized = _scipy_linalg.cho_solve(L, Mtr, check_finite=False)
+            cov_normalized = _scipy_linalg.cho_solve(L, np.eye(n_cols), check_finite=False)
+            cholesky_ok = True
+        except _scipy_linalg.LinAlgError:
+            cholesky_ok = False
+
+    if not cholesky_ok:
+        # Cholesky failed -- fall back to SVD on CPU (rare path)
+        if not isinstance(M2, np.ndarray):
+            M2 = np.asarray(M2)
+        if not isinstance(r1, np.ndarray):
+            r1 = np.asarray(r1)
         has_prior = np.any(prior_inv > 0)
         if has_prior:
             sqrt_prior_inv = np.sqrt(prior_inv)
@@ -573,7 +615,7 @@ def _build_jump_masks(
             mjd_start = float(parts[2])
             mjd_end = float(parts[3])
             toas_mjd = np.array([f.get('__mjd', 0.0) for f in toa_flags])
-            # Need actual MJDs — fall back to all-ones if not available
+            # Need actual MJDs -- fall back to all-ones if not available
             masks[jump_name] = np.ones(n_toas, dtype=bool)
         else:
             # Flag-based: JUMP -<flag_name> <flag_value> <value> ...
@@ -685,7 +727,7 @@ def _build_setup_common(
         if verbose:
             print(f"  Red noise: log10_A={red_noise_proc.log10_A:.3f}, "
                   f"gamma={red_noise_proc.log10_A:.3f}, "
-                  f"{red_noise_proc.n_harmonics} harmonics → {red_noise_basis.shape[1]} columns")
+                  f"{red_noise_proc.n_harmonics} harmonics -> {red_noise_basis.shape[1]} columns")
 
     if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
         dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
@@ -695,7 +737,7 @@ def _build_setup_common(
         if verbose:
             print(f"  DM noise: log10_A={dm_noise_proc.log10_A:.3f}, "
                   f"gamma={dm_noise_proc.gamma:.3f}, "
-                  f"{dm_noise_proc.n_harmonics} harmonics → {dm_noise_basis.shape[1]} columns")
+                  f"{dm_noise_proc.n_harmonics} harmonics -> {dm_noise_basis.shape[1]} columns")
 
     if chromatic_noise_proc is not None and noise_config.is_enabled("ChromaticNoise"):        
         chromatic_noise_basis, chromatic_noise_prior = chromatic_noise_proc.build_basis_and_prior(
@@ -706,7 +748,7 @@ def _build_setup_common(
             print(f"  Chromatic noise: log10_A={chromatic_noise_proc.log10_A:.3f}, "
                   f"gamma={chromatic_noise_proc.gamma:.3f}, "
                   f"chrom_idx={chromatic_noise_proc.chrom_idx:.3f}, "
-                  f"{chromatic_noise_proc.n_harmonics} harmonics → {chromatic_noise_basis.shape[1]} columns")
+                  f"{chromatic_noise_proc.n_harmonics} harmonics -> {chromatic_noise_basis.shape[1]} columns")
 
     # --- DMX design matrix -------------------------------------------------
     dmx_design_matrix = None
@@ -718,7 +760,7 @@ def _build_setup_common(
             toas_mjd, freq_mhz_bary, dmx_ranges
         )
         if verbose:
-            print(f"  DMX: {len(dmx_ranges)} ranges → {dmx_design_matrix.shape[1]} columns")
+            print(f"  DMX: {len(dmx_ranges)} ranges -> {dmx_design_matrix.shape[1]} columns")
         
         # Apply DMEFAC scaling to DMX design matrix
         if noise_lines and toa_flags is not None:
@@ -781,7 +823,7 @@ def _build_setup_common(
                     dmjump_labels.append(f"DMJUMP_{flag_name}_{flag_value}")
                 
                 if verbose:
-                    print(f"  DMJUMP: {n_dmjumps} DM offsets → {n_dmjumps} columns")
+                    print(f"  DMJUMP: {n_dmjumps} DM offsets -> {n_dmjumps} columns")
 
     # --- ECORR GLS basis (alternative to whitener) -------------------------
     ecorr_basis = None
@@ -829,7 +871,7 @@ def _build_setup_common(
     param_values_start = []
     for idx, param in enumerate(fit_params):
         if param not in params:
-            # Try canonical name and aliases (e.g., A1DOT ↔ XDOT)
+            # Try canonical name and aliases (e.g., A1DOT <-> XDOT)
             canonical = canonicalize_param_name(param)
             if canonical != param and canonical in params:
                 params[param] = params[canonical]
@@ -885,7 +927,7 @@ def _build_setup_common(
     jump_params_list = [p for p in fit_params if is_jump_param(p)]
     jump_masks = _build_jump_masks(params, toa_flags, jump_params_list) if jump_params_list and toa_flags else None
 
-    # Drop JUMPs whose mask is empty (no matching TOAs) — matches Tempo2 behaviour
+    # Drop JUMPs whose mask is empty (no matching TOAs) -- matches Tempo2 behaviour
     if jump_masks:
         empty_jumps = [jp for jp in jump_params_list if not jump_masks.get(jp, np.zeros(1, dtype=bool)).any()]
         if empty_jumps:
@@ -956,7 +998,7 @@ def _build_setup_common(
             dt_sec_ld = dt_sec_ld - np.asarray(subtract_noise_sec, dtype=np.longdouble)
         if verbose:
             print(f"  Applied noise subtraction to dt_sec: "
-                  f"RMS correction = {np.std(subtract_noise_sec)*1e6:.3f} μs")
+                  f"RMS correction = {np.std(subtract_noise_sec)*1e6:.3f} mus")
 
     # --- Assemble GeneralFitSetup ------------------------------------------
     return GeneralFitSetup(
@@ -1115,7 +1157,7 @@ def _compute_full_model_residuals(
     wrms_us : float
         Weighted RMS in microseconds
     """
-    # Get cached arrays — use longdouble dt_sec for phase precision
+    # Get cached arrays -- use longdouble dt_sec for phase precision
     from jug.residuals.simple_calculator import compute_phase_residuals
     dt_sec_base = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)
     tdb_mjd = setup.tdb_mjd
@@ -1336,7 +1378,7 @@ def _run_general_fit_iterations(
     rms_history = [current_rms_us]
 
     if verbose:
-        print(f"\n{'Iter':<6} {'RMS (μs)':<12} {'ΔParam':<15} {'λ':<8} {'Status':<20}")
+        print(f"\n{'Iter':<6} {'RMS (mus)':<12} {'DeltaParam':<15} {'lambda_':<8} {'Status':<20}")
         print("-" * 75)
     
     # ITERATION LOOP (PINT-style damping with full-model validation)
@@ -1547,7 +1589,7 @@ def _run_general_fit_iterations(
         # Solve WLS to get step direction
         # When ECORR whitener is present AND no noise augmentation, pre-whiten
         # residuals and M so the standard WLS solver recovers the GLS solution.
-        # When augmented (GLS), skip pre-whitening — the ECORR basis columns
+        # When augmented (GLS), skip pre-whitening -- the ECORR basis columns
         # in the augmented system already account for ECORR correlations.
         ecorr_w = getattr(setup, 'ecorr_whitener', None)
         if ecorr_w is not None and n_augmented == 0:
@@ -1755,13 +1797,13 @@ def _run_general_fit_iterations(
             # But don't exit until we've done minimum iterations
             if iteration >= min_iterations:
                 if verbose:
-                    print(f"         (step rejected at λ={lambda_:.4f}, converged at minimum)")
+                    print(f"         (step rejected at lambda_={lambda_:.4f}, converged at minimum)")
                 converged = True
                 break
             else:
                 # Continue anyway to let linearization settle
                 if verbose:
-                    print(f"         (step rejected at λ={lambda_:.4f}, continuing...)")
+                    print(f"         (step rejected at lambda_={lambda_:.4f}, continuing...)")
         
         # Track RMS history (full-model RMS)
         rms_history.append(current_rms_us)
@@ -1789,11 +1831,11 @@ def _run_general_fit_iterations(
             status = ""
             if converged:
                 if param_converged:
-                    status = "✓ Params converged"
+                    status = "[x] Params converged"
                 elif chi2_converged:
-                    status = "✓ Chi2 stable"
+                    status = "[x] Chi2 stable"
                 elif rms_converged:
-                    status = "✓ RMS stable"
+                    status = "[x] RMS stable"
             max_delta = np.max(np.abs([lambda_ * d for d in delta_params]))
             lambda_str = f"{lambda_:.3f}" if lambda_ < 1.0 else "1.0"
             print(f"{iteration+1:<6} {current_rms_us:>11.6f}  {max_delta:>13.6e}  {lambda_str:<8} {status:<20}")
@@ -1919,7 +1961,7 @@ def _run_general_fit_iterations(
         if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
             dmx_coeffs = best_noise_coeffs[offset:offset + n_dmx_cols]
             F_dmx = setup.dmx_design_matrix
-            # DMX is timing model, not noise — subtract from residuals
+            # DMX is timing model, not noise -- subtract from residuals
             # (only needed for nonlinear path; linear postfit already includes DMX)
             if _saved_residuals_sec is None:
                 dmx_realization_sec = F_dmx @ dmx_coeffs
@@ -1929,7 +1971,7 @@ def _run_general_fit_iterations(
         if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
             dmjump_coeffs = best_noise_coeffs[offset:offset + n_dmjump_cols]
             F_dmjump = setup.dmjump_design_matrix
-            # DMJUMP is timing model, not noise — subtract from residuals
+            # DMJUMP is timing model, not noise -- subtract from residuals
             if _saved_residuals_sec is None:
                 dmjump_realization_sec = F_dmjump @ dmjump_coeffs
                 residuals_final_sec = residuals_final_sec - dmjump_realization_sec
@@ -2125,7 +2167,7 @@ def _fit_parameters_general(
     verbose: bool,
     device: Optional[str]
 ) -> Dict:
-    """General parameter fitter — handles any parameter combination.
+    """General parameter fitter -- handles any parameter combination.
 
     Fits any mix of spin, DM, astrometric, binary, FD, solar-wind,
     JUMP, and DMX parameters.  This is the file-based path; the GUI
@@ -2177,7 +2219,7 @@ def _fit_parameters_general(
         print(f"{'='*80}")
         print(f"Converged: {result['converged']}")
         print(f"Iterations: {result['iterations']}")
-        print(f"Final RMS: {result['final_rms']:.6f} μs")
+        print(f"Final RMS: {result['final_rms']:.6f} mus")
         print(f"\nFitted parameters:")
         for param in fit_params:
             val = result['final_params'][param]

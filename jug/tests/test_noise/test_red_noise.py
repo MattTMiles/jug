@@ -1,4 +1,4 @@
-"""Tests for jug.noise.red_noise — red noise and DM noise processes."""
+"""Tests for jug.noise.red_noise -- red noise and DM noise processes."""
 
 import numpy as np
 import pytest
@@ -42,9 +42,9 @@ class TestFourierDesignMatrix:
         t_sec = (toas - toas.min()) * 86400.0
         phase1 = 2 * np.pi * freqs[0] * t_sec
 
-        # Column 0 should be sin(2π f₁ t)
+        # Column 0 should be sin(2pi f_1 t)
         np.testing.assert_allclose(F[:, 0], np.sin(phase1), atol=1e-12)
-        # Column 1 should be cos(2π f₁ t)
+        # Column 1 should be cos(2pi f_1 t)
         np.testing.assert_allclose(F[:, 1], np.cos(phase1), atol=1e-12)
 
     def test_negative_Tspan_defaults(self):
@@ -87,7 +87,7 @@ class TestPowerlawSpectrum:
         assert P[0] > P[-1]
 
     def test_amplitude_scaling(self):
-        """Doubling log10_A by 1 → 100× amplitude → 10000× PSD."""
+        """Doubling log10_A by 1 -> 100* amplitude -> 10000* PSD."""
         freqs = np.array([1e-8])
         P1 = powerlaw_spectrum(freqs, -14.0, 4.33)[0]
         P2 = powerlaw_spectrum(freqs, -13.0, 4.33)[0]
@@ -100,7 +100,7 @@ class TestPowerlawSpectrum:
 
 class TestTurnoverSpectrum:
     def test_matches_powerlaw_at_high_freq(self):
-        """Well above f_bend, turnover spectrum ≈ power law."""
+        """Well above f_bend, turnover spectrum ~= power law."""
         freqs = np.logspace(-5, -4, 20)  # well above f_bend=1e-8
         P_pl = powerlaw_spectrum(freqs, -14.0, 4.33)
         P_to = turnover_spectrum(freqs, -14.0, 4.33, f_bend_hz=1e-8)
@@ -143,7 +143,7 @@ class TestRedNoiseProcess:
 
 class TestDMNoiseProcess:
     def test_chromatic_scaling(self):
-        """Higher observing freq → smaller chromatic weight → smaller basis."""
+        """Higher observing freq -> smaller chromatic weight -> smaller basis."""
         dm = DMNoiseProcess(log10_A=-14.0, gamma=13.0/3.0, n_harmonics=3)
         toas = np.linspace(58000, 59000, 10)
         freq_low = np.full(10, 400.0)   # 400 MHz
@@ -152,7 +152,7 @@ class TestDMNoiseProcess:
         F_low, _ = dm.build_basis_and_prior(toas, freq_low)
         F_high, _ = dm.build_basis_and_prior(toas, freq_high)
 
-        # At 1400 MHz, chromatic weight is 1.0; at 400 MHz it's (1400/400)² = 12.25
+        # At 1400 MHz, chromatic weight is 1.0; at 400 MHz it's (1400/400)^2 = 12.25
         assert np.abs(F_low).max() > np.abs(F_high).max()
 
     def test_shape(self):

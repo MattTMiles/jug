@@ -32,7 +32,7 @@ from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.fitting.derivatives_spin import compute_spin_derivatives, taylor_horner
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.fitting.derivatives_fd import compute_fd_derivatives, compute_fd_delay
-from jug.fitting.derivatives_sw import compute_sw_derivatives, K_DM_SEC
+from jug.fitting.derivatives_sw import compute_sw_derivatives
 from jug.fitting.derivatives_astrometry import (
     compute_astrometry_derivatives,
     compute_astrometric_delay,
@@ -49,14 +49,15 @@ from jug.io.par_reader import parse_par_file, parse_ra, parse_dec
 # ---------------------------------------------------------------------------
 JUG_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_PULSARS = JUG_ROOT / "data" / "pulsars"
-SECS_PER_DAY = 86400.0
+
+from jug.utils.constants import SECS_PER_DAY, K_DM_SEC
 
 # Thresholds
 CORR_THRESHOLD = 0.999_99
 REL_ERR_THRESHOLD = 1e-5       # default max relative error
 REL_ERR_THRESHOLD_LOOSE = 1e-3  # for params where FD is inherently noisy
 
-# Finite-difference step sizes – chosen so that h is small enough to stay in
+# Finite-difference step sizes - chosen so that h is small enough to stay in
 # the linear regime yet large enough to avoid catastrophic cancellation.
 _STEPS = {
     "F0": 1e-6, "F1": 1e-14,

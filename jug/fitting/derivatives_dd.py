@@ -25,13 +25,10 @@ import jax
 import jax.numpy as jnp
 from typing import Dict, List
 
+from jug.utils.constants import SECS_PER_DAY, SECS_PER_YEAR, T_SUN, DEG_TO_RAD, PC_TO_LIGHT_SEC
+
 # Enable float64 for precision
 jax.config.update("jax_enable_x64", True)
-
-# Constants
-SECS_PER_DAY = 86400.0
-T_SUN = 4.925490947e-6  # GM_sun/c^3 in seconds
-DEG_TO_RAD = jnp.pi / 180.0
 
 
 # =============================================================================
@@ -106,7 +103,7 @@ def compute_mean_anomaly_dd(
 ) -> jnp.ndarray:
     """Compute mean anomaly for DD model.
     
-    M = 2π * (t - T0) / PB * (1 - 0.5 * PBDOT * (t - T0) / PB)
+    M = 2pi * (t - T0) / PB * (1 - 0.5 * PBDOT * (t - T0) / PB)
     
     Parameters
     ----------
@@ -140,10 +137,10 @@ def compute_dd_roemer_delay(
     """Compute Roemer delay for DD model.
     
     Roemer delay = a1 * (sin(omega) * (cos(E) - ecc) + 
-                         cos(omega) * sqrt(1-ecc²) * sin(E))
+                         cos(omega) * sqrt(1-ecc^2) * sin(E))
     
     Or equivalently using true anomaly:
-    Roemer delay = a1 * sin(omega + theta) * (1 - ecc²) / (1 + ecc*cos(theta))
+    Roemer delay = a1 * sin(omega + theta) * (1 - ecc^2) / (1 + ecc*cos(theta))
     
     Parameters
     ----------
@@ -212,7 +209,7 @@ def compute_dd_shapiro_delay(
     """Compute Shapiro delay for DD model.
 
     Implements Damour & Deruelle (1986) equation [26]:
-        Shapiro = -2 * r * log(1 - e*cos(E) - s*(sin(ω)*(cos(E)-e) + sqrt(1-e²)*cos(ω)*sin(E)))
+        Shapiro = -2 * r * log(1 - e*cos(E) - s*(sin(omega)*(cos(E)-e) + sqrt(1-e^2)*cos(omega)*sin(E)))
 
     where r = T_SUN * M2 and s = SINI.
 
@@ -338,7 +335,7 @@ def _compute_dd_binary_delay_jit(
     # True anomaly
     theta = compute_true_anomaly(E, ecc)
 
-    # Periastron advance: D&D 1986 eq [25]: ω = ω₀ + k·Ae
+    # Periastron advance: D&D 1986 eq [25]: omega = omega_0 + k*Ae
     # k = OMDOT / n (dimensionless); Ae = accumulated true anomaly
     dt = toas_bary_mjd - t0  # days
     orbits = dt / pb - 0.5 * pbdot * (dt / pb) ** 2
@@ -374,7 +371,7 @@ def compute_binary_derivatives_dd(
 ) -> Dict[str, jnp.ndarray]:
     """Compute DD binary parameter derivatives.
     
-    Uses JAX autodiff for accurate derivatives.
+    Uses hand-coded analytical derivatives, JIT-compiled with JAX.
     
     Parameters
     ----------
@@ -517,7 +514,7 @@ def compute_binary_derivatives_dd(
 
 
 # =============================================================================
-# Individual Derivative Functions (using autodiff where beneficial)
+# Individual Derivative Functions (analytical, JIT-compiled)
 # =============================================================================
 
 @jax.jit
@@ -533,7 +530,7 @@ def _d_delay_d_A1(
     cos_omega = jnp.cos(om_rad)
     sqrt_1_e2 = jnp.sqrt(1 - ecc**2)
     
-    # d(Roemer)/d(A1) = (Roemer/A1) since Roemer ∝ A1
+    # d(Roemer)/d(A1) = (Roemer/A1) since Roemer ~ A1
     return sin_omega * (jnp.cos(E) - ecc) + cos_omega * sqrt_1_e2 * jnp.sin(E)
 
 
@@ -546,7 +543,7 @@ def _d_delay_d_PB(
     """d(delay)/d(PB) via chain rule through mean anomaly."""
     dt = toas_bary_mjd - t0
     
-    # d(M)/d(PB) = -2π * dt / PB² * (1 - PBDOT * dt / PB)
+    # d(M)/d(PB) = -2pi * dt / PB^2 * (1 - PBDOT * dt / PB)
     dM_dPB = -2 * jnp.pi * dt / pb**2 * (1 - pbdot * dt / pb)
     
     # Need d(delay)/d(M) = d(delay)/d(E) * d(E)/d(M)
@@ -567,10 +564,20 @@ def _d_delay_d_PB(
     # d(Einstein)/d(E) = GAMMA * cos(E) -- but GAMMA doesn't depend on PB in first order
     
     # Shapiro derivative through theta
-    # d(theta)/d(E) = sqrt(1-e²) / (1 - e*cos(E))
+    # d(theta)/d(E) = sqrt(1-e^2) / (1 - e*cos(E))
     dtheta_dE = sqrt_1_e2 / (1 - ecc * jnp.cos(E))
     
     # d(Shapiro)/d(theta)
+    # DD Shapiro delay: Deltat_S = -2r ln(1 - s sin(omega+theta))
+    # where r = T_Sun M2, s = sin(i).
+    # d(Deltat_S)/dtheta = 2r s cos(omega+theta) / [1 - s sin(omega+theta)]
+    #
+    # NOTE: This is the DD analogue of the ELL1 cos(Phi) factor.
+    # PINT and Tempo2 omit cos(omega+theta) in the equivalent expression.
+    # PINT's ELL1H model (d_delayS_H3_STIGMA_exact_d_Phi)
+    # includes cos(Phi), while ELL1 model does not.
+    #
+    # Wolfram Alpha: d/dx [-2*a*ln(1 - b*sin(x))]  ->  2*a*b*cos(x)/(1-b*sin(x))
     r = T_SUN * m2
     sin_omega_theta = jnp.sin(om_rad + theta)
     cos_omega_theta = jnp.cos(om_rad + theta)
@@ -592,7 +599,7 @@ def _d_delay_d_T0(
     """d(delay)/d(T0) via chain rule."""
     dt = toas_bary_mjd - t0
     
-    # d(M)/d(T0) = -2π/PB * (1 - PBDOT * dt / PB)
+    # d(M)/d(T0) = -2pi/PB * (1 - PBDOT * dt / PB)
     dM_dT0 = -2 * jnp.pi / pb * (1 - pbdot * dt / pb)
     
     M = compute_mean_anomaly_dd(toas_bary_mjd, pb, t0, pbdot)
@@ -625,37 +632,58 @@ def _d_delay_d_ECC(
     a1: float, pb: float, t0: float, ecc: float, om_rad: jnp.ndarray,
     pbdot: float, gamma: float, sini: float, m2: float
 ) -> jnp.ndarray:
-    """d(delay)/d(ECC) - includes Roemer and Einstein terms."""
+    """d(delay)/d(ECC) - includes Roemer, Einstein, and Shapiro terms."""
     M = compute_mean_anomaly_dd(toas_bary_mjd, pb, t0, pbdot)
     E = solve_kepler(M, ecc)
-    theta = compute_true_anomaly(E, ecc)
+    sinE = jnp.sin(E)
+    cosE = jnp.cos(E)
     
     sin_omega = jnp.sin(om_rad)
     cos_omega = jnp.cos(om_rad)
     sqrt_1_e2 = jnp.sqrt(1 - ecc**2)
     
-    # d(Roemer)/d(ecc) has two parts:
-    # 1. Direct: d/de[sin(om)*(cos(E)-e) + cos(om)*sqrt(1-e²)*sin(E)]
-    # 2. Chain rule through E: d(Roemer)/d(E) * d(E)/d(ecc)
-    
-    # Direct derivative (holding E constant)
-    dRoemer_de_direct = a1 * (
-        -sin_omega  # from d(-ecc)/de
-        - cos_omega * ecc / sqrt_1_e2 * jnp.sin(E)  # from d(sqrt(1-e²))/de
-    )
-    
     # Chain rule: d(E)/d(ecc) at fixed M
     # From E - ecc*sin(E) = M: d(E)/de = sin(E) / (1 - ecc*cos(E))
-    dE_de = jnp.sin(E) / (1 - ecc * jnp.cos(E))
+    oneMecccosE = 1 - ecc * cosE
+    dE_de = sinE / oneMecccosE
     
-    dRoemer_dE = a1 * (-sin_omega * jnp.sin(E) + cos_omega * sqrt_1_e2 * jnp.cos(E))
-    
+    # --- Roemer term ---
+    # d(Roemer)/d(ecc) has two parts:
+    # 1. Direct: d/de[sin(om)*(cos(E)-e) + cos(om)*sqrt(1-e^2)*sin(E)]
+    # 2. Chain rule through E: d(Roemer)/d(E) * d(E)/d(ecc)
+    dRoemer_de_direct = a1 * (
+        -sin_omega  # from d(-ecc)/de
+        - cos_omega * ecc / sqrt_1_e2 * sinE  # from d(sqrt(1-e^2))/de
+    )
+    dRoemer_dE = a1 * (-sin_omega * sinE + cos_omega * sqrt_1_e2 * cosE)
     dRoemer_de = dRoemer_de_direct + dRoemer_dE * dE_de
     
-    # Einstein: d(GAMMA*sin(E))/d(ecc) = GAMMA * cos(E) * d(E)/d(ecc)
-    dEinstein_de = gamma * jnp.cos(E) * dE_de
+    # --- Einstein term ---
+    # d(GAMMA*sin(E))/d(ecc) = GAMMA * cos(E) * d(E)/d(ecc)
+    dEinstein_de = gamma * cosE * dE_de
     
-    return dRoemer_de + dEinstein_de
+    # --- Shapiro term ---
+    # Shapiro delay: -2*r*ln(1 - e*cosE - s*(sin(om)*(cosE-e) + sqrt(1-e^2)*cos(om)*sinE))
+    # where r = T_SUN * M2, s = SINI
+    # d(Shapiro)/d(ecc) = d(Shapiro)/d(ecc)|_E + d(Shapiro)/d(E) * dE/de
+    r = T_SUN * m2
+    logArg = 1 - ecc * cosE - sini * (sin_omega * (cosE - ecc) + sqrt_1_e2 * cos_omega * sinE)
+    logArg = jnp.maximum(logArg, 1e-10)
+    
+    # Direct partial (holding E constant):
+    # d(logArg)/de = -cosE - sini*(-sin(om) - e*cos(om)*sinE/sqrt(1-e^2))
+    #              = -cosE - sini*(-sin(om) + e/(sqrt(1-e^2))*(-cos(om)*sinE))
+    dlogArg_de = -cosE - sini * (-sin_omega - ecc * cos_omega * sinE / sqrt_1_e2)
+    dShapiro_de_direct = -2 * r * dlogArg_de / logArg
+    
+    # Chain rule through E:
+    # d(logArg)/dE = e*sinE - sini*(sqrt(1-e^2)*cosE*cos(om) - sinE*sin(om))
+    dlogArg_dE = ecc * sinE - sini * (sqrt_1_e2 * cosE * cos_omega - sinE * sin_omega)
+    dShapiro_dE = -2 * r * dlogArg_dE / logArg
+    
+    dShapiro_de = dShapiro_de_direct + dShapiro_dE * dE_de
+    
+    return dRoemer_de + dEinstein_de + dShapiro_de
 
 
 @jax.jit
@@ -673,7 +701,7 @@ def _d_delay_d_OM(
     cos_omega = jnp.cos(om_rad)
     sqrt_1_e2 = jnp.sqrt(1 - ecc**2)
     
-    # d(Roemer)/d(omega) = a1 * (cos(om)*(cos(E)-e) - sin(om)*sqrt(1-e²)*sin(E))
+    # d(Roemer)/d(omega) = a1 * (cos(om)*(cos(E)-e) - sin(om)*sqrt(1-e^2)*sin(E))
     dRoemer_dom = a1 * (cos_omega * (jnp.cos(E) - ecc) - sin_omega * sqrt_1_e2 * jnp.sin(E))
     
     # d(Shapiro)/d(omega) = 2*r*sini*cos(om+theta) / (1 - sini*sin(om+theta))
@@ -695,7 +723,7 @@ def _d_delay_d_PBDOT(
     """d(delay)/d(PBDOT) via chain rule."""
     dt = toas_bary_mjd - t0
     
-    # d(M)/d(PBDOT) = -π * dt² / PB²
+    # d(M)/d(PBDOT) = -pi * dt^2 / PB^2
     dM_dPBDOT = -jnp.pi * dt**2 / pb**2
     
     M = compute_mean_anomaly_dd(toas_bary_mjd, pb, t0, 0.0)  # Use PBDOT=0 for base
@@ -806,10 +834,6 @@ def _d_delay_d_OMDOT(
 #   - PINT src/pint/models/binary_ddk.py for implementation details
 
 
-# Constants for DDK corrections
-PC_TO_LIGHT_SEC = 3.0857e16 / 2.99792458e8  # parsec to light-seconds
-
-
 @jax.jit
 def _compute_ddk_correction_derivatives_KIN(
     tt0_sec: jnp.ndarray,
@@ -828,9 +852,9 @@ def _compute_ddk_correction_derivatives_KIN(
     Compute d(delta_A1)/d(KIN) and d(delta_OM)/d(KIN) for DDK corrections.
     
     The K96 proper motion corrections (Kopeikin 1996) are:
-        delta_KIN_pm = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * (t - T0)
+        delta_KIN_pm = (-mu_RA * sin(KOM) + mu_DEC * cos(KOM)) * (t - T0)
         delta_A1_pm = A1 * delta_KIN_pm / tan(KIN_eff)
-        delta_OM_pm = (1/sin(KIN_eff)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * (t - T0)
+        delta_OM_pm = (1/sin(KIN_eff)) * (mu_RA * cos(KOM) + mu_DEC * sin(KOM)) * (t - T0)
     
     The Kopeikin 1995 parallax corrections are:
         delta_A1_px = (A1 / tan(KIN) / d) * (delta_I0 * sin(KOM) - delta_J0 * cos(KOM))
@@ -855,15 +879,10 @@ def _compute_ddk_correction_derivatives_KIN(
     cos_kom = jnp.cos(kom_rad)
     sin_kin = jnp.sin(kin_rad)
     cos_kin = jnp.cos(kin_rad)
-    tan_kin = jnp.tan(kin_rad)
-    
-    # Safe denominators
-    sin_kin_safe = jnp.where(jnp.abs(sin_kin) < 1e-10, 1e-10, sin_kin)
-    tan_kin_safe = jnp.where(jnp.abs(tan_kin) < 1e-10, 1e-10, tan_kin)
     sin2_kin = sin_kin ** 2
     
     # K96 proper motion corrections
-    # delta_KIN_pm = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * tt0_sec
+    # delta_KIN_pm = (-mu_RA * sin(KOM) + mu_DEC * cos(KOM)) * tt0_sec
     pm_term = -pmra_rad_per_sec * sin_kom + pmdec_rad_per_sec * cos_kom
     delta_kin_pm = jnp.where(use_k96, pm_term * tt0_sec, 0.0)
     
@@ -871,17 +890,17 @@ def _compute_ddk_correction_derivatives_KIN(
     
     # delta_A1_pm = A1 * delta_KIN_pm / tan(KIN_eff)
     # where KIN_eff = KIN + delta_KIN_pm
-    # Approximate: d(KIN_eff)/d(KIN) ≈ 1 (delta_KIN_pm doesn't depend on KIN)
+    # Approximate: d(KIN_eff)/d(KIN) ~= 1 (delta_KIN_pm doesn't depend on KIN)
     # d(A1 * delta_KIN / tan(KIN))/d(KIN) = A1 * delta_KIN * d(1/tan(KIN))/d(KIN)
-    #                                      = A1 * delta_KIN * (-1/sin²(KIN))
+    #                                      = A1 * delta_KIN * (-1/sin^2(KIN))
     d_A1_pm_d_KIN = jnp.where(
         use_k96,
         -a1 * delta_kin_pm / sin2_kin,
         0.0
     )
     
-    # delta_OM_pm = (1/sin(KIN)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * tt0_sec
-    # d/d(KIN)[1/sin(KIN)] = -cos(KIN)/sin²(KIN)
+    # delta_OM_pm = (1/sin(KIN)) * (mu_RA * cos(KOM) + mu_DEC * sin(KOM)) * tt0_sec
+    # d/d(KIN)[1/sin(KIN)] = -cos(KIN)/sin^2(KIN)
     pm_omega_term = pmra_rad_per_sec * cos_kom + pmdec_rad_per_sec * sin_kom
     d_OM_pm_d_KIN = jnp.where(
         use_k96,
@@ -891,7 +910,7 @@ def _compute_ddk_correction_derivatives_KIN(
     
     # Kopeikin 1995 parallax corrections
     # delta_A1_px = (A1 / tan(KIN) / d) * (delta_I0 * sin(KOM) - delta_J0 * cos(KOM))
-    # d/d(KIN)[A1 / tan(KIN) / d] = A1 / d * (-1/sin²(KIN))
+    # d/d(KIN)[A1 / tan(KIN) / d] = A1 / d * (-1/sin^2(KIN))
     parallax_a1_term = delta_I0 * sin_kom - delta_J0 * cos_kom
     d_A1_px_d_KIN = jnp.where(
         has_parallax,
@@ -900,7 +919,7 @@ def _compute_ddk_correction_derivatives_KIN(
     )
     
     # delta_OM_px = -(1/sin(KIN) / d) * (delta_I0 * cos(KOM) + delta_J0 * sin(KOM))
-    # d/d(KIN)[1/sin(KIN)] = -cos(KIN)/sin²(KIN)
+    # d/d(KIN)[1/sin(KIN)] = -cos(KIN)/sin^2(KIN)
     parallax_om_term = delta_I0 * cos_kom + delta_J0 * sin_kom
     d_OM_px_d_KIN = jnp.where(
         has_parallax,
@@ -912,7 +931,7 @@ def _compute_ddk_correction_derivatives_KIN(
     d_A1_eff_d_KIN = d_A1_pm_d_KIN + d_A1_px_d_KIN
     d_OM_eff_d_KIN = d_OM_pm_d_KIN + d_OM_px_d_KIN  # in radians/radian
     
-    # SINI_eff = sin(KIN_eff) where KIN_eff ≈ KIN for small corrections
+    # SINI_eff = sin(KIN_eff) where KIN_eff ~= KIN for small corrections
     # d(sin(KIN))/d(KIN) = cos(KIN)
     d_SINI_eff_d_KIN = cos_kin
     
@@ -937,9 +956,9 @@ def _compute_ddk_correction_derivatives_KOM(
     Compute d(delta_A1)/d(KOM) and d(delta_OM)/d(KOM) for DDK corrections.
     
     K96 proper motion:
-        delta_KIN_pm = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * tt0
+        delta_KIN_pm = (-mu_RA * sin(KOM) + mu_DEC * cos(KOM)) * tt0
         delta_A1_pm = A1 * delta_KIN_pm / tan(KIN)
-        delta_OM_pm = (1/sin(KIN)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * tt0
+        delta_OM_pm = (1/sin(KIN)) * (mu_RA * cos(KOM) + mu_DEC * sin(KOM)) * tt0
     
     Kopeikin 1995 parallax:
         delta_A1_px = (A1 / tan(KIN) / d) * (delta_I0 * sin(KOM) - delta_J0 * cos(KOM))
@@ -961,8 +980,8 @@ def _compute_ddk_correction_derivatives_KOM(
     sin_kin_safe = jnp.where(jnp.abs(sin_kin) < 1e-10, 1e-10, sin_kin)
     tan_kin_safe = jnp.where(jnp.abs(tan_kin) < 1e-10, 1e-10, tan_kin)
     
-    # K96 proper motion: delta_KIN_pm = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * tt0
-    # d(delta_KIN_pm)/d(KOM) = (-μ_RA * cos(KOM) - μ_DEC * sin(KOM)) * tt0
+    # K96 proper motion: delta_KIN_pm = (-mu_RA * sin(KOM) + mu_DEC * cos(KOM)) * tt0
+    # d(delta_KIN_pm)/d(KOM) = (-mu_RA * cos(KOM) - mu_DEC * sin(KOM)) * tt0
     d_delta_kin_pm_d_KOM = jnp.where(
         use_k96,
         (-pmra_rad_per_sec * cos_kom - pmdec_rad_per_sec * sin_kom) * tt0_sec,
@@ -977,8 +996,8 @@ def _compute_ddk_correction_derivatives_KOM(
         0.0
     )
     
-    # delta_OM_pm = (1/sin(KIN)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * tt0
-    # d/d(KOM)[μ_RA * cos(KOM) + μ_DEC * sin(KOM)] = -μ_RA * sin(KOM) + μ_DEC * cos(KOM)
+    # delta_OM_pm = (1/sin(KIN)) * (mu_RA * cos(KOM) + mu_DEC * sin(KOM)) * tt0
+    # d/d(KOM)[mu_RA * cos(KOM) + mu_DEC * sin(KOM)] = -mu_RA * sin(KOM) + mu_DEC * cos(KOM)
     d_OM_pm_d_KOM = jnp.where(
         use_k96,
         (1.0 / sin_kin_safe) * (-pmra_rad_per_sec * sin_kom + pmdec_rad_per_sec * cos_kom) * tt0_sec,
@@ -1005,8 +1024,10 @@ def _compute_ddk_correction_derivatives_KOM(
     d_A1_eff_d_KOM = d_A1_pm_d_KOM + d_A1_px_d_KOM
     d_OM_eff_d_KOM = d_OM_pm_d_KOM + d_OM_px_d_KOM  # in radians/radian
     
-    # SINI_eff = sin(KIN_eff) doesn't depend on KOM directly
-    d_SINI_eff_d_KOM = 0.0
+    # SINI_eff = sin(KIN_eff) where KIN_eff = KIN + delta_KIN_pm(KOM)
+    # d(SINI_eff)/d(KOM) = cos(KIN_eff) * d(delta_KIN_pm)/d(KOM)
+    cos_kin = jnp.cos(kin_rad)
+    d_SINI_eff_d_KOM = jnp.where(use_k96, cos_kin * d_delta_kin_pm_d_KOM, 0.0)
     
     return d_A1_eff_d_KOM, d_OM_eff_d_KOM, d_SINI_eff_d_KOM
 
@@ -1058,12 +1079,6 @@ def compute_binary_derivatives_ddk(
     # DDK-specific parameters
     kin_deg = float(params.get('KIN', 0.0))
     
-    # Handle SINI - can be numeric or 'KIN' (DDK convention: SINI = sin(KIN))
-    sini_raw = params.get('SINI', 0.0)
-    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
-        sini = float(jnp.sin(jnp.deg2rad(kin_deg)))
-    else:
-        sini = float(sini_raw)
     kom_deg = float(params.get('KOM', 0.0))
     kin_rad = jnp.deg2rad(kin_deg)
     kom_rad = jnp.deg2rad(kom_deg)
@@ -1073,7 +1088,7 @@ def compute_binary_derivatives_ddk(
     # Proper motion (for K96).
     # For ecliptic pulsars, use PMELONG/PMELAT (stored as _ecliptic_pm_lon/lat)
     # so that the K96 formula uses the same coordinate frame as KOM.
-    MAS_PER_YR_TO_RAD_PER_SEC = (jnp.pi / 180.0 / 3600.0 / 1000.0) / (365.25 * 86400.0)
+    MAS_PER_YR_TO_RAD_PER_SEC = (jnp.pi / 180.0 / 3600.0 / 1000.0) / SECS_PER_YEAR
     _is_ecliptic = bool(params.get('_ecliptic_coords', False))
     if _is_ecliptic:
         pmra_mas_yr = float(params.get('_ecliptic_pm_lon', 0.0))   # PMELONG
@@ -1235,9 +1250,9 @@ def compute_binary_derivatives_ddk(
         if param_upper == 'A1':
             # For A1, the effective derivative needs adjustment
             # d(delay)/d(A1) through effective A1
-            # d(A1_eff)/d(A1) = 1 + d(delta_A1)/d(A1) where delta_A1 terms ∝ A1
-            # delta_A1_pm = A1 * delta_kin_pm / tan(KIN) → d/dA1 = delta_kin_pm / tan(KIN)
-            # delta_A1_px = A1 / tan(KIN) / d * (...) → d/dA1 = 1/tan(KIN)/d * (...)
+            # d(A1_eff)/d(A1) = 1 + d(delta_A1)/d(A1) where delta_A1 terms ~ A1
+            # delta_A1_pm = A1 * delta_kin_pm / tan(KIN) -> d/dA1 = delta_kin_pm / tan(KIN)
+            # delta_A1_px = A1 / tan(KIN) / d * (...) -> d/dA1 = 1/tan(KIN)/d * (...)
             
             # Get base derivative for A1
             deriv = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
@@ -1531,34 +1546,4 @@ def _d_delay_d_H4(
     return d_M2 * dM2_dH4 + d_SINI * dSINI_dH4
 
 
-if __name__ == '__main__':
-    print("Testing DD binary derivatives...")
-    
-    # Create synthetic TOAs
-    toas = jnp.linspace(58000, 58100, 100)
-    
-    # DD model parameters (like J0614-3329)
-    params = {
-        'A1': 1.0,
-        'PB': 1.5,
-        'T0': 58050.0,
-        'ECC': 0.001,
-        'OM': 90.0,
-        'SINI': 0.9,
-        'M2': 0.3,
-        'GAMMA': 0.0,
-        'PBDOT': 0.0,
-        'OMDOT': 0.0,
-    }
-    
-    # Compute delay
-    delay = compute_dd_binary_delay(toas, params)
-    print(f"DD delay range: {float(jnp.min(delay)):.6f} to {float(jnp.max(delay)):.6f} s")
-    
-    # Compute derivatives
-    derivs = compute_binary_derivatives_dd(params, toas, ['A1', 'PB', 'T0', 'ECC', 'OM'])
-    
-    for p, d in derivs.items():
-        print(f"d(delay)/d({p}): mean={float(jnp.mean(d)):.6e}, std={float(jnp.std(d)):.6e}")
-    
-    print("\n✓ DD binary derivatives module ready!")
+

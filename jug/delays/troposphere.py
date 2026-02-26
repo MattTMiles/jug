@@ -5,6 +5,7 @@ ensure_jax_x64()
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jug.utils.constants import C_M_S
 
 def _pressure_from_height(height_m):
     """Compute surface pressure from observatory height using US Standard Atmosphere.
@@ -21,8 +22,6 @@ def _pressure_from_height(height_m):
     pressure_mbar : float
         Estimated surface pressure in mbar.
     """
-    EARTH_R_m = 6356766.0  # mean Earth radius (m)
-    gph = EARTH_R_m * height_m / (EARTH_R_m + height_m)  # geopotential height
     T = 288.15 - 0.0065 * height_m  # temperature lapse (K)
     p_kPa = 101.325 * (288.15 / T) ** (-5.25575)
     return p_kPa * 10.0  # kPa -> mbar
@@ -82,17 +81,7 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     zhd_m = (const_a * pressure_mbar) / denom
     
     # 2. Niell Mapping Function (NMF) - Niell (1996)
-    # Need to verify if we need NMF or if Tempo2 uses something simpler like 1/sin(E).
-    # Tempo2 usually uses NMF.
-    # NMF has separate Hydrostatic and Wet mapping functions.
-    # For standard CORRECT_TROPOSPHERE without met data, Tempo2 likely only computes
-    # the hydrostatic component or assumes a standard wet component is negligible or included?
-    # Actually, Tempo2 code suggests it computes both if flags are set, or defaults.
-    # Let's start with just Hydrostatic Mapping Function (HMF) applied to ZHD.
-    # Usually Total Delay = ZHD * m_h(E) + ZWD * m_w(E).
-    # Without external ZWD data, Tempo2 might just do ZHD correction.
-    
-    # Let's implement full NMF for Hydrostatic component.
+
     # NMF Coefficients for average atmosphere (Table 3 of Niell 1996)
     # Latitudes: 15, 30, 45, 60, 75
     lats_nmf = np.array([15.0, 30.0, 45.0, 60.0, 75.0])
@@ -126,12 +115,6 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     ba = interpolate_coeff(abs_lat, lats_nmf, b_amp)
     ca = interpolate_coeff(abs_lat, lats_nmf, c_amp)
     
-    # Seasonal variation
-    # t is time from Jan 0.0 in UT days / 365.25
-    # Reference epoch: Jan 0, DOY 0.
-    # MJD of Jan 0 is roughly ... 
-    # Niell 1996: "t is time from Jan 0.0" (DOY 1 - 1?)
-    # Usually: t = (DOY - 28) / 365.25. (Phase is -28 days for northern hemisphere)
     # Seasonal variation: use jnp.where instead of Python if/else for hemisphere
     doy_phase = jnp.where(lat_deg < 0, 28.0 + 365.25/2.0, 28.0)
     # Convert MJD to DOY (approximate is fine for NMF)
@@ -182,7 +165,6 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     tropo_delay_m = zhd_m * total_mapping_function
     
     # Convert to seconds
-    SPEED_OF_LIGHT = 299792458.0
-    tropo_delay_sec = tropo_delay_m / SPEED_OF_LIGHT
+    tropo_delay_sec = tropo_delay_m / C_M_S
     
     return tropo_delay_sec

@@ -1,15 +1,15 @@
 """
-GUI ↔ Engine Equivalence Tests
+GUI <-> Engine Equivalence Tests
 ================================
 
 Tests that verify the GUI NEVER does physics computation itself.
 All computation must go through the engine (TimingSession).
 
 Key requirements:
-1. RAJ/DECJ Edit Equivalence: GUI sexagesimal → codec → radians → engine matches direct call
-2. Codec Round-trip: Edit value back to same string → residuals unchanged
+1. RAJ/DECJ Edit Equivalence: GUI sexagesimal -> codec -> radians -> engine matches direct call
+2. Codec Round-trip: Edit value back to same string -> residuals unchanged
 3. Fit Equivalence: GUI-edited starting values produce same fit as direct engine call
-4. Engine Determinism: Multiple sessions with same inputs → bit-for-bit identical
+4. Engine Determinism: Multiple sessions with same inputs -> bit-for-bit identical
 
 Run with:
     pytest jug/tests/test_gui_engine_equivalence.py -v
@@ -57,7 +57,7 @@ class TestRAJDECJEditEquivalence:
         # Simulate GUI: user enters RA in sexagesimal
         gui_input = "19:09:47.4346970"
 
-        # GUI decodes sexagesimal → radians before passing to engine
+        # GUI decodes sexagesimal -> radians before passing to engine
         codec = RAJCodec()
         raj_rad = codec.decode(gui_input)
 
@@ -84,7 +84,7 @@ class TestRAJDECJEditEquivalence:
         # Simulate GUI: user enters DEC in sexagesimal
         gui_input = "-37:44:14.4662200"
 
-        # GUI decodes sexagesimal → radians
+        # GUI decodes sexagesimal -> radians
         codec = DECJCodec()
         decj_rad = codec.decode(gui_input)
 
@@ -109,7 +109,7 @@ class TestCodecRoundTripStability:
     def test_raj_roundtrip_residuals_unchanged(self):
         """
         1. Get original RAJ from par file
-        2. Decode → encode → decode (round-trip)
+        2. Decode -> encode -> decode (round-trip)
         3. Residuals with round-tripped value must match original
         """
         if not _session_available():
@@ -145,7 +145,7 @@ class TestCodecRoundTripStability:
 
         # Allow sub-nanosecond differences due to round-trip precision
         assert max_diff < 1e-3, \
-            f"RAJ round-trip changes residuals by {max_diff:.2e} μs (should be < 1e-3)"
+            f"RAJ round-trip changes residuals by {max_diff:.2e} mus (should be < 1e-3)"
 
     def test_decj_roundtrip_residuals_unchanged(self):
         """Same as above for DECJ."""
@@ -175,7 +175,7 @@ class TestCodecRoundTripStability:
 
         max_diff = np.max(np.abs(result_original['residuals_us'] - result_roundtrip['residuals_us']))
         assert max_diff < 1e-3, \
-            f"DECJ round-trip changes residuals by {max_diff:.2e} μs (should be < 1e-3)"
+            f"DECJ round-trip changes residuals by {max_diff:.2e} mus (should be < 1e-3)"
 
 
 class TestFitEquivalence:
@@ -313,46 +313,46 @@ class TestEngineDeterminism:
 def run_all_tests():
     """Run all equivalence tests."""
     print("=" * 80)
-    print("GUI ↔ Engine Equivalence Test Suite")
+    print("GUI <-> Engine Equivalence Test Suite")
     print("=" * 80)
 
     if not _session_available():
-        print(f"⚠ Test data not found at {DATA_DIR}")
+        print(f"[!] Test data not found at {DATA_DIR}")
         print("  Skipping tests.")
         return
 
     # RAJ/DECJ Edit Equivalence
     edit_tests = TestRAJDECJEditEquivalence()
     edit_tests.test_raj_gui_edit_matches_engine()
-    print("✓ RAJ GUI edit matches engine")
+    print("[x] RAJ GUI edit matches engine")
     edit_tests.test_decj_gui_edit_matches_engine()
-    print("✓ DECJ GUI edit matches engine")
+    print("[x] DECJ GUI edit matches engine")
 
     # Codec Round-trip
     roundtrip_tests = TestCodecRoundTripStability()
     roundtrip_tests.test_raj_roundtrip_residuals_unchanged()
-    print("✓ RAJ round-trip residuals unchanged")
+    print("[x] RAJ round-trip residuals unchanged")
     roundtrip_tests.test_decj_roundtrip_residuals_unchanged()
-    print("✓ DECJ round-trip residuals unchanged")
+    print("[x] DECJ round-trip residuals unchanged")
 
     # Fit Equivalence
     fit_tests = TestFitEquivalence()
     fit_tests.test_fit_same_starting_values_same_result()
-    print("✓ Fit determinism (same starting values)")
+    print("[x] Fit determinism (same starting values)")
     fit_tests.test_fit_with_gui_edited_params_matches_direct()
-    print("✓ GUI-edited fit matches direct engine fit")
+    print("[x] GUI-edited fit matches direct engine fit")
 
     # Engine Determinism
     det_tests = TestEngineDeterminism()
     det_tests.test_residuals_determinism_across_sessions()
-    print("✓ Residuals determinism across sessions")
+    print("[x] Residuals determinism across sessions")
     det_tests.test_fit_determinism_across_sessions()
-    print("✓ Fit determinism across sessions")
+    print("[x] Fit determinism across sessions")
     det_tests.test_warm_cold_cache_identical()
-    print("✓ Warm/cold cache identical")
+    print("[x] Warm/cold cache identical")
 
     print()
-    print("All GUI ↔ Engine equivalence tests passed!")
+    print("All GUI <-> Engine equivalence tests passed!")
 
 
 if __name__ == '__main__':

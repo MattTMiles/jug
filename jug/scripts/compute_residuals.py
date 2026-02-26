@@ -109,8 +109,8 @@ Examples:
         # Summary output
         if not args.verbose:
             print(f"\nResults for {args.par_file.stem}:")
-            print(f"  Weighted RMS:   {result['rms_us']:8.3f} μs")
-            print(f"  Mean:           {result['mean_us']:8.3f} μs")
+            print(f"  Weighted RMS:   {result['rms_us']:8.3f} mus")
+            print(f"  Mean:           {result['mean_us']:8.3f} mus")
             print(f"  N_TOAs:         {result['n_toas']:8d}")
 
         # Generate plot if requested
@@ -136,17 +136,17 @@ Examples:
                             capsize=0, color='blue', ecolor='blue')
                 ax1.axhline(y=0, color='r', linestyle='--', linewidth=1, alpha=0.7)
                 ax1.set_xlabel('MJD', fontsize=12)
-                ax1.set_ylabel('Residual (μs)', fontsize=12)
-                ax1.set_title(f'{args.par_file.stem} - Timing Residuals (Weighted RMS={result["rms_us"]:.3f} μs)', 
+                ax1.set_ylabel('Residual (mus)', fontsize=12)
+                ax1.set_title(f'{args.par_file.stem} - Timing Residuals (Weighted RMS={result["rms_us"]:.3f} mus)', 
                              fontsize=14, fontweight='bold')
                 ax1.grid(True, alpha=0.3)
                 
                 # Bottom: Histogram
                 ax2.hist(residuals_us, bins=50, alpha=0.7, color='blue', edgecolor='black')
                 ax2.axvline(x=0, color='r', linestyle='--', linewidth=1, alpha=0.7)
-                ax2.set_xlabel('Residual (μs)', fontsize=12)
+                ax2.set_xlabel('Residual (mus)', fontsize=12)
                 ax2.set_ylabel('Count', fontsize=12)
-                ax2.set_title(f'Distribution (Mean={result["mean_us"]:.3f} μs, N={result["n_toas"]})', 
+                ax2.set_title(f'Distribution (Mean={result["mean_us"]:.3f} mus, N={result["n_toas"]})', 
                              fontsize=12)
                 ax2.grid(True, alpha=0.3, axis='y')
                 

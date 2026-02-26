@@ -1,5 +1,5 @@
 """
-Helper functions for plot coloring — backend identification and brush generation.
+Helper functions for plot coloring -- backend identification and brush generation.
 
 Performance-critical: Uses vectorized numpy operations, no per-TOA Python loops.
 """
@@ -50,14 +50,14 @@ def build_backend_brush_array(
         Per-TOA flag dictionaries.
     palette : list of (R, G, B, A) tuples, optional
         Color palette. If None, uses PlotTheme.get_backend_palette().
-    overrides : dict of backend_name → QColor, optional
+    overrides : dict of backend_name -> QColor, optional
         User-specified color overrides for specific backends.
     
     Returns
     -------
     brushes : list of pg.mkBrush
         Brush for each TOA (same length as toa_flags).
-    backend_color_map : dict of backend_name → QColor
+    backend_color_map : dict of backend_name -> QColor
         Mapping used for legend (sorted alphabetically).
     """
     if palette is None:
@@ -72,7 +72,7 @@ def build_backend_brush_array(
     # Find unique backends and sort alphabetically for stable assignment
     unique_backends = sorted(set(backend_labels))
     
-    # Build color map: backend → QColor
+    # Build color map: backend -> QColor
     backend_color_map = {}
     for i, backend in enumerate(unique_backends):
         if backend in overrides:
@@ -108,12 +108,12 @@ def build_noise_colors(
     ----------
     process_names : list of str
         Noise process names (e.g., ["RedNoise", "DMNoise"]).
-    overrides : dict of process_name → QColor, optional
+    overrides : dict of process_name -> QColor, optional
         User-specified color overrides.
     
     Returns
     -------
-    dict of process_name → QColor
+    dict of process_name -> QColor
         Color for each noise process.
     """
     if overrides is None:

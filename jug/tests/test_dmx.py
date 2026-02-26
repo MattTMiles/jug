@@ -1,4 +1,4 @@
-"""Tests for jug.model.dmx — DMX support."""
+"""Tests for jug.model.dmx -- DMX support."""
 
 import numpy as np
 import pytest

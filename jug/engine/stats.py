@@ -57,7 +57,7 @@ def compute_residual_stats(
     >>> residuals = np.array([1.0, 2.0, 3.0])
     >>> errors = np.array([0.1, 0.2, 0.3])
     >>> stats = compute_residual_stats(residuals, errors)
-    >>> print(f"Weighted RMS: {stats['weighted_rms_us']:.6f} μs")
+    >>> print(f"Weighted RMS: {stats['weighted_rms_us']:.6f} mus")
     """
     # Ensure float64 arrays
     residuals_us = np.asarray(residuals_us, dtype=np.float64)
@@ -166,14 +166,14 @@ def compute_chi2_reduced(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.2 — Residual representations
+# Phase 3.2 -- Residual representations
 # ---------------------------------------------------------------------------
 
 def compute_normalized_residuals(
     residuals_us: np.ndarray,
     errors_us: np.ndarray,
 ) -> np.ndarray:
-    """Compute normalized residuals r/σ.
+    """Compute normalized residuals r/sigma.
 
     Parameters
     ----------
@@ -201,7 +201,7 @@ def compute_whitened_residuals(
     """Compute whitened residuals (noise-decorrelated).
 
     If a diagonal noise covariance is provided, whitening divides by
-    ``sqrt(σ² + C_diag)`` (the total effective uncertainty).  Without
+    ``sqrt(sigma^2 + C_diag)`` (the total effective uncertainty).  Without
     ``noise_cov_diag`` this falls back to simple normalization.
 
     Parameters
@@ -211,7 +211,7 @@ def compute_whitened_residuals(
     errors_us : np.ndarray
         TOA uncertainties in microseconds.
     noise_cov_diag : np.ndarray, optional
-        Diagonal of the noise covariance matrix (μs²).  If the noise
+        Diagonal of the noise covariance matrix (mus^2).  If the noise
         model is not diagonal this should be the marginal variance
         per TOA after conditioning.
 
@@ -246,7 +246,7 @@ def build_residual_representations(
     errors_us : np.ndarray
         TOA uncertainties in microseconds.
     noise_cov_diag : np.ndarray, optional
-        Diagonal noise covariance (μs²) for whitening.
+        Diagonal noise covariance (mus^2) for whitening.
 
     Returns
     -------
@@ -270,7 +270,7 @@ def build_residual_representations(
 
 
 # ---------------------------------------------------------------------------
-# Phase 3.3 — Fit summary metrics
+# Phase 3.3 -- Fit summary metrics
 # ---------------------------------------------------------------------------
 
 def fit_summary(
@@ -350,17 +350,17 @@ def fit_summary(
         warnings.append("Fitter did not converge.")
     if chi2["chi2_reduced"] > 10.0:
         warnings.append(
-            f"Reduced χ² = {chi2['chi2_reduced']:.2f} is very large "
+            f"Reduced chi^2 = {chi2['chi2_reduced']:.2f} is very large "
             "(expect ~1 for a good fit)."
         )
     if chi2["chi2_reduced"] > 0 and chi2["chi2_reduced"] < 0.1:
         warnings.append(
-            f"Reduced χ² = {chi2['chi2_reduced']:.4f} is suspiciously low "
+            f"Reduced chi^2 = {chi2['chi2_reduced']:.4f} is suspiciously low "
             "(may indicate over-fitting or inflated errors)."
         )
     if postfit_stats["weighted_rms_us"] > prefit_stats["weighted_rms_us"]:
         warnings.append(
-            "Post-fit wRMS is larger than pre-fit wRMS — "
+            "Post-fit wRMS is larger than pre-fit wRMS -- "
             "fit may have diverged."
         )
 

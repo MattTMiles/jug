@@ -44,11 +44,11 @@ def test_bt_model():
     print(f"\nTest times (MJD): {t_test}")
     print(f"Binary delays (seconds): {delays}")
     print(f"Binary delays (microseconds): {delays * 1e6}")
-    print(f"\nDelay range: {np.min(delays) * 1e6:.3f} to {np.max(delays) * 1e6:.3f} μs")
+    print(f"\nDelay range: {np.min(delays) * 1e6:.3f} to {np.max(delays) * 1e6:.3f} mus")
     
     # Check that delays are reasonable (should be on order of a1 ~ 1.8 light-seconds)
     assert np.all(np.abs(delays) < 2.0 * a1), "Delays exceed maximum possible value!"
-    print("✓ Delays are physically reasonable")
+    print("[x] Delays are physically reasonable")
 
 
 def test_t2_model_dd_style():
@@ -85,14 +85,14 @@ def test_t2_model_dd_style():
     t2_delays = compute_binary_delay(t_test, t2_params)
     dd_delays = compute_binary_delay(t_test, dd_params)
 
-    print(f"\nT2 delays (μs): {t2_delays * 1e6}")
-    print(f"DD delays (μs): {dd_delays * 1e6}")
+    print(f"\nT2 delays (mus): {t2_delays * 1e6}")
+    print(f"DD delays (mus): {dd_delays * 1e6}")
     print(f"Max difference: {np.max(np.abs(t2_delays - dd_delays)):.2e} s")
 
     assert np.all(np.abs(t2_delays) < 2.0 * 1.8), "T2 delays exceed physical maximum"
     np.testing.assert_allclose(t2_delays, dd_delays, rtol=1e-15,
                                err_msg="T2 (DD-style) does not match DD")
-    print("✓ T2 DD-style matches DD exactly")
+    print("[x] T2 DD-style matches DD exactly")
 
 
 def test_t2_model_ell1_style():
@@ -126,14 +126,14 @@ def test_t2_model_ell1_style():
     t2_delays = compute_binary_delay(t_test, t2_params)
     ell1_delays = compute_binary_delay(t_test, ell1_params)
 
-    print(f"\nT2 delays (μs): {t2_delays * 1e6}")
-    print(f"ELL1 delays (μs): {ell1_delays * 1e6}")
+    print(f"\nT2 delays (mus): {t2_delays * 1e6}")
+    print(f"ELL1 delays (mus): {ell1_delays * 1e6}")
     print(f"Max difference: {np.max(np.abs(t2_delays - ell1_delays)):.2e} s")
 
     assert np.all(np.abs(t2_delays) < 2.0 * 0.025795), "T2 delays exceed physical maximum"
     np.testing.assert_allclose(t2_delays, ell1_delays, rtol=1e-15,
                                err_msg="T2 (ELL1-style) does not match ELL1")
-    print("✓ T2 ELL1-style matches ELL1 exactly")
+    print("[x] T2 ELL1-style matches ELL1 exactly")
 
 
 if __name__ == "__main__":

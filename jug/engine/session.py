@@ -93,7 +93,7 @@ class TimingSession:
         
         self.params = parse_par_file(self.par_file)
         
-        # Convert TCB→TDB at ingest time so all downstream code sees TDB params
+        # Convert TCB->TDB at ingest time so all downstream code sees TDB params
         from jug.io.par_reader import validate_par_timescale
         validate_par_timescale(self.params, context="TimingSession", verbose=verbose)
         
@@ -184,7 +184,7 @@ class TimingSession:
 
         # Build temp par file with updated params
         # Convert KIN/KOM from DT92 back to IAU convention for par file
-        # (compute_residuals_simple will apply IAU→DT92 again when reading)
+        # (compute_residuals_simple will apply IAU->DT92 again when reading)
         binary = params.get('BINARY', '').upper()
         if binary == 'T2' and ('KIN' in params or 'KOM' in params):
             params = dict(params)  # avoid mutating caller's dict
@@ -297,46 +297,9 @@ class TimingSession:
                 print(f"  Using cached residuals (subtract_tzr={subtract_tzr})")
             return self._cached_result_by_mode[subtract_tzr]
         
-        # If params provided, use fast evaluation if we have cached data
+        # If params provided, recompute residuals with updated parameters
         if params is not None:
-            # FAST PATH: Reuse parsed TOAs and clock data
-            # This is 30x faster than creating temp file and reparsing everything
-            if self._cached_toa_data is not None:
-                from jug.residuals.fast_evaluator import compute_residuals_fast_v2
-                
-                if self.verbose:
-                    print("  Using fast postfit evaluation (cached TOA data)")
-                
-                # Fast residual compute (reuses TOAs, clocks, corrections)
-                try:
-                    residuals_us, rms_us = compute_residuals_fast_v2(
-                        toa_data=self._cached_toa_data,
-                        params={**self.params, **params},  # Merge with new params
-                        subtract_mean=True
-                    )
-                    
-                    # Compute unweighted RMS (standard deviation)
-                    unweighted_rms_us = float(np.std(residuals_us))
-                    
-                    # Build result using cached metadata
-                    result = {
-                        'residuals_us': residuals_us,
-                        'rms_us': rms_us,
-                        'weighted_rms_us': rms_us,  # Same as rms_us (weighted)
-                        'unweighted_rms_us': unweighted_rms_us,
-                        'mean_us': 0.0,  # Already subtracted
-                        'tdb_mjd': self._cached_toa_data['tdb_mjd'],
-                        'dt_sec': self._cached_toa_data['dt_sec'],
-                        'errors_us': self._cached_toa_data.get('errors_us'),
-                        'n_toas': len(residuals_us),
-                    }
-                    
-                    return result
-                except Exception as e:
-                    if self.verbose:
-                        print(f"  Fast path failed: {e}, falling back to slow path")
-            
-            # SLOW PATH: Create temporary par file (no cached data yet)
+            # Create temporary par file with updated parameters
             import tempfile
             from pathlib import Path
             
@@ -372,7 +335,7 @@ class TimingSession:
                         params['PMBETA'] = ecl['PMBETA']
 
             # Convert KIN/KOM from DT92 back to IAU convention for par file
-            # (compute_residuals_simple will apply IAU→DT92 again when reading)
+            # (compute_residuals_simple will apply IAU->DT92 again when reading)
             binary = params.get('BINARY', '').upper()
             if binary == 'T2' and ('KIN' in params or 'KOM' in params):
                 params = dict(params)  # avoid mutating caller's dict
@@ -571,7 +534,7 @@ class TimingSession:
             Fit results with keys:
             - 'final_params': Fitted parameter values
             - 'uncertainties': Parameter uncertainties
-            - 'final_rms': Final RMS in μs
+            - 'final_rms': Final RMS in mus
             - 'iterations': Number of iterations
             - 'converged': Whether fit converged
             - etc.
@@ -708,7 +671,7 @@ class TimingSession:
 
         # Invalidate residuals cache since parameters changed
         self._cached_result_by_mode.clear()
-        # Also invalidate cached TOA data — the fast evaluator only handles
+        # Also invalidate cached TOA data -- the fast evaluator only handles
         # spin/DM changes, so stale dt_sec causes wrong postfit residuals
         # when binary, astrometric, FD, or SW parameters were fitted.
         self._cached_toa_data = None

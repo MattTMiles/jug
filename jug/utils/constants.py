@@ -2,41 +2,54 @@
 
 This module contains all physical constants, planetary parameters, and
 observatory coordinates used throughout JUG.
+
+All timing-relevant constants should be defined here to avoid duplication
+and ensure consistency across the codebase.
 """
 
 import numpy as np
 
-# === Time and Distance Constants ===
+# === Time Constants ===
 
 SECS_PER_DAY = 86400.0
-"""Seconds per day"""
+"""Seconds per day (exact)."""
+
+SECS_PER_YEAR = 365.25 * SECS_PER_DAY
+"""Seconds per Julian year (365.25 days)."""
+
+# === Speed of Light ===
 
 C_KM_S = 299792.458
-"""Speed of light in km/s"""
+"""Speed of light in km/s (exact, SI definition)."""
 
 C_M_S = 299792458.0
-"""Speed of light in m/s"""
+"""Speed of light in m/s (exact, SI definition)."""
 
-T_SUN_SEC = 4.925490947e-6
-"""Solar GM/c^3 in seconds (for Shapiro delay)"""
+# === Solar System Constants ===
+
+T_SUN = 4.925490947e-6
+"""Solar mass parameter GM_sun/c^3 in seconds.
+
+Used for Shapiro delay: Delta_S = -2 * T_SUN * M2 * ln(1 - s*sin(Phi)).
+This is the IAU nominal value from Prsa et al. (2016)."""
 
 AU_KM = 149597870.7
-"""Astronomical unit in km"""
+"""Astronomical unit in km (IAU 2012 exact definition)."""
 
 AU_M = 149597870700.0
-"""Astronomical unit in meters"""
+"""Astronomical unit in meters (IAU 2012 exact definition)."""
 
-K_DM_SEC = 1.0 / 2.41e-4
-"""DM constant: K_DM = 1 / (2.41e-4) MHz^2 pc^-1 cm^3 s
+AU_PC = AU_M / 3.0856775814913673e16  # ~4.84813681e-6
+"""Astronomical unit in parsecs (AU/pc)."""
 
-Cold-plasma dispersion delay: delay = K_DM * DM / freq^2
-where DM is in pc cm^-3 and freq is in MHz
-"""
+PC_M = 3.0856775814913673e16
+"""Parsec in meters (IAU 2015 exact definition)."""
 
-L_B = 1.550519768e-8
-"""IAU TCB-TDB scaling factor for time scale conversion"""
+KPC_TO_KM = PC_M  # 1 kpc = 1000 pc * (PC_M m/pc) / (1000 m/km) = PC_M km/kpc
+"""Kiloparsec in kilometers. Numerically equals PC_M since the factors of 1000 cancel."""
 
-# === Planetary Parameters ===
+PC_TO_LIGHT_SEC = PC_M / C_M_S
+"""Parsec in light-seconds (~1.0292e8 lt-s/pc)."""
 
 T_PLANET = {
     'jupiter': 4.702819050227708e-09,
@@ -45,7 +58,51 @@ T_PLANET = {
     'neptune': 2.537311999186760e-10,
     'venus':   1.205680558494223e-11,
 }
-"""Planetary GM/c^3 in seconds (for planetary Shapiro delays)"""
+"""Planetary GM/c^3 in seconds (for planetary Shapiro delays).
+
+Values from JPL DE440 ephemeris."""
+
+# === Dispersion Constants ===
+
+K_DM_SEC = 1.0 / 2.41e-4
+"""DM dispersion constant in s MHz^2 pc^-1 cm^3.
+
+Cold-plasma dispersion delay: delay = K_DM_SEC * DM / freq_MHz^2.
+Value from Lorimer & Kramer (2004), Handbook of Pulsar Astronomy, p86 Note 1.
+This equals ~4149.378, matching PINT. Tempo2 uses 4.148808e3 (0.014% smaller),
+which is closer to the CODATA 2018 value of 4148.8064 derived from e^2/(2*pi*m_e*c).
+The difference is absorbed into the fitted DM value.
+"""
+
+# === Time Scale Constants ===
+
+L_B = 1.550519768e-8
+"""IAU TCB-TDB scaling factor for time scale conversion.
+
+TDB = TCB - L_B * (JD_TCB - T0) * 86400, from IAU 2006 Resolution B3."""
+
+MJD_TO_JD = 2400000.5
+"""Offset to convert MJD to JD: JD = MJD + 2400000.5."""
+
+# === Angular Conversion ===
+
+DEG_TO_RAD = np.pi / 180.0
+"""Degrees to radians conversion factor."""
+
+RAD_TO_DEG = 180.0 / np.pi
+"""Radians to degrees conversion factor."""
+
+MAS_PER_RAD = 180.0 * 3600.0 * 1000.0 / np.pi
+"""Milliarcseconds per radian (~206264806)."""
+
+HOURANGLE_PER_RAD = 12.0 / np.pi
+"""Hour angles per radian (~3.819)."""
+
+DEG_PER_RAD = RAD_TO_DEG
+"""Degrees per radian (alias for RAD_TO_DEG)."""
+
+# Backwards-compatible alias (prefer T_SUN in new code)
+T_SUN_SEC = T_SUN
 
 # === Observatory Coordinates ===
 
@@ -97,14 +154,3 @@ HIGH_PRECISION_PARAMS = _get_hp() | {'TZRMJD'}
 These parameters must be parsed with maximum precision to maintain
 microsecond-level accuracy in pulsar timing
 """
-
-# === Conversion Factors ===
-
-MJD_TO_JD = 2400000.5
-"""Offset to convert MJD to JD: JD = MJD + 2400000.5"""
-
-DEG_TO_RAD = np.pi / 180.0
-"""Degrees to radians conversion factor"""
-
-RAD_TO_DEG = 180.0 / np.pi
-"""Radians to degrees conversion factor"""

@@ -11,8 +11,8 @@ The DD model includes:
 
 References
 ----------
-- Damour & Deruelle (1985), Ann. Inst. H. Poincaré (Physique Théorique) 43, 107
-- Damour & Deruelle (1986), Ann. Inst. H. Poincaré (Physique Théorique) 44, 263
+- Damour & Deruelle (1985), Ann. Inst. H. Poincare (Physique Theorique) 43, 107
+- Damour & Deruelle (1986), Ann. Inst. H. Poincare (Physique Theorique) 44, 263
 - Taylor & Weisberg (1989), ApJ 345, 434
 - Tempo2: T2model_BTmodel.C, T2model_DD.C
 - PINT: pint/models/binary_dd.py
@@ -20,7 +20,7 @@ References
 
 import jax
 import jax.numpy as jnp
-from jug.utils.constants import SECS_PER_DAY, C_M_S
+from jug.utils.constants import SECS_PER_DAY, C_M_S, T_SUN
 
 
 @jax.jit
@@ -128,7 +128,7 @@ def dd_binary_delay(
 
     References
     ----------
-    - Damour & Deruelle (1985), Ann. Inst. H. Poincaré 43, 107
+    - Damour & Deruelle (1985), Ann. Inst. H. Poincare 43, 107
     - Damour & Deruelle (1986), equations [25]-[52]
     - PINT: pint/models/stand_alone_psr_binaries/DD_model.py
 
@@ -144,14 +144,14 @@ def dd_binary_delay(
 
     # Mean anomaly calculation following PINT's exact formula
     # PINT uses: orbits = tt0/PB - 0.5 * PBDOT * (tt0/PB)^2
-    # then wraps to fractional orbit before computing M = (frac_orbits) * 2π
+    # then wraps to fractional orbit before computing M = (frac_orbits) * 2pi
     # This properly accounts for orbital period evolution
     pb_sec = pb_days * SECS_PER_DAY
     orbits = tt0 / pb_sec - 0.5 * pbdot * (tt0 / pb_sec)**2
 
-    # CRITICAL: Wrap orbits to [0, 1) BEFORE multiplying by 2π
+    # Wrap orbits to [0, 1) BEFORE multiplying by 2pi
     # This avoids precision loss for large number of orbits
-    # PINT does: (orbits - floor(orbits)) * 2π
+    # PINT does: (orbits - floor(orbits)) * 2pi
     norbits = jnp.floor(orbits)
     frac_orbits = orbits - norbits
     mean_anomaly = frac_orbits * 2.0 * jnp.pi
@@ -163,7 +163,7 @@ def dd_binary_delay(
     # Solve Kepler's equation for eccentric anomaly E
     E = solve_kepler(mean_anomaly, ecc_current)
 
-    # Periastron advance: D&D 1986 eq [25]: ω = ω₀ + k·Ae
+    # Periastron advance: D&D 1986 eq [25]: omega = omega_0 + k*Ae
     # k = OMDOT / n (dimensionless); Ae = accumulated true anomaly (radians)
     # Differs from linear dt formula for eccentric orbits; matches PINT's implementation.
     half_E = E / 2.0
@@ -234,8 +234,6 @@ def dd_binary_delay(
     # Following PINT's DD_model.py: delayS()
     # Reference: Damour & Deruelle (1986) equation [26]
     # =========================================================================
-
-    T_SUN = 4.925490947e-6  # Solar mass in seconds (G*Msun/c^3)
 
     # Convert H3/STIG (DDH) or H3/H4 to SINI/M2 if needed
     # Use JAX-compatible conditionals for JIT compatibility
@@ -318,7 +316,6 @@ def dd_binary_delay_vectorized(
     h3_sec=None,
     h4_sec=None,
     stig=None,
-    _force_recompile_v2=None,  # Dummy parameter to force recompilation
 ):
     """Vectorized DD binary delay computation.
     

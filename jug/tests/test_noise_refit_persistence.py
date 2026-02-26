@@ -132,7 +132,7 @@ class TestNoiseRefitPersistence:
         fit_params = ['F0', 'F1', 'DM']
         F0_history = [original_F0]
 
-        # Scenario: no noise → EFAC → EFAC+RedNoise → RedNoise → no noise
+        # Scenario: no noise -> EFAC -> EFAC+RedNoise -> RedNoise -> no noise
         configs = [
             ('no_noise', NoiseConfig()),
             ('EFAC', NoiseConfig.from_par(session.params)),

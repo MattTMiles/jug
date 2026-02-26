@@ -69,7 +69,11 @@ jug_updates.patch
 # eopc04_*
 
 # Pulsar data files (sensitive/large timing data)
-data/pulsars/
+data/pulsars/*
+!data/pulsars/NG_15yr_partim
+data/pulsars/NG_15yr_partim/*
+!data/pulsars/NG_15yr_partim/J1909-3744_PINT_20220303.nb.par
+!data/pulsars/NG_15yr_partim/J1909-3744_PINT_20220303.nb.tim
 
 # Keep data directory structure but ignore contents
 # data/ephemeris/*

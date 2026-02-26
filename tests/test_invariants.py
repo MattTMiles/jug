@@ -130,6 +130,7 @@ def test_fit_recovery_f0():
     
     # Create session with original parameters
     session = TimingSession(par, tim, verbose=False)
+    session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
     prefit = session.compute_residuals(force_recompute=True)
     prefit_rms = prefit.get('weighted_rms_us', prefit.get('rms_us', 0))
     
@@ -161,6 +162,7 @@ def test_fit_recovery_multiple_params():
     
     # Create session
     session = TimingSession(par, tim, verbose=False)
+    session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
     prefit = session.compute_residuals(force_recompute=True)
     prefit_rms = prefit.get('weighted_rms_us', prefit.get('rms_us', 0))
     
@@ -193,6 +195,7 @@ def test_fit_deterministic():
     results = []
     for _ in range(2):
         session = TimingSession(par, tim, verbose=False)
+        session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
         session.compute_residuals(force_recompute=True)
         fit = session.fit_parameters(['F0', 'F1'], verbose=False, max_iter=10)
         postfit = session.compute_residuals(force_recompute=True)

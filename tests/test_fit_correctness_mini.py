@@ -42,6 +42,7 @@ def test_fit_reduces_rms():
         return False, "mini dataset not found"
     
     session = TimingSession(par, tim, verbose=False)
+    session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
     
     # Get prefit RMS
     prefit = session.compute_residuals(force_recompute=True)
@@ -77,6 +78,7 @@ def test_fit_produces_finite_params():
         return False, "mini dataset not found"
     
     session = TimingSession(par, tim, verbose=False)
+    session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
     session.compute_residuals(force_recompute=True)
     
     # Run fit
@@ -136,10 +138,9 @@ def test_fit_reasonable_param_changes():
     
     # Run fit
     session = TimingSession(par, tim, verbose=False)
+    session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
     session.compute_residuals(force_recompute=True)
     fit_result = session.fit_parameters(['F0', 'F1'], verbose=False, max_iter=10)
-    
-    # Get fitted F0
     param_values = fit_result.get('final_params', {}) or fit_result.get('params', {})
     f0_fitted = param_values.get('F0')
     
@@ -169,6 +170,7 @@ def test_fit_determinism():
     results = []
     for i in range(2):
         session = TimingSession(par, tim, verbose=False)
+        session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
         session.compute_residuals(force_recompute=True)
         fit = session.fit_parameters(['F0', 'F1'], verbose=False, max_iter=10)
         postfit = session.compute_residuals(force_recompute=True)
@@ -202,6 +204,7 @@ def test_fit_iterations_positive():
         return False, "mini dataset not found"
     
     session = TimingSession(par, tim, verbose=False)
+    session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
     session.compute_residuals(force_recompute=True)
     fit_result = session.fit_parameters(['F0', 'F1'], verbose=False, max_iter=10)
     

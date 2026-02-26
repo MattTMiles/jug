@@ -69,9 +69,9 @@ jug-gui = "jug.gui.main:main"
 jug-benchmark = "jug.scripts.benchmark_stages:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/jug"
-Documentation = "https://jug-timing.readthedocs.io"
-Repository = "https://github.com/yourusername/jug"
+Homepage = "https://github.com/MattTMiles/jug"
+Documentation = "https://github.com/MattTMiles/jug#readme"
+Repository = "https://github.com/MattTMiles/jug"
 Issues = "https://github.com/yourusername/jug/issues"
 
 [tool.setuptools.packages.find]

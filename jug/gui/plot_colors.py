@@ -38,6 +38,7 @@ def build_backend_brush_array(
     toa_flags: List[Dict[str, str]],
     palette: Optional[List[Tuple[int, int, int, int]]] = None,
     overrides: Optional[Dict[str, QColor]] = None,
+    all_backends: Optional[List[str]] = None,
 ) -> Tuple[List, Dict[str, QColor]]:
     """Build per-TOA brush array for backend coloring (vectorized).
     
@@ -52,6 +53,10 @@ def build_backend_brush_array(
         Color palette. If None, uses PlotTheme.get_backend_palette().
     overrides : dict of backend_name -> QColor, optional
         User-specified color overrides for specific backends.
+    all_backends : list of str, optional
+        Full sorted list of all backend names (including deleted ones).
+        Used to keep color assignments stable after TOA deletion.
+        If None, derives from the current toa_flags.
     
     Returns
     -------
@@ -69,17 +74,18 @@ def build_backend_brush_array(
     # Get backend labels (vectorized)
     backend_labels = get_backend_labels(toa_flags)
     
-    # Find unique backends and sort alphabetically for stable assignment
-    unique_backends = sorted(set(backend_labels))
+    # Use full backend list for stable palette indices, or derive from current data
+    if all_backends is not None:
+        unique_backends = all_backends
+    else:
+        unique_backends = sorted(set(backend_labels))
     
-    # Build color map: backend -> QColor
+    # Build color map: backend -> QColor (indices stable across deletions)
     backend_color_map = {}
     for i, backend in enumerate(unique_backends):
         if backend in overrides:
-            # User override
             backend_color_map[backend] = overrides[backend]
         else:
-            # Default palette color (cycle if more than 12 backends)
             r, g, b, a = palette[i % len(palette)]
             backend_color_map[backend] = QColor(r, g, b, a)
     

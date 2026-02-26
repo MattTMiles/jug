@@ -488,7 +488,7 @@ class TimingSession:
     
     def fit_parameters(
         self,
-        fit_params: List[str],
+        fit_params: Optional[List[str]] = None,
         max_iter: int = 100,
         convergence_threshold: float = 1e-14,
         device: Optional[str] = None,
@@ -503,8 +503,11 @@ class TimingSession:
 
         Parameters
         ----------
-        fit_params : list of str
-            Parameters to fit (e.g., ['F0', 'F1', 'DM'])
+        fit_params : list of str, optional
+            Additional parameters to fit on top of those already flagged
+            in the par file (free_params). For example, passing ['F2']
+            will fit all par-file free params plus F2.
+            If None, fits only the par-file free params.
         max_iter : int, default 100
             Maximum iterations
         convergence_threshold : float, default 1e-14
@@ -551,6 +554,21 @@ class TimingSession:
         solver_mode = solver_mode.lower().strip() if solver_mode else "exact"
         if solver_mode not in ("exact", "fast"):
             solver_mode = "exact"
+
+        # Build final fit param list: par-file free params + any extras
+        base_params = self.free_params or []
+        if fit_params is not None:
+            # Merge extras, avoiding duplicates, preserving order
+            extra = [p for p in fit_params if p not in base_params]
+            fit_params = base_params + extra
+        else:
+            fit_params = base_params
+
+        if not fit_params:
+            raise ValueError(
+                "No parameters to fit. Set fit flags in the par file "
+                "or pass fit_params=['F0', 'F1', ...]."
+            )
 
         if verbose:
             n_toas = len(self.toas_data)
@@ -692,7 +710,487 @@ class TimingSession:
     def get_toa_count(self) -> int:
         """Get number of TOAs in the session."""
         return len(self.toas_data)
+
+    @property
+    def free_params(self) -> List[str]:
+        """Parameters with fit flag = 1 in the par file.
+
+        These are the default parameters to fit, matching the par file
+        convention used by PINT and Tempo2.
+        """
+        import re
+        all_flags = sorted(self.params.get('_fit_flags', {}).keys())
+        # Filter out parametric families handled automatically by the fitter
+        # (DMX_nnnn, JUMP1..N are auto-detected from the par file)
+        return [p for p in all_flags
+                if not re.match(r'^DMX_\d+$', p) and not re.match(r'^JUMP\d+$', p)]
+
+    def set_free(self, *param_names):
+        """Turn on the fit flag for one or more parameters.
+
+        Accepts individual names or a list:
+            session.set_free('F0', 'F1')
+            session.set_free(['F0', 'F1'])
+        """
+        flags = self.params.setdefault('_fit_flags', {})
+        # If a single list/tuple was passed, unpack it
+        if len(param_names) == 1 and isinstance(param_names[0], (list, tuple)):
+            param_names = param_names[0]
+        for name in param_names:
+            flags[name] = True
+
+    def set_frozen(self, *param_names):
+        """Turn off the fit flag for one or more parameters.
+
+        Accepts individual names or a list:
+            session.set_frozen('F0', 'F1')
+            session.set_frozen(['F0', 'F1'])
+        """
+        flags = self.params.get('_fit_flags', {})
+        # If a single list/tuple was passed, unpack it
+        if len(param_names) == 1 and isinstance(param_names[0], (list, tuple)):
+            param_names = param_names[0]
+        for name in param_names:
+            flags.pop(name, None)
+
+    def print_model(self, include_dmx: bool = False):
+        """Print the timing model: all parameters, values, and fit status.
+
+        Groups parameters by category (metadata, position, spin, DM,
+        binary, noise, etc.) similar to PINT's model display.
+
+        Parameters
+        ----------
+        include_dmx : bool, default False
+            If True, print individual DMX bins. Otherwise show a
+            summary count.
+        """
+        p = self.params
+        fit_flags = p.get('_fit_flags', {})
+
+        def _row(key, val, show_fit=True):
+            flag_str = ''
+            if show_fit:
+                if key in fit_flags:
+                    flag_str = '  [fit]'
+                else:
+                    flag_str = '  [frozen]'
+            if isinstance(val, float):
+                hp = p.get('_high_precision', {})
+                if key in hp:
+                    val_str = hp[key]
+                else:
+                    val_str = repr(val)
+            else:
+                val_str = str(val)
+            return f"  {key:<20s} {val_str}{flag_str}"
+
+        lines = [f"=== Timing Model: {p.get('PSR', 'Unknown')} ===", ""]
+
+        # Metadata
+        lines.append("-- Metadata --")
+        for k in ['PSR', 'EPHEM', 'CLOCK', 'UNITS', 'TIMEEPH', 'T2CMETHOD',
+                   'DILATEFREQ', 'DMDATA', 'NTOA', 'START', 'FINISH']:
+            if k in p:
+                lines.append(_row(k, p[k], show_fit=False))
+
+        # Position
+        lines.append("")
+        lines.append("-- Position --")
+        if p.get('_ecliptic_coords'):
+            lines.append(_row('ECL', p.get('ECL', p.get('_ecliptic_frame', '')), show_fit=False))
+            for k in ['ELONG', 'ELAT', 'PMELONG', 'PMELAT', 'PX']:
+                if k in p:
+                    lines.append(_row(k, p[k]))
+        else:
+            for k in ['RAJ', 'DECJ', 'PMRA', 'PMDEC', 'PX']:
+                if k in p:
+                    lines.append(_row(k, p[k]))
+        if 'POSEPOCH' in p:
+            lines.append(_row('POSEPOCH', p['POSEPOCH'], show_fit=False))
+
+        # Spin
+        lines.append("")
+        lines.append("-- Spin --")
+        for k in ['F0', 'F1', 'F2', 'F3']:
+            if k in p:
+                lines.append(_row(k, p[k]))
+        if 'PEPOCH' in p:
+            lines.append(_row('PEPOCH', p['PEPOCH'], show_fit=False))
+
+        # DM
+        lines.append("")
+        lines.append("-- Dispersion --")
+        for k in ['DM', 'DM1', 'DM2', 'DM3']:
+            if k in p:
+                lines.append(_row(k, p[k]))
+        if 'DMEPOCH' in p:
+            lines.append(_row('DMEPOCH', p['DMEPOCH'], show_fit=False))
+
+        # DMX summary or detail
+        dmx_keys = sorted([k for k in p if k.startswith('DMX_') and k[4:].isdigit()])
+        n_dmx = len(dmx_keys)
+        if n_dmx > 0:
+            n_dmx_fit = sum(1 for k in dmx_keys if k in fit_flags)
+            if include_dmx:
+                lines.append(f"  -- DMX ({n_dmx} bins, {n_dmx_fit} fit) --")
+                for k in dmx_keys:
+                    lines.append(_row(k, p[k]))
+            else:
+                lines.append(f"  DMX                {n_dmx} bins ({n_dmx_fit} fit)  [use print_model(include_dmx=True) to show]")
+
+        # Binary
+        if 'BINARY' in p:
+            lines.append("")
+            lines.append(f"-- Binary ({p['BINARY']}) --")
+            binary_keys = ['PB', 'A1', 'ECC', 'E', 'T0', 'OM', 'OMDOT', 'PBDOT',
+                           'GAMMA', 'M2', 'SINI', 'KIN', 'KOM',
+                           'EPS1', 'EPS2', 'EPS1DOT', 'EPS2DOT', 'TASC',
+                           'FB0', 'FB1', 'A1DOT', 'XDOT', 'EDOT',
+                           'DR', 'DTH', 'A0', 'B0', 'SHAPMAX',
+                           'H3', 'H4', 'STIGMA', 'K96']
+            for k in binary_keys:
+                if k in p:
+                    lines.append(_row(k, p[k]))
+
+        # FD
+        fd_keys = sorted([k for k in p if k.startswith('FD') and k[2:].isdigit()],
+                         key=lambda k: int(k[2:]))
+        if fd_keys:
+            lines.append("")
+            lines.append("-- Frequency-dependent delays --")
+            for k in fd_keys:
+                lines.append(_row(k, p[k]))
+
+        # JUMPs
+        jump_lines = p.get('_jump_lines', [])
+        if jump_lines:
+            lines.append("")
+            lines.append(f"-- JUMPs ({len(jump_lines)}) --")
+            for idx, jl in enumerate(jump_lines):
+                jkey = f'JUMP{idx + 1}'
+                parts = jl.strip().split()
+                if parts[1].upper() == 'MJD':
+                    label = f"MJD {parts[2]}-{parts[3]}"
+                else:
+                    label = f"{parts[1]} {parts[2]}"
+                flag_str = '  [fit]' if jkey in fit_flags else '  [frozen]'
+                lines.append(f"  {jkey:<20s} {p.get(jkey, 0.0):<22}  ({label}){flag_str}")
+
+        # Noise
+        noise_lines = p.get('_noise_lines', [])
+        if noise_lines:
+            lines.append("")
+            lines.append(f"-- White Noise ({len(noise_lines)} entries) --")
+            for nl in noise_lines:
+                parts = nl.strip().split()
+                kind = parts[0]
+                flag_val = parts[2] if len(parts) >= 3 else ''
+                value = parts[3] if len(parts) >= 4 else ''
+                lines.append(f"  {kind:<12s} {flag_val:<20s} {value}")
+
+        # Red noise
+        if 'RNAMP' in p or any(k.upper() in ('TNREDAMP',) for k in p):
+            lines.append("")
+            lines.append("-- Red Noise --")
+            if 'RNAMP' in p:
+                import math
+                _SEC_PER_YR = 365.25 * 86400.0
+                log10_A = math.log10(2.0 * math.pi * math.sqrt(3.0) / (_SEC_PER_YR * 1e6) * float(p['RNAMP']))
+                gamma = -float(p.get('RNIDX', 0))
+                lines.append(f"  {'TNRedAmp':<20s} {log10_A}")
+                lines.append(f"  {'TNRedGam':<20s} {gamma}")
+
+        # Misc
+        misc_keys = ['NE_SW', 'SWM', 'PLANET_SHAPIRO', 'CORRECT_TROPOSPHERE']
+        misc_present = [k for k in misc_keys if k in p]
+        if misc_present:
+            lines.append("")
+            lines.append("-- Miscellaneous --")
+            for k in misc_present:
+                lines.append(_row(k, p[k], show_fit=False))
+
+        # TZR
+        lines.append("")
+        lines.append("-- Reference TOA --")
+        for k in ['TZRMJD', 'TZRSITE', 'TZRFRQ']:
+            if k in p:
+                lines.append(_row(k, p[k], show_fit=False))
+
+        print('\n'.join(lines))
+
+    def print_toas(self, n: int = 10):
+        """Print a summary of the TOA dataset.
+
+        Parameters
+        ----------
+        n : int, default 10
+            Number of sample TOAs to display at the start and end.
+        """
+        toas = self.toas_data
+        n_toas = len(toas)
+        errors = np.array([t.error_us for t in toas])
+        freqs = np.array([t.freq_mhz for t in toas])
+        mjds = np.array([t.mjd_int + t.mjd_frac for t in toas])
+
+        # Backend counts
+        from jug.engine.flag_mapping import resolve_backends
+        backends = resolve_backends([t.flags for t in toas])
+        from collections import Counter
+        backend_counts = Counter(backends)
+
+        # Observatory counts
+        obs_counts = Counter(t.observatory for t in toas)
+
+        lines = [
+            f"=== TOA Summary: {self.params.get('PSR', 'Unknown')} ===",
+            f"  Total TOAs:     {n_toas}",
+            f"  MJD range:      {mjds.min():.3f} - {mjds.max():.3f}",
+            f"  Timespan:       {(mjds.max() - mjds.min()) / 365.25:.2f} years",
+            f"  Freq range:     {freqs.min():.1f} - {freqs.max():.1f} MHz",
+            f"  Error range:    {errors.min():.4f} - {errors.max():.4f} us",
+            f"  Median error:   {np.median(errors):.4f} us",
+            "",
+            "  Backends:",
+        ]
+        for backend, count in sorted(backend_counts.items()):
+            lines.append(f"    {backend:<25s} {count:>6d} TOAs")
+
+        lines.append("")
+        lines.append("  Observatories:")
+        for obs, count in sorted(obs_counts.items()):
+            lines.append(f"    {obs:<25s} {count:>6d} TOAs")
+
+        # Sample TOAs
+        lines.append("")
+        show_n = min(n, n_toas)
+        lines.append(f"  First {show_n} TOAs:")
+        lines.append(f"    {'MJD':>18s}  {'Freq (MHz)':>10s}  {'Error (us)':>10s}  {'Backend':>15s}  {'Obs':>6s}")
+        for t in toas[:show_n]:
+            b = resolve_backends([t.flags])[0]
+            lines.append(f"    {t.mjd_int + t.mjd_frac:>18.10f}  {t.freq_mhz:>10.1f}  {t.error_us:>10.3f}  {b:>15s}  {t.observatory:>6s}")
+
+        if n_toas > 2 * show_n:
+            lines.append(f"    ... ({n_toas - 2*show_n} more) ...")
+            lines.append(f"  Last {show_n} TOAs:")
+            for t in toas[-show_n:]:
+                b = resolve_backends([t.flags])[0]
+                lines.append(f"    {t.mjd_int + t.mjd_frac:>18.10f}  {t.freq_mhz:>10.1f}  {t.error_us:>10.3f}  {b:>15s}  {t.observatory:>6s}")
+
+        print('\n'.join(lines))
     
+    def summary(self) -> str:
+        """Print a summary of the current session state.
+
+        Shows pulsar name, TOA count, parameter count, binary model,
+        noise configuration, and fit status.
+        """
+        p = self.params
+        lines = []
+        lines.append(f"=== {p.get('PSR', 'Unknown')} ===")
+        lines.append(f"  TOAs:       {len(self.toas_data)}")
+        lines.append(f"  Par file:   {self.par_file.name}")
+        lines.append(f"  Tim file:   {self.tim_file.name}")
+
+        # Coordinate system
+        if p.get('_ecliptic_coords'):
+            lines.append(f"  Coords:     Ecliptic ({p.get('_ecliptic_frame', 'IERS2010')})")
+        else:
+            lines.append(f"  Coords:     Equatorial (RAJ/DECJ)")
+
+        # Binary
+        binary = p.get('BINARY')
+        if binary:
+            lines.append(f"  Binary:     {binary}")
+
+        # DMX
+        n_dmx = len([k for k in p if k.startswith('DMX_') and k[4:].isdigit()])
+        if n_dmx:
+            lines.append(f"  DMX bins:   {n_dmx}")
+
+        # Noise
+        noise_lines = p.get('_noise_lines', [])
+        if noise_lines:
+            from collections import Counter
+            kinds = Counter(l.split()[0].upper() for l in noise_lines)
+            noise_str = ', '.join(f"{v} {k}" for k, v in sorted(kinds.items()))
+            lines.append(f"  Noise:      {noise_str}")
+        if 'RNAMP' in p or any(k.upper() in ('TNREDAMP',) for k in p):
+            lines.append(f"  Red noise:  Yes")
+
+        # JUMPs
+        n_jumps = len(p.get('_jump_lines', []))
+        if n_jumps:
+            lines.append(f"  JUMPs:      {n_jumps}")
+
+        # Ephem / clock
+        lines.append(f"  Ephemeris:  {p.get('EPHEM', 'N/A')}")
+        lines.append(f"  Clock:      {p.get('CLOCK', p.get('CLK', 'N/A'))}")
+        lines.append(f"  Timescale:  {p.get('_par_timescale', 'TDB')}")
+
+        text = '\n'.join(lines)
+        print(text)
+
+    def parameter_table(self, fit_result: Optional[Dict[str, Any]] = None) -> None:
+        """Print a table comparing initial and current parameter values.
+
+        Parameters
+        ----------
+        fit_result : dict, optional
+            Fit result dict (with 'final_params' and 'uncertainties').
+            If provided, shows fitted values and uncertainties.
+
+        Returns
+        -------
+        str
+            Formatted table string.
+        """
+        initial = self._initial_params
+        current = self.params
+
+        if fit_result is not None:
+            fitted = fit_result.get('final_params', {})
+            unc = fit_result.get('uncertainties', {})
+            param_names = list(fitted.keys())
+        else:
+            fitted = {}
+            unc = {}
+            # Show key timing params
+            param_names = [k for k in current if not k.startswith('_')
+                           and not k.startswith('DMX') and not k.startswith('JUMP')
+                           and isinstance(current[k], (int, float))
+                           and k not in ('NTOA', 'CHI2', 'START', 'FINISH')]
+
+        lines = []
+        hdr = f"{'Parameter':<14s} {'Initial':>22s} {'Current':>22s}"
+        if fit_result is not None:
+            hdr += f" {'Uncertainty':>14s} {'Delta/sigma':>12s}"
+        lines.append(hdr)
+        lines.append('-' * len(hdr))
+
+        for name in param_names:
+            init_val = initial.get(name)
+            curr_val = fitted.get(name, current.get(name))
+            row = f"{name:<14s} "
+            if isinstance(init_val, str):
+                row += f"{init_val:>22s} {str(curr_val):>22s}"
+            elif isinstance(init_val, (int, float)):
+                row += f"{init_val:>22.15g} {curr_val:>22.15g}"
+            else:
+                row += f"{'N/A':>22s} {str(curr_val):>22s}"
+
+            if fit_result is not None and name in unc:
+                u = unc[name]
+                row += f" {u:>14.6e}"
+                if isinstance(init_val, (int, float)) and isinstance(curr_val, (int, float)) and u > 0:
+                    delta = abs(curr_val - init_val)
+                    row += f" {delta/u:>12.2f}"
+                else:
+                    row += f" {'':>12s}"
+            lines.append(row)
+
+        text = '\n'.join(lines)
+        print(text)
+
+    def weighted_rms(self, residuals_us: Optional[np.ndarray] = None) -> float:
+        """Compute weighted RMS of residuals in microseconds.
+
+        Parameters
+        ----------
+        residuals_us : ndarray, optional
+            Residuals to use. If None, computes current residuals.
+
+        Returns
+        -------
+        float
+            Weighted RMS in microseconds.
+        """
+        if residuals_us is None:
+            result = self.compute_residuals(subtract_tzr=True)
+            residuals_us = result['residuals_us']
+        errors_us = np.array([t.error_us for t in self.toas_data])
+        weights = 1.0 / errors_us**2
+        return float(np.sqrt(np.average(residuals_us**2, weights=weights)))
+
+    def save_par(self, path, fit_result=None):
+        """Save the current parameters to a par file.
+
+        Parameters
+        ----------
+        path : str or Path
+            Output file path.
+        fit_result : dict, optional
+            Fit result dict for writing uncertainties and fit flags.
+        """
+        from jug.io.par_writer import write_par_file
+        uncertainties = {}
+        fit_params = set()
+        if fit_result is not None:
+            uncertainties = fit_result.get('uncertainties', {})
+            fit_params = set(fit_result.get('final_params', {}).keys())
+        write_par_file(self.params, path,
+                       uncertainties=uncertainties, fit_params=fit_params)
+
+    def save_tim(self, path, deleted_indices=None):
+        """Save the tim file, commenting out deleted TOAs.
+
+        Parameters
+        ----------
+        path : str or Path
+            Output file path.
+        deleted_indices : set of int, optional
+            Zero-based indices of TOAs to comment out. Default: none.
+        """
+        from jug.io.tim_writer import write_tim_file
+        if deleted_indices is None:
+            deleted_indices = set()
+        return write_tim_file(self.tim_file, path, deleted_indices)
+
+    def inspect(self) -> str:
+        """List available inspection methods and data attributes.
+
+        Call this after loading a pulsar to see what you can do.
+        """
+        lines = [
+            f"=== {self.params.get('PSR', 'Unknown')} - Available Inspections ===",
+            "",
+            "Session methods:",
+            "  session.summary()                    - Overview of pulsar and data",
+            "  session.free_params                  - Parameters with fit flag on (from par file)",
+            "  session.set_free('F2', 'PX')         - Turn on fit flag for parameters",
+            "  session.set_frozen('PX')             - Turn off fit flag for parameters",
+            "  session.parameter_table()            - List all timing parameters",
+            "  session.parameter_table(fit_result)  - Compare pre/post-fit with uncertainties",
+            "  session.weighted_rms()               - Compute current weighted RMS (us)",
+            "  session.compute_residuals()           - Compute timing residuals",
+            "  session.fit_parameters(fit_params)    - Fit specified parameters",
+            "  session.get_initial_params()          - Original par file parameters",
+            "  session.save_par(path, fit_result)    - Write par file",
+            "  session.save_tim(path, deleted)       - Write tim file",
+            "",
+            "Data attributes:",
+            f"  session.params                       - Current parameters ({len([k for k in self.params if not k.startswith('_')])} keys)",
+            f"  session.toas_data                    - TOA objects ({len(self.toas_data)} TOAs)",
+            f"  session.par_file                     - {self.par_file}",
+            f"  session.tim_file                     - {self.tim_file}",
+            "",
+            "Fit result keys (after fitting):",
+            "  result['residuals_us']               - Post-fit residuals (us)",
+            "  result['residuals_prefit_us']         - Pre-fit residuals (us)",
+            "  result['final_params']               - Fitted parameter values",
+            "  result['uncertainties']              - Parameter uncertainties",
+            "  result['noise_realizations']         - Noise realizations (RedNoise, DMNoise, ECORR)",
+            "  result['covariance']                 - Parameter covariance matrix",
+            "  result['final_chi2']                 - Chi-squared",
+            "  result['iterations']                 - Number of iterations",
+            "  result['converged']                  - Convergence flag",
+            "",
+            "Noise estimation (requires numpyro):",
+            "  from jug.noise.map_estimator import estimate_noise_parameters",
+        ]
+        text = '\n'.join(lines)
+        print(text)
+
     def __repr__(self) -> str:
         return (
             f"TimingSession("

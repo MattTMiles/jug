@@ -1,4 +1,4 @@
-# JUG — JAX-based Unified pulsar timinG
+# JUG — JAX-based Unified pulsar timinG (?)
 
 Fast, independent pulsar timing software built on JAX with automatic GPU acceleration.
 

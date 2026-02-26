@@ -89,6 +89,7 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
     """
     params = {}
     params_str = {}
+    fit_flags = {}  # Track which parameters have fit flag = 1
     noise_lines = []  # Collect EFAC/EQUAD/ECORR lines (non-standard multi-token format)
     jump_lines = []   # Collect JUMP lines (multi-token format: JUMP -flag val value)
 
@@ -135,8 +136,16 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                     except ValueError:
                         params[key] = value_str
 
+                # Extract fit flag: parts[2] is '1' or '0' if present
+                if len(parts) >= 3 and parts[2] in ('0', '1'):
+                    if parts[2] == '1':
+                        fit_flags[key] = True
+
     # Store high-precision string values
     params['_high_precision'] = params_str
+
+    # Store fit flags (parameters with fit flag = 1 in par file)
+    params['_fit_flags'] = fit_flags
     
     # Store raw noise lines for later parsing by jug.noise.white
     if noise_lines:
@@ -153,11 +162,17 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
             try:
                 if jparts[1].upper() == 'MJD':
                     val = float(jparts[4])
+                    fit_idx = 5
                 else:
                     val = float(jparts[3])
+                    fit_idx = 4
             except (IndexError, ValueError):
                 val = 0.0
-            params[f'JUMP{idx + 1}'] = val
+                fit_idx = -1
+            jump_key = f'JUMP{idx + 1}'
+            params[jump_key] = val
+            if fit_idx > 0 and len(jparts) > fit_idx and jparts[fit_idx] == '1':
+                fit_flags[jump_key] = True
     
     # Determine and store par file timescale
     # UNITS keyword is the authoritative source (PINT/Tempo2 convention)

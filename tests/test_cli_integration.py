@@ -143,6 +143,7 @@ def test_cli_fit_improves_rms():
     from jug.engine.session import TimingSession
     
     session = TimingSession(par, tim, verbose=False)
+    session.params['_fit_flags'] = {}  # Clear par-file fit flags for controlled test
     prefit = session.compute_residuals(force_recompute=True)
     prefit_rms = prefit.get('weighted_rms_us') or prefit.get('rms_us')
     

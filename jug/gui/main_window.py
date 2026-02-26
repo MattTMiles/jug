@@ -1418,8 +1418,37 @@ class MainWindow(QMainWindow):
     
     def on_save_par(self):
         """Handle Save .par file."""
-        # TODO: Implement in Phase 3
-        self.status_bar.showMessage("Save .par not yet implemented (Phase 3)")
+        if self.session is None:
+            QMessageBox.warning(self, "No Data", "No session loaded")
+            return
+
+        # Default to original par file directory/name
+        default_path = str(self.par_file) if self.par_file else ""
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save .par File", default_path,
+            "Par Files (*.par);;All Files (*)"
+        )
+        if not filename:
+            return
+
+        try:
+            from jug.io.par_writer import write_par_file
+
+            uncertainties = {}
+            fit_params = set()
+            if self.fit_results is not None:
+                uncertainties = self.fit_results.get('uncertainties', {})
+                fit_params = set(self.fit_results.get('final_params', {}).keys())
+
+            write_par_file(
+                self.session.params, filename,
+                uncertainties=uncertainties,
+                fit_params=fit_params,
+            )
+            self.status_bar.showMessage(f"Saved .par to {Path(filename).name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save .par file:\n\n{e}")
     
     def _check_ready_to_compute(self):
         """Check if we have both files and can compute residuals."""
@@ -1548,11 +1577,14 @@ class MainWindow(QMainWindow):
         # Auto-select color mode: backend if multiple backends, else none
         if self.toa_flags is not None:
             from jug.engine.flag_mapping import resolve_backends
-            n_backends = len(set(resolve_backends(self.toa_flags)))
+            all_backends = resolve_backends(self.toa_flags)
+            n_backends = len(set(all_backends))
             if n_backends > 1:
                 self._color_mode = "backend"
             else:
                 self._color_mode = "none"
+            # Store full backend list for stable color assignment after deletions
+            self._all_backends_sorted = sorted(set(all_backends))
         else:
             self._color_mode = "none"
         self._sync_color_mode_ui()
@@ -1576,8 +1608,10 @@ class MainWindow(QMainWindow):
         self.fit_window_button.setEnabled(True)
         if self.is_remote:
             self._file_overlay.set_item_enabled("save_tim", True)
+            self._file_overlay.set_item_enabled("save_par", True)
         else:
             self.save_tim_action.setEnabled(True)
+            self.save_par_action.setEnabled(True)
 
         # Update statistics (now just values, labels are separate)
         self.rms_label.setText(f"{self.rms_us:.6f} mus")
@@ -1819,9 +1853,9 @@ class MainWindow(QMainWindow):
                 return self.toa_freqs, "Frequency (MHz)"
             return mjd, "MJD (freq unavailable)"
 
-        if mode == "ToA Error (mus)":
+        if mode == "ToA Error (\u03bcs)":
             if self.errors_us is not None:
-                return self.errors_us, "ToA Error (mus)"
+                return self.errors_us, "ToA Error (\u03bcs)"
             return mjd, "MJD (errors unavailable)"
 
         if mode == "Orbital Phase":
@@ -2018,7 +2052,8 @@ class MainWindow(QMainWindow):
         full_errors = result.get('errors_us', None)
         self.errors_us = full_errors if full_errors is not None else None
 
-        # Update auxiliary arrays only when the result provides them
+        # Update auxiliary arrays: keep existing values when result doesn't
+        # provide new ones (e.g. fit path), but re-filter to match new size.
         if result.get('freq_bary_mhz') is not None:
             self.toa_freqs = result['freq_bary_mhz']
         if result.get('orbital_phase') is not None:
@@ -2029,16 +2064,18 @@ class MainWindow(QMainWindow):
         # Re-apply deletion mask when result arrays are full-size
         if need_mask:
             km = self._keep_mask
+            n_full = len(km)
             self.mjd = self.mjd[km]
             self.residuals_us = self.residuals_us[km]
             self.postfit_residuals_us = self.postfit_residuals_us[km]
             if self.errors_us is not None:
                 self.errors_us = self.errors_us[km]
-            if self.toa_freqs is not None:
+            # Only re-filter auxiliary arrays if they are full-size
+            if self.toa_freqs is not None and len(self.toa_freqs) == n_full:
                 self.toa_freqs = self.toa_freqs[km]
-            if self.orbital_phase is not None:
+            if self.orbital_phase is not None and len(self.orbital_phase) == n_full:
                 self.orbital_phase = self.orbital_phase[km]
-            if self.toa_flags is not None:
+            if self.toa_flags is not None and len(self.toa_flags) == n_full:
                 self.toa_flags = [f for f, k in zip(self.toa_flags, km) if k]
         self._backend_brushes_cache = None
 
@@ -3167,7 +3204,8 @@ class MainWindow(QMainWindow):
             # Build new brush array (vectorized, no per-TOA loop)
             brushes, self._backend_color_map = build_backend_brush_array(
                 self.toa_flags,
-                overrides=self._backend_color_overrides
+                overrides=self._backend_color_overrides,
+                all_backends=getattr(self, '_all_backends_sorted', None),
             )
             
             # Cache for next update
@@ -4359,11 +4397,14 @@ class MainWindow(QMainWindow):
         if self.errors_us is not None:
             self.errors_us = self.errors_us[keep_mask]
         if hasattr(self, 'toa_freqs') and self.toa_freqs is not None:
-            self.toa_freqs = self.toa_freqs[keep_mask]
+            if len(self.toa_freqs) == len(keep_mask):
+                self.toa_freqs = self.toa_freqs[keep_mask]
         if hasattr(self, 'orbital_phase') and self.orbital_phase is not None:
-            self.orbital_phase = self.orbital_phase[keep_mask]
+            if len(self.orbital_phase) == len(keep_mask):
+                self.orbital_phase = self.orbital_phase[keep_mask]
         if hasattr(self, 'toa_flags') and self.toa_flags is not None:
-            self.toa_flags = [f for f, k in zip(self.toa_flags, keep_mask) if k]
+            if len(self.toa_flags) == len(keep_mask):
+                self.toa_flags = [f for f, k in zip(self.toa_flags, keep_mask) if k]
         # Invalidate backend color cache so it's rebuilt for the new TOA count
         self._backend_brushes_cache = None
         
@@ -4418,25 +4459,26 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def on_save_tim(self):
-        """Save current TOAs to a new .tim file (excluding deleted points)."""
+        """Save current TOAs to a .tim file (deleted points commented with C)."""
         if self.tim_file is None:
             QMessageBox.warning(self, "No Data", "No .tim file loaded")
             return
-        
-        # Suggest a filename
-        original_name = self.tim_file.stem
-        suggested_name = f"{original_name}_filtered.tim"
-        
+
+        # Default to original tim file path
+        default_path = str(self.tim_file) if self.tim_file else ""
+
         filename, _ = QFileDialog.getSaveFileName(
-            self, "Save .tim File", suggested_name, "Tim Files (*.tim);;All Files (*)"
+            self, "Save .tim File", default_path,
+            "Tim Files (*.tim);;All Files (*)"
         )
-        
+
         if not filename:
             return  # User cancelled
-        
+
         try:
-            self._write_filtered_tim(filename)
-            self.status_bar.showMessage(f"Saved {len(self.mjd)} TOAs to {Path(filename).name}")
+            from jug.io.tim_writer import write_tim_file
+            n_kept = write_tim_file(self.tim_file, filename, self.deleted_indices)
+            self.status_bar.showMessage(f"Saved {n_kept} TOAs to {Path(filename).name}")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save .tim file:\n\n{e}")
 

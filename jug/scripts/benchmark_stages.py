@@ -529,12 +529,12 @@ def run_benchmark(par_file: Path, tim_file: Path, output_file: Optional[Path] = 
     res_result = benchmark_residuals_detailed(
         cold_timer, par_file, tim_file, params, toas_data, " (cold)"
     )
-    print(f"   RMS: {res_result['rms_us']:.6f} μs, TOAs: {res_result['n_toas']}")
+    print(f"   RMS: {res_result['rms_us']:.6f} mus, TOAs: {res_result['n_toas']}")
     
     # Fit
     print("4. Benchmarking fit (cold)...")
     fit_result = benchmark_fit(cold_timer, par_file, tim_file, ['F0', 'F1'], " (cold)")
-    print(f"   Final RMS: {fit_result['final_rms']:.6f} μs, Iterations: {fit_result['iterations']}")
+    print(f"   Final RMS: {fit_result['final_rms']:.6f} mus, Iterations: {fit_result['iterations']}")
     
     print("\n" + cold_timer.report("COLD RUN TIMING"))
     results["cold_run"] = cold_timer.to_dict()
@@ -561,12 +561,12 @@ def run_benchmark(par_file: Path, tim_file: Path, output_file: Optional[Path] = 
     res_result2 = benchmark_residuals_detailed(
         warm_timer, par_file, tim_file, params2, toas_data2, " (warm)"
     )
-    print(f"   RMS: {res_result2['rms_us']:.6f} μs")
+    print(f"   RMS: {res_result2['rms_us']:.6f} mus")
     
     # Fit (warm)
     print("3. Benchmarking fit (warm)...")
     fit_result2 = benchmark_fit(warm_timer, par_file, tim_file, ['F0', 'F1'], " (warm)")
-    print(f"   Final RMS: {fit_result2['final_rms']:.6f} μs, Iterations: {fit_result2['iterations']}")
+    print(f"   Final RMS: {fit_result2['final_rms']:.6f} mus, Iterations: {fit_result2['iterations']}")
     
     print("\n" + warm_timer.report("WARM RUN TIMING"))
     results["warm_run"] = warm_timer.to_dict()

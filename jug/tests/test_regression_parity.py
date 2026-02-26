@@ -1,5 +1,5 @@
 """
-Regression tests — evaluate-only vs fitter codepath identity.
+Regression tests -- evaluate-only vs fitter codepath identity.
 =============================================================
 
 These tests ensure that:
@@ -34,14 +34,14 @@ DATA_PULSARS = JUG_ROOT / "data" / "pulsars"
 DATA_GOLDEN = JUG_ROOT / "tests" / "data_golden"
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# -- helpers ------------------------------------------------------------------
 
 def _skip_no_data(par, tim):
     if not par.exists() or not tim.exists():
         pytest.skip(f"Missing data: {par.name} / {tim.name}")
 
 
-# ── Test class ───────────────────────────────────────────────────────────────
+# -- Test class ---------------------------------------------------------------
 
 class TestEvalOnlyIdentity:
     """Two evaluate-only runs must agree bit-for-bit."""

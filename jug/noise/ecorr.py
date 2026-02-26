@@ -2,7 +2,7 @@
 
 ECORR models correlated jitter noise within observing epochs.  TOAs that
 share the same backend flag value **and** fall within the same MJD window
-(default 0.5 days ≈ a single observing session) are grouped into an
+(default 0.5 days ~= a single observing session) are grouped into an
 *epoch*.  Within each epoch, the noise covariance gains a rank-1 update:
 
 .. math::
@@ -15,7 +15,7 @@ In matrix notation the full covariance is:
 
     C = \\text{diag}(\\sigma_i^2)  +  U \\, \\text{diag}(J_k) \\, U^T
 
-where :math:`U` is an (N_toa × N_epoch) quantization matrix with
+where :math:`U` is an (N_toa * N_epoch) quantization matrix with
 :math:`U_{i,k} = 1` if TOA *i* belongs to epoch *k*, and
 :math:`J_k = \\text{ECORR}_k^2`.
 
@@ -23,7 +23,7 @@ The key operation exposed by this module is **block-Cholesky whitening**:
 given residuals *r* and design matrix *M*, produce whitened versions
 :math:`\\tilde{r} = L^{-1} r` and :math:`\\tilde{M} = L^{-1} M` such
 that the standard OLS/WLS solver recovers the GLS solution.  This is done
-block-by-block without ever forming the full N×N matrix.
+block-by-block without ever forming the full N*N matrix.
 
 For single-TOA epochs the whitening reduces to the usual diagonal
 :math:`1/\\sigma_i` scaling, so the approach degrades gracefully when
@@ -31,7 +31,7 @@ ECORR entries are absent or when no TOA groups exist.
 
 References
 ----------
-- van Haasteren & Vallisneri (2014) — "New advances in the Gaussian-process
+- van Haasteren & Vallisneri (2014) -- "New advances in the Gaussian-process
   approach to pulsar-timing data analysis"
 - NANOGrav / enterprise noise conventions
 """
@@ -155,7 +155,7 @@ class ECORRWhitener:
     Attributes
     ----------
     epoch_groups : list of EpochGroup
-        All multi-TOA epoch groups (size ≥ 2).
+        All multi-TOA epoch groups (size >= 2).
     singleton_indices : np.ndarray
         Indices of TOAs not in any multi-TOA epoch.
     n_toas : int
@@ -193,7 +193,7 @@ class ECORRWhitener:
         sigma_sec : np.ndarray, shape (n_toas,)
             Per-TOA uncertainties in seconds (after EFAC/EQUAD scaling).
         """
-        # Cast to float64 — JAX does not support float128/longdouble
+        # Cast to float64 -- JAX does not support float128/longdouble
         sigma_sec = np.asarray(sigma_sec, dtype=np.float64)
         n_blocks = len(self.epoch_groups)
 
@@ -254,7 +254,7 @@ class ECORRWhitener:
         # Batched Cholesky via JAX vmap (JIT-compiled)
         self._L_padded = _batched_cholesky(jnp.array(C_padded))
 
-        # Singletons: just 1/σ
+        # Singletons: just 1/sigma
         if len(self.singleton_indices) > 0:
             self._sigma_inv_singletons = jnp.array(
                 1.0 / sigma_sec[self.singleton_indices]
@@ -277,7 +277,7 @@ class ECORRWhitener:
         r_white : np.ndarray, shape (n_toas,)
             Whitened residuals (dimensionless if r was in seconds).
         """
-        # Cast to float64 — JAX does not support float128/longdouble
+        # Cast to float64 -- JAX does not support float128/longdouble
         r_sec = np.asarray(r_sec, dtype=np.float64)
         r_white = np.empty(self.n_toas, dtype=np.float64)
 
@@ -319,7 +319,7 @@ class ECORRWhitener:
         -------
         M_white : np.ndarray, shape (n_toas, n_params)
         """
-        # Cast to float64 — JAX does not support float128/longdouble
+        # Cast to float64 -- JAX does not support float128/longdouble
         M = np.asarray(M, dtype=np.float64)
         M_white = np.empty_like(M)
         n_params = M.shape[1]
@@ -391,7 +391,7 @@ def _group_toas_into_epochs(
     -------
     epochs : list of tuple of int
         Each tuple contains the *original* TOA indices belonging to one epoch.
-        Only epochs with ≥ 2 TOAs are returned.
+        Only epochs with >= 2 TOAs are returned.
     """
     indices = np.where(mask)[0]
     if len(indices) < 2:
@@ -480,8 +480,8 @@ def build_ecorr_basis_and_prior(
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """Build ECORR quantization matrix and prior for GLS basis augmentation.
 
-    Returns the quantization matrix U (n_toa × n_epochs) and the prior
-    variance vector J (n_epochs,) where J_k = ECORR_k² in seconds².
+    Returns the quantization matrix U (n_toa * n_epochs) and the prior
+    variance vector J (n_epochs,) where J_k = ECORR_k^2 in seconds^2.
 
     Parameters
     ----------
@@ -511,7 +511,7 @@ def build_ecorr_basis_and_prior(
     for entry in ecorr_entries:
         mask = build_backend_mask(toa_flags, entry.flag_name, entry.flag_value)
         epochs = _group_toas_into_epochs(toas_mjd, mask, dt_days)
-        ecorr_sec = entry.value * 1e-6  # microseconds → seconds
+        ecorr_sec = entry.value * 1e-6  # microseconds -> seconds
         for ep in epochs:
             epoch_indices_list.append(ep)
             epoch_ecorr_sec_list.append(ecorr_sec)
@@ -526,7 +526,7 @@ def build_ecorr_basis_and_prior(
         for i in indices:
             U[i, k] = 1.0
 
-    # Prior: J_k = ECORR_k² (seconds²)
+    # Prior: J_k = ECORR_k^2 (seconds^2)
     J = np.array([ec**2 for ec in epoch_ecorr_sec_list], dtype=np.float64)
 
     return U, J

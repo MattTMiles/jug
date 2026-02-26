@@ -11,7 +11,7 @@ ensure_jax_x64()
 import jax
 
 import jax.numpy as jnp
-from jug.utils.constants import K_DM_SEC, SECS_PER_DAY, T_SUN_SEC
+from jug.utils.constants import K_DM_SEC, SECS_PER_DAY, T_SUN_SEC, PC_TO_LIGHT_SEC, AU_KM, AU_PC
 from jug.delays.binary_bt import bt_binary_delay
 from jug.delays.binary_dd import (
     dd_binary_delay,
@@ -64,10 +64,8 @@ def combined_delays(
     dm_sec = K_DM_SEC * dm_eff / (freq_bary ** 2)
 
     # === Solar Wind Delay ===
-    AU_KM_local = 1.495978707e8
-    AU_PC = 4.84813681e-6
     r_km = jnp.sqrt(jnp.sum(obs_sun_pos**2, axis=1))
-    r_au = r_km / AU_KM_local
+    r_au = r_km / AU_KM
     sun_dir = obs_sun_pos / r_km[:, jnp.newaxis]
     cos_elong = jnp.sum(sun_dir * L_hat, axis=1)
     elong = jnp.arccos(jnp.clip(cos_elong, -1.0, 1.0))
@@ -226,7 +224,7 @@ def combined_delays(
                 0.0
             )
             # ELL1H mode 2: H3/H4 harmonic expansion (Freire & Wex 2010, nharm=4)
-            # ds = -4/3*H3*sin(3Φ) + H4*cos(4Φ)
+            # ds = -4/3*H3*sin(3Phi) + H4*cos(4Phi)
             cos_4Phi = jnp.cos(4.0 * Phi)
             shapiro_h3h4 = jnp.where(
                 (h4 != 0.0) & (stig == 0.0),
@@ -281,7 +279,7 @@ def combined_delays(
             # =====================================================================
 
             # delta_kin from proper motion (Eq 10)
-            # δ_KIN = (-μ_RA * sin(KOM) + μ_DEC * cos(KOM)) * (t - T0)
+            # delta_KIN = (-mu_RA * sin(KOM) + mu_DEC * cos(KOM)) * (t - T0)
             sin_kom = jnp.sin(kom_rad)
             cos_kom = jnp.cos(kom_rad)
 
@@ -295,7 +293,7 @@ def combined_delays(
             kin_eff_rad = kin_rad + delta_kin_pm
 
             # delta_a1 from proper motion (Eq 8)
-            # δ_a1 = a1 * δ_KIN / tan(KIN)
+            # delta_a1 = a1 * delta_KIN / tan(KIN)
             tan_kin_eff = jnp.tan(kin_eff_rad)
             tan_kin_eff_safe = jnp.where(jnp.abs(tan_kin_eff) < 1e-10, 1e-10, tan_kin_eff)
 
@@ -306,7 +304,7 @@ def combined_delays(
             )
 
             # delta_omega from proper motion (Eq 9)
-            # δ_ω = (1/sin(KIN)) * (μ_RA * cos(KOM) + μ_DEC * sin(KOM)) * (t - T0)
+            # delta_omega = (1/sin(KIN)) * (mu_RA * cos(KOM) + mu_DEC * sin(KOM)) * (t - T0)
             sin_kin_eff = jnp.sin(kin_eff_rad)
             sin_kin_eff_safe = jnp.where(jnp.abs(sin_kin_eff) < 1e-10, 1e-10, sin_kin_eff)
 
@@ -330,7 +328,6 @@ def combined_delays(
             delta_J0 = -x * sin_dec * cos_ra - y * sin_dec * sin_ra + z * cos_dec
 
             # Distance in light-seconds from parallax
-            PC_TO_LIGHT_SEC = 3.0857e16 / 2.99792458e8
             px_safe = jnp.maximum(jnp.abs(px), 1e-10)
             d_ls = 1000.0 * PC_TO_LIGHT_SEC / px_safe
 

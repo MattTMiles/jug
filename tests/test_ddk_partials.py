@@ -355,8 +355,10 @@ class TestDDKCorrectionDerivativesKOM:
         d_A1, d_OM, d_SINI = result
         assert d_A1.shape == (len(toas_array),)
         assert d_OM.shape == (len(toas_array),)
-        # SINI_eff doesn't depend on KOM
-        np.testing.assert_allclose(d_SINI, 0.0)
+        # SINI_eff depends on KOM through K96: d(sin(KIN_eff))/d(KOM) = cos(KIN) * d(delta_KIN_pm)/d(KOM)
+        assert d_SINI.shape == (len(toas_array),)
+        # At t=T0 (first TOA), delta_KIN_pm=0, so d_SINI should be zero there
+        np.testing.assert_allclose(d_SINI[0], 0.0, atol=1e-15)
 
 
 # =============================================================================

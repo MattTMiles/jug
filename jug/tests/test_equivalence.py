@@ -92,25 +92,25 @@ class TestResidualEquivalence:
         # Residuals array
         assert np.array_equal(result_legacy['residuals_us'], result_session['residuals_us']), \
             "Residuals array differs between legacy and session paths"
-        print(f"✓ residuals_us: IDENTICAL ({len(result_legacy['residuals_us'])} values)")
+        print(f"[x] residuals_us: IDENTICAL ({len(result_legacy['residuals_us'])} values)")
 
         # RMS
         assert result_legacy['rms_us'] == result_session['rms_us'], \
             f"RMS differs: legacy={result_legacy['rms_us']}, session={result_session['rms_us']}"
-        print(f"✓ rms_us: IDENTICAL ({result_legacy['rms_us']:.10f} μs)")
+        print(f"[x] rms_us: IDENTICAL ({result_legacy['rms_us']:.10f} mus)")
 
         # TDB times
         assert np.array_equal(result_legacy['tdb_mjd'], result_session['tdb_mjd']), \
             "TDB MJD array differs"
-        print(f"✓ tdb_mjd: IDENTICAL")
+        print(f"[x] tdb_mjd: IDENTICAL")
 
         # dt_sec (delays)
         assert np.array_equal(result_legacy['dt_sec'], result_session['dt_sec']), \
             "dt_sec array differs"
-        print(f"✓ dt_sec: IDENTICAL")
+        print(f"[x] dt_sec: IDENTICAL")
 
         print("\n" + "="*80)
-        print("✓ TEST PASSED: Legacy and Session paths are bit-for-bit identical")
+        print("[x] TEST PASSED: Legacy and Session paths are bit-for-bit identical")
         print("="*80)
 
     def test_subtract_tzr_modes_differ(self):
@@ -136,8 +136,8 @@ class TestResidualEquivalence:
             "subtract_tzr=True and False should produce different residuals"
 
         max_diff = np.max(np.abs(result_tzr_true['residuals_us'] - result_tzr_false['residuals_us']))
-        print(f"✓ Residuals differ (max diff: {max_diff:.6f} μs)")
-        print(f"✓ TEST PASSED: TZR subtraction works correctly")
+        print(f"[x] Residuals differ (max diff: {max_diff:.6f} mus)")
+        print(f"[x] TEST PASSED: TZR subtraction works correctly")
 
 
 class TestFittingEquivalence:
@@ -193,7 +193,7 @@ class TestFittingEquivalence:
             val_cached = result_cached['final_params'][param]
             assert val_file == val_cached, \
                 f"Parameter {param} differs: file={val_file}, cached={val_cached}"
-            print(f"✓ {param}: IDENTICAL ({val_file:.20e})")
+            print(f"[x] {param}: IDENTICAL ({val_file:.20e})")
 
         # Uncertainties
         for param in fit_params:
@@ -201,30 +201,30 @@ class TestFittingEquivalence:
             unc_cached = result_cached['uncertainties'][param]
             assert unc_file == unc_cached, \
                 f"Uncertainty {param} differs: file={unc_file}, cached={unc_cached}"
-            print(f"✓ σ({param}): IDENTICAL ({unc_file:.6e})")
+            print(f"[x] sigma({param}): IDENTICAL ({unc_file:.6e})")
 
         # Final RMS
         assert result_file['final_rms'] == result_cached['final_rms'], \
             f"Final RMS differs: file={result_file['final_rms']}, cached={result_cached['final_rms']}"
-        print(f"✓ final_rms: IDENTICAL ({result_file['final_rms']:.10f} μs)")
+        print(f"[x] final_rms: IDENTICAL ({result_file['final_rms']:.10f} mus)")
 
         # Iterations
         assert result_file['iterations'] == result_cached['iterations'], \
             f"Iterations differ: file={result_file['iterations']}, cached={result_cached['iterations']}"
-        print(f"✓ iterations: IDENTICAL ({result_file['iterations']})")
+        print(f"[x] iterations: IDENTICAL ({result_file['iterations']})")
 
         # Residuals arrays
         assert np.array_equal(result_file['residuals_us'], result_cached['residuals_us']), \
             "Postfit residuals array differs"
-        print(f"✓ residuals_us: IDENTICAL ({len(result_file['residuals_us'])} values)")
+        print(f"[x] residuals_us: IDENTICAL ({len(result_file['residuals_us'])} values)")
 
         # Covariance matrix
         assert np.array_equal(result_file['covariance'], result_cached['covariance']), \
             "Covariance matrix differs"
-        print(f"✓ covariance: IDENTICAL")
+        print(f"[x] covariance: IDENTICAL")
 
         print("\n" + "="*80)
-        print("✓ TEST PASSED: File-based and cached fitting are bit-for-bit identical")
+        print("[x] TEST PASSED: File-based and cached fitting are bit-for-bit identical")
         print("="*80)
 
     def test_exact_solver_reproducibility(self):
@@ -270,8 +270,8 @@ class TestFittingEquivalence:
         assert np.array_equal(result1['residuals_us'], result2['residuals_us']), \
             "EXACT solver residuals not reproducible"
 
-        print("✓ EXACT solver produces bit-for-bit identical results across runs")
-        print("✓ TEST PASSED")
+        print("[x] EXACT solver produces bit-for-bit identical results across runs")
+        print("[x] TEST PASSED")
 
     def test_fast_solver_convergence(self):
         """
@@ -307,8 +307,8 @@ class TestFittingEquivalence:
             verbose=False
         )
 
-        print(f"EXACT solver: RMS = {result_exact['final_rms']:.6f} μs, iterations = {result_exact['iterations']}")
-        print(f"FAST solver:  RMS = {result_fast['final_rms']:.6f} μs, iterations = {result_fast['iterations']}")
+        print(f"EXACT solver: RMS = {result_exact['final_rms']:.6f} mus, iterations = {result_exact['iterations']}")
+        print(f"FAST solver:  RMS = {result_fast['final_rms']:.6f} mus, iterations = {result_fast['iterations']}")
 
         # FAST should converge
         assert result_fast['converged'], "FAST solver did not converge"
@@ -318,8 +318,8 @@ class TestFittingEquivalence:
         assert 0.99 < rms_ratio < 1.01, \
             f"FAST solver RMS differs too much from EXACT: {rms_ratio:.6f}"
 
-        print(f"✓ RMS ratio (FAST/EXACT): {rms_ratio:.6f}")
-        print("✓ TEST PASSED: FAST solver converges and produces similar results")
+        print(f"[x] RMS ratio (FAST/EXACT): {rms_ratio:.6f}")
+        print("[x] TEST PASSED: FAST solver converges and produces similar results")
 
 
 class TestEngineAPIUsage:
@@ -343,14 +343,14 @@ class TestEngineAPIUsage:
 
         for key in required_keys:
             assert key in result, f"Missing required key: {key}"
-            print(f"✓ {key}: present")
+            print(f"[x] {key}: present")
 
         # Check types
         assert isinstance(result['residuals_us'], np.ndarray)
         assert isinstance(result['rms_us'], float)
         assert isinstance(result['tdb_mjd'], np.ndarray)
 
-        print("✓ TEST PASSED: All required keys present with correct types")
+        print("[x] TEST PASSED: All required keys present with correct types")
 
     def test_session_fit_parameters_returns_required_keys(self):
         """
@@ -377,14 +377,14 @@ class TestEngineAPIUsage:
 
         for key in required_keys:
             assert key in result, f"Missing required key: {key}"
-            print(f"✓ {key}: present")
+            print(f"[x] {key}: present")
 
         # Check structure
         assert isinstance(result['final_params'], dict)
         assert isinstance(result['uncertainties'], dict)
         assert result['converged'] in (True, False)  # Works for bool and np.bool_
 
-        print("✓ TEST PASSED: All required keys present with correct types")
+        print("[x] TEST PASSED: All required keys present with correct types")
 
     def test_toa_mask_filtering(self):
         """
@@ -418,9 +418,9 @@ class TestEngineAPIUsage:
         # Result should be based on 1000 TOAs
         # (residuals array length may vary based on implementation)
         assert result['converged'], "Fit with TOA mask should converge"
-        print(f"✓ Fit converged with TOA mask (1000/{n_total} TOAs)")
-        print(f"✓ Final RMS: {result['final_rms']:.6f} μs")
-        print("✓ TEST PASSED: TOA mask filtering works")
+        print(f"[x] Fit converged with TOA mask (1000/{n_total} TOAs)")
+        print(f"[x] Final RMS: {result['final_rms']:.6f} mus")
+        print("[x] TEST PASSED: TOA mask filtering works")
 
 
 class TestPrecomputedConstants:
@@ -453,7 +453,7 @@ class TestPrecomputedConstants:
 
         # All should be identical
         assert sum1 == sum2 == sum3, "Weight sum differs between computation methods"
-        print(f"✓ Weight sum consistent: {sum1:.10e}")
+        print(f"[x] Weight sum consistent: {sum1:.10e}")
 
         # Test weighted mean calculation
         residuals = np.random.randn(len(weights)) * 1e-6
@@ -462,8 +462,8 @@ class TestPrecomputedConstants:
         mean2 = np.sum(residuals * weights) / sum1  # Using precomputed
 
         assert mean1 == mean2, "Weighted mean differs with precomputed sum"
-        print("✓ Weighted mean identical with precomputed sum")
-        print("✓ TEST PASSED")
+        print("[x] Weighted mean identical with precomputed sum")
+        print("[x] TEST PASSED")
 
 
 def run_all_tests():

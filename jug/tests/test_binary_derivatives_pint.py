@@ -4,7 +4,7 @@
 This module validates JUG's analytical ELL1 binary derivatives using two methods:
 
 1. **Comparison against PINT**: Validates unit conversions and general agreement.
-   Note: PINT has a bug in d_delayS_d_Phi (missing cos(Φ) factor), so PB/TASC/PBDOT
+   Note: PINT has a bug in d_delayS_d_Phi (missing cos(Phi) factor), so PB/TASC/PBDOT
    derivatives will differ near superior conjunction. JUG is correct.
 
 2. **Numerical finite-difference verification**: The ground truth test.
@@ -120,9 +120,9 @@ def test_ell1_derivatives_vs_pint():
             tolerance = 1e-3  # 0.1% for PB, TASC, PBDOT, M2
         
         if abs(mean_ratio - 1.0) < tolerance:
-            status = "✓ PASS"
+            status = "[x] PASS"
         else:
-            status = f"✗ FAIL ({mean_ratio:.6f})"
+            status = f"[ ] FAIL ({mean_ratio:.6f})"
         
         print(f"{param:<8} {mean_ratio:<15.10f} {max_rel_diff:<15.6e} {status}")
     

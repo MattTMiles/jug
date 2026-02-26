@@ -1,7 +1,7 @@
 """Clock correction file handling and interpolation.
 
 This module provides functions to parse and interpolate tempo2-style clock
-correction files for the observatory → UTC → TAI → TT clock chain.
+correction files for the observatory -> UTC -> TAI -> TT clock chain.
 """
 
 from functools import lru_cache
@@ -374,9 +374,9 @@ def check_clock_files(mjd_start: float, mjd_end: float,
     all_issues = []
 
     suggestion = (
-        f"  → Copy the correct clock files into {clock_dir}"
+        f"  -> Copy the correct clock files into {clock_dir}"
         if clock_dir else
-        "  → Copy the correct clock files into your JUG data/clock/ directory"
+        "  -> Copy the correct clock files into your JUG data/clock/ directory"
     )
 
     for name, clock_data in [
@@ -395,15 +395,15 @@ def check_clock_files(mjd_start: float, mjd_end: float,
         for error in result['errors']:
             msg = f"CLOCK FILE ERROR: {error}"
             all_issues.append({'severity': 'error', 'message': msg})
-            # Always print errors — they affect timing accuracy
-            print(f"{_RED}❌ {msg}{_RESET}")
+            # Always print errors -- they affect timing accuracy
+            print(f"{_RED}[!] {msg}{_RESET}")
             print(f"{_RED}{suggestion}{_RESET}")
 
         for warning in result['warnings']:
             msg = f"CLOCK FILE WARNING: {warning}"
             all_issues.append({'severity': 'warning', 'message': msg})
             if verbose:
-                print(f"{_YELLOW}⚠️  {msg}{_RESET}")
+                print(f"{_YELLOW}[!]  {msg}{_RESET}")
                 print(f"{_YELLOW}{suggestion}{_RESET}")
 
     return all_valid, all_issues
@@ -418,7 +418,7 @@ def compare_clock_files(path_a: Path | str, path_b: Path | str,
     path_a, path_b : Path or str
         Paths to clock files to compare.
     threshold_us : float, optional
-        Difference threshold in microseconds above which to flag (default: 0.001 μs).
+        Difference threshold in microseconds above which to flag (default: 0.001 mus).
 
     Returns
     -------
@@ -454,7 +454,7 @@ def compare_clock_files(path_a: Path | str, path_b: Path | str,
     summary = (
         f"{Path(path_a).name}: {len(mjds_a)} entries, ends MJD {mjds_a[-1]:.1f}; "
         f"{Path(path_b).name}: {len(mjds_b)} entries, ends MJD {mjds_b[-1]:.1f}; "
-        f"max diff = {max_diff_us:.4f} μs"
+        f"max diff = {max_diff_us:.4f} mus"
     )
 
     return {
@@ -473,7 +473,7 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
                         verbose: bool = True) -> tuple:
     """Check that astropy's IERS Earth-orientation data covers the data MJD range.
 
-    The ITRF→GCRS coordinate transform (used when computing observatory SSB
+    The ITRF->GCRS coordinate transform (used when computing observatory SSB
     positions) relies on IERS UT1-UTC and polar-motion data.  Using predicted
     rather than measured values introduces small but systematic errors.
 
@@ -527,8 +527,8 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
             )
             issues.append({'severity': 'error', 'message': msg})
             valid = False
-            print(f"{_RED}❌ {msg}{_RESET}")
-            print(f"{_RED}  → Run: python -c \"from astropy.utils.iers import IERS_A; IERS_A.open()\"{_RESET}")
+            print(f"{_RED}[!] {msg}{_RESET}")
+            print(f"{_RED}  -> Run: python -c \"from astropy.utils.iers import IERS_A; IERS_A.open()\"{_RESET}")
         elif mjd_end > measured_end:
             days_predicted = mjd_end - measured_end
             msg = (
@@ -538,12 +538,12 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
             )
             issues.append({'severity': 'warning', 'message': msg})
             if verbose:
-                print(f"{_YELLOW}⚠️  {msg}{_RESET}")
-                print(f"{_YELLOW}  → Download fresh IERS-A: python -c \"from astropy.utils.iers import IERS_A; IERS_A.open()\"{_RESET}")
+                print(f"{_YELLOW}[!]  {msg}{_RESET}")
+                print(f"{_YELLOW}  -> Download fresh IERS-A: python -c \"from astropy.utils.iers import IERS_A; IERS_A.open()\"{_RESET}")
         else:
             if verbose:
                 print(
-                    f"   ✓ IERS data ({table_type}) covers MJD {mjd_end:.1f} "
+                    f"   [x] IERS data ({table_type}) covers MJD {mjd_end:.1f} "
                     f"with measured data to MJD {measured_end:.1f}"
                 )
 
@@ -551,6 +551,6 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
         msg = f"EOP/IERS WARNING: Could not check IERS coverage: {e}"
         issues.append({'severity': 'warning', 'message': msg})
         if verbose:
-            print(f"{_YELLOW}⚠️  {msg}{_RESET}")
+            print(f"{_YELLOW}[!]  {msg}{_RESET}")
 
     return valid, issues

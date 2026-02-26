@@ -8,7 +8,7 @@ The test loads the data entirely through PINT, extracts the epoch
 structure (U matrix) and EFAC-scaled uncertainties, then rebuilds the
 same problem using JUG's ECORRWhitener and compares results.
 
-This avoids needing JUG to parse PINT-format tim files — we only
+This avoids needing JUG to parse PINT-format tim files -- we only
 compare the ECORR *math*, not the full pipeline.
 """
 
@@ -104,7 +104,7 @@ class TestECORRvsPINT:
         """JUG block-Cholesky chi2 must match PINT full-matrix chi2.
 
         Computes chi2 = r^T C^{-1} r two ways:
-        1. PINT: full 4005×4005 Cholesky factorization
+        1. PINT: full 4005*4005 Cholesky factorization
         2. JUG: block-by-block Cholesky via ECORRWhitener
         """
         r_sec, sigma, groups, singletons, ntoa = pint_ecorr_data
@@ -177,7 +177,7 @@ class TestECORRvsPINT:
         """M_w^T M_w == M^T C^{-1} M for a random design matrix.
 
         This validates that the block-Cholesky whitening correctly
-        transforms the design matrix for GLS → OLS equivalence.
+        transforms the design matrix for GLS -> OLS equivalence.
         """
         r_sec, sigma, groups, singletons, ntoa = pint_ecorr_data
 

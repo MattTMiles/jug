@@ -59,7 +59,7 @@ def open_session(
     >>> from jug.engine import open_session
     >>> session = open_session('J1909.par', 'J1909.tim')
     >>> result = session.compute_residuals()
-    >>> print(f"RMS: {result['rms_us']:.3f} μs")
+    >>> print(f"RMS: {result['rms_us']:.3f} mus")
     >>> 
     >>> # Fit parameters (reuses cached file parsing)
     >>> fit_result = session.fit_parameters(['F0', 'F1'])
@@ -112,7 +112,7 @@ def compute_residuals(
     --------
     >>> from jug.engine import compute_residuals
     >>> result = compute_residuals('J1909.par', 'J1909.tim')
-    >>> print(f"RMS: {result['rms_us']:.3f} μs")
+    >>> print(f"RMS: {result['rms_us']:.3f} mus")
     
     Notes
     -----
@@ -169,7 +169,7 @@ def fit_parameters(
         Fit results with keys:
         - 'final_params': Fitted parameter values
         - 'uncertainties': Parameter uncertainties
-        - 'final_rms': Final RMS in μs
+        - 'final_rms': Final RMS in mus
         - 'iterations': Number of iterations
         - 'converged': Whether fit converged
         - etc.
@@ -179,7 +179,7 @@ def fit_parameters(
     >>> from jug.engine import fit_parameters
     >>> result = fit_parameters('J1909.par', 'J1909.tim', ['F0', 'F1'])
     >>> print(f"F0 = {result['final_params']['F0']:.15f} Hz")
-    >>> print(f"RMS = {result['final_rms']:.3f} μs")
+    >>> print(f"RMS = {result['final_rms']:.3f} mus")
     
     Notes
     -----

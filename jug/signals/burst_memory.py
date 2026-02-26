@@ -6,17 +6,17 @@ after the burst epoch.
 
 Enterprise-compatible par parameters:
 
-    BWM_log10_h      — log10 of GW memory strain amplitude
-    BWM_cos_gwtheta  — cosine of GW source polar angle
-    BWM_gwphi        — GW source azimuthal angle (rad)
-    BWM_t0           — burst epoch (MJD)
-    BWM_pol          — polarisation angle (rad)
+    BWM_log10_h      -- log10 of GW memory strain amplitude
+    BWM_cos_gwtheta  -- cosine of GW source polar angle
+    BWM_gwphi        -- GW source azimuthal angle (rad)
+    BWM_t0           -- burst epoch (MJD)
+    BWM_pol          -- polarisation angle (rad)
 
 The timing residual for a BWM is:
 
-    s(t) = h * F(θ,φ,ψ) * (t - t0) * Θ(t - t0)
+    s(t) = h * F(theta,phi,psi) * (t - t0) * Theta(t - t0)
 
-where Θ is the Heaviside step function and F is the antenna pattern.
+where Theta is the Heaviside step function and F is the antenna pattern.
 
 Reference: van Haasteren & Levin (2010), MNRAS 401, 2372.
 """
@@ -28,6 +28,8 @@ from typing import List, Optional
 
 import jax.numpy as jnp
 import numpy as np
+
+from jug.utils.constants import SECS_PER_DAY
 
 from jug.signals.base import DeterministicSignal, register_signal
 from jug.signals.continuous_wave import _antenna_pattern
@@ -106,8 +108,8 @@ class BurstWithMemorySignal(DeterministicSignal):
     ) -> np.ndarray:
         """Compute BWM timing residual at each TOA epoch."""
         ref_mjd = toas_mjd[0]
-        toas_sec = jnp.asarray((toas_mjd - ref_mjd) * 86400.0)
-        t0_sec = (self.t0_mjd - ref_mjd) * 86400.0
+        toas_sec = jnp.asarray((toas_mjd - ref_mjd) * SECS_PER_DAY)
+        t0_sec = (self.t0_mjd - ref_mjd) * SECS_PER_DAY
 
         result = _bwm_delay(
             toas_sec,

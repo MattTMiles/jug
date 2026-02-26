@@ -3,15 +3,15 @@
 T2 is Tempo2's general-purpose binary model that automatically selects the
 appropriate computation based on which parameters are present in the par file:
 
-- If TASC is present → ELL1-style (Laplace-Lagrange) computation
-- If T0 is present   → DD-style (Keplerian) computation
+- If TASC is present -> ELL1-style (Laplace-Lagrange) computation
+- If T0 is present   -> DD-style (Keplerian) computation
 
 This allows users with ``BINARY T2`` in their par files to use JUG without
 changing the model name. The T2 model is mathematically equivalent to DD or
 ELL1 depending on parameterization; it just auto-detects which one to use.
 
-FB (orbital frequency) parameters are supported in both modes—ELL1 handles
-them natively, and DD converts FB0 → PB when needed.
+FB (orbital frequency) parameters are supported in both modes--ELL1 handles
+them natively, and DD converts FB0 -> PB when needed.
 
 References
 ----------
@@ -59,7 +59,7 @@ def _is_ell1_parameterization(params: Dict) -> bool:
     if has_t0:
         return False
     
-    # Neither TASC nor T0 — check for EPS1/EPS2 (ELL1 indicators)
+    # Neither TASC nor T0 -- check for EPS1/EPS2 (ELL1 indicators)
     if 'EPS1' in params or 'EPS2' in params:
         return True
     

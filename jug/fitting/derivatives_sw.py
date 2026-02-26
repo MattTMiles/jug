@@ -1,13 +1,13 @@
 """Analytical derivatives for solar wind parameter NE_SW.
 
 The solar wind delay is:
-    τ_SW = K_DM * NE_SW * geometry_pc / freq²
+    tau_SW = K_DM * NE_SW * geometry_pc / freq^2
 
-where geometry_pc = (π * ρ) / (r_AU * sin(ρ)) encodes the Sun-Earth-pulsar
-geometry (ρ = π - solar elongation).
+where geometry_pc = (pi * rho) / (r_AU * sin(rho)) encodes the Sun-Earth-pulsar
+geometry (rho = pi - solar elongation).
 
 The partial derivative is:
-    ∂τ_SW / ∂NE_SW = K_DM * geometry_pc / freq²
+    dtau_SW / dNE_SW = K_DM * geometry_pc / freq^2
 
 References:
     Edwards, Hobbs & Manchester (2006), MNRAS 372, 1549 (Tempo2 solar wind)
@@ -22,8 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 from typing import Dict, List
 
-# K_DM = 1/(2.41e-4) MHz^2 pc cm^-3 s  (DM constant)
-K_DM_SEC = 4.148808e3  # s MHz^2 pc^-1 cm^3
+from jug.utils.constants import K_DM_SEC
 
 
 @jax.jit

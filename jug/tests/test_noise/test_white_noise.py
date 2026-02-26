@@ -8,7 +8,7 @@ Tests cover:
 - EFAC-only, EQUAD-only, EFAC+EQUAD scaling
 - Multiple backends with different noise parameters
 - Integration with par_reader noise line collection
-- Round-trip: par file → noise_lines → parse → apply
+- Round-trip: par file -> noise_lines -> parse -> apply
 """
 
 import numpy as np
@@ -227,7 +227,7 @@ class TestApplyWhiteNoise:
         return errors_us, toa_flags
 
     def test_no_entries(self, simple_setup):
-        """No noise entries → errors unchanged."""
+        """No noise entries -> errors unchanged."""
         errors_us, toa_flags = simple_setup
         result = apply_white_noise(errors_us, toa_flags, [])
         np.testing.assert_array_almost_equal(result, errors_us)
@@ -237,7 +237,7 @@ class TestApplyWhiteNoise:
         errors_us, toa_flags = simple_setup
         entries = [WhiteNoiseEntry("EFAC", "f", "A", 2.0)]
         result = apply_white_noise(errors_us, toa_flags, entries)
-        # Backend A: σ_eff = 2.0 * σ,  Backend B: unchanged (EFAC=1)
+        # Backend A: sigma_eff = 2.0 * sigma,  Backend B: unchanged (EFAC=1)
         expected = np.array([2.0, 4.0, 3.0, 4.0])
         np.testing.assert_array_almost_equal(result, expected)
 
@@ -246,7 +246,7 @@ class TestApplyWhiteNoise:
         errors_us, toa_flags = simple_setup
         entries = [WhiteNoiseEntry("EQUAD", "f", "A", 1.0)]
         result = apply_white_noise(errors_us, toa_flags, entries)
-        # Backend A: σ_eff = sqrt(σ² + 1²) = sqrt(1+1), sqrt(4+1)
+        # Backend A: sigma_eff = sqrt(sigma^2 + 1^2) = sqrt(1+1), sqrt(4+1)
         # Backend B: unchanged
         expected = np.array([
             np.sqrt(1.0 + 1.0),   # sqrt(2)
@@ -257,14 +257,14 @@ class TestApplyWhiteNoise:
         np.testing.assert_array_almost_equal(result, expected)
 
     def test_efac_and_equad(self, simple_setup):
-        """EFAC + EQUAD: σ_eff = EFAC * sqrt(σ² + EQUAD²)."""
+        """EFAC + EQUAD: sigma_eff = EFAC * sqrt(sigma^2 + EQUAD^2)."""
         errors_us, toa_flags = simple_setup
         entries = [
             WhiteNoiseEntry("EFAC", "f", "A", 1.5),
             WhiteNoiseEntry("EQUAD", "f", "A", 0.5),
         ]
         result = apply_white_noise(errors_us, toa_flags, entries)
-        # Backend A: σ_eff = sqrt(1.5² * (σ² + 0.5²))
+        # Backend A: sigma_eff = sqrt(1.5^2 * (sigma^2 + 0.5^2))
         expected_A0 = np.sqrt(1.5**2 * (1.0**2 + 0.5**2))
         expected_A1 = np.sqrt(1.5**2 * (2.0**2 + 0.5**2))
         expected = np.array([expected_A0, expected_A1, 3.0, 4.0])
@@ -289,11 +289,11 @@ class TestApplyWhiteNoise:
             WhiteNoiseEntry("EQUAD", "f", "C", 0.5),
         ]
         result = apply_white_noise(errors_us, toa_flags, entries)
-        # A: sqrt(2² * (1² + 1²)) = sqrt(8)
-        # B: sqrt(3² * (1² + 0²)) = 3
-        # C: sqrt(1² * (1² + 0.5²)) = sqrt(1.25)
+        # A: sqrt(2^2 * (1^2 + 1^2)) = sqrt(8)
+        # B: sqrt(3^2 * (1^2 + 0^2)) = 3
+        # C: sqrt(1^2 * (1^2 + 0.5^2)) = sqrt(1.25)
         expected = np.array([
-            np.sqrt(4.0 * 2.0),     # 2√2
+            np.sqrt(4.0 * 2.0),     # 2sqrt2
             3.0,
             np.sqrt(1.25),
         ])
@@ -321,7 +321,7 @@ class TestApplyWhiteNoise:
         np.testing.assert_array_almost_equal(result, expected)
 
     def test_formula_derivation(self):
-        """Verify the exact formula: σ_eff² = EFAC² * (σ² + EQUAD²)."""
+        """Verify the exact formula: sigma_eff^2 = EFAC^2 * (sigma^2 + EQUAD^2)."""
         sigma = 1.5
         efac = 1.3
         equad = 0.7
@@ -440,7 +440,7 @@ EQUAD -be GUPPI 0.4
 # ===================================================================
 
 class TestEndToEndNoise:
-    """Integration: par file → par_reader → parse_noise_lines → apply."""
+    """Integration: par file -> par_reader -> parse_noise_lines -> apply."""
 
     def test_par_to_scaled_errors(self, tmp_path):
         """Full pipeline: read par, extract noise, scale errors."""
@@ -471,15 +471,15 @@ T2EFAC -f backend_B 1.5
         toa_flags = [
             {"f": "backend_A"},
             {"f": "backend_B"},
-            {"f": "backend_C"},  # no noise spec → unchanged
+            {"f": "backend_C"},  # no noise spec -> unchanged
         ]
         result = apply_white_noise(errors_us, toa_flags, entries)
 
-        # backend_A: sqrt(2² * (1² + 1²)) = sqrt(8) = 2√2 ≈ 2.828
+        # backend_A: sqrt(2^2 * (1^2 + 1^2)) = sqrt(8) = 2sqrt2 ~= 2.828
         expected_A = np.sqrt(4.0 * 2.0)
         np.testing.assert_almost_equal(result[0], expected_A)
 
-        # backend_B: sqrt(1.5² * (1² + 0²)) = 1.5
+        # backend_B: sqrt(1.5^2 * (1^2 + 0^2)) = 1.5
         np.testing.assert_almost_equal(result[1], 1.5)
 
         # backend_C: unchanged (EFAC=1, EQUAD=0)

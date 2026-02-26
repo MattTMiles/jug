@@ -114,22 +114,22 @@ def run_tests():
     print("Testing JAX compilation cache...")
     
     test.test_configure_does_not_crash()
-    print("✓ configure_jax_compilation_cache() doesn't crash")
+    print("[x] configure_jax_compilation_cache() doesn't crash")
     
     test.test_get_cache_directory_with_env_var()
-    print("✓ Cache directory respects JUG_JAX_CACHE_DIR")
+    print("[x] Cache directory respects JUG_JAX_CACHE_DIR")
     
     test.test_get_cache_directory_with_tmpdir()
-    print("✓ Cache directory respects TMPDIR")
+    print("[x] Cache directory respects TMPDIR")
     
     test.test_get_cache_directory_default()
-    print("✓ Cache directory falls back to ~/.cache")
+    print("[x] Cache directory falls back to ~/.cache")
     
     test.test_get_cache_info()
-    print("✓ get_cache_info() returns expected structure")
+    print("[x] get_cache_info() returns expected structure")
     
     test.test_idempotent_configuration()
-    print("✓ Multiple configure calls are idempotent")
+    print("[x] Multiple configure calls are idempotent")
     
     print("\nAll JAX cache tests passed!")
 

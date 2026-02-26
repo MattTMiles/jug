@@ -25,7 +25,7 @@ For now, we implement the most common subset (Keplerian + M2/SINI + derivatives)
 import jax
 import jax.numpy as jnp
 from jug.delays.binary_bt import solve_kepler
-from jug.utils.constants import SECS_PER_DAY
+from jug.utils.constants import SECS_PER_DAY, T_SUN
 
 
 @jax.jit
@@ -98,10 +98,6 @@ def t2_binary_delay(
     
     # 3D geometry correction (KIN/KOM)
     kin_rad = jnp.deg2rad(kin)
-    # kom not used in delay? It is used for secular changes in x/om due to proper motion (Kopeikin), 
-    # but geometric delay factor only depends on KIN (inclination) and position on sky?
-    # Kopeikin Eq 7: Delay = x * [ -sin(w+nu) * cos(KIN) + ... ] ?
-    # Actually checking t2_binary used cos(KIN) factor correctly as projection.
     
     geometry_factor = jnp.where(
         kin != 0.0,
@@ -115,7 +111,6 @@ def t2_binary_delay(
     einstein_delay = jnp.where(gamma != 0.0, gamma * jnp.sin(ecc_anomaly), 0.0)
     
     # === SHAPIRO DELAY ===
-    T_SUN = 4.925490947e-6
     r_shap = T_SUN * m2
     shapiro_delay = jnp.where(
         (m2 > 0.0) & (sini > 0.0),

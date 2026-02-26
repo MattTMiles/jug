@@ -197,36 +197,3 @@ def parse_jump_from_par_line(line: str) -> Dict[str, Any]:
     except ValueError:
         return {'type': 'unknown', 'value': 0.0}
 
-
-if __name__ == '__main__':
-    print("Testing JAX-based JUMP derivatives...")
-    
-    # Test with pre-computed masks
-    jump_masks = {
-        'JUMP1': jnp.array([True, True, False, False, False]),
-        'JUMP2': jnp.array([False, False, True, True, False]),
-    }
-    
-    toas = jnp.array([58000, 58001, 58002, 58003, 58004], dtype=jnp.float64)
-    
-    derivs = compute_jump_derivatives(
-        params={'JUMP1': 0.001, 'JUMP2': 0.002},
-        toas_mjd=toas,
-        fit_params=['JUMP1', 'JUMP2', 'F0'],
-        jump_masks=jump_masks,
-    )
-    
-    print(f"JUMP1 derivatives: {derivs['JUMP1']}")
-    print(f"JUMP2 derivatives: {derivs['JUMP2']}")
-    
-    assert 'F0' not in derivs, "F0 should not be in JUMP derivatives"
-    assert jnp.allclose(derivs['JUMP1'], jnp.array([1., 1., 0., 0., 0.])), "JUMP1 mismatch"
-    assert jnp.allclose(derivs['JUMP2'], jnp.array([0., 0., 1., 1., 0.])), "JUMP2 mismatch"
-    
-    # Test MJD range mask
-    mjd_mask = create_jump_mask_from_mjd_range(toas, 58001, 58003)
-    expected = jnp.array([False, True, True, True, False])
-    assert jnp.array_equal(mjd_mask, expected), "MJD mask mismatch"
-    print(f"MJD range [58001, 58003] mask: {mjd_mask}")
-    
-    print("\n✓ JAX-based JUMP derivatives module ready!")

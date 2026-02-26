@@ -1437,14 +1437,14 @@ class AnimatedButton(QPushButton):
             
         else:
             # LOCAL MODE: Animated background via palette (no stylesheet reparsing)
-            # Set base stylesheet once (without background — we paint that ourselves)
+            # Set base stylesheet once (without background -- we paint that ourselves)
             self.setStyleSheet(self._base_style + "QPushButton { background-color: transparent; }")
             self.setAutoFillBackground(True)
             
             self._current_bg_color = QColor(self._bg_normal)
             self._apply_palette_bg(self._current_bg_color)
             
-            # Setup animation (QColor interpolation — no stylesheet on each frame)
+            # Setup animation (QColor interpolation -- no stylesheet on each frame)
             self._anim = QVariantAnimation()
             self._anim.setDuration(200) 
             self._anim.setEasingCurve(QEasingCurve.InOutQuad)

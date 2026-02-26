@@ -13,7 +13,7 @@ from astropy import units as u
 from astropy.time import Time
 from astropy.coordinates import EarthLocation, get_body_barycentric_posvel, solar_system_ephemeris
 
-from jug.utils.constants import C_KM_S, AU_KM, SECS_PER_DAY
+from jug.utils.constants import C_KM_S, AU_KM, SECS_PER_DAY, KPC_TO_KM
 
 # Profiling support (guarded by env var)
 _PROFILE_ENABLED = os.environ.get('JUG_PROFILE_GEOM', '').strip() == '1'
@@ -385,7 +385,7 @@ def compute_roemer_delay(
     # Dot product: projection of position onto pulsar direction
     re_dot_L = np.sum(ssb_obs_pos_km * L_hat, axis=1)
 
-    # Basic Roemer delay: -r·L/c
+    # Basic Roemer delay: -r*L/c
     roemer_sec = -re_dot_L / C_KM_S
 
     # Parallax correction (second-order effect)
@@ -393,7 +393,7 @@ def compute_roemer_delay(
         # Distance to pulsar in kpc
         distance_kpc = 1.0 / parallax_mas
         # Convert to km
-        L_km = distance_kpc * 3.085677581e16
+        L_km = distance_kpc * KPC_TO_KM
 
         # Magnitude squared of position vector
         re_sqr = np.sum(ssb_obs_pos_km**2, axis=1)
@@ -439,9 +439,9 @@ def compute_shapiro_delay(
     Notes
     -----
     The formula used is:
-        Δt = -2 * (GM/c^3) * ln((r - r·cos(θ)) / AU)
+        Deltat = -2 * (GM/c^3) * ln((r - r*cos(theta)) / AU)
 
-    where r is the distance from observatory to the body, and θ is the
+    where r is the distance from observatory to the body, and theta is the
     angle between the pulsar direction and the line to the body.
 
     The delay is negative (signal arrives earlier) when the pulsar line

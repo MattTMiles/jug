@@ -1,4 +1,4 @@
-"""Tests for jug.engine.diagnostics — noise/backend diagnostics report."""
+"""Tests for jug.engine.diagnostics -- noise/backend diagnostics report."""
 
 import pytest
 

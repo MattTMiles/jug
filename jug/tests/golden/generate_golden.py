@@ -78,7 +78,7 @@ def generate_goldens():
     prefit_rms = prefit_result['rms_us']
 
     print(f"  N TOAs: {len(prefit_residuals)}")
-    print(f"  Prefit RMS: {prefit_rms:.6f} μs")
+    print(f"  Prefit RMS: {prefit_rms:.6f} mus")
 
     # Run fit
     print(f"Fitting parameters: {FIT_PARAMS}...")
@@ -94,7 +94,7 @@ def generate_goldens():
     covariance = fit_result['covariance']
     postfit_rms = fit_result['final_rms']
 
-    print(f"  Postfit RMS: {postfit_rms:.6f} μs")
+    print(f"  Postfit RMS: {postfit_rms:.6f} mus")
     print(f"  Iterations: {fit_result['iterations']}")
     print(f"  Converged: {fit_result['converged']}")
 
@@ -153,7 +153,7 @@ def generate_goldens():
             'hex': change.hex() if isinstance(change, float) else float(change).hex()
         }
 
-        print(f"  {param}: {initial_val} -> {final_val} ± {uncertainty}")
+        print(f"  {param}: {initial_val} -> {final_val} +/- {uncertainty}")
 
     # Save outputs
     print()

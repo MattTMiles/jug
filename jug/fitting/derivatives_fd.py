@@ -163,28 +163,4 @@ def get_fd_derivative_column(
     return log_freq ** order
 
 
-if __name__ == '__main__':
-    # Quick test
-    print("Testing FD derivatives...")
-    
-    freq_mhz = np.array([800., 1000., 1200., 1500., 2000.])
-    params = {'FD1': 1e-5, 'FD2': -2e-6, 'FD3': 5e-7}
-    
-    derivs = compute_fd_derivatives(params, freq_mhz, ['FD1', 'FD2', 'FD3'])
-    
-    print(f"Frequencies (MHz): {freq_mhz}")
-    print(f"log(freq/1GHz): {np.log(freq_mhz/1000)}")
-    print()
-    
-    for name, deriv in derivs.items():
-        print(f"{name} derivatives: {deriv}")
-    
-    # Verify formula: FD delay = sum(FD_n * log(f)^n)
-    fd_delay = (params['FD1'] * derivs['FD1'] + 
-                params['FD2'] * derivs['FD2'] + 
-                params['FD3'] * derivs['FD3'])
-    print(f"\nFD delay (s): {fd_delay}")
-    print(f"FD delay (μs): {fd_delay * 1e6}")
-    
-    print("\n✓ FD derivatives module ready!")
 

@@ -78,11 +78,11 @@ def test_cached_vs_file_fitting_bitwise_identical():
         val_new = result_new['final_params'][param]
         
         if val_old == val_new:
-            print(f"✓ {param}: IDENTICAL ({val_old:.20e})")
+            print(f"[x] {param}: IDENTICAL ({val_old:.20e})")
         else:
             diff = abs(val_new - val_old)
             rel_diff = diff / abs(val_old) if val_old != 0 else diff
-            print(f"✗ {param}: DIFFERS!")
+            print(f"[ ] {param}: DIFFERS!")
             print(f"  Old: {val_old:.20e}")
             print(f"  New: {val_new:.20e}")
             print(f"  Diff: {diff:.6e} (rel: {rel_diff:.6e})")
@@ -94,49 +94,49 @@ def test_cached_vs_file_fitting_bitwise_identical():
         unc_new = result_new['uncertainties'][param]
         
         if unc_old == unc_new:
-            print(f"✓ {param} uncertainty: IDENTICAL ({unc_old:.6e})")
+            print(f"[x] {param} uncertainty: IDENTICAL ({unc_old:.6e})")
         else:
-            print(f"✗ {param} uncertainty: DIFFERS!")
+            print(f"[ ] {param} uncertainty: DIFFERS!")
             print(f"  Old: {unc_old:.20e}")
             print(f"  New: {unc_new:.20e}")
             raise AssertionError(f"Uncertainty for {param} differs")
     
     # Check RMS
     if result_old['final_rms'] == result_new['final_rms']:
-        print(f"✓ Final RMS: IDENTICAL ({result_old['final_rms']:.10f} μs)")
+        print(f"[x] Final RMS: IDENTICAL ({result_old['final_rms']:.10f} mus)")
     else:
-        print(f"✗ Final RMS: DIFFERS!")
-        print(f"  Old: {result_old['final_rms']:.10f} μs")
-        print(f"  New: {result_new['final_rms']:.10f} μs")
+        print(f"[ ] Final RMS: DIFFERS!")
+        print(f"  Old: {result_old['final_rms']:.10f} mus")
+        print(f"  New: {result_new['final_rms']:.10f} mus")
         raise AssertionError("Final RMS differs")
     
     # Check iterations
     if result_old['iterations'] == result_new['iterations']:
-        print(f"✓ Iterations: IDENTICAL ({result_old['iterations']})")
+        print(f"[x] Iterations: IDENTICAL ({result_old['iterations']})")
     else:
-        print(f"✗ Iterations: DIFFERS!")
+        print(f"[ ] Iterations: DIFFERS!")
         print(f"  Old: {result_old['iterations']}")
         print(f"  New: {result_new['iterations']}")
         raise AssertionError("Iteration count differs")
     
     # Check residuals arrays (bit-for-bit)
     if np.array_equal(result_old['residuals_us'], result_new['residuals_us']):
-        print(f"✓ Residuals array: IDENTICAL (all {len(result_old['residuals_us'])} values)")
+        print(f"[x] Residuals array: IDENTICAL (all {len(result_old['residuals_us'])} values)")
     else:
         max_diff = np.max(np.abs(result_old['residuals_us'] - result_new['residuals_us']))
-        print(f"✗ Residuals array: DIFFERS! (max diff: {max_diff:.6e} μs)")
+        print(f"[ ] Residuals array: DIFFERS! (max diff: {max_diff:.6e} mus)")
         raise AssertionError("Residuals array differs")
     
     # Check covariance matrix
     if np.array_equal(result_old['covariance'], result_new['covariance']):
-        print(f"✓ Covariance matrix: IDENTICAL")
+        print(f"[x] Covariance matrix: IDENTICAL")
     else:
         max_diff = np.max(np.abs(result_old['covariance'] - result_new['covariance']))
-        print(f"✗ Covariance matrix: DIFFERS! (max diff: {max_diff:.6e})")
+        print(f"[ ] Covariance matrix: DIFFERS! (max diff: {max_diff:.6e})")
         raise AssertionError("Covariance matrix differs")
     
     print("\n" + "="*80)
-    print("✓ ALL TESTS PASSED: Cached path is bit-for-bit identical!")
+    print("[x] ALL TESTS PASSED: Cached path is bit-for-bit identical!")
     print("="*80)
 
 

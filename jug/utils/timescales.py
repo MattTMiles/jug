@@ -36,7 +36,7 @@ __all__ = [
 # These are the same as used in PINT and Tempo2 (as of Feb 2023)
 IFTE_MJD0 = np.longdouble("43144.0003725")  # Reference epoch MJD
 IFTE_KM1 = np.longdouble("1.55051979176e-8")  # L_B: rate difference
-IFTE_K = np.longdouble(1.0) + IFTE_KM1  # Scale factor ≈ 1.0000000155051979176
+IFTE_K = np.longdouble(1.0) + IFTE_KM1  # Scale factor ~= 1.0000000155051979176
 
 # ---------------------------------------------------------------------------
 # Build EPOCH_PARAMETERS and SCALED_PARAMETERS from the ParameterSpec registry
@@ -58,7 +58,7 @@ _INDEXED_EPOCH_PARAMS = {
 
 # Indexed scaled parameters (glitch, exponential dip, multi-companion, high F-deriv)
 _INDEXED_SCALED_PARAMS = [
-    # Higher spin frequency derivatives (F4–F12)
+    # Higher spin frequency derivatives (F4-F12)
     *((f'F{i}', -(i + 1)) for i in range(4, 13)),
     # DM3 (not in registry)
     ('DM3', -4),
@@ -161,9 +161,9 @@ def scale_parameter_tcb_to_tdb(value: float, effective_dimensionality: int) -> f
     where n = effective_dimensionality
     
     Examples:
-    - F0 (frequency): n = -1 → F0_tdb = F0_tcb * IFTE_K^1
-    - A1 (time): n = 1 → A1_tdb = A1_tcb * IFTE_K^(-1)
-    - PBDOT (dimensionless): n = 0 → no scaling
+    - F0 (frequency): n = -1 -> F0_tdb = F0_tcb * IFTE_K^1
+    - A1 (time): n = 1 -> A1_tdb = A1_tcb * IFTE_K^(-1)
+    - PBDOT (dimensionless): n = 0 -> no scaling
     
     Parameters
     ----------
@@ -213,7 +213,7 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                                verbose: bool = False) -> Tuple[Dict[str, Any], List[str]]:
     """Convert all TCB parameters to TDB in place.
     
-    This is the main entry point for TCB → TDB conversion. It:
+    This is the main entry point for TCB -> TDB conversion. It:
     1. Converts all MJD epoch parameters
     2. Scales frequency, DM, binary parameters appropriately
     3. Handles prefix parameters (DMX_*, DMXR1_*, DMXR2_*)
@@ -271,7 +271,7 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                     # Update _high_precision with converted value string
                     if hp is not None:
                         hp[param_name] = f"{new_ld:.20g}"
-                    epoch_converted.append(f"{param_name}: {old_val:.9f} → {float(new_ld):.9f}")
+                    epoch_converted.append(f"{param_name}: {old_val:.9f} -> {float(new_ld):.9f}")
                 except (ValueError, TypeError):
                     pass  # Skip non-numeric values
     
@@ -289,7 +289,7 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                     params[key] = float(new_ld)
                     if hp is not None:
                         hp[key] = f"{new_ld:.20g}"
-                    epoch_converted.append(f"{key}: {old_val:.6f} → {float(new_ld):.6f}")
+                    epoch_converted.append(f"{key}: {old_val:.6f} -> {float(new_ld):.6f}")
                 except (ValueError, TypeError):
                     pass
     
@@ -321,7 +321,7 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                     rel_change = abs((new_val - old_val) / old_val) if old_val != 0 else 0
                     if rel_change > 1e-10:
                         scaled_converted.append(
-                            f"{param_pattern}: {old_val:.12e} → {new_val:.12e} "
+                            f"{param_pattern}: {old_val:.12e} -> {new_val:.12e} "
                             f"(eff_dim={eff_dim})"
                         )
                 except (ValueError, TypeError):
@@ -347,7 +347,7 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                         hp[key] = f"{new_ld:.20g}"
                     rel_change = abs((new_val - old_val) / old_val) if old_val != 0 else 0
                     if rel_change > 1e-10:
-                        scaled_converted.append(f"{key}: {old_val:.9e} → {new_val:.9e}")
+                        scaled_converted.append(f"{key}: {old_val:.9e} -> {new_val:.9e}")
                 except (ValueError, TypeError):
                     pass
     
@@ -487,6 +487,6 @@ def convert_par_params_to_tcb(params: Dict[str, Any],
     params['_par_timescale'] = 'TCB'
     params['_tcb_converted'] = False
     
-    log.append("TDB → TCB conversion complete")
+    log.append("TDB -> TCB conversion complete")
     
     return params, log

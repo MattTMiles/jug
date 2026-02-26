@@ -102,8 +102,7 @@ class TestNESWDerivative:
     def test_matches_forward_model(self, sw_geometry, freq_mhz):
         """d(delay)/d(NE_SW) should equal delay/NE_SW for any NE_SW > 0."""
         from jug.fitting.derivatives_sw import d_delay_d_NE_SW
-
-        K_DM_SEC = 4.148808e3
+        from jug.utils.constants import K_DM_SEC
         ne_sw = 4.0  # cm^-3
 
         # Forward model: delay = K_DM * NE_SW * geometry / freq^2

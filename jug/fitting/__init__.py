@@ -29,7 +29,7 @@ High-level API (recommended):
 >>>     fit_params=['F0', 'F1']
 >>> )
 >>> print(f"F0 = {result['final_params']['F0']:.15f} Hz")
->>> print(f"RMS = {result['final_rms']:.3f} μs")
+>>> print(f"RMS = {result['final_rms']:.3f} mus")
 
 Low-level API (for custom fitting):
 
@@ -56,10 +56,10 @@ Low-level API (for custom fitting):
 
 Status
 ------
-✅ Spin parameters (F0, F1, F2): VALIDATED against Tempo2/PINT
-⏳ DM parameters (DM, DM1, DM2, ...): Coming in Milestone 3
-⏳ Astrometry parameters (RA, DEC, PM, PX): Coming in Milestone 3
-⏳ Binary parameters: Coming in Milestone 3
+[x] Spin parameters (F0, F1, F2): VALIDATED against Tempo2/PINT
+* DM parameters (DM, DM1, DM2, ...): Coming in Milestone 3
+* Astrometry parameters (RA, DEC, PM, PX): Coming in Milestone 3
+* Binary parameters: Coming in Milestone 3
 """
 
 from jug.fitting.derivatives_spin import compute_spin_derivatives

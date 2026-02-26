@@ -5,7 +5,7 @@ Tests cover:
 - ECORRWhitener construction from noise entries
 - Block-Cholesky whitening of residuals and design matrices
 - Chi2 computation with off-diagonal correlations
-- Integration: ECORR entries parsed from par → whitener built → correct chi2
+- Integration: ECORR entries parsed from par -> whitener built -> correct chi2
 - Edge cases: no ECORR, single-TOA epochs, multiple backends
 """
 
@@ -29,7 +29,7 @@ class TestGroupTOAsIntoEpochs:
     """Test TOA epoch grouping by time proximity."""
 
     def test_single_epoch(self):
-        """All TOAs within dt_days → one epoch."""
+        """All TOAs within dt_days -> one epoch."""
         toas_mjd = np.array([50000.0, 50000.1, 50000.2])
         mask = np.ones(3, dtype=bool)
         epochs = _group_toas_into_epochs(toas_mjd, mask, dt_days=0.5)
@@ -64,14 +64,14 @@ class TestGroupTOAsIntoEpochs:
         assert set(epochs[0]) == {0, 2}
 
     def test_empty_mask(self):
-        """No TOAs selected → no epochs."""
+        """No TOAs selected -> no epochs."""
         toas_mjd = np.array([50000.0, 50000.1])
         mask = np.zeros(2, dtype=bool)
         epochs = _group_toas_into_epochs(toas_mjd, mask, dt_days=0.5)
         assert epochs == []
 
     def test_one_toa(self):
-        """Single TOA → no epoch (need ≥ 2)."""
+        """Single TOA -> no epoch (need >= 2)."""
         toas_mjd = np.array([50000.0])
         mask = np.ones(1, dtype=bool)
         epochs = _group_toas_into_epochs(toas_mjd, mask, dt_days=0.5)
@@ -83,8 +83,8 @@ class TestGroupTOAsIntoEpochs:
         mask = np.ones(4, dtype=bool)
         epochs = _group_toas_into_epochs(toas_mjd, mask, dt_days=0.5)
         assert len(epochs) == 2
-        # Epoch 1: TOAs at 50000.0, 50000.1 → original indices 1, 3
-        # Epoch 2: TOAs at 50001.0, 50001.1 → original indices 0, 2
+        # Epoch 1: TOAs at 50000.0, 50000.1 -> original indices 1, 3
+        # Epoch 2: TOAs at 50001.0, 50001.1 -> original indices 0, 2
         epoch_sets = [set(ep) for ep in epochs]
         assert {1, 3} in epoch_sets
         assert {0, 2} in epoch_sets
@@ -98,7 +98,7 @@ class TestBuildEcorrWhitener:
     """Test ECORRWhitener construction."""
 
     def test_no_ecorr_returns_none(self):
-        """No ECORR entries → returns None."""
+        """No ECORR entries -> returns None."""
         toas_mjd = np.array([50000.0, 50000.1])
         toa_flags = [{"f": "A"}, {"f": "A"}]
         entries = [WhiteNoiseEntry("EFAC", "f", "A", 1.0)]
@@ -106,7 +106,7 @@ class TestBuildEcorrWhitener:
         assert result is None
 
     def test_basic_construction(self):
-        """ECORR entry with grouped TOAs → whitener built."""
+        """ECORR entry with grouped TOAs -> whitener built."""
         toas_mjd = np.array([50000.0, 50000.1, 50001.0, 50001.1])
         toa_flags = [{"f": "A"}] * 4
         entries = [WhiteNoiseEntry("ECORR", "f", "A", 1.0)]
@@ -164,7 +164,7 @@ class TestECORRWhitener:
 
     @pytest.fixture
     def simple_whitener(self):
-        """4 TOAs: 2 in one epoch (ECORR=1µs), 2 singletons."""
+        """4 TOAs: 2 in one epoch (ECORR=1mus), 2 singletons."""
         toas_mjd = np.array([50000.0, 50000.1, 50005.0, 50006.0])
         toa_flags = [{"f": "A"}] * 4
         entries = [WhiteNoiseEntry("ECORR", "f", "A", 1.0)]
@@ -193,27 +193,27 @@ class TestECORRWhitener:
         assert M_white.shape == M.shape
 
     def test_singleton_whiten_is_diagonal(self, simple_whitener):
-        """For singleton TOAs, whitening = 1/σ scaling."""
+        """For singleton TOAs, whitening = 1/sigma scaling."""
         sigma_sec = np.array([1e-6, 1e-6, 2e-6, 3e-6])
         simple_whitener.prepare(sigma_sec)
         r = np.array([0.0, 0.0, 6e-6, 9e-6])
         r_white = simple_whitener.whiten_residuals(r)
-        # TOAs 2 and 3 are singletons → r_white = r / σ
+        # TOAs 2 and 3 are singletons -> r_white = r / sigma
         np.testing.assert_almost_equal(r_white[2], 6e-6 / 2e-6)
         np.testing.assert_almost_equal(r_white[3], 9e-6 / 3e-6)
 
     def test_ecorr_block_covariance(self):
-        """Verify block covariance C = diag(σ²) + J·11^T is used correctly.
+        """Verify block covariance C = diag(sigma^2) + J*11^T is used correctly.
 
-        For a 2-TOA epoch with σ1=σ2=σ, ECORR=j:
-        C = [[σ²+j², j²], [j², σ²+j²]]
+        For a 2-TOA epoch with sigma1=sigma2=sigma, ECORR=j:
+        C = [[sigma^2+j^2, j^2], [j^2, sigma^2+j^2]]
         C^{-1} can be computed analytically.
         """
-        # 2 TOAs in one epoch, equal σ
+        # 2 TOAs in one epoch, equal sigma
         toas_mjd = np.array([50000.0, 50000.1])
         toa_flags = [{"f": "A"}, {"f": "A"}]
-        sigma_us = 1.0  # µs
-        ecorr_us = 0.5  # µs
+        sigma_us = 1.0  # mus
+        ecorr_us = 0.5  # mus
         entries = [WhiteNoiseEntry("ECORR", "f", "A", ecorr_us)]
         w = build_ecorr_whitener(toas_mjd, toa_flags, entries)
         assert w is not None
@@ -225,7 +225,7 @@ class TestECORRWhitener:
         r = np.array([1e-6, 2e-6])
 
         # Analytic C^{-1} for 2x2 block:
-        # C = [[σ²+j², j²], [j², σ²+j²]]  (in seconds²)
+        # C = [[sigma^2+j^2, j^2], [j^2, sigma^2+j^2]]  (in seconds^2)
         s2 = (sigma_us * 1e-6) ** 2
         j2 = (ecorr_us * 1e-6) ** 2
         det = (s2 + j2) ** 2 - j2 ** 2
@@ -240,14 +240,14 @@ class TestECORRWhitener:
         np.testing.assert_almost_equal(actual_chi2, expected_chi2, decimal=10)
 
     def test_chi2_no_ecorr_matches_diagonal(self):
-        """With ECORR=0, chi2 should match diagonal Σ(r/σ)²."""
+        """With ECORR=0, chi2 should match diagonal Sigma(r/sigma)^2."""
         toas_mjd = np.array([50000.0, 50000.1, 50001.0])
         toa_flags = [{"f": "A"}] * 3
-        # ECORR=0 means no correlation — but we can test with very small ECORR
-        # Actually test with no ECORR at all → all singletons
+        # ECORR=0 means no correlation -- but we can test with very small ECORR
+        # Actually test with no ECORR at all -> all singletons
         entries = [WhiteNoiseEntry("ECORR", "f", "B", 1.0)]  # doesn't match
         w = build_ecorr_whitener(toas_mjd, toa_flags, entries)
-        # No match → all singletons
+        # No match -> all singletons
         assert w is not None
         assert len(w.epoch_groups) == 0
 
@@ -334,7 +334,7 @@ class TestECORRWhitener:
         for i in [3, 4]:
             for j in [3, 4]:
                 C[i, j] += j2
-        # TOA 2 is singleton — no off-diagonal
+        # TOA 2 is singleton -- no off-diagonal
         C_inv = np.linalg.inv(C)
         expected_chi2 = r @ C_inv @ r
         np.testing.assert_almost_equal(chi2, expected_chi2, decimal=10)
@@ -393,7 +393,7 @@ class TestECORRParsingIntegration:
                 assert set(g.indices) == {2, 3}
 
     def test_no_ecorr_in_entries(self):
-        """Only EFAC/EQUAD → build_ecorr_whitener returns None."""
+        """Only EFAC/EQUAD -> build_ecorr_whitener returns None."""
         lines = [
             "T2EFAC -f PUPPI 1.0",
             "T2EQUAD -f PUPPI 0.5",

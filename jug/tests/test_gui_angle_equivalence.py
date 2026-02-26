@@ -177,7 +177,7 @@ class TestGUIAngleEquivalence:
         # 5e-10 rad in position translates to ~1.5e-7 seconds max for 1 AU baseline
         # That's about 0.15 microseconds worst case
         assert max_diff < 0.2, \
-            f"Codec round-trip changed residuals by {max_diff:.6f} μs"
+            f"Codec round-trip changed residuals by {max_diff:.6f} mus"
 
 
 class TestGUIFitEquivalence:
@@ -308,13 +308,13 @@ def run_all_tests():
                 method = getattr(test_class, method_name)
                 try:
                     method()
-                    print(f"✓ {class_name}.{method_name}")
+                    print(f"[x] {class_name}.{method_name}")
                     passed += 1
                 except AssertionError as e:
-                    print(f"✗ {class_name}.{method_name}: {e}")
+                    print(f"[ ] {class_name}.{method_name}: {e}")
                     failed += 1
                 except Exception as e:
-                    print(f"✗ {class_name}.{method_name}: {type(e).__name__}: {e}")
+                    print(f"[ ] {class_name}.{method_name}: {type(e).__name__}: {e}")
                     failed += 1
 
     print()

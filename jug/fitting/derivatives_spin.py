@@ -15,6 +15,8 @@ import jax.numpy as jnp
 import numpy as np
 from typing import Dict
 
+from jug.utils.constants import SECS_PER_DAY
+
 
 @jax.jit
 def taylor_horner(dt: jnp.ndarray, coeffs: list) -> jnp.ndarray:
@@ -119,9 +121,9 @@ def d_phase_d_F(
         raise ValueError(f"Cannot parse order from {param_name}")
     
     # Create coefficient array with 1 at position (order+1), 0 elsewhere
-    # d/dF0 = dt^1/1! → position 1
-    # d/dF1 = dt^2/2! → position 2
-    # d/dF2 = dt^3/3! → position 3
+    # d/dF0 = dt^1/1! -> position 1
+    # d/dF1 = dt^2/2! -> position 2
+    # d/dF2 = dt^3/3! -> position 3
     max_order = max(order, len(f_terms) - 1) if f_terms else order
     coeffs = [0.0] * (max_order + 2)  # +2 because position is order+1
     coeffs[order + 1] = 1.0
@@ -175,7 +177,7 @@ def compute_spin_derivatives(
     pepoch_mjd = params.get('PEPOCH', toas_mjd[0])
     
     # Compute dt in seconds
-    dt_sec = (toas_mjd - pepoch_mjd) * 86400.0  # MJD to seconds
+    dt_sec = (toas_mjd - pepoch_mjd) * SECS_PER_DAY  # MJD to seconds
     
     # Get all F terms for API compatibility (not used in derivative)
     f_terms = []
@@ -193,78 +195,11 @@ def compute_spin_derivatives(
             deriv_phase = d_phase_d_F(dt_sec, param, f_terms)  # cycles/Hz (POSITIVE)
             # Apply PINT's convention (timing_model.py line 2365):
             # q = -self.d_phase_d_param(toas, delay, param)
-            # Then divide by F0 to convert phase → time units (line 2368)
+            # Then divide by F0 to convert phase -> time units (line 2368)
             f0 = params.get('F0', 1.0)
             derivatives[param] = -deriv_phase / f0  # seconds/Hz (NEGATIVE)
     
     return derivatives
 
 
-# For backward compatibility / testing
-@jax.jit
-def d_phase_d_F0(dt_sec: jnp.ndarray) -> jnp.ndarray:
-    """Derivative of phase with respect to F0.
-    
-    d(phase)/d(F0) = dt
-    """
-    return taylor_horner(dt_sec, [0.0, 1.0])
 
-
-@jax.jit
-def d_phase_d_F1(dt_sec: jnp.ndarray) -> jnp.ndarray:
-    """Derivative of phase with respect to F1.
-    
-    d(phase)/d(F1) = dt^2 / 2!
-    """
-    return taylor_horner(dt_sec, [0.0, 0.0, 1.0])
-
-
-@jax.jit
-def d_phase_d_F2(dt_sec: jnp.ndarray) -> jnp.ndarray:
-    """Derivative of phase with respect to F2.
-    
-    d(phase)/d(F2) = dt^3 / 3!
-    """
-    return taylor_horner(dt_sec, [0.0, 0.0, 0.0, 1.0])
-
-
-@jax.jit
-def d_phase_d_F3(dt_sec: jnp.ndarray) -> jnp.ndarray:
-    """Derivative of phase with respect to F3.
-    
-    d(phase)/d(F3) = dt^4 / 4!
-    """
-    return taylor_horner(dt_sec, [0.0, 0.0, 0.0, 0.0, 1.0])
-
-
-if __name__ == '__main__':
-    # Quick test
-    print("Testing spin derivatives...")
-    
-    # Test case from PINT documentation
-    dt = np.array([2.0])
-    coeffs = [10, 3, 4, 12]
-    result = taylor_horner(dt, coeffs)
-    print(f"taylor_horner(2.0, [10, 3, 4, 12]) = {result[0]:.1f}")
-    print(f"Expected: 40.0")
-    print(f"Match: {abs(result[0] - 40.0) < 1e-10}")
-    
-    # Test derivatives
-    dt = np.array([1.0, 2.0, 3.0])
-    
-    # d/dF0 = dt
-    d_f0 = d_phase_d_F0(dt)
-    print(f"\nd/dF0 at dt=[1,2,3]: {d_f0}")
-    print(f"Expected: [1, 2, 3]")
-    
-    # d/dF1 = dt^2/2
-    d_f1 = d_phase_d_F1(dt)
-    print(f"\nd/dF1 at dt=[1,2,3]: {d_f1}")
-    print(f"Expected: [0.5, 2.0, 4.5]")
-    
-    # d/dF2 = dt^3/6
-    d_f2 = d_phase_d_F2(dt)
-    print(f"\nd/dF2 at dt=[1,2,3]: {d_f2}")
-    print(f"Expected: [0.167, 1.333, 4.5]")
-    
-    print("\n✓ Spin derivatives module ready!")

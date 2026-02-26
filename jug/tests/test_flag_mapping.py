@@ -1,4 +1,4 @@
-"""Tests for jug.engine.flag_mapping — flag aliasing + backend resolution."""
+"""Tests for jug.engine.flag_mapping -- flag aliasing + backend resolution."""
 
 import pytest
 

@@ -1,4 +1,4 @@
-"""Tests for jug.engine.validation — TOA data integrity checks."""
+"""Tests for jug.engine.validation -- TOA data integrity checks."""
 
 import numpy as np
 import pytest
@@ -180,7 +180,7 @@ class TestStrictMode:
     def test_strict_ok_with_warnings_only(self):
         """Warnings don't raise in strict mode."""
         mjd, freq, err, _ = _good_data()
-        mjd[2] = mjd[1]  # duplicate → warning
+        mjd[2] = mjd[1]  # duplicate -> warning
         # Should NOT raise
         issues = validate_toas(mjd, freq, err, strict=True)
         assert any(i.severity == Severity.WARNING for i in issues)

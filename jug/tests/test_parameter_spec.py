@@ -329,11 +329,11 @@ def run_all_tests():
                 method = getattr(test_class, method_name)
                 try:
                     method()
-                    print(f"✓ {class_name}.{method_name}")
+                    print(f"[x] {class_name}.{method_name}")
                 except AssertionError as e:
-                    print(f"✗ {class_name}.{method_name}: {e}")
+                    print(f"[ ] {class_name}.{method_name}: {e}")
                 except Exception as e:
-                    print(f"✗ {class_name}.{method_name}: {type(e).__name__}: {e}")
+                    print(f"[ ] {class_name}.{method_name}: {type(e).__name__}: {e}")
 
     print()
     print("All tests completed!")

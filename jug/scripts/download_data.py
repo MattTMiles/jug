@@ -306,10 +306,10 @@ Environment Variables:
     if args.verify:
         results = verify_data_integrity(verbose=True)
         if results['valid']:
-            print("\n✓ All data files verified successfully")
+            print("\n[x] All data files verified successfully")
             sys.exit(0)
         else:
-            print("\n✗ Data integrity check failed")
+            print("\n[ ] Data integrity check failed")
             sys.exit(1)
 
     if args.status:
@@ -329,11 +329,11 @@ Environment Variables:
     print("=" * 60)
     
     if iers_ok and eph_ok:
-        print("✓ All data prefetched successfully")
+        print("[x] All data prefetched successfully")
         print("\nJUG is ready for offline use.")
         sys.exit(0)
     else:
-        print("⚠ Some data could not be prefetched")
+        print("[!] Some data could not be prefetched")
         print("  JUG will still work but may need network access on first use.")
         sys.exit(1)
 

@@ -1,5 +1,5 @@
 """
-Parity smoke pack — cross-pulsar regression tests.
+Parity smoke pack -- cross-pulsar regression tests.
 ====================================================
 
 Runs the JUG residuals engine on multiple pulsars and verifies:
@@ -9,8 +9,8 @@ Runs the JUG residuals engine on multiple pulsars and verifies:
 4. (When Tempo2 is available) per-TOA parity within golden thresholds.
 
 Pulsars covered:
-    J1909-3744  — ELL1 binary, SINI+M2, DM1/DM2, FD1–FD9, NE_SW
-    J0614-3329  — DD binary, SINI+M2, DM1/DM2, PBDOT, FD1
+    J1909-3744  -- ELL1 binary, SINI+M2, DM1/DM2, FD1-FD9, NE_SW
+    J0614-3329  -- DD binary, SINI+M2, DM1/DM2, PBDOT, FD1
 
 Run with:
     pytest jug/tests/test_parity_smoke.py -v -o "addopts="
@@ -49,9 +49,9 @@ def _has_tempo2():
     return shutil.which("tempo2") is not None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Sanity checks — WRMS in physical range
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# Sanity checks -- WRMS in physical range
+# ------------------------------------------------------------------------------
 
 class TestSmokeSanity:
     """Verify each pulsar produces residuals with WRMS in a plausible range."""
@@ -59,8 +59,8 @@ class TestSmokeSanity:
     @pytest.mark.parametrize(
         "pulsar,max_wrms_us",
         [
-            ("J1909-3744", 1.0),   # TRES ≈ 0.40 μs
-            ("J0614-3329", 5.0),   # TRES ≈ 2.34 μs
+            ("J1909-3744", 1.0),   # TRES ~= 0.40 mus
+            ("J0614-3329", 5.0),   # TRES ~= 2.34 mus
         ],
     )
     def test_wrms_in_range(self, pulsar, max_wrms_us):
@@ -69,7 +69,7 @@ class TestSmokeSanity:
         wrms = result["weighted_rms_us"]
         assert wrms > 0, f"{pulsar}: WRMS is zero or negative"
         assert wrms < max_wrms_us, (
-            f"{pulsar}: WRMS {wrms:.3f} μs exceeds {max_wrms_us} μs"
+            f"{pulsar}: WRMS {wrms:.3f} mus exceeds {max_wrms_us} mus"
         )
 
     @pytest.mark.parametrize("pulsar", ["J1909-3744", "J0614-3329"])
@@ -87,9 +87,9 @@ class TestSmokeSanity:
             )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Determinism
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 class TestSmokeDeterminism:
     """Two independent runs on the same pulsar must agree bit-for-bit."""
@@ -102,9 +102,9 @@ class TestSmokeDeterminism:
         np.testing.assert_array_equal(r1["residuals_us"], r2["residuals_us"])
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Config fingerprinting
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 class TestSmokeFingerprint:
     """Verify par files are JUG-compatible (TDB, DE440, BIPM2024)."""
@@ -117,9 +117,9 @@ class TestSmokeFingerprint:
         assert ok, f"{pulsar} par file not JUG-compatible: {issues}"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Fitting smoke — converges, RMS improves
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# Fitting smoke -- converges, RMS improves
+# ------------------------------------------------------------------------------
 
 class TestSmokeFitting:
     """Verify fitting converges and improves RMS for a few core params."""
@@ -154,9 +154,9 @@ class TestSmokeFitting:
         )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Binary-model coverage
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 class TestSmokeBinaryModels:
     """Verify different binary models produce reasonable binary delays."""
@@ -166,7 +166,7 @@ class TestSmokeBinaryModels:
         par, tim = _skip_no_data("J1909-3744")
         result = compute_residuals_simple(par, tim, verbose=False)
         assert result["prebinary_delay_sec"] is not None
-        # Binary delay should have sub-μs variation for well-timed pulsar
+        # Binary delay should have sub-mus variation for well-timed pulsar
         binary_contribution = np.std(result["prebinary_delay_sec"])
         assert binary_contribution > 0, "Binary delay has zero variation"
 
@@ -179,9 +179,9 @@ class TestSmokeBinaryModels:
         assert binary_contribution > 0, "Binary delay has zero variation"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Tempo2 parity (integration, requires tempo2)
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 def _run_tempo2(par, tim):
     """Run Tempo2 and return per-TOA residuals."""
@@ -219,8 +219,8 @@ class TestTempo2Parity:
     Thresholds are per-pulsar because the clock-chain systematic offset
     varies with observation span and frequency coverage.
 
-    - J1909-3744: max |Δ| < 100 ns  (ELL1, short PB, 10k TOAs)
-    - J0614-3329: max |Δ| < 500 ns  (DD, long PB, Shapiro + OM)
+    - J1909-3744: max |Delta| < 100 ns  (ELL1, short PB, 10k TOAs)
+    - J0614-3329: max |Delta| < 500 ns  (DD, long PB, Shapiro + OM)
     """
 
     _THRESHOLDS = {
@@ -236,12 +236,12 @@ class TestTempo2Parity:
 
         # JUG
         result = compute_residuals_simple(par, tim, verbose=False)
-        jug_res = result["residuals_us"] * 1e-6  # → seconds
+        jug_res = result["residuals_us"] * 1e-6  # -> seconds
 
         # Tempo2
         t2_bat, t2_post = _run_tempo2(par, tim)
 
-        # Match by index (same input file → same ordering)
+        # Match by index (same input file -> same ordering)
         n = min(len(jug_res), len(t2_post))
         assert n > 0, f"{pulsar}: no matched TOAs"
 
@@ -249,7 +249,7 @@ class TestTempo2Parity:
         max_abs = float(np.max(np.abs(delta_ns)))
 
         assert max_abs < thresholds["max_abs_ns"], (
-            f"{pulsar}: max per-TOA |Δ| = {max_abs:.1f} ns > {thresholds['max_abs_ns']} ns threshold"
+            f"{pulsar}: max per-TOA |Delta| = {max_abs:.1f} ns > {thresholds['max_abs_ns']} ns threshold"
         )
 
         # WRMS comparison
@@ -267,5 +267,5 @@ class TestTempo2Parity:
         wrms_diff_ns = (wrms_jug - wrms_t2) * 1e3
 
         assert abs(wrms_diff_ns) < thresholds["wrms_diff_ns"], (
-            f"{pulsar}: |ΔWRMS| = {abs(wrms_diff_ns):.3f} ns > {thresholds['wrms_diff_ns']} ns threshold"
+            f"{pulsar}: |DeltaWRMS| = {abs(wrms_diff_ns):.3f} ns > {thresholds['wrms_diff_ns']} ns threshold"
         )

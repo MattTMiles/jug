@@ -2,7 +2,7 @@
 
 DMX is an alternative to a smooth polynomial DM model: the dataset is
 split into time windows (``DMX_####`` groups) and a separate offset
-``ΔDM_k`` is fitted for each window.  This is widely used in
+``DeltaDM_k`` is fitted for each window.  This is widely used in
 NANOGrav / PINT analyses where DM variations are too rapid for a low-
 order polynomial.
 
@@ -13,16 +13,16 @@ Design
   ``DMX_####`` (initial value), ``DMXF1_####`` / ``DMXF2_####`` (frequency
   bounds).
 * **Design matrix columns**: one column per DMX window, with the standard
-  DM chromatic derivative ``K_DM / ν²`` inside the window and zero
+  DM chromatic derivative ``K_DM / nu^2`` inside the window and zero
   outside.
 * **Integration with fitter**: the DMX columns can be appended to the
   general design matrix exactly like other timing parameters.
 
 This module provides:
   * ``DMXRange`` dataclass describing one DMX window
-  * ``parse_dmx_ranges(params)`` — extract all DMX ranges from a par dict
-  * ``assign_toas_to_dmx(toas_mjd, ranges)`` — build a membership array
-  * ``build_dmx_design_matrix(…)`` — design matrix for DMX fitting
+  * ``parse_dmx_ranges(params)`` -- extract all DMX ranges from a par dict
+  * ``assign_toas_to_dmx(toas_mjd, ranges)`` -- build a membership array
+  * ``build_dmx_design_matrix(...)`` -- design matrix for DMX fitting
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class DMXRange:
     r2_mjd : float
         End MJD (inclusive).
     value : float
-        Initial DMX value (pc/cm³), or 0.0 if not specified.
+        Initial DMX value (pc/cm^3), or 0.0 if not specified.
     freq_lo_mhz : float
         Lower frequency bound (MHz), or 0.0 (no bound).
     freq_hi_mhz : float
@@ -172,7 +172,7 @@ def assign_toas_to_dmx(
     mask_matrix = np.zeros((n_toa, n_ranges), dtype=bool)
 
     for k, rng in enumerate(ranges):
-        # MJD-only matching (consistent with PINT/Tempo2 — DMXF1/DMXF2 are informational)
+        # MJD-only matching (consistent with PINT/Tempo2 -- DMXF1/DMXF2 are informational)
         mask = (toas_mjd >= rng.r1_mjd) & (toas_mjd <= rng.r2_mjd)
         mask_matrix[:, k] = mask
         # First match wins if ranges overlap (later ranges don't override)
@@ -194,7 +194,7 @@ def build_dmx_design_matrix(
     """Build the DMX design matrix.
 
     Each column is the standard DM chromatic derivative
-    ``K_DM / freq_mhz²`` inside the corresponding DMX window, and
+    ``K_DM / freq_mhz^2`` inside the corresponding DMX window, and
     zero outside.
 
     Parameters
@@ -214,7 +214,7 @@ def build_dmx_design_matrix(
     n_ranges = len(ranges)
     _, mask_matrix = assign_toas_to_dmx(toas_mjd, freq_mhz, ranges)
 
-    # DM derivative: d(delay)/d(DM) = K_DM / freq_mhz² [seconds per pc/cm³]
+    # DM derivative: d(delay)/d(DM) = K_DM / freq_mhz^2 [seconds per pc/cm^3]
     dm_deriv = K_DM_SEC / (freq_mhz ** 2)  # (n_toa,)
 
     M_dmx = np.zeros((n_toa, n_ranges), dtype=np.float64)

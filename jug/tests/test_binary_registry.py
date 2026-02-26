@@ -38,7 +38,7 @@ def test_builtin_models_registered():
     # T2 (universal model)
     assert is_model_registered('T2'), "T2 not registered"
 
-    print("  ✓ All expected models are registered")
+    print("  [x] All expected models are registered")
 
 
 def test_compute_binary_delay_routing():
@@ -92,9 +92,9 @@ def test_compute_binary_delay_routing():
     dd_params_lower = {**dd_params, 'BINARY': 'dd'}
     dd_delay_lower = compute_binary_delay(toas, dd_params_lower)
     np.testing.assert_array_equal(dd_delay, dd_delay_lower)
-    print("  ✓ Case-insensitive model names work")
+    print("  [x] Case-insensitive model names work")
 
-    print("  ✓ Binary delay routing works correctly")
+    print("  [x] Binary delay routing works correctly")
 
 
 def test_t2_delay_routing_dd_style():
@@ -103,7 +103,7 @@ def test_t2_delay_routing_dd_style():
 
     toas = np.array([55000.0, 55001.0, 55002.0])
 
-    # DD-style T2 params (has T0, ECC, OM → should dispatch to DD)
+    # DD-style T2 params (has T0, ECC, OM -> should dispatch to DD)
     t2_dd_params = {
         'BINARY': 'T2',
         'A1': 10.0,
@@ -128,7 +128,7 @@ def test_t2_delay_routing_dd_style():
     np.testing.assert_allclose(t2_delay, dd_delay, rtol=1e-15,
                                err_msg="T2 (DD-style) should match DD exactly")
     print(f"  T2(DD) delay range: {t2_delay.min():.6f} to {t2_delay.max():.6f} s")
-    print("  ✓ T2 with T0/ECC/OM matches DD")
+    print("  [x] T2 with T0/ECC/OM matches DD")
 
 
 def test_t2_delay_routing_ell1_style():
@@ -137,7 +137,7 @@ def test_t2_delay_routing_ell1_style():
 
     toas = np.array([55000.0, 55001.0, 55002.0])
 
-    # ELL1-style T2 params (has TASC, EPS1, EPS2 → should dispatch to ELL1)
+    # ELL1-style T2 params (has TASC, EPS1, EPS2 -> should dispatch to ELL1)
     t2_ell1_params = {
         'BINARY': 'T2',
         'A1': 10.0,
@@ -162,7 +162,7 @@ def test_t2_delay_routing_ell1_style():
     np.testing.assert_allclose(t2_delay, ell1_delay, rtol=1e-15,
                                err_msg="T2 (ELL1-style) should match ELL1 exactly")
     print(f"  T2(ELL1) delay range: {t2_delay.min():.6f} to {t2_delay.max():.6f} s")
-    print("  ✓ T2 with TASC/EPS1/EPS2 matches ELL1")
+    print("  [x] T2 with TASC/EPS1/EPS2 matches ELL1")
 
 
 def test_non_binary_returns_zeros():
@@ -181,7 +181,7 @@ def test_non_binary_returns_zeros():
     delay = compute_binary_delay(toas, params_empty)
     np.testing.assert_array_equal(delay, np.zeros(3))
 
-    print("  ✓ Non-binary pulsars return zero delay")
+    print("  [x] Non-binary pulsars return zero delay")
 
 
 def test_unknown_model_raises():
@@ -197,7 +197,7 @@ def test_unknown_model_raises():
     except ValueError as e:
         assert 'UNKNOWN_MODEL' in str(e)
         assert 'Registered models' in str(e)
-        print(f"  ✓ Unknown model raises helpful error: {e}")
+        print(f"  [x] Unknown model raises helpful error: {e}")
 
 
 def test_derivatives_routing():
@@ -239,7 +239,7 @@ def test_derivatives_routing():
     assert 'PB' in derivs
     print(f"  ELL1 derivatives computed for: {list(derivs.keys())}")
 
-    print("  ✓ Binary derivatives routing works correctly")
+    print("  [x] Binary derivatives routing works correctly")
 
 
 def test_t2_derivatives_routing():
@@ -286,16 +286,16 @@ def test_t2_derivatives_routing():
     derivs_dd_direct = compute_binary_derivatives(dd_params, toas, ['A1', 'PB'])
     np.testing.assert_allclose(derivs_dd['A1'], derivs_dd_direct['A1'], rtol=1e-15)
     np.testing.assert_allclose(derivs_dd['PB'], derivs_dd_direct['PB'], rtol=1e-15)
-    print("  ✓ T2(DD) derivatives match DD exactly")
+    print("  [x] T2(DD) derivatives match DD exactly")
 
     # Verify T2(ELL1) matches ELL1 exactly
     ell1_params = {**t2_ell1_params, 'BINARY': 'ELL1'}
     derivs_ell1_direct = compute_binary_derivatives(ell1_params, toas, ['A1', 'PB'])
     np.testing.assert_allclose(derivs_ell1['A1'], derivs_ell1_direct['A1'], rtol=1e-15)
     np.testing.assert_allclose(derivs_ell1['PB'], derivs_ell1_direct['PB'], rtol=1e-15)
-    print("  ✓ T2(ELL1) derivatives match ELL1 exactly")
+    print("  [x] T2(ELL1) derivatives match ELL1 exactly")
 
-    print("  ✓ T2 derivatives routing works correctly")
+    print("  [x] T2 derivatives routing works correctly")
 
 
 if __name__ == "__main__":
@@ -319,7 +319,7 @@ if __name__ == "__main__":
         try:
             all_passed &= test()
         except Exception as e:
-            print(f"  ✗ FAILED: {e}")
+            print(f"  [ ] FAILED: {e}")
             import traceback
             traceback.print_exc()
             all_passed = False

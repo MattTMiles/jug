@@ -9,12 +9,12 @@ Jacobian chain rule: d(delay)/d(ecl_param) = J^T @ d(delay)/d(eq_param),
 where J is the coordinate transformation Jacobian.
 
 The astrometric delay (Roemer delay) depends on the Earth-pulsar geometry:
-    τ_astro = r · n̂ / c
+    tau_astro = r * n / c
 
-where r is the SSB-to-observatory vector and n̂ is the unit vector to the pulsar.
+where r is the SSB-to-observatory vector and n is the unit vector to the pulsar.
 
-Key insight: The design matrix columns are ∂(delay)/∂(param).
-For fitting, PINT divides these by F0 to get ∂(phase)/∂(param).
+Key insight: The design matrix columns are d(delay)/d(param).
+For fitting, PINT divides these by F0 to get d(phase)/d(param).
 
 Reference: PINT src/pint/models/astrometry.py
 """
@@ -28,14 +28,15 @@ import numpy as np
 from typing import Dict, List, Optional
 import math
 
-# Physical constants
-SPEED_OF_LIGHT = 299792458.0  # m/s
-AU_METERS = 149597870700.0  # meters per AU
-SECS_PER_DAY = 86400.0
-SECS_PER_YEAR = 365.25 * SECS_PER_DAY
-MAS_PER_RAD = 180.0 * 3600.0 * 1000.0 / math.pi  # ~206264806 mas/rad
-HOURANGLE_PER_RAD = 12.0 / math.pi  # ~3.819 hourangle/rad
-DEG_PER_RAD = 180.0 / math.pi
+from jug.utils.constants import (
+    C_M_S as SPEED_OF_LIGHT,
+    AU_M as AU_METERS,
+    SECS_PER_DAY,
+    SECS_PER_YEAR,
+    MAS_PER_RAD,
+    HOURANGLE_PER_RAD,
+    DEG_PER_RAD,
+)
 
 # Obliquity values (arcseconds) for ecliptic coordinate frames
 from jug.io.par_reader import OBLIQUITY_ARCSEC
@@ -89,10 +90,10 @@ def d_delay_d_RAJ(
     """Compute derivative of delay with respect to RAJ.
     
     The astrometric delay is:
-        τ = r * [cos(dec_e)*cos(dec_p)*cos(ra_e - ra_p) + sin(dec_e)*sin(dec_p)] / c
+        tau = r * [cos(dec_e)*cos(dec_p)*cos(ra_e - ra_p) + sin(dec_e)*sin(dec_p)] / c
     
     The derivative w.r.t. RA (in radians) is:
-        ∂τ/∂RA = r * cos(dec_e) * cos(dec_p) * sin(ra_p - ra_e) / c
+        dtau/dRA = r * cos(dec_e) * cos(dec_p) * sin(ra_p - ra_e) / c
     
     Parameters
     ----------
@@ -106,7 +107,7 @@ def d_delay_d_RAJ(
     Returns
     -------
     derivative : jnp.ndarray
-        ∂(delay)/∂(RAJ) in units of seconds/radian
+        d(delay)/d(RAJ) in units of seconds/radian
         Shape (n_toas,)
         
     Notes
@@ -119,7 +120,7 @@ def d_delay_d_RAJ(
     # Geometric factor: cos(dec_e) * cos(dec_p) * sin(ra_p - ra_e)
     geom = jnp.cos(rd['earth_dec']) * jnp.cos(psr_dec) * jnp.sin(psr_ra - rd['earth_ra'])
     
-    # ∂τ/∂RA = r * geom / c
+    # dtau/dRA = r * geom / c
     # ssb_obs_r is in light-seconds, so r/c = ssb_obs_r (in seconds)
     dd_draj = rd['ssb_obs_r'] * geom  # seconds/radian
     
@@ -135,7 +136,7 @@ def d_delay_d_DECJ(
     """Compute derivative of delay with respect to DECJ.
     
     The derivative w.r.t. DEC (in radians) is:
-        ∂τ/∂DEC = r * [cos(dec_e)*sin(dec_p)*cos(ra_e - ra_p) - sin(dec_e)*cos(dec_p)] / c
+        dtau/dDEC = r * [cos(dec_e)*sin(dec_p)*cos(ra_e - ra_p) - sin(dec_e)*cos(dec_p)] / c
     
     Parameters
     ----------
@@ -149,7 +150,7 @@ def d_delay_d_DECJ(
     Returns
     -------
     derivative : jnp.ndarray
-        ∂(delay)/∂(DECJ) in units of seconds/radian
+        d(delay)/d(DECJ) in units of seconds/radian
         Shape (n_toas,)
     """
     rd = compute_earth_position_angles(ssb_obs_pos)
@@ -177,7 +178,7 @@ def d_delay_d_PMRA(
         RA(t) = RA_0 + PMRA * (t - POSEPOCH)
     
     The derivative w.r.t. PMRA is:
-        ∂τ/∂PMRA = (t - POSEPOCH) * ∂τ/∂RA
+        dtau/dPMRA = (t - POSEPOCH) * dtau/dRA
     
     Parameters
     ----------
@@ -195,12 +196,12 @@ def d_delay_d_PMRA(
     Returns
     -------
     derivative : jnp.ndarray
-        ∂(delay)/∂(PMRA) in units of seconds/(rad/year)
+        d(delay)/d(PMRA) in units of seconds/(rad/year)
         Shape (n_toas,)
         
     Notes
     -----
-    PMRA in pulsar timing is μ_α* = dα/dt × cos(δ), i.e., proper motion
+    PMRA in pulsar timing is mu_alpha* = dalpha/dt * cos(delta), i.e., proper motion
     in RA already includes the cos(dec) factor. Therefore the derivative
     does NOT include cos(psr_dec) in the geometric factor (unlike d_delay_d_RAJ).
     """
@@ -214,7 +215,7 @@ def d_delay_d_PMRA(
     # Note: NO cos(psr_dec) because PMRA = dRA/dt * cos(dec)
     geom = jnp.cos(rd['earth_dec']) * jnp.sin(psr_ra - rd['earth_ra'])
     
-    # ∂τ/∂PMRA = dt * r * geom / c
+    # dtau/dPMRA = dt * r * geom / c
     dd_dpmra = dt_years * rd['ssb_obs_r'] * geom  # seconds/(rad/year)
     
     return dd_dpmra
@@ -246,7 +247,7 @@ def d_delay_d_PMDEC(
     Returns
     -------
     derivative : jnp.ndarray
-        ∂(delay)/∂(PMDEC) in units of seconds/(rad/year)
+        d(delay)/d(PMDEC) in units of seconds/(rad/year)
         Shape (n_toas,)
     """
     rd = compute_earth_position_angles(ssb_obs_pos)
@@ -259,7 +260,7 @@ def d_delay_d_PMDEC(
     geom = (jnp.cos(rd['earth_dec']) * jnp.sin(psr_dec) * jnp.cos(psr_ra - rd['earth_ra'])
             - jnp.sin(rd['earth_dec']) * jnp.cos(psr_dec))
     
-    # ∂τ/∂PMDEC = dt * r * geom / c
+    # dtau/dPMDEC = dt * r * geom / c
     dd_dpmdec = dt_years * rd['ssb_obs_r'] * geom  # seconds/(rad/year)
     
     return dd_dpmdec
@@ -302,7 +303,7 @@ def compute_pulsar_unit_vector(
         dt_years = (toas_mjd - posepoch_mjd) / 365.25
         
         # Update RA and DEC for proper motion
-        # Note: PMRA is μ_α* = dα/dt × cos(δ), so we divide by cos(dec) to get dα/dt
+        # Note: PMRA is mu_alpha* = dalpha/dt * cos(delta), so we divide by cos(dec) to get dalpha/dt
         cos_dec = jnp.cos(psr_dec)
         ra_corrected = psr_ra + (pmra_rad_yr / cos_dec) * dt_years
         dec_corrected = psr_dec + pmdec_rad_yr * dt_years
@@ -343,13 +344,13 @@ def d_delay_d_PX(
     """Compute derivative of delay with respect to PX (parallax).
     
     The parallax delay is approximately:
-        τ_px = 0.5 * (px_r^2 / AU) * PX / c
+        tau_px = 0.5 * (px_r^2 / AU) * PX / c
     
     where px_r is the transverse distance (perpendicular to line of sight):
-        px_r = sqrt(r^2 - (r·n̂)^2)
+        px_r = sqrt(r^2 - (r*n)^2)
     
     The derivative w.r.t. PX (in radians) is:
-        ∂τ/∂PX = 0.5 * px_r^2 / (AU * c)
+        dtau/dPX = 0.5 * px_r^2 / (AU * c)
     
     Parameters
     ----------
@@ -364,14 +365,14 @@ def d_delay_d_PX(
     posepoch_mjd : float, optional
         Position epoch in MJD
     pmra_rad_yr : float, optional
-        Proper motion in RA (μ_α* = dα/dt × cos(δ)) in rad/yr
+        Proper motion in RA (mu_alpha* = dalpha/dt * cos(delta)) in rad/yr
     pmdec_rad_yr : float, optional
         Proper motion in DEC in rad/yr
         
     Returns
     -------
     derivative : jnp.ndarray
-        ∂(delay)/∂(PX) in units of seconds/radian
+        d(delay)/d(PX) in units of seconds/radian
         Shape (n_toas,)
         
     Notes
@@ -387,13 +388,13 @@ def d_delay_d_PX(
         psr_ra, psr_dec, toas_mjd, posepoch_mjd, pmra_rad_yr, pmdec_rad_yr
     )
     
-    # Inner product r · n̂
+    # Inner product r * n
     r_dot_n = rd['x'] * n_x + rd['y'] * n_y + rd['z'] * n_z
     
-    # Transverse distance squared: px_r^2 = r^2 - (r·n̂)^2
+    # Transverse distance squared: px_r^2 = r^2 - (r*n)^2
     px_r_sq = rd['ssb_obs_r']**2 - r_dot_n**2
     
-    # ∂τ/∂PX = 0.5 * px_r^2 / (AU * c)
+    # dtau/dPX = 0.5 * px_r^2 / (AU * c)
     # AU in light-seconds: AU_METERS / SPEED_OF_LIGHT
     AU_LS = AU_METERS / SPEED_OF_LIGHT  # ~499.005 light-seconds
     
@@ -403,11 +404,11 @@ def d_delay_d_PX(
 
 
 def _ecliptic_to_equatorial_jacobian(ecl_lon_deg, ecl_lat_deg, obl_rad):
-    """Compute Jacobian ∂(RAJ, DECJ) / ∂(ELONG, ELAT) in radians/radians.
+    """Compute Jacobian d(RAJ, DECJ) / d(ELONG, ELAT) in radians/radians.
 
     Returns a 2x2 matrix J where:
-        J[0,0] = ∂RAJ/∂ELONG,  J[0,1] = ∂RAJ/∂ELAT
-        J[1,0] = ∂DECJ/∂ELONG, J[1,1] = ∂DECJ/∂ELAT
+        J[0,0] = dRAJ/dELONG,  J[0,1] = dRAJ/dELAT
+        J[1,0] = dDECJ/dELONG, J[1,1] = dDECJ/dELAT
 
     All angles in radians (input ecliptic coords converted from degrees).
     """
@@ -422,12 +423,12 @@ def _ecliptic_to_equatorial_jacobian(ecl_lon_deg, ecl_lat_deg, obl_rad):
     y = sin_lon * cos_lat * cos_obl - sin_lat * sin_obl
     z = sin_lon * cos_lat * sin_obl + sin_lat * cos_obl
 
-    # ∂(x,y,z)/∂(lon)  (lon in radians)
+    # d(x,y,z)/d(lon)  (lon in radians)
     dx_dlon = -sin_lon * cos_lat
     dy_dlon = cos_lon * cos_lat * cos_obl
     dz_dlon = cos_lon * cos_lat * sin_obl
 
-    # ∂(x,y,z)/∂(lat)  (lat in radians)
+    # d(x,y,z)/d(lat)  (lat in radians)
     dx_dlat = -cos_lon * sin_lat
     dy_dlat = -sin_lon * sin_lat * cos_obl - cos_lat * sin_obl
     dz_dlat = -sin_lon * sin_lat * sin_obl + cos_lat * cos_obl
@@ -435,11 +436,11 @@ def _ecliptic_to_equatorial_jacobian(ecl_lon_deg, ecl_lat_deg, obl_rad):
     # RA = atan2(y, x), DEC = asin(z)
     r_xy_sq = x**2 + y**2
 
-    # ∂RA/∂lon = (x * dy_dlon - y * dx_dlon) / (x² + y²)
+    # dRA/dlon = (x * dy_dlon - y * dx_dlon) / (x^2 + y^2)
     dra_dlon = (x * dy_dlon - y * dx_dlon) / r_xy_sq
     dra_dlat = (x * dy_dlat - y * dx_dlat) / r_xy_sq
 
-    # ∂DEC/∂lon = dz_dlon / sqrt(1 - z²) = dz_dlon / sqrt(x² + y²)
+    # dDEC/dlon = dz_dlon / sqrt(1 - z^2) = dz_dlon / sqrt(x^2 + y^2)
     r_xy = np.sqrt(r_xy_sq)
     ddec_dlon = dz_dlon / r_xy
     ddec_dlat = dz_dlat / r_xy
@@ -449,17 +450,17 @@ def _ecliptic_to_equatorial_jacobian(ecl_lon_deg, ecl_lat_deg, obl_rad):
 
 
 def _ecliptic_pm_jacobian(ecl_lon_deg, ecl_lat_deg, obl_rad):
-    """Compute Jacobian ∂(PMRA, PMDEC) / ∂(PMELONG, PMELAT).
+    """Compute Jacobian d(PMRA, PMDEC) / d(PMELONG, PMELAT).
 
     Both ecliptic and equatorial proper motions include the cos(lat) factor:
-        PMELONG = dλ·cos(β),  PMRA = dα·cos(δ)
+        PMELONG = dlambda_*cos(beta),  PMRA = dalpha*cos(delta)
 
     The Jacobian relates the proper motion vectors through the same rotation
     as the position Jacobian, but projected onto the local tangent planes.
 
     Returns a 2x2 matrix J_pm where:
-        J_pm[0,0] = ∂PMRA/∂PMELONG,    J_pm[0,1] = ∂PMRA/∂PMELAT
-        J_pm[1,0] = ∂PMDEC/∂PMELONG,   J_pm[1,1] = ∂PMDEC/∂PMELAT
+        J_pm[0,0] = dPMRA/dPMELONG,    J_pm[0,1] = dPMRA/dPMELAT
+        J_pm[1,0] = dPMDEC/dPMELONG,   J_pm[1,1] = dPMDEC/dPMELAT
     """
     lon = np.radians(ecl_lon_deg)
     lat = np.radians(ecl_lat_deg)
@@ -476,21 +477,21 @@ def _ecliptic_pm_jacobian(ecl_lon_deg, ecl_lat_deg, obl_rad):
     cos_ra, sin_ra = np.cos(ra_rad), np.sin(ra_rad)
     cos_dec, sin_dec = np.cos(dec_rad), np.sin(dec_rad)
 
-    # For PMELONG (= dλ·cos(β)): Cartesian velocity = dλ·cos(β) × (-sin(λ), cos(λ)·cos(ε), cos(λ)·sin(ε))
-    # For PMELAT (= dβ): Cartesian velocity = dβ × (-cos(λ)·sin(β), -sin(λ)·sin(β)·cos(ε) - cos(β)·sin(ε),
-    #                                                  -sin(λ)·sin(β)·sin(ε) + cos(β)·cos(ε))
-    # Unit PMELONG → Cartesian
+    # For PMELONG (= dlambda_*cos(beta)): Cartesian velocity = dlambda_*cos(beta) * (-sin(lambda_), cos(lambda_)*cos(epsilon), cos(lambda_)*sin(epsilon))
+    # For PMELAT (= dbeta): Cartesian velocity = dbeta * (-cos(lambda_)*sin(beta), -sin(lambda_)*sin(beta)*cos(epsilon) - cos(beta)*sin(epsilon),
+    #                                                  -sin(lambda_)*sin(beta)*sin(epsilon) + cos(beta)*cos(epsilon))
+    # Unit PMELONG -> Cartesian
     vx_lon = -sin_lon
     vy_lon = cos_lon * cos_obl
     vz_lon = cos_lon * sin_obl
 
-    # Unit PMELAT → Cartesian
+    # Unit PMELAT -> Cartesian
     vx_lat = -cos_lon * sin_lat
     vy_lat = -sin_lon * sin_lat * cos_obl - cos_lat * sin_obl
     vz_lat = -sin_lon * sin_lat * sin_obl + cos_lat * cos_obl
 
-    # Project onto equatorial PM: PMRA·cos(δ) = -sin(α)·vx + cos(α)·vy
-    #                              PMDEC = -cos(α)·sin(δ)·vx - sin(α)·sin(δ)·vy + cos(δ)·vz
+    # Project onto equatorial PM: PMRA*cos(delta) = -sin(alpha)*vx + cos(alpha)*vy
+    #                              PMDEC = -cos(alpha)*sin(delta)*vx - sin(alpha)*sin(delta)*vy + cos(delta)*vz
     pmra_from_lon = -sin_ra * vx_lon + cos_ra * vy_lon
     pmra_from_lat = -sin_ra * vx_lat + cos_ra * vy_lat
 
@@ -510,7 +511,7 @@ def compute_astrometric_delay(
 
     The astrometric delay is the light travel time from the observatory to
     the SSB along the pulsar direction:
-        τ_astro = -r · n̂ / c  (with parallax correction)
+        tau_astro = -r * n / c  (with parallax correction)
 
     Parameters
     ----------
@@ -533,7 +534,7 @@ def compute_astrometric_delay(
     Notes
     -----
     This function computes the full astrometric delay including:
-    1. Basic Roemer delay: -r · n̂ / c
+    1. Basic Roemer delay: -r * n / c
     2. Proper motion correction to the pulsar direction
     3. Second-order parallax correction
     """
@@ -578,26 +579,26 @@ def compute_astrometric_delay(
     y = ssb_obs_pos_ls[:, 1]
     z = ssb_obs_pos_ls[:, 2]
 
-    # Inner product r · n̂ (in light-seconds)
+    # Inner product r * n (in light-seconds)
     r_dot_n = x * n_x + y * n_y + z * n_z
 
-    # Basic Roemer delay: -r · n̂ / c = -r · n̂ (since ssb_obs_pos is in light-seconds)
+    # Basic Roemer delay: -r * n / c = -r * n (since ssb_obs_pos is in light-seconds)
     roemer_delay = -r_dot_n  # seconds
 
     # Parallax correction (second-order effect)
-    # Always compute — when px_mas=0 the correction is zero.
+    # Always compute -- when px_mas=0 the correction is zero.
     # Using jnp.where avoids Python conditional which breaks JAX tracing.
     px_rad = px_mas * (jnp.pi / 180.0 / 3600.0 / 1000.0)
 
     # Distance in light-seconds: d_ls = AU_ls / px_rad
     AU_LS = AU_METERS / SPEED_OF_LIGHT  # ~499.005 light-seconds
-    # Guard against division by zero — use a large distance when px_rad == 0
+    # Guard against division by zero -- use a large distance when px_rad == 0
     d_ls = jnp.where(px_rad != 0, AU_LS / px_rad, jnp.inf)
 
     # r^2 magnitude
     r_sq = x**2 + y**2 + z**2
 
-    # Transverse distance squared: px_r^2 = r^2 - (r·n̂)^2
+    # Transverse distance squared: px_r^2 = r^2 - (r*n)^2
     px_r_sq = r_sq - r_dot_n**2
 
     # Parallax delay: 0.5 * px_r^2 / d
@@ -687,21 +688,21 @@ def compute_astrometry_derivatives(
         param_upper = param.upper()
         
         if param_upper == 'RAJ':
-            # ∂(delay)/∂(RAJ) in seconds/radian
+            # d(delay)/d(RAJ) in seconds/radian
             # Fitter stores RAJ in radians (via parse_ra), so derivative
             # must be in sec/rad to match parameter units.
             deriv_rad = d_delay_d_RAJ(psr_ra, psr_dec, ssb_obs_pos)
             derivatives[param] = deriv_rad
 
         elif param_upper == 'DECJ':
-            # ∂(delay)/∂(DECJ) in seconds/radian
+            # d(delay)/d(DECJ) in seconds/radian
             # Fitter stores DECJ in radians (via parse_dec), so derivative
             # must be in sec/rad to match parameter units.
             deriv_rad = d_delay_d_DECJ(psr_ra, psr_dec, ssb_obs_pos)
             derivatives[param] = deriv_rad
             
         elif param_upper == 'PMRA':
-            # ∂(delay)/∂(PMRA) in seconds/(rad/year)
+            # d(delay)/d(PMRA) in seconds/(rad/year)
             deriv_rad_yr = d_delay_d_PMRA(psr_ra, psr_dec, ssb_obs_pos, toas_mjd, posepoch)
             # Convert to seconds/(mas/year)
             deriv_mas_yr = deriv_rad_yr / MAS_PER_RAD  # seconds/(mas/year)
@@ -709,7 +710,7 @@ def compute_astrometry_derivatives(
             derivatives[param] = deriv_mas_yr
             
         elif param_upper == 'PMDEC':
-            # ∂(delay)/∂(PMDEC) in seconds/(rad/year)
+            # d(delay)/d(PMDEC) in seconds/(rad/year)
             deriv_rad_yr = d_delay_d_PMDEC(psr_ra, psr_dec, ssb_obs_pos, toas_mjd, posepoch)
             # Convert to seconds/(mas/year)
             deriv_mas_yr = deriv_rad_yr / MAS_PER_RAD  # seconds/(mas/year)
@@ -717,7 +718,7 @@ def compute_astrometry_derivatives(
             derivatives[param] = deriv_mas_yr
             
         elif param_upper == 'PX':
-            # ∂(delay)/∂(PX) in seconds/radian
+            # d(delay)/d(PX) in seconds/radian
             deriv_rad = d_delay_d_PX(
                 psr_ra, psr_dec, ssb_obs_pos,
                 toas_mjd=toas_mjd,
@@ -739,13 +740,13 @@ def compute_astrometry_derivatives(
             obl_rad = OBLIQUITY_ARCSEC[ecl_frame] * np.pi / (180.0 * 3600.0)
 
             if param_upper in ('ELONG', 'ELAT'):
-                # Position Jacobian: ∂(RAJ_rad, DECJ_rad)/∂(ELONG_rad, ELAT_rad)
+                # Position Jacobian: d(RAJ_rad, DECJ_rad)/d(ELONG_rad, ELAT_rad)
                 J = _ecliptic_to_equatorial_jacobian(ecl_lon, ecl_lat, obl_rad)
                 d_raj = d_delay_d_RAJ(psr_ra, psr_dec, ssb_obs_pos)
                 d_decj = d_delay_d_DECJ(psr_ra, psr_dec, ssb_obs_pos)
 
                 if param_upper == 'ELONG':
-                    # d(delay)/d(ELONG_rad) = d(delay)/d(RAJ) * ∂RAJ/∂ELONG + d(delay)/d(DECJ) * ∂DECJ/∂ELONG
+                    # d(delay)/d(ELONG_rad) = d(delay)/d(RAJ) * dRAJ/dELONG + d(delay)/d(DECJ) * dDECJ/dELONG
                     d_ecl_rad = d_raj * J[0, 0] + d_decj * J[1, 0]
                     # Convert to d(delay)/d(ELONG_deg) since ELONG is stored in degrees
                     derivatives[param] = d_ecl_rad * (np.pi / 180.0)
@@ -754,7 +755,7 @@ def compute_astrometry_derivatives(
                     derivatives[param] = d_ecl_rad * (np.pi / 180.0)
 
             else:
-                # PM Jacobian: ∂(PMRA, PMDEC)/∂(PMELONG, PMELAT)
+                # PM Jacobian: d(PMRA, PMDEC)/d(PMELONG, PMELAT)
                 J_pm = _ecliptic_pm_jacobian(ecl_lon, ecl_lat, obl_rad)
                 d_pmra = d_delay_d_PMRA(psr_ra, psr_dec, ssb_obs_pos, toas_mjd, posepoch)
                 d_pmdec = d_delay_d_PMDEC(psr_ra, psr_dec, ssb_obs_pos, toas_mjd, posepoch)

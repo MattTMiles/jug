@@ -5,23 +5,23 @@ that can model DM events, scattering events, or other chromatic transients.
 
 The timing residual is:
 
-    s(t, ν) = A * exp(±(t - t0)/τ) * (ν / ν_ref)^(-idx) * Θ(±(t - t0))
+    s(t, nu) = A * exp(+/-(t - t0)/tau) * (nu / nu_ref)^(-idx) * Theta(+/-(t - t0))
 
 where:
-    A     — amplitude (seconds)
-    t0    — event epoch (MJD)
-    τ     — decay timescale (days)
-    idx   — chromatic index (2 = DM-like, 4 = scattering-like)
-    sign  — +1 for exponential rise, -1 for exponential decay (default)
-    ν_ref — reference frequency (1400 MHz by default)
+    A     -- amplitude (seconds)
+    t0    -- event epoch (MJD)
+    tau     -- decay timescale (days)
+    idx   -- chromatic index (2 = DM-like, 4 = scattering-like)
+    sign  -- +1 for exponential rise, -1 for exponential decay (default)
+    nu_ref -- reference frequency (1400 MHz by default)
 
 Par parameters:
 
-    CHROMEV_epoch  — event epoch (MJD)
-    CHROMEV_amp    — amplitude (seconds)
-    CHROMEV_tau    — decay timescale (days)
-    CHROMEV_idx    — chromatic index (default 2)
-    CHROMEV_sign   — exponential sign: +1 or -1 (default -1)
+    CHROMEV_epoch  -- event epoch (MJD)
+    CHROMEV_amp    -- amplitude (seconds)
+    CHROMEV_tau    -- decay timescale (days)
+    CHROMEV_idx    -- chromatic index (default 2)
+    CHROMEV_sign   -- exponential sign: +1 or -1 (default -1)
 
 Reference: Lentati et al. (2017) for chromatic noise modelling.
 """
@@ -115,7 +115,7 @@ class ChromaticEventSignal(DeterministicSignal):
     ) -> np.ndarray:
         """Compute chromatic event timing residual.
 
-        Requires ``toa_freqs_mhz`` — raises ValueError if not provided.
+        Requires ``toa_freqs_mhz`` -- raises ValueError if not provided.
         """
         if toa_freqs_mhz is None:
             raise ValueError(
@@ -151,5 +151,5 @@ class ChromaticEventSignal(DeterministicSignal):
     def summary(self) -> str:
         return (
             f"ChromaticEvent: A={self.amp_sec:.2e} s, "
-            f"τ={self.tau_day:.1f} d, idx={self.chrom_idx:.0f}"
+            f"tau={self.tau_day:.1f} d, idx={self.chrom_idx:.0f}"
         )

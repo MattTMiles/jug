@@ -66,8 +66,8 @@ def test_session_worker_flow():
     assert session.tim_file == TIM_FILE
     assert len(session.toas_data) > 0
 
-    print(f"✓ Session created with {len(session.toas_data)} TOAs")
-    print("✓ TEST PASSED")
+    print(f"[x] Session created with {len(session.toas_data)} TOAs")
+    print("[x] TEST PASSED")
 
 
 def test_compute_worker_flow():
@@ -100,9 +100,9 @@ def test_compute_worker_flow():
     assert isinstance(result['rms_us'], float)
     assert result['rms_us'] > 0
 
-    print(f"✓ Computed residuals: RMS = {result['rms_us']:.6f} μs")
-    print(f"✓ Arrays: residuals={len(result['residuals_us'])}, mjd={len(result['tdb_mjd'])}")
-    print("✓ TEST PASSED")
+    print(f"[x] Computed residuals: RMS = {result['rms_us']:.6f} mus")
+    print(f"[x] Arrays: residuals={len(result['residuals_us'])}, mjd={len(result['tdb_mjd'])}")
+    print("[x] TEST PASSED")
 
 
 def test_compute_worker_with_params():
@@ -134,10 +134,10 @@ def test_compute_worker_with_params():
     assert not np.array_equal(result1['residuals_us'], result2['residuals_us']), \
         "Parameter override should change residuals"
 
-    print(f"✓ Initial RMS: {result1['rms_us']:.6f} μs")
-    print(f"✓ Modified RMS: {result2['rms_us']:.6f} μs")
-    print(f"✓ Residuals differ (param override working)")
-    print("✓ TEST PASSED")
+    print(f"[x] Initial RMS: {result1['rms_us']:.6f} mus")
+    print(f"[x] Modified RMS: {result2['rms_us']:.6f} mus")
+    print(f"[x] Residuals differ (param override working)")
+    print("[x] TEST PASSED")
 
 
 def test_fit_worker_flow():
@@ -189,12 +189,12 @@ def test_fit_worker_flow():
         assert param in result['final_params']
         assert param in result['uncertainties']
 
-    print(f"✓ Fit converged: {result['converged']}")
-    print(f"✓ Iterations: {result['iterations']}")
-    print(f"✓ Final RMS: {result['final_rms']:.6f} μs")
+    print(f"[x] Fit converged: {result['converged']}")
+    print(f"[x] Iterations: {result['iterations']}")
+    print(f"[x] Final RMS: {result['final_rms']:.6f} mus")
     for param in fit_params:
-        print(f"✓ {param} = {result['final_params'][param]:.15e} ± {result['uncertainties'][param]:.6e}")
-    print("✓ TEST PASSED")
+        print(f"[x] {param} = {result['final_params'][param]:.15e} +/- {result['uncertainties'][param]:.6e}")
+    print("[x] TEST PASSED")
 
 
 def test_fit_worker_with_toa_mask():
@@ -232,9 +232,9 @@ def test_fit_worker_with_toa_mask():
 
     assert result['converged'], "Fit with TOA mask should converge"
 
-    print(f"✓ Fit with {n_used} TOAs ({n_deleted} deleted)")
-    print(f"✓ Final RMS: {result['final_rms']:.6f} μs")
-    print("✓ TEST PASSED")
+    print(f"[x] Fit with {n_used} TOAs ({n_deleted} deleted)")
+    print(f"[x] Final RMS: {result['final_rms']:.6f} mus")
+    print("[x] TEST PASSED")
 
 
 def test_fit_worker_solver_modes():
@@ -272,14 +272,14 @@ def test_fit_worker_solver_modes():
     assert result_exact['converged'], "EXACT solver should converge"
     assert result_fast['converged'], "FAST solver should converge"
 
-    print(f"✓ EXACT: RMS={result_exact['final_rms']:.6f} μs, iters={result_exact['iterations']}")
-    print(f"✓ FAST:  RMS={result_fast['final_rms']:.6f} μs, iters={result_fast['iterations']}")
-    print("✓ TEST PASSED")
+    print(f"[x] EXACT: RMS={result_exact['final_rms']:.6f} mus, iters={result_exact['iterations']}")
+    print(f"[x] FAST:  RMS={result_fast['final_rms']:.6f} mus, iters={result_fast['iterations']}")
+    print("[x] TEST PASSED")
 
 
 def test_gui_data_flow():
     """
-    Test: Complete GUI data flow (load → compute → fit → postfit).
+    Test: Complete GUI data flow (load -> compute -> fit -> postfit).
 
     This tests the entire workflow a user would do in the GUI.
     """
@@ -299,7 +299,7 @@ def test_gui_data_flow():
     print("\n2. Computing prefit residuals...")
     prefit = session.compute_residuals(subtract_tzr=True)
     prefit_rms = prefit['rms_us']
-    print(f"   Prefit RMS: {prefit_rms:.6f} μs")
+    print(f"   Prefit RMS: {prefit_rms:.6f} mus")
 
     # 3. Populate fitting cache (automatic on first fit)
     print("\n3. Preparing for fit...")
@@ -322,16 +322,16 @@ def test_gui_data_flow():
         subtract_tzr=True
     )
     postfit_rms = postfit['rms_us']
-    print(f"   Postfit RMS: {postfit_rms:.6f} μs")
+    print(f"   Postfit RMS: {postfit_rms:.6f} mus")
 
     # 6. Verify improvement
     print("\n6. Verifying fit improvement...")
     assert postfit_rms <= prefit_rms * 1.01, \
         f"Fit should not make residuals worse: prefit={prefit_rms}, postfit={postfit_rms}"
-    print(f"   RMS improved: {prefit_rms:.6f} → {postfit_rms:.6f} μs")
+    print(f"   RMS improved: {prefit_rms:.6f} -> {postfit_rms:.6f} mus")
 
     print("\n" + "="*80)
-    print("✓ COMPLETE GUI DATA FLOW PASSED")
+    print("[x] COMPLETE GUI DATA FLOW PASSED")
     print("="*80)
 
 

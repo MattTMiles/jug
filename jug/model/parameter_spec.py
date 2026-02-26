@@ -72,12 +72,10 @@ class ParameterSpec:
     par_unit_str : str
         Unit label as it appears in .par files (ASCII, e.g. 's^-2', 'Msun')
     display_unit : str
-        Human-readable unit for GUI display (Unicode OK, e.g. 'Hz/s', 'M☉').
+        Human-readable unit for GUI display (Unicode OK, e.g. 'Hz/s', 'MSun').
         Falls back to par_unit_str when empty.
     aliases : tuple
         Alternative names that resolve to this parameter
-    component_name : str
-        Name of the component that provides this parameter
     derivative_group : DerivativeGroup
         Routing group for derivative computation
     default_fit : bool
@@ -103,7 +101,6 @@ class ParameterSpec:
     par_unit_str: str = ""
     display_unit: str = ""  # Falls back to par_unit_str when empty
     aliases: Tuple[str, ...] = ()
-    component_name: str = ""
     default_fit: bool = False
     gui_visible: bool = True
     requires: Tuple[str, ...] = ()
@@ -112,13 +109,13 @@ class ParameterSpec:
     display_format: str = ".6g"
     """Format specifier for displaying parameter values in fit reports.
     E.g. '.15f' for F0, '.6e' for small quantities, '.10f' for moderate precision."""
-    # TCB→TDB conversion metadata (single source of truth)
+    # TCB->TDB conversion metadata (single source of truth)
     tcb_scaling_dim: Optional[int] = None
-    """Effective time dimensionality for TCB→TDB scaling.
+    """Effective time dimensionality for TCB->TDB scaling.
     None = no scaling needed. n means: x_tdb = x_tcb * IFTE_K^(-n).
     E.g. F0 (frequency) = -1, A1 (time) = 1, PBDOT (dimensionless) = 0."""
     is_epoch: bool = False
-    """True for MJD epoch parameters that need TCB→TDB epoch conversion."""
+    """True for MJD epoch parameters that need TCB->TDB epoch conversion."""
     high_precision: bool = False
     """True for parameters requiring np.longdouble precision in par reader."""
 
@@ -137,7 +134,6 @@ _SPIN_PARAMS = [
         internal_unit="Hz",
         par_unit_str="Hz",
         aliases=("NU", "F"),
-        component_name="SpinComponent",
         default_fit=True,
         requires=("PEPOCH",),
         display_format=".15f",
@@ -153,7 +149,6 @@ _SPIN_PARAMS = [
         par_unit_str="s^-2",
         display_unit="Hz/s",
         aliases=("NUDOT", "FDOT"),
-        component_name="SpinComponent",
         default_fit=True,
         requires=("PEPOCH",),
         display_format=".6e",
@@ -167,8 +162,7 @@ _SPIN_PARAMS = [
         dtype="longdouble",  # High-order terms need precision
         internal_unit="Hz/s^2",
         par_unit_str="s^-3",
-        display_unit="Hz/s²",
-        component_name="SpinComponent",
+        display_unit="Hz/s^2",
         requires=("PEPOCH",),
         display_format=".6e",
         tcb_scaling_dim=-3,
@@ -181,8 +175,7 @@ _SPIN_PARAMS = [
         dtype="longdouble",
         internal_unit="Hz/s^3",
         par_unit_str="s^-4",
-        display_unit="Hz/s³",
-        component_name="SpinComponent",
+        display_unit="Hz/s^3",
         requires=("PEPOCH",),
         display_format=".6e",
         tcb_scaling_dim=-4,
@@ -195,7 +188,6 @@ _SPIN_PARAMS = [
         dtype="float64",
         internal_unit="MJD",
         par_unit_str="MJD",
-        component_name="SpinComponent",
         gui_visible=False,
         par_codec_name="epoch_mjd",
         is_epoch=True,
@@ -212,9 +204,8 @@ _DM_PARAMS = [
         dtype="float64",
         internal_unit="pc/cm^3",
         par_unit_str="pc cm^-3",
-        display_unit="pc/cm³",
+        display_unit="pc/cm^3",
         aliases=("DM0",),
-        component_name="DispersionComponent",
         default_fit=True,
         display_format=".10f",
         tcb_scaling_dim=-1,
@@ -226,8 +217,7 @@ _DM_PARAMS = [
         dtype="float64",
         internal_unit="pc/cm^3/yr",
         par_unit_str="pc cm^-3 yr^-1",
-        display_unit="pc/cm³/yr",
-        component_name="DispersionComponent",
+        display_unit="pc/cm^3/yr",
         requires=("DMEPOCH",),
         display_format=".10f",
         tcb_scaling_dim=-2,
@@ -239,8 +229,7 @@ _DM_PARAMS = [
         dtype="float64",
         internal_unit="pc/cm^3/yr^2",
         par_unit_str="pc cm^-3 yr^-2",
-        display_unit="pc/cm³/yr²",
-        component_name="DispersionComponent",
+        display_unit="pc/cm^3/yr^2",
         requires=("DMEPOCH",),
         display_format=".10f",
         tcb_scaling_dim=-3,
@@ -252,7 +241,6 @@ _DM_PARAMS = [
         dtype="float64",
         internal_unit="MJD",
         par_unit_str="MJD",
-        component_name="DispersionComponent",
         gui_visible=False,
         par_codec_name="epoch_mjd",
         is_epoch=True,
@@ -269,7 +257,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad",  # CRITICAL: radians internally
         par_unit_str="HH:MM:SS.sss",
-        component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         par_codec_name="raj",
         aliases=("LAMBDA",),  # ELONG is a separate param (ecliptic fitting)
@@ -281,7 +268,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad",  # CRITICAL: radians internally
         par_unit_str="DD:MM:SS.sss",
-        component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         par_codec_name="decj",
         aliases=("BETA",),  # ELAT is a separate param (ecliptic fitting)
@@ -294,7 +280,6 @@ _ASTROMETRY_PARAMS = [
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
         aliases=("PMRAC", "PMLAMBDA"),
-        component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -306,7 +291,6 @@ _ASTROMETRY_PARAMS = [
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
         aliases=("PMBETA",),
-        component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -318,7 +302,6 @@ _ASTROMETRY_PARAMS = [
         internal_unit="rad",
         par_unit_str="mas",
         aliases=("PARALLAX",),
-        component_name="AstrometryComponent",
         display_format=".6f",
     ),
     ParameterSpec(
@@ -328,7 +311,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="deg",
         par_unit_str="degrees",
-        component_name="AstrometryComponent",
         requires=("POSEPOCH",),
     ),
     ParameterSpec(
@@ -338,7 +320,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="deg",
         par_unit_str="degrees",
-        component_name="AstrometryComponent",
         requires=("POSEPOCH",),
     ),
     ParameterSpec(
@@ -348,7 +329,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="mas/yr",
         par_unit_str="mas/yr",
-        component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -359,7 +339,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="mas/yr",
         par_unit_str="mas/yr",
-        component_name="AstrometryComponent",
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -370,7 +349,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="MJD",
         par_unit_str="MJD",
-        component_name="AstrometryComponent",
         gui_visible=False,
         par_codec_name="epoch_mjd",
         is_epoch=True,
@@ -389,7 +367,6 @@ _BINARY_PARAMS = [
         par_unit_str="d",
         display_unit="days",
         aliases=("PORB",),
-        component_name="BinaryComponent",
         display_format=".15f",
         tcb_scaling_dim=1,
     ),
@@ -401,7 +378,6 @@ _BINARY_PARAMS = [
         internal_unit="lt-s",
         par_unit_str="lt-s",
         aliases=("ASINI",),
-        component_name="BinaryComponent",
         display_format=".10f",
         tcb_scaling_dim=1,
     ),
@@ -413,7 +389,6 @@ _BINARY_PARAMS = [
         internal_unit="",
         par_unit_str="",
         aliases=("E",),
-        component_name="BinaryComponent",
         display_format=".12e",
         tcb_scaling_dim=0,
     ),
@@ -425,7 +400,6 @@ _BINARY_PARAMS = [
         internal_unit="rad",
         par_unit_str="deg",
         aliases=("OMEGA",),
-        component_name="BinaryComponent",
         display_format=".10f",
         tcb_scaling_dim=0,
     ),
@@ -436,7 +410,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="MJD",
         par_unit_str="MJD",
-        component_name="BinaryComponent",
         par_codec_name="epoch_mjd",
         display_format=".12f",
         is_epoch=True,
@@ -449,7 +422,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="MJD",
         par_unit_str="MJD",
-        component_name="BinaryComponent",
         par_codec_name="epoch_mjd",
         display_format=".12f",
         is_epoch=True,
@@ -461,7 +433,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="",
         par_unit_str="",
-        component_name="BinaryComponent",
         display_format=".12e",
         tcb_scaling_dim=0,
     ),
@@ -472,7 +443,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="",
         par_unit_str="",
-        component_name="BinaryComponent",
         display_format=".12e",
         tcb_scaling_dim=0,
     ),
@@ -483,7 +453,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="1/s",
         par_unit_str="1/s",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=-1,
     ),
@@ -494,7 +463,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="1/s",
         par_unit_str="1/s",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=-1,
     ),
@@ -506,7 +474,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="",
         par_unit_str="",
-        component_name="BinaryComponent",
         display_format=".12f",
         tcb_scaling_dim=0,
     ),
@@ -517,8 +484,7 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="Msun",
         par_unit_str="Msun",
-        display_unit="M☉",
-        component_name="BinaryComponent",
+        display_unit="MSun",
         display_format=".12f",
         tcb_scaling_dim=0,
     ),
@@ -531,7 +497,6 @@ _BINARY_PARAMS = [
         internal_unit="s/s",
         par_unit_str="s/s",
         display_unit="s/s",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=0,
     ),
@@ -543,7 +508,6 @@ _BINARY_PARAMS = [
         internal_unit="lt-s/s",
         par_unit_str="lt-s/s",
         aliases=("A1DOT",),
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=0,
     ),
@@ -555,7 +519,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="deg/yr",
         par_unit_str="deg/yr",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=-1,
     ),
@@ -567,7 +530,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=1,
     ),
@@ -579,7 +541,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="1/s",
         par_unit_str="",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=-1,
     ),
@@ -591,7 +552,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=0,
     ),
@@ -602,7 +562,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=0,
     ),
@@ -614,7 +573,6 @@ _BINARY_PARAMS = [
         internal_unit="",
         par_unit_str="",
         aliases=("STIGMA",),
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=0,
     ),
@@ -626,7 +584,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="",
         par_unit_str="",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=0,
     ),
@@ -638,7 +595,6 @@ _BINARY_PARAMS = [
         internal_unit="",
         par_unit_str="",
         aliases=("DTHETA",),
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=0,
     ),
@@ -650,7 +606,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=1,
     ),
@@ -661,7 +616,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="BinaryComponent",
         display_format=".6e",
         tcb_scaling_dim=1,
     ),
@@ -673,7 +627,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="deg",
         par_unit_str="deg",
-        component_name="BinaryComponent",
         display_format=".10f",
         tcb_scaling_dim=0,
     ),
@@ -684,7 +637,6 @@ _BINARY_PARAMS = [
         dtype="float64",
         internal_unit="deg",
         par_unit_str="deg",
-        component_name="BinaryComponent",
         display_format=".10f",
         tcb_scaling_dim=0,
     ),
@@ -700,7 +652,6 @@ for i in range(21):
             dtype="float64",
             internal_unit=f"Hz/s^{i}" if i > 0 else "Hz",
             par_unit_str="",
-            component_name="BinaryComponent",
             display_format=".6e",
             tcb_scaling_dim=-(i + 1),
         )
@@ -715,7 +666,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
     ParameterSpec(
@@ -725,7 +675,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
     ParameterSpec(
@@ -735,7 +684,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
     ParameterSpec(
@@ -745,7 +693,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
     ParameterSpec(
@@ -755,7 +702,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
     ParameterSpec(
@@ -765,7 +711,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
     ParameterSpec(
@@ -775,7 +720,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
     ParameterSpec(
@@ -785,7 +729,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
     ParameterSpec(
@@ -795,7 +738,6 @@ _FD_PARAMS = [
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="FDComponent",
         display_format=".6e",
     ),
 ]
@@ -809,9 +751,8 @@ _SW_PARAMS = [
         dtype="float64",
         internal_unit="cm^-3",
         par_unit_str="cm^-3",
-        display_unit="cm⁻³",
+        display_unit="cm^-^3",
         aliases=("NE1AU",),
-        component_name="SolarWindComponent",
     ),
 ]
 
@@ -933,7 +874,7 @@ def get_display_unit(name: str) -> str:
     >>> get_display_unit('F1')
     'Hz/s'
     >>> get_display_unit('M2')
-    'M☉'
+    'MSun'
     """
     spec = get_spec(name)
     if spec is None:
@@ -1214,7 +1155,6 @@ def create_jump_spec(name: str) -> ParameterSpec:
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
-        component_name="JumpComponent",
     )
 
 

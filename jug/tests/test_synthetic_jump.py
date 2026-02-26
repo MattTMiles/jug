@@ -168,25 +168,25 @@ def run_synthetic_jump_test():
     
     print(f"\nTest setup:")
     print(f"  TOAs: {len(data['toas_mjd'])} total (50 per backend)")
-    print(f"  True JUMP: {true_jump_us:.3f} μs")
-    print(f"  Noise RMS: 1.0 μs")
+    print(f"  True JUMP: {true_jump_us:.3f} mus")
+    print(f"  Noise RMS: 1.0 mus")
     
     # Fit JUMP
     result = fit_jump_only(data)
     
     print(f"\nFitting results:")
-    print(f"  Fitted JUMP: {result['fitted_jump_us']:.3f} ± {result['uncertainty_us']:.3f} μs")
-    print(f"  True JUMP:   {result['true_jump_us']:.3f} μs")
-    print(f"  Error:       {abs(result['fitted_jump_us'] - result['true_jump_us']):.3f} μs")
+    print(f"  Fitted JUMP: {result['fitted_jump_us']:.3f} +/- {result['uncertainty_us']:.3f} mus")
+    print(f"  True JUMP:   {result['true_jump_us']:.3f} mus")
+    print(f"  Error:       {abs(result['fitted_jump_us'] - result['true_jump_us']):.3f} mus")
     
     # Check if fit recovered the correct value within 3-sigma
     error = abs(result['fitted_jump_us'] - result['true_jump_us'])
     success = error < 3 * result['uncertainty_us']
     
     if success:
-        print(f"\n✓ JUMP recovered within 3σ uncertainty!")
+        print(f"\n[x] JUMP recovered within 3sigma uncertainty!")
     else:
-        print(f"\n✗ JUMP recovery failed (error > 3σ)")
+        print(f"\n[ ] JUMP recovery failed (error > 3sigma)")
     
     # Additional verification: residuals should improve
     mask_b = data['mask_b']
@@ -197,15 +197,15 @@ def run_synthetic_jump_test():
     rms_after = float(jnp.std(residuals_after))
     
     print(f"\nResidual improvement:")
-    print(f"  RMS before JUMP correction: {rms_before:.3f} μs")
-    print(f"  RMS after JUMP correction:  {rms_after:.3f} μs")
+    print(f"  RMS before JUMP correction: {rms_before:.3f} mus")
+    print(f"  RMS after JUMP correction:  {rms_after:.3f} mus")
     print(f"  Improvement: {(rms_before - rms_after) / rms_before * 100:.1f}%")
     
-    assert success, f"JUMP fitting failed: error {error:.3f} > 3σ ({3*result['uncertainty_us']:.3f})"
+    assert success, f"JUMP fitting failed: error {error:.3f} > 3sigma ({3*result['uncertainty_us']:.3f})"
     assert rms_after < rms_before, "RMS should improve after JUMP correction"
     
     print("\n" + "=" * 70)
-    print("✓ All synthetic JUMP tests passed!")
+    print("[x] All synthetic JUMP tests passed!")
     print("=" * 70)
     
     return result

@@ -1,14 +1,14 @@
-"""Red noise and DM noise processes — Fourier-basis GP models.
+"""Red noise and DM noise processes -- Fourier-basis GP models.
 
 Implements the standard power-law spectral models used in pulsar timing:
 
 * **Achromatic red noise** (spin noise): frequency-dependent correlated
-  noise with power spectrum P(f) = A² / (12π²) * (f/f_yr)^(-γ) * f_yr⁻¹.
+  noise with power spectrum P(f) = A^2 / (12pi^2) * (f/f_yr)^(-gamma) * f_yr^-^1.
   This noise is common to all observing frequencies and dominates at
   low timing frequencies.
 
 * **DM noise** (chromatic): correlated noise whose amplitude scales as
-  1/ν² (where ν is the observing frequency), following the expected
+  1/nu^2 (where nu is the observing frequency), following the expected
   chromatic signature of interstellar medium variations.
 
 Both processes are modelled via a Fourier basis of sine/cosine pairs
@@ -21,7 +21,7 @@ For weighted least squares integration, the module provides:
   * ``build_fourier_design_matrix(toas_mjd, n_harmonics, Tspan)``
   * ``powerlaw_spectrum(freqs, log10_A, gamma)``
   * ``RedNoiseProcess`` / ``DMNoiseProcess`` dataclasses that bundle
-    parameters and can compute the prior covariance φ = diag(spectrum).
+    parameters and can compute the prior covariance phi = diag(spectrum).
 
 References
 ----------
@@ -50,7 +50,7 @@ import jax.numpy as jnp
 # Constants
 # ---------------------------------------------------------------------------
 
-_SECS_PER_YEAR = 365.25 * 86400.0  # Julian year in seconds
+from jug.utils.constants import SECS_PER_DAY, SECS_PER_YEAR as _SECS_PER_YEAR
 _F_YR = 1.0 / _SECS_PER_YEAR      # 1/yr in Hz
 
 
@@ -75,7 +75,7 @@ def _fourier_design_jax(
     Returns
     -------
     F : (n_toa, 2 * n_harmonics)
-        Columns [sin(2π f₁ t), cos(2π f₁ t), sin(2π f₂ t), …].
+        Columns [sin(2pi f_1 t), cos(2pi f_1 t), sin(2pi f_2 t), ...].
     """
     phase = 2.0 * jnp.pi * jnp.outer(t_sec, freqs_hz)   # (n_toa, n_harm)
     sin_part = jnp.sin(phase)
@@ -121,14 +121,14 @@ def build_fourier_design_matrix(
         # Single-TOA or zero span: use 1 year as default span
         Tspan_days = 365.25
 
-    Tspan_sec = Tspan_days * 86400.0
+    Tspan_sec = Tspan_days * SECS_PER_DAY
 
-    # Fourier frequencies: k/Tspan for k = 1, …, n_harmonics
+    # Fourier frequencies: k/Tspan for k = 1, ..., n_harmonics
     freqs_hz = np.arange(1, n_harmonics + 1, dtype=np.float64) / Tspan_sec
 
     # Reference time at start of span
     t0_mjd = toas_mjd.min()
-    t_sec = (toas_mjd - t0_mjd) * 86400.0
+    t_sec = (toas_mjd - t0_mjd) * SECS_PER_DAY
 
     F = np.asarray(_fourier_design_jax(jnp.array(t_sec), jnp.array(freqs_hz)))
     return F, freqs_hz
@@ -161,7 +161,7 @@ def powerlaw_spectrum(
     Returns
     -------
     P : np.ndarray, shape (n,)
-        PSD values (s³ = s²/Hz).
+        PSD values (s^3 = s^2/Hz).
     """
     A = 10.0 ** log10_A
     return (A ** 2 / (12.0 * np.pi ** 2)) * (freqs_hz / _F_YR) ** (-gamma) / _F_YR
@@ -247,7 +247,7 @@ class RedNoiseProcess:
         toas_mjd: np.ndarray,
         Tspan_days: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Build Fourier basis F and diagonal prior φ.
+        """Build Fourier basis F and diagonal prior phi.
 
         Uses the enterprise convention for the per-coefficient variance:
 
@@ -255,13 +255,13 @@ class RedNoiseProcess:
 
             \\phi_k = \\frac{A^2}{12\\pi^2} f_{\\rm yr}^{\\gamma-3} f_k^{-\\gamma} \\Delta f
 
-        where Δf = 1/T_span is the frequency resolution.
+        where Deltaf = 1/T_span is the frequency resolution.
 
         Returns
         -------
         F : (n_toa, 2 * n_harmonics)
         phi : (2 * n_harmonics,)
-            Prior variance for each Fourier coefficient (s²).
+            Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
             toas_mjd, self.n_harmonics, Tspan_days
@@ -269,7 +269,7 @@ class RedNoiseProcess:
         # Frequency resolution (all harmonics equally spaced)
         df = freqs[0]  # = 1/T_span (fundamental frequency = frequency spacing)
         A = 10.0 ** self.log10_A
-        # Enterprise convention: phi = A²/(12π²) × f_yr^(γ-3) × f^(-γ) × Δf
+        # Enterprise convention: phi = A^2/(12pi^2) * f_yr^(gamma-3) * f^(-gamma) * Deltaf
         phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
             _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
         # Each harmonic contributes [sin, cos], both with the same variance
@@ -279,11 +279,11 @@ class RedNoiseProcess:
 
 @dataclass
 class DMNoiseProcess:
-    """Chromatic DM noise (scales as 1/ν²).
+    """Chromatic DM noise (scales as 1/nu^2).
 
     The DM noise Fourier basis is identical to red noise but each
     column is multiplied by the DM-delay chromatic weight:
-    ``K_DM / ν²`` (in seconds per DM unit).
+    ``K_DM / nu^2`` (in seconds per DM unit).
 
     Attributes
     ----------
@@ -321,10 +321,10 @@ class DMNoiseProcess:
         freq_mhz: np.ndarray,
         Tspan_days: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Build chromatic Fourier basis F_dm and diagonal prior φ.
+        """Build chromatic Fourier basis F_dm and diagonal prior phi.
 
         The achromatic Fourier basis is scaled column-wise by
-        ``(1400 / freq_mhz)²`` to impart the ν⁻² chromatic signature.
+        ``(1400 / freq_mhz)^2`` to impart the nu^-^2 chromatic signature.
 
         Uses the enterprise convention for per-coefficient variance:
 
@@ -343,13 +343,13 @@ class DMNoiseProcess:
         -------
         F_dm : (n_toa, 2 * n_harmonics)
         phi : (2 * n_harmonics,)
-            Prior variance for each Fourier coefficient (s²).
+            Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
             toas_mjd, self.n_harmonics, Tspan_days
         )
-        # Chromatic weighting: (1400 / ν)²
-        # Using 1400 MHz as normalisation keeps numerical values ≈ O(1)
+        # Chromatic weighting: (1400 / nu)^2
+        # Using 1400 MHz as normalisation keeps numerical values ~= O(1)
         chromatic_weight = (1400.0 / freq_mhz) ** 2
         F_dm = F * chromatic_weight[:, None]
         # Enterprise convention for per-coefficient variance
@@ -363,11 +363,11 @@ class DMNoiseProcess:
 
 @dataclass
 class ChromaticNoiseProcess:
-    """Chromatic noise (scales as 1/ν^\beta).
+    """Chromatic noise (scales as 1/nu^\beta).
 
     The chromatic noise Fourier basis is identical to red noise but each
     column is multiplied by the DM-delay chromatic weight:
-    ``K_DM / ν²`` (in seconds per DM unit).
+    ``K_DM / nu^2`` (in seconds per DM unit).
 
     Attributes
     ----------
@@ -376,7 +376,7 @@ class ChromaticNoiseProcess:
     gamma : float
         Spectral index.
     chrom_idx : float
-        Chromatic index β (e.g. 2 for DM-like chromaticity).
+        Chromatic index beta (e.g. 2 for DM-like chromaticity).
     n_harmonics : int
         Number of Fourier harmonics.
     """
@@ -412,10 +412,10 @@ class ChromaticNoiseProcess:
         freq_mhz: np.ndarray,
         Tspan_days: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Build chromatic Fourier basis F_dm and diagonal prior φ.
+        """Build chromatic Fourier basis F_dm and diagonal prior phi.
 
         The achromatic Fourier basis is scaled column-wise by
-        ``(1400 / freq_mhz)^\beta`` to impart the ν⁻β chromatic signature.
+        ``(1400 / freq_mhz)^\beta`` to impart the nu^-beta chromatic signature.
 
         Uses the enterprise convention for per-coefficient variance:
 
@@ -434,13 +434,13 @@ class ChromaticNoiseProcess:
         -------
         F_dm : (n_toa, 2 * n_harmonics)
         phi : (2 * n_harmonics,)
-            Prior variance for each Fourier coefficient (s²).
+            Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
             toas_mjd, self.n_harmonics, Tspan_days
         )
-        # Chromatic weighting: (1400 / ν)^\beta
-        # Using 1400 MHz as normalisation keeps numerical values ≈ O(1)
+        # Chromatic weighting: (1400 / nu)^\beta
+        # Using 1400 MHz as normalisation keeps numerical values ~= O(1)
         chromatic_weight = (1400.0 / freq_mhz) ** self.chrom_idx
         F_dm = F * chromatic_weight[:, None]
         # Enterprise convention for per-coefficient variance
@@ -471,7 +471,7 @@ def parse_red_noise_params(params: dict) -> Optional[RedNoiseProcess]:
             gamma=float(params["TNRedGam"]),
             n_harmonics=int(params.get("TNRedC", 30)),
         )
-    # TempoNest convention (uppercase — par reader uppercases keys)
+    # TempoNest convention (uppercase -- par reader uppercases keys)
     if "TNREDAMP" in params and "TNREDGAM" in params:
         return RedNoiseProcess(
             log10_A=float(params["TNREDAMP"]),
@@ -486,15 +486,15 @@ def parse_red_noise_params(params: dict) -> Optional[RedNoiseProcess]:
             n_harmonics=int(params.get("RN_ncoeff", 30)),
         )
     # Tempo2-native RNAMP/RNIDX convention (from original Tempo)
-    # NOTE: Conversion is NOT trivial — RNAMP has units yr^(3/2) µs
+    # NOTE: Conversion is NOT trivial -- RNAMP has units yr^(3/2) mus
     # See Tempo2 readParfile.C line 1826 for reference
     if "RNAMP" in params and "RNIDX" in params:
         import math
         rnamp_str = str(params["RNAMP"]).replace("D", "e").replace("d", "e")
         rnamp = float(rnamp_str)
         # Tempo2 convention: convert from Tempo amplitude to TempoNest log10_A
-        # log10(2π√3 / (sec_per_yr × 1e6) × RNAMP)
-        _SEC_PER_YR = 86400.0 * 365.25
+        # log10(2pisqrt3 / (sec_per_yr * 1e6) * RNAMP)
+        _SEC_PER_YR = _SECS_PER_YEAR
         log10_A = math.log10(2.0 * math.pi * math.sqrt(3.0) / (_SEC_PER_YR * 1e6) * rnamp)
         gamma = -float(params["RNIDX"])  # Sign flip
         # RNC is the RNAMP/RNIDX analogue of TNRedC (number of Fourier harmonics)
@@ -580,7 +580,7 @@ def parse_chromatic_noise_params(params: dict) -> Optional[ChromaticNoiseProcess
 
 
 # ---------------------------------------------------------------------------
-# Noise realization — compute MAP (maximum a-posteriori) realization
+# Noise realization -- compute MAP (maximum a-posteriori) realization
 # ---------------------------------------------------------------------------
 
 def realize_red_noise(
@@ -594,8 +594,8 @@ def realize_red_noise(
 ) -> np.ndarray:
     """Compute MAP realization of achromatic red noise.
 
-    Uses the Wiener filter: ``realization = φ F^T (F φ F^T + N)^{-1} r``
-    where φ is the prior covariance, F is the Fourier design matrix,
+    Uses the Wiener filter: ``realization = phi F^T (F phi F^T + N)^{-1} r``
+    where phi is the prior covariance, F is the Fourier design matrix,
     N is the white noise covariance, and r is the residual vector.
 
     Returns
@@ -658,7 +658,7 @@ def _wiener_filter(
     residuals: np.ndarray,
     errors: np.ndarray,
 ) -> np.ndarray:
-    """Wiener filter: φ F^T (F φ F^T + N)^{-1} r."""
+    """Wiener filter: phi F^T (F phi F^T + N)^{-1} r."""
     N_inv = 1.0 / (errors ** 2)
     FtNir = F.T @ (N_inv * residuals)
     FtNiF = F.T @ (N_inv[:, None] * F)

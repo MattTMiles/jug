@@ -38,32 +38,32 @@ def test_cache_save_load():
         # Save to cache
         saved = cache.save(tdb_mjd, obs_itrf_km, ssb_obs_pos, ssb_obs_vel)
         assert saved, "Failed to save to cache"
-        print("✓ Cache save successful")
+        print("[x] Cache save successful")
         
         # Load from cache
         loaded = cache.load(tdb_mjd, obs_itrf_km)
         assert loaded is not None, "Failed to load from cache"
         loaded_pos, loaded_vel = loaded
-        print("✓ Cache load successful")
+        print("[x] Cache load successful")
         
         # Verify bit-for-bit identical
         pos_identical = np.array_equal(ssb_obs_pos, loaded_pos)
         vel_identical = np.array_equal(ssb_obs_vel, loaded_vel)
         
         if pos_identical:
-            print("✓ Position arrays: BIT-FOR-BIT IDENTICAL")
+            print("[x] Position arrays: BIT-FOR-BIT IDENTICAL")
         else:
-            print(f"✗ Position arrays DIFFER (max: {np.max(np.abs(ssb_obs_pos - loaded_pos))})")
+            print(f"[ ] Position arrays DIFFER (max: {np.max(np.abs(ssb_obs_pos - loaded_pos))})")
         
         if vel_identical:
-            print("✓ Velocity arrays: BIT-FOR-BIT IDENTICAL")
+            print("[x] Velocity arrays: BIT-FOR-BIT IDENTICAL")
         else:
-            print(f"✗ Velocity arrays DIFFER (max: {np.max(np.abs(ssb_obs_vel - loaded_vel))})")
+            print(f"[ ] Velocity arrays DIFFER (max: {np.max(np.abs(ssb_obs_vel - loaded_vel))})")
         
         # Verify dtype
         assert loaded_pos.dtype == np.float64, "Position dtype mismatch"
         assert loaded_vel.dtype == np.float64, "Velocity dtype mismatch"
-        print("✓ Dtypes: float64")
+        print("[x] Dtypes: float64")
 
 
 def test_cache_key_mismatch():
@@ -91,18 +91,18 @@ def test_cache_key_mismatch():
         tdb_mjd_different = tdb_mjd + 0.001
         loaded = cache.load(tdb_mjd_different, obs_itrf_km)
         assert loaded is None, "Cache should miss on different TDB times"
-        print("✓ Cache misses on different TDB times")
+        print("[x] Cache misses on different TDB times")
         
         # Try to load with different observatory
         obs_itrf_different = obs_itrf_km + 0.001
         loaded = cache.load(tdb_mjd, obs_itrf_different)
         assert loaded is None, "Cache should miss on different observatory"
-        print("✓ Cache misses on different observatory")
+        print("[x] Cache misses on different observatory")
         
         # Original should still work
         loaded = cache.load(tdb_mjd, obs_itrf_km)
         assert loaded is not None, "Cache should hit on original inputs"
-        print("✓ Cache hits on original inputs")
+        print("[x] Cache hits on original inputs")
 
 
 def test_compute_with_cache():
@@ -142,19 +142,19 @@ def test_compute_with_cache():
     vel_identical = np.array_equal(vel1, vel2)
     
     if pos_identical:
-        print("✓ Positions: BIT-FOR-BIT IDENTICAL")
+        print("[x] Positions: BIT-FOR-BIT IDENTICAL")
     else:
-        print(f"✗ Positions DIFFER (max: {np.max(np.abs(pos1 - pos2))})")
+        print(f"[ ] Positions DIFFER (max: {np.max(np.abs(pos1 - pos2))})")
     
     if vel_identical:
-        print("✓ Velocities: BIT-FOR-BIT IDENTICAL")
+        print("[x] Velocities: BIT-FOR-BIT IDENTICAL")
     else:
-        print(f"✗ Velocities DIFFER (max: {np.max(np.abs(vel1 - vel2))})")
+        print(f"[ ] Velocities DIFFER (max: {np.max(np.abs(vel1 - vel2))})")
     
     # Verify dtypes
     assert pos2.dtype == np.float64, "Position dtype must be float64"
     assert vel2.dtype == np.float64, "Velocity dtype must be float64"
-    print("✓ Dtypes: float64")
+    print("[x] Dtypes: float64")
 
 
 def test_residuals_with_cache():
@@ -182,12 +182,12 @@ def test_residuals_with_cache():
     # First computation (cache miss)
     print("\nFirst residual computation (geometry cache miss)...")
     result1 = compute_residuals_simple(par_file, tim_file, verbose=False, subtract_tzr=False)
-    print(f"  RMS: {result1['rms_us']:.6f} μs")
+    print(f"  RMS: {result1['rms_us']:.6f} mus")
     
     # Second computation (cache hit)
     print("Second residual computation (geometry cache hit)...")
     result2 = compute_residuals_simple(par_file, tim_file, verbose=False, subtract_tzr=False)
-    print(f"  RMS: {result2['rms_us']:.6f} μs")
+    print(f"  RMS: {result2['rms_us']:.6f} mus")
     
     # Compare bit-for-bit
     residuals_identical = np.array_equal(result1['residuals_us'], result2['residuals_us'])
@@ -195,27 +195,27 @@ def test_residuals_with_cache():
     dt_identical = np.array_equal(result1['dt_sec'], result2['dt_sec'])
     
     if residuals_identical:
-        print("✓ Residuals: BIT-FOR-BIT IDENTICAL")
+        print("[x] Residuals: BIT-FOR-BIT IDENTICAL")
     else:
         max_diff = np.max(np.abs(result1['residuals_us'] - result2['residuals_us']))
-        print(f"✗ Residuals DIFFER (max: {max_diff:.6e} μs)")
+        print(f"[ ] Residuals DIFFER (max: {max_diff:.6e} mus)")
     
     if tdb_identical:
-        print("✓ TDB times: BIT-FOR-BIT IDENTICAL")
+        print("[x] TDB times: BIT-FOR-BIT IDENTICAL")
     else:
-        print("✗ TDB times DIFFER")
+        print("[ ] TDB times DIFFER")
     
     if dt_identical:
-        print("✓ dt_sec: BIT-FOR-BIT IDENTICAL")
+        print("[x] dt_sec: BIT-FOR-BIT IDENTICAL")
     else:
-        print("✗ dt_sec DIFFER")
+        print("[ ] dt_sec DIFFER")
     
     # RMS should be exactly equal
     rms_identical = result1['rms_us'] == result2['rms_us']
     if rms_identical:
-        print("✓ RMS: IDENTICAL")
+        print("[x] RMS: IDENTICAL")
     else:
-        print(f"✗ RMS DIFFER ({result1['rms_us']} vs {result2['rms_us']})")
+        print(f"[ ] RMS DIFFER ({result1['rms_us']} vs {result2['rms_us']})")
 
 
 def test_cache_disabled():
@@ -243,14 +243,14 @@ def test_cache_disabled():
     vel_identical = np.array_equal(vel_cached, vel_nocache)
     
     if pos_identical:
-        print("✓ Positions: BIT-FOR-BIT IDENTICAL")
+        print("[x] Positions: BIT-FOR-BIT IDENTICAL")
     else:
-        print(f"✗ Positions DIFFER")
+        print(f"[ ] Positions DIFFER")
     
     if vel_identical:
-        print("✓ Velocities: BIT-FOR-BIT IDENTICAL")
+        print("[x] Velocities: BIT-FOR-BIT IDENTICAL")
     else:
-        print(f"✗ Velocities DIFFER")
+        print(f"[ ] Velocities DIFFER")
 
 
 def run_all_tests():
@@ -273,7 +273,7 @@ def run_all_tests():
     
     all_passed = True
     for test_name, passed in results.items():
-        status = "✓ PASS" if passed else "✗ FAIL"
+        status = "[x] PASS" if passed else "[ ] FAIL"
         print(f"  {test_name}: {status}")
         if not passed:
             all_passed = False

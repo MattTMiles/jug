@@ -53,7 +53,7 @@ from jug.gui.theme import (
 )
 
 # NOTE: jug.engine.stats import is deferred to call sites to avoid
-# triggering jug.engine.__init__ → JAX import chain at GUI startup.
+# triggering jug.engine.__init__ -> JAX import chain at GUI startup.
 
 
 
@@ -235,7 +235,7 @@ class MenuBarOverlayMenu(QFrame):
         """
 
     def _sub_item_style(self):
-        """Style for submenu child items — tinted background to show nesting."""
+        """Style for submenu child items -- tinted background to show nesting."""
         return f"""
             QPushButton {{
                 text-align: left;
@@ -565,7 +565,7 @@ class MainWindow(QMainWindow):
         title_axis_bar.setSpacing(12)
         title_axis_bar.setContentsMargins(0, 0, 0, 0)
 
-        # "Noise" button — shown when noise panel is collapsed, opens it back
+        # "Noise" button -- shown when noise panel is collapsed, opens it back
         self._noise_title_btn = QPushButton("◀  Noise")
         self._noise_title_btn.setFixedWidth(100)
         self._noise_title_btn.setCursor(Qt.PointingHandCursor)
@@ -642,7 +642,7 @@ class MainWindow(QMainWindow):
         control_panel = self._create_control_panel()
 
         # Add to main layout: noise panel (if any) + plot (80%) + controls (20%)
-        # Noise panel placeholder — will be populated in on_session_ready
+        # Noise panel placeholder -- will be populated in on_session_ready
         from jug.gui.widgets.noise_control_panel import NoiseControlPanel
         self.noise_panel = NoiseControlPanel()
         self.noise_panel.setVisible(False)  # Hidden until session loads
@@ -776,7 +776,7 @@ class MainWindow(QMainWindow):
         self.rms_label.setObjectName("rmsValue")
         self.iter_label_text, self.iter_label = self._create_stat_row(stats_layout, "Iterations", "--")
         self.ntoa_label_text, self.ntoa_label = self._create_stat_row(stats_layout, "TOAs", "--")
-        self.chi2_label_text, self.chi2_label = self._create_stat_row(stats_layout, "χ²/dof", "--")
+        self.chi2_label_text, self.chi2_label = self._create_stat_row(stats_layout, "chi^2/dof", "--")
 
         layout.addWidget(self.stats_card)
 
@@ -956,10 +956,10 @@ class MainWindow(QMainWindow):
                  self.params_drawer.raise_()
                  self.params_drawer.setVisible(True)
                  
-                 self.params_drawer_btn.setText("Parameters to Fit  ▴")
+                 self.params_drawer_btn.setText("Parameters to Fit  ^")
              else:
                  self.params_drawer.setVisible(False)
-                 self.params_drawer_btn.setText("Parameters to Fit  ▾")
+                 self.params_drawer_btn.setText("Parameters to Fit  v")
              return
 
         # LOCAL MODE: Smooth Animation
@@ -986,13 +986,13 @@ class MainWindow(QMainWindow):
             
             self._drawer_anim.setStartValue(0)
             self._drawer_anim.setEndValue(drawer_width)
-            self.params_drawer_btn.setText("Parameters to Fit  ▴")
+            self.params_drawer_btn.setText("Parameters to Fit  ^")
             self._drawer_anim.start()
         else:
             # CLOSING
             self._drawer_anim.setStartValue(drawer_width)
             self._drawer_anim.setEndValue(0)
-            self.params_drawer_btn.setText("Parameters to Fit  ▾")
+            self.params_drawer_btn.setText("Parameters to Fit  v")
             
             def on_close_finished():
                 # Shrink window back
@@ -1460,7 +1460,7 @@ class MainWindow(QMainWindow):
             if self.noise_panel.has_noise():
                 self._set_noise_panel_visible(True)
             else:
-                # No noise yet — keep panel hidden but show title-bar button
+                # No noise yet -- keep panel hidden but show title-bar button
                 self._set_noise_panel_visible(False)
                 if hasattr(self, '_noise_title_btn'):
                     self._noise_title_btn.setVisible(True)
@@ -1483,7 +1483,7 @@ class MainWindow(QMainWindow):
             msg.setWindowTitle("Clock File Error")
             msg.setIcon(QMessageBox.Warning)
             msg.setText(
-                "<b style='color:red;'>⚠️  Clock file problem detected!</b><br><br>"
+                "<b style='color:red;'>[!]  Clock file problem detected!</b><br><br>"
                 + error_text.replace('\n', '<br>')
                 + "<br><br>Residuals may be inaccurate until clock files are corrected."
             )
@@ -1492,7 +1492,7 @@ class MainWindow(QMainWindow):
         elif warnings:
             # Just show in status bar so it's visible but non-blocking
             first = warnings[0]['message']
-            self.status_bar.showMessage(f"⚠️  {first}", 10000)
+            self.status_bar.showMessage(f"[!]  {first}", 10000)
 
     def on_session_error(self, error_msg):
         """Handle session creation error."""
@@ -1580,13 +1580,13 @@ class MainWindow(QMainWindow):
             self.save_tim_action.setEnabled(True)
 
         # Update statistics (now just values, labels are separate)
-        self.rms_label.setText(f"{self.rms_us:.6f} μs")
+        self.rms_label.setText(f"{self.rms_us:.6f} mus")
         self.ntoa_label.setText(f"{len(self.mjd)}")
         
         # Update status
         rms_label = "wRMS" if self.use_weighted_rms else "RMS"
         self.status_bar.showMessage(
-            f"Loaded {len(self.mjd)} TOAs, Prefit {rms_label} = {self.rms_us:.6f} μs"
+            f"Loaded {len(self.mjd)} TOAs, Prefit {rms_label} = {self.rms_us:.6f} mus"
         )
 
         # Tempo2-style prefit summary to console
@@ -1629,7 +1629,7 @@ class MainWindow(QMainWindow):
             auto_range = is_first_plot
         
         # Block view range signals during data update to prevent cascading
-        # redraws (setData triggers sigRangeChanged → beam recalc → redraw)
+        # redraws (setData triggers sigRangeChanged -> beam recalc -> redraw)
         view_box = self.plot_widget.getPlotItem().getViewBox()
         view_box.blockSignals(True)
         
@@ -1677,11 +1677,11 @@ class MainWindow(QMainWindow):
                     self.plot_widget.addItem(self.error_bar_item)
                 
                 # Update error bar data
-                eb_height = self.errors_us * 2  # ±1σ
+                eb_height = self.errors_us * 2  # +/-1sigma
                 # If Y axis is normalized, scale error bars accordingly
                 y_mode = self._y_axis_mode
                 if y_mode == "Normalized":
-                    # In normalized mode, error bars are ±1 (by definition)
+                    # In normalized mode, error bars are +/-1 (by definition)
                     eb_height = np.ones_like(self.errors_us) * 2
                 self.error_bar_item.setData(
                     x=x_data,
@@ -1757,7 +1757,7 @@ class MainWindow(QMainWindow):
         # Wrap callback to update button text and toggle chevron
         original_callback = overlay.callback
         def wrapped_callback(val):
-            btn.setText(val + "  ▾")
+            btn.setText(val + "  v")
             original_callback(val)
         overlay.callback = wrapped_callback
         
@@ -1765,14 +1765,14 @@ class MainWindow(QMainWindow):
         def toggle_overlay():
             if overlay.isVisible():
                 overlay.hide()
-                btn.setText(btn.text().replace("▴", "▾"))
+                btn.setText(btn.text().replace("^", "v"))
             else:
                 # Calculate position relative to MainWindow (self)
                 # This ensures correct placement even if centralWidget has margins/offsets
                 pos_in_window = btn.mapTo(self, QPoint(0, btn.height()))
                 
                 # Update text to show active state
-                btn.setText(btn.text().replace("▾", "▴"))
+                btn.setText(btn.text().replace("v", "^"))
                 overlay.toggle_at(pos_in_window)
                 
         btn.clicked.connect(toggle_overlay)
@@ -1806,11 +1806,11 @@ class MainWindow(QMainWindow):
             return np.arange(len(mjd), dtype=np.float64), "TOA number"
 
         if mode == "Year":
-            # MJD → Year (approximate: MJD 51544.0 = 2000-01-01.5)
+            # MJD -> Year (approximate: MJD 51544.0 = 2000-01-01.5)
             return 2000.0 + (mjd - 51544.0) / 365.25, "Year"
 
         if mode == "Day of Year":
-            # Day-of-year = fractional part of year × 365.25
+            # Day-of-year = fractional part of year * 365.25
             year_frac = (mjd - 51544.0) / 365.25
             return (year_frac - np.floor(year_frac)) * 365.25, "Day of Year"
 
@@ -1819,9 +1819,9 @@ class MainWindow(QMainWindow):
                 return self.toa_freqs, "Frequency (MHz)"
             return mjd, "MJD (freq unavailable)"
 
-        if mode == "ToA Error (μs)":
+        if mode == "ToA Error (mus)":
             if self.errors_us is not None:
-                return self.errors_us, "ToA Error (μs)"
+                return self.errors_us, "ToA Error (mus)"
             return mjd, "MJD (errors unavailable)"
 
         if mode == "Orbital Phase":
@@ -1835,20 +1835,20 @@ class MainWindow(QMainWindow):
     def _get_y_data(self):
         """Return (y_array, y_label) based on the current Y-axis selector."""
         mode = self._y_axis_mode
-        if mode == "Pre-fit (μs)":
+        if mode == "Pre-fit (mus)":
             if hasattr(self, 'prefit_residuals_us') and self.prefit_residuals_us is not None:
-                return self.prefit_residuals_us, "Pre-fit residual (μs)"
-            return self.residuals_us, "Residual (μs) [no pre-fit]"
+                return self.prefit_residuals_us, "Pre-fit residual (mus)"
+            return self.residuals_us, "Residual (mus) [no pre-fit]"
 
         if mode == "Normalized":
             if self.errors_us is not None and len(self.errors_us) > 0:
                 from jug.engine.stats import compute_normalized_residuals
                 norm = compute_normalized_residuals(self.residuals_us, self.errors_us)
                 return norm, "Normalized residual"
-            return self.residuals_us, "Residual (μs) [no errors]"
+            return self.residuals_us, "Residual (mus) [no errors]"
 
-        # Default: Post-fit (μs)
-        return self.residuals_us, "Post-fit residual (μs)"
+        # Default: Post-fit (mus)
+        return self.residuals_us, "Post-fit residual (mus)"
     
     def _update_plot_title(self):
         """Update the plot title with pulsar name and RMS matching displayed view."""
@@ -1856,13 +1856,13 @@ class MainWindow(QMainWindow):
         rms_label = "wRMS" if self.use_weighted_rms else "RMS"
 
         # Show RMS corresponding to what's on screen
-        if self._y_axis_mode == "Pre-fit (μs)":
+        if self._y_axis_mode == "Pre-fit (mus)":
             rms_val = self.prefit_weighted_rms_us if self.use_weighted_rms else self.prefit_unweighted_rms_us
         else:
             rms_val = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
 
-        rms_str = f"{rms_val:.6f} μs" if rms_val is not None else "--"
-        self.plot_title_label.setText(f"✦  {pulsar_str}  ·  {rms_label}: {rms_str}")
+        rms_str = f"{rms_val:.6f} mus" if rms_val is not None else "--"
+        self.plot_title_label.setText(f"{pulsar_str}  \u00b7  {rms_label}: {rms_str}")
     
     def on_fit_clicked(self):
         """Handle Fit button click."""
@@ -1964,7 +1964,7 @@ class MainWindow(QMainWindow):
         # Use the fitter's own residuals directly instead of recomputing.
         # This ensures the GUI displays exactly the same residuals as the
         # fitter computed (including JUMP handling, noise-aware validation,
-        # etc.) — no risk of divergence from a separate code path.
+        # etc.) -- no risk of divergence from a separate code path.
         self.on_postfit_compute_complete(result)
 
     def _compute_postfit_residuals(self, result):
@@ -1999,10 +1999,10 @@ class MainWindow(QMainWindow):
         """Handle postfit residual computation completion.
 
         Called from two paths:
-          1. on_fit_complete – result comes from the fitter which already
+          1. on_fit_complete - result comes from the fitter which already
              applied toa_mask, so arrays are already filtered.  Result does
              NOT contain freq_bary_mhz / orbital_phase / toa_flags.
-          2. _compute_postfit_residuals via ComputeWorker – result is
+          2. _compute_postfit_residuals via ComputeWorker - result is
              full-size (no mask).  Contains all auxiliary arrays.
 
         We detect which path by comparing result size to _keep_mask.
@@ -2047,9 +2047,9 @@ class MainWindow(QMainWindow):
         
         # Update plot (auto-range to show new residual scale after fit)
         # Auto-switch to post-fit view
-        self._y_axis_mode = "Post-fit (μs)"
+        self._y_axis_mode = "Post-fit (mus)"
         if hasattr(self, 'y_axis_btn'):
-            self.y_axis_btn.setText("Post-fit (μs)")
+            self.y_axis_btn.setText("Post-fit (mus)")
 
         # Store GLS noise realizations from the fit (if available)
         if hasattr(self, '_pending_fit_result'):
@@ -2067,7 +2067,7 @@ class MainWindow(QMainWindow):
             fit_result = self._pending_fit_result
             
             # Update statistics (values only, labels are separate)
-            self.rms_label.setText(f"{self.rms_us:.6f} μs")
+            self.rms_label.setText(f"{self.rms_us:.6f} mus")
             self.iter_label.setText(f"{fit_result['iterations']}")
 
             # Calculate chi-squared if we have errors
@@ -2089,7 +2089,7 @@ class MainWindow(QMainWindow):
             rms_label = "wRMS" if self.use_weighted_rms else "RMS"
             self.status_bar.showMessage(
                 f"Fit complete: {param_str} | "
-                f"{rms_label} = {self.rms_us:.6f} μs | "
+                f"{rms_label} = {self.rms_us:.6f} mus | "
                 f"{fit_result['iterations']} iterations | "
                 f"{'converged' if fit_result['converged'] else 'not converged'}"
             )
@@ -2170,21 +2170,21 @@ class MainWindow(QMainWindow):
         prev_value = self.initial_params.get(param, 0.0)
         unit = get_display_unit(param)
 
-        # Special cases requiring custom logic (sexagesimal, KIN→SINI)
+        # Special cases requiring custom logic (sexagesimal, KIN->SINI)
         if param == 'RAJ':
             prev_value_rad = parse_ra(prev_value) if isinstance(prev_value, str) else prev_value
             change = new_value - prev_value_rad
             new_val_str = format_ra(new_value)
             prev_val_str = format_ra(prev_value_rad) if isinstance(prev_value, str) else str(prev_value)
             change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
-            unit = "Δ arcsec"
+            unit = "Delta arcsec"
         elif param == 'DECJ':
             prev_value_rad = parse_dec(prev_value) if isinstance(prev_value, str) else prev_value
             change = new_value - prev_value_rad
             new_val_str = format_dec(new_value)
             prev_val_str = format_dec(prev_value_rad) if isinstance(prev_value, str) else str(prev_value)
             change_str = f"{change * 180 / 3.14159265 * 3600:+.6f}"
-            unit = "Δ arcsec"
+            unit = "Delta arcsec"
         elif param == 'SINI':
             if isinstance(prev_value, str) and prev_value.upper() == 'KIN':
                 kin_deg = float(self.initial_params.get('KIN', 0.0))
@@ -2449,7 +2449,7 @@ class MainWindow(QMainWindow):
             self._update_plot_title()
 
             # Update statistics
-            self.rms_label.setText(f"{self.rms_us:.6f} μs")
+            self.rms_label.setText(f"{self.rms_us:.6f} mus")
             self.ntoa_label.setText(f"{len(self.mjd)}")
             self.iter_label.setText("--")
             self.chi2_label.setText("--")
@@ -2545,7 +2545,7 @@ class MainWindow(QMainWindow):
 
         if realization_us is None:
             self.status_bar.showMessage(
-                f"No {process_name} realization available — run fit first or check parameters"
+                f"No {process_name} realization available -- run fit first or check parameters"
             )
             return
 
@@ -2562,8 +2562,8 @@ class MainWindow(QMainWindow):
         This modifies the displayed residuals in-place (like tempo2 Shift+K / Shift+F).
         Requires the realization to already be computed (via "Realise" toggle).
         For deterministic signals (CW, BWM, ChromaticEvent), the waveform is
-        computed automatically — no prior "Realise" step is needed.
-        Also updates displayed RMS / wRMS / χ² to reflect the new residuals.
+        computed automatically -- no prior "Realise" step is needed.
+        Also updates displayed RMS / wRMS / chi^2 to reflect the new residuals.
 
         IMPORTANT: When noise is subtracted, that process is disabled in the noise_config
         so that subsequent fits do NOT re-apply that noise process to the cleaned data.
@@ -2653,7 +2653,7 @@ class MainWindow(QMainWindow):
     def _compute_noise_realization_fallback(self, process_name: str):
         """Wiener filter fallback when GLS realization isn't available.
 
-        Delegates to the central noise registry — no per-process branching needed.
+        Delegates to the central noise registry -- no per-process branching needed.
         """
         from jug.engine.noise_mode import compute_noise_realization
 
@@ -2754,7 +2754,7 @@ class MainWindow(QMainWindow):
                 self._noise_realizations[process_name] = real
             else:
                 self.status_bar.showMessage(
-                    f"No {process_name} realization available — run fit first"
+                    f"No {process_name} realization available -- run fit first"
                 )
                 return
 
@@ -2967,14 +2967,14 @@ class MainWindow(QMainWindow):
         
         # Update displayed value
         if self.rms_us is not None:
-            self.rms_label.setText(f"{self.rms_us:.6f} μs")
+            self.rms_label.setText(f"{self.rms_us:.6f} mus")
         
         # Update plot title
         self._update_plot_title()
         
         # Show status message
         if self.rms_us is not None:
-            self.status_bar.showMessage(f"Switched to {rms_type} RMS: {self.rms_us:.6f} μs (press W to toggle)")
+            self.status_bar.showMessage(f"Switched to {rms_type} RMS: {self.rms_us:.6f} mus (press W to toggle)")
         else:
             self.status_bar.showMessage(f"Switched to {rms_type} RMS (press W to toggle)")
 
@@ -3006,7 +3006,7 @@ class MainWindow(QMainWindow):
         self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
 
     def _refresh_stats_from_residuals(self):
-        """Recompute RMS / wRMS / χ² from the current ``self.residuals_us`` and update labels."""
+        """Recompute RMS / wRMS / chi^2 from the current ``self.residuals_us`` and update labels."""
         if self.residuals_us is None:
             return
         r = self.residuals_us
@@ -3019,8 +3019,8 @@ class MainWindow(QMainWindow):
             self.weighted_rms_us = self.unweighted_rms_us
         self.rms_us = self.weighted_rms_us if self.use_weighted_rms else self.unweighted_rms_us
         if self.rms_us is not None:
-            self.rms_label.setText(f"{self.rms_us:.6f} μs")
-        # Update χ²/dof
+            self.rms_label.setText(f"{self.rms_us:.6f} mus")
+        # Update chi^2/dof
         if self.errors_us is not None:
             n_toas = len(r)
             n_params = len(self.param_checkboxes) if hasattr(self, 'param_checkboxes') else 0
@@ -3041,10 +3041,10 @@ class MainWindow(QMainWindow):
         print(f" Pre-fit summary for {name}")
         print(f"{'='*60}")
         print(f" Number of TOAs:    {n}")
-        print(f" MJD range:         {self.mjd[0]:.1f} – {self.mjd[-1]:.1f}" if n > 1 else "")
+        print(f" MJD range:         {self.mjd[0]:.1f} - {self.mjd[-1]:.1f}" if n > 1 else "")
         print(f" Time span (yr):    {span:.2f}")
-        print(f" RMS residual:      {rms:.4f} μs")
-        print(f" Weighted RMS:      {wrms:.4f} μs")
+        print(f" RMS residual:      {rms:.4f} mus")
+        print(f" Weighted RMS:      {wrms:.4f} mus")
         print(f"{'='*60}\n")
 
     def _print_postfit_summary(self, fit_result):
@@ -3068,13 +3068,13 @@ class MainWindow(QMainWindow):
         print(f" Fit parameters:    {n_params}")
         print(f" Iterations:        {fit_result.get('iterations', '?')}")
         print(f" Converged:         {'yes' if fit_result.get('converged') else 'no'}")
-        print(f" RMS residual:      {rms:.4f} μs")
-        print(f" Weighted RMS:      {wrms:.4f} μs", end="")
+        print(f" RMS residual:      {rms:.4f} mus")
+        print(f" Weighted RMS:      {wrms:.4f} mus", end="")
         if pre_wrms is not None:
-            print(f"  (pre-fit: {pre_wrms:.4f} μs)")
+            print(f"  (pre-fit: {pre_wrms:.4f} mus)")
         else:
             print()
-        print(f" χ²/dof:            {chi2_dof:.2f}  ({n} TOAs, {dof} dof)")
+        print(f" chi^2/dof:            {chi2_dof:.2f}  ({n} TOAs, {dof} dof)")
         print(f"{'-'*60}")
 
         # Parameter table
@@ -3238,7 +3238,7 @@ class MainWindow(QMainWindow):
             self._update_freq_legend(True, f_min, f_max)
             return brushes
 
-        # mode == "none" → reset to theme default
+        # mode == "none" -> reset to theme default
         self._update_freq_legend(False)
         self._update_backend_legend(False)
         return None  # Returning None means "use default symbolBrush"
@@ -3525,7 +3525,7 @@ class MainWindow(QMainWindow):
                 self.params_drawer.setStyleSheet(f"background-color: {Colors.BG_SECONDARY}; border-left: 1px solid {get_border_subtle()};")
                 
             if hasattr(self, 'param_table'):
-                 # Batch checkbox style — build string once, apply to all
+                 # Batch checkbox style -- build string once, apply to all
                  checkbox_style = f"""
                     QCheckBox {{
                         color: {Colors.TEXT_PRIMARY};
@@ -3617,7 +3617,7 @@ class MainWindow(QMainWindow):
     def _set_solver_mode(self, mode: str, display_name: str):
         """Set the solver mode from dropdown menu selection."""
         self.solver_mode = mode
-        self.solver_button.setText(f"  {display_name} ▾")
+        self.solver_button.setText(f"  {display_name} v")
         self.status_bar.showMessage(f"Solver mode: {display_name}")
 
     def _on_view_range_changed(self, view_box, ranges):
@@ -3723,12 +3723,12 @@ class MainWindow(QMainWindow):
         msg.setText(
             f"""
             <div style='text-align: center;'>
-                <h2 style='color: {accent}; margin-bottom: 8px;'>✦ JUG Timing Analysis</h2>
+                <h2 style='color: {accent}; margin-bottom: 8px;'>* JUG Timing Analysis</h2>
                 <p style='color: {Colors.TEXT_SECONDARY}; font-size: 14px;'>
                     JAX-based pulsar timing software
                 </p>
                 <p style='color: {Colors.TEXT_MUTED}; font-size: 13px; margin-top: 16px;'>
-                    Fast · Independent · Extensible
+                    Fast * Independent * Extensible
                 </p>
                 <hr style='border: none; border-top: 1px solid {Colors.SURFACE_BORDER}; margin: 16px 0;'>
                 <p style='font-size: 12px;'>
@@ -3792,7 +3792,7 @@ class MainWindow(QMainWindow):
         Returns
         -------
         dict
-            Mapping of parameter name → ``True`` if the fit flag is set,
+            Mapping of parameter name -> ``True`` if the fit flag is set,
             ``False`` otherwise.  Only includes parameters recognised as
             fittable by the parameter registry.
         """
@@ -3837,7 +3837,7 @@ class MainWindow(QMainWindow):
                             found_params[jump_name] = has_fit_flag
                             continue
 
-                        # DMX_NNNN lines → single "DMX" checkbox
+                        # DMX_NNNN lines -> single "DMX" checkbox
                         import re
                         if re.match(r'^DMX_\d+$', param_name):
                             has_fit_flag = False
@@ -3846,14 +3846,14 @@ class MainWindow(QMainWindow):
                                     has_fit_flag = (int(parts[2]) == 1)
                                 except ValueError:
                                     pass
-                            # Any DMX range with fit flag → DMX is fit-flagged
+                            # Any DMX range with fit flag -> DMX is fit-flagged
                             if dmx_has_fit_flag is None:
                                 dmx_has_fit_flag = has_fit_flag
                             elif has_fit_flag:
                                 dmx_has_fit_flag = True
                             continue
 
-                        # Canonicalize aliases (LAMBDA→RAJ, BETA→DECJ, etc.)
+                        # Canonicalize aliases (LAMBDA->RAJ, BETA->DECJ, etc.)
                         from jug.model.parameter_spec import canonicalize_param_name
                         canon_name = canonicalize_param_name(param_name)
                         lookup_name = canon_name if canon_name in fittable_params else param_name
@@ -3976,7 +3976,7 @@ class MainWindow(QMainWindow):
 
         self.available_params = all_params
 
-        # Update status — report fit flags detected
+        # Update status -- report fit flags detected
         if all_params:
             n_fit_flagged = sum(1 for v in params_in_file.values() if v)
             status_msg = f"Found {len(params_in_file)} parameters in .par"
@@ -4168,7 +4168,7 @@ class MainWindow(QMainWindow):
         view_box = self.plot_widget.getPlotItem().getViewBox()
         view_box.setRange(xRange=(x_min, x_max), yRange=(y_min, y_max), padding=0)
         
-        self.status_bar.showMessage(f"Zoomed to region: MJD [{x_min:.2f}, {x_max:.2f}], Residual [{y_min:.2f}, {y_max:.2f}] μs")
+        self.status_bar.showMessage(f"Zoomed to region: MJD [{x_min:.2f}, {x_max:.2f}], Residual [{y_min:.2f}, {y_max:.2f}] mus")
 
     def _cancel_box_zoom(self):
         """Cancel box zoom mode and clean up."""
@@ -4377,7 +4377,7 @@ class MainWindow(QMainWindow):
         self._update_plot_title()
 
         # Update statistics
-        self.rms_label.setText(f"{self.rms_us:.6f} μs")
+        self.rms_label.setText(f"{self.rms_us:.6f} mus")
         self.ntoa_label.setText(f"{len(self.mjd)}")
         
         self.status_bar.showMessage(f"Deleted {n_delete} TOAs ({len(self.mjd)} remaining)")

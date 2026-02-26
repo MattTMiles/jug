@@ -10,7 +10,7 @@ Solar System Roemer delay). Using raw TDB TOAs causes ~6-9% errors
 in derivatives because the orbital phase is computed incorrectly.
 
 In JUG, barycentric TOAs are computed as:
-    t_bary = t_tdb - τ_roemer - τ_shapiro - τ_other_delays
+    t_bary = t_tdb - tau_roemer - tau_shapiro - tau_other_delays
 
 Implementation Notes
 --------------------
@@ -20,7 +20,7 @@ This implementation follows PINT's ELL1_model.py exactly, including:
    - Tempo2 uses only 1st+2nd order, causing ~5 femtosecond differences
    
 2. Inverse delay iteration (d_delayI_d_par)
-   - PINT computes delayI = Dre * (1 - nhat*Drep + (nhat*Drep)² + 0.5*nhat²*Dre*Drepp)
+   - PINT computes delayI = Dre * (1 - nhat*Drep + (nhat*Drep)^2 + 0.5*nhat^2*Dre*Drepp)
    - Tempo2 uses simpler formulas without this correction
    - Difference is ~0.01-0.02% in derivatives
    
@@ -55,14 +55,13 @@ Reference:
 
 import jax
 import jax.numpy as jnp
+from functools import partial
 from typing import Dict, List, Tuple
+
+from jug.utils.constants import SECS_PER_DAY, T_SUN
 
 # Ensure 64-bit precision for pulsar timing accuracy
 jax.config.update('jax_enable_x64', True)
-
-# Physical constants
-SECS_PER_DAY = 86400.0
-T_SUN = 4.925490947e-6  # GM_sun / c^3 in seconds
 
 
 # =============================================================================
@@ -80,11 +79,11 @@ def compute_orbital_phase_ell1(
     """Compute orbital phase Phi for ELL1 model (supports FB parameters).
     
     Standard:
-        orbits = ttasc / PB - 0.5 * PBDOT * (ttasc / PB)²
+        orbits = ttasc / PB - 0.5 * PBDOT * (ttasc / PB)^2
     
     FB Mode (if fb_coeffs provided):
         F_orb(t) = sum(FB_i * t^i / i!)
-        Phi = 2π * integral(F_orb * dt) = 2π * sum(FB_i * t^(i+1) / (i+1)!)
+        Phi = 2pi * integral(F_orb * dt) = 2pi * sum(FB_i * t^(i+1) / (i+1)!)
     
     Parameters
     ----------
@@ -106,9 +105,6 @@ def compute_orbital_phase_ell1(
     """
     ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY  # seconds
     
-    # Check if using FB
-    use_fb = (fb_coeffs is not None) & (len(fb_coeffs) > 0)
-    
     def compute_phi_standard():
         pb_sec = pb * SECS_PER_DAY
         orbits = ttasc_sec / pb_sec - 0.5 * pbdot * (ttasc_sec / pb_sec) ** 2
@@ -116,37 +112,18 @@ def compute_orbital_phase_ell1(
 
     def compute_phi_fb():
         # FB Taylor series integration
-        # Phase = 2π * sum(FB_i * t^(i+1) / (i+1)!)
+        # Phase = 2pi * sum(FB_i * t^(i+1) / (i+1)!)
         # Note: (i+1)! = fb_factorials[i] * (i+1)
         # We need to construct factorials here or pass them. 
         # Constructing small factorials on the fly is cheap in JIT.
         n_coeffs = len(fb_coeffs)
         
-        # JAX loop or vectorized sum
-        # t^(i+1)
-        # We need to broadcast ttasc_sec against powers
-        # ttasc_sec shape: (N,)
-        # coeffs shape: (M,)
-        
-        # Use vmap over toas? No, outer product is better.
-        # ttasc_sec: (N, 1)
-        # powers: (1, M)
-        
         indices = jnp.arange(n_coeffs)
         powers = indices + 1
         
-        # Factorials: (i+1)!
-        # Can compute robustly via gamma or simple product loop
-        # Since M is small (~18), we can precompute a constant array inside JIT
-        # Factorials up to 20:
-        facts = jnp.array([1.0, 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 
-                           362880.0, 3628800.0, 39916800.0, 479001600.0, 
-                           6227020800.0, 87178291200.0, 1307674368000.0, 
-                           20922789888000.0, 355687428096000.0, 6402373705728000.0,
-                           121645100408832000.0]) # 0! to 19!
-        # We need (i+1)! -> facts[1] to facts[n+1]
-        # But indices starts at 0 -> we need facts[indices+1]
-        denom = facts[indices + 1] 
+        # Factorials: (i+1)! via cumulative product (JIT-friendly)
+        _all_facts = jnp.concatenate([jnp.array([1.0]), jnp.cumprod(jnp.arange(1, 20, dtype=jnp.float64))])
+        denom = _all_facts[indices + 1]
         
         # Expand time: t^(i+1)
         # shape (N, M)
@@ -158,17 +135,11 @@ def compute_orbital_phase_ell1(
         phase_integral = jnp.sum(terms, axis=1)
         return 2 * jnp.pi * phase_integral
 
-    # Use lax.cond to handle None/empty check inside JIT if needed
-    # But fb_coeffs shape is static. Python branch is fine if shape is static.
-    # If fb_coeffs is passed as None, len() fails.
-    # We'll use a python check.
     if fb_coeffs is not None and len(fb_coeffs) > 0:
         return compute_phi_fb()
     else:
         return compute_phi_standard()
 
-
-from functools import partial
 
 @partial(jax.jit, static_argnums=(1,))
 def d_Phi_d_FBi(
@@ -177,8 +148,8 @@ def d_Phi_d_FBi(
 ) -> jnp.ndarray:
     """Derivative of orbital phase w.r.t. FB coefficient i.
     
-    Phi = 2π * sum(FB_k * t^(k+1) / (k+1)!)
-    dPhi/dFB_i = 2π * t^(i+1) / (i+1)!
+    Phi = 2pi * sum(FB_k * t^(k+1) / (k+1)!)
+    dPhi/dFB_i = 2pi * t^(i+1) / (i+1)!
     
     Parameters
     ----------
@@ -193,9 +164,6 @@ def d_Phi_d_FBi(
         Derivative in rad/Hz (or equivalent unit)
     """
     power = fb_index + 1
-    
-    # Factorial (i+1)!
-    # Compute robustly
     fact = 1.0
     for k in range(1, power + 1):
         fact *= k
@@ -214,7 +182,7 @@ def d_delayR_da1(
     """ELL1 Roemer delay divided by a1/c, with 3rd-order corrections.
     
     This is PINT's d_delayR_da1() from ELL1_model.py.
-    Includes terms up to O(e³) for maximum accuracy.
+    Includes terms up to O(e^3) for maximum accuracy.
     
     Dre = (a1/c) * d_delayR_da1
     
@@ -247,7 +215,7 @@ def d_delayR_da1(
         + 0.5 * (eps2 * sin_2phi - eps1 * cos_2phi)
     )
     
-    # Third order O(e²) corrections
+    # Third order O(e^2) corrections
     result = result - (1.0 / 8) * (
         5 * eps2**2 * sin_phi
         - 3 * eps2**2 * sin_3phi
@@ -257,7 +225,7 @@ def d_delayR_da1(
         + 3 * eps1**2 * sin_3phi
     )
     
-    # Fourth order O(e³) corrections
+    # Fourth order O(e^3) corrections
     result = result - (1.0 / 12) * (
         5 * eps2**3 * sin_2phi
         + 3 * eps1**2 * eps2 * sin_2phi
@@ -358,7 +326,7 @@ def d_dd_delayR_dPhi2_da1(
     Returns
     -------
     jnp.ndarray
-        d²(d_delayR_da1)/d(Phi)² - dimensionless
+        d^2(d_delayR_da1)/d(Phi)^2 - dimensionless
     """
     sin_phi = jnp.sin(phi)
     cos_phi = jnp.cos(phi)
@@ -420,7 +388,7 @@ def d_ddd_delayR_dPhi3_da1(
     Returns
     -------
     jnp.ndarray
-        d³(d_delayR_da1)/d(Phi)³ - dimensionless
+        d^3(d_delayR_da1)/d(Phi)^3 - dimensionless
     """
     sin_phi = jnp.sin(phi)
     cos_phi = jnp.cos(phi)
@@ -728,7 +696,7 @@ def d_Phi_d_TASC(
 ) -> jnp.ndarray:
     """Derivative of orbital phase w.r.t. TASC.
     
-    d(Phi)/d(TASC) = (PBDOT * ttasc / PB - 1) * 2π / PB
+    d(Phi)/d(TASC) = (PBDOT * ttasc / PB - 1) * 2pi / PB
     
     This matches PINT's d_Phi_d_TASC().
     
@@ -745,15 +713,15 @@ def d_Phi_d_PB(
 ) -> jnp.ndarray:
     """Derivative of orbital phase w.r.t. PB.
     
-    d(Phi)/d(PB) = 2π * ((PBDOT) * ttasc² / PB³ - ttasc / PB²)
+    d(Phi)/d(PB) = 2pi * ((PBDOT) * ttasc^2 / PB^3 - ttasc / PB^2)
     
-    This matches PINT's d_orbits_d_PB() * 2π.
-    Note: PINT's orbits doesn't include the 2π factor.
+    This matches PINT's d_orbits_d_PB() * 2pi.
+    Note: PINT's orbits doesn't include the 2pi factor.
     
     Returns: rad/day (since PB is in days)
     """
     # PINT formula from binary_orbits.py:
-    # d_orbits_d_PB = 2π * (PBDOT * ttasc² / PB³ - ttasc / PB²)
+    # d_orbits_d_PB = 2pi * (PBDOT * ttasc^2 / PB^3 - ttasc / PB^2)
     return 2 * jnp.pi * (pbdot * ttasc_sec**2 / pb_sec**3 - ttasc_sec / pb_sec**2)
 
 
@@ -764,9 +732,9 @@ def d_Phi_d_PBDOT(
 ) -> jnp.ndarray:
     """Derivative of orbital phase w.r.t. PBDOT.
     
-    d(Phi)/d(PBDOT) = -π * ttasc² / PB²
+    d(Phi)/d(PBDOT) = -pi * ttasc^2 / PB^2
     
-    This matches PINT's d_orbits_d_PBDOT() * 2π.
+    This matches PINT's d_orbits_d_PBDOT() * 2pi.
     
     Returns: rad (PBDOT is dimensionless)
     """
@@ -785,10 +753,10 @@ def d_shapiro_d_SINI(
 ) -> jnp.ndarray:
     """Derivative of Shapiro delay w.r.t. SINI.
     
-    Shapiro delay: Δt_S = -2 × TM2 × log(1 - SINI × sin(Φ))
-    where TM2 = T_SUN × M2
+    Shapiro delay: Deltat_S = -2 * TM2 * log(1 - SINI * sin(Phi))
+    where TM2 = T_SUN * M2
     
-    d(Δt_S)/d(SINI) = 2 × TM2 × sin(Φ) / (1 - SINI × sin(Φ))
+    d(Deltat_S)/d(SINI) = 2 * TM2 * sin(Phi) / (1 - SINI * sin(Phi))
     
     This matches PINT's d_delayS_d_par() for SINI.
     
@@ -822,7 +790,7 @@ def d_shapiro_d_M2(
 ) -> jnp.ndarray:
     """Derivative of Shapiro delay w.r.t. M2.
     
-    d(Δt_S)/d(M2) = -2 × T_SUN × log(1 - SINI × sin(Φ))
+    d(Deltat_S)/d(M2) = -2 * T_SUN * log(1 - SINI * sin(Phi))
     
     This matches PINT's d_delayS_d_par() for M2/TM2.
     
@@ -852,11 +820,28 @@ def d_shapiro_d_Phi(
     sini: float,
     m2: float,
 ) -> jnp.ndarray:
-    """Derivative of Shapiro delay w.r.t. Phi.
+    """Derivative of Shapiro delay w.r.t. orbital phase Phi.
     
-    Used for chain rule when parameter affects orbital phase.
+    Used for chain rule when a parameter affects orbital phase
+    (e.g. PB, TASC, PBDOT, FB).
     
-    d(Δt_S)/d(Phi) = 2 × TM2 × SINI × cos(Φ) / (1 - SINI × sin(Φ))
+    The ELL1 Shapiro delay is:
+        Deltat_S = -2 T_M2 ln(1 - sin(i) sin(Phi))
+    
+    Differentiating:
+        d(Deltat_S)/dPhi = -2 T_M2 * [-sin(i) cos(Phi)] / [1 - sin(i) sin(Phi)]
+                    =  2 T_M2 sin(i) cos(Phi) / [1 - sin(i) sin(Phi)]
+    
+    NOTE: PINT (ELL1_model.py) and Tempo2 omit the cos(Phi) factor from this
+    derivative -- they compute 2 T_M2 sin(i) / [1 - sin(i) sin(Phi)].
+    
+    The PINT ELL1H model (ELL1H_model.py,
+    d_delayS_H3_STIGMA_exact_d_Phi) includes cos(Phi), while the
+    ELL1 model (ELL1_model.py, d_delayS_d_par) does not. 
+    
+    To verify in Wolfram Alpha:
+        d/dx [-2*a*ln(1 - b*sin(x))]
+    where a = T_M2, b = sin(i), x = Phi.  Result: 2*a*b*cos(x)/(1-b*sin(x)).
     """
     TM2 = T_SUN * m2
     sin_phi = jnp.sin(phi)
@@ -963,7 +948,7 @@ def _compute_ell1_binary_delay_jit(
     # Orbital phase
     phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
 
-    # nhat = 2π / PB (mean angular velocity in rad/s)
+    # nhat = 2pi / PB (mean angular velocity in rad/s)
     nhat = 2 * jnp.pi / pb_sec
 
     # Compute Dre, Drep, Drepp using existing functions
@@ -998,7 +983,7 @@ def _compute_ell1_binary_delay_jit(
 
     # H3-only Shapiro delay (Freire & Wex 2010 Eq. 19)
     # When H3 > 0 but no STIG/M2/SINI, use harmonic expansion:
-    #   Δ_S = -(4/3)*H3*sin(3*Phi)
+    #   Delta_S = -(4/3)*H3*sin(3*Phi)
     # Coefficient 4/3 = 2 * (2/3) from Fourier basis factor 2/k for k=3.
     shapiro_h3only = jnp.where(
         (sini == 0.0) & (m2 == 0.0) & (h3 > 0.0) & (stig == 0.0),
@@ -1104,7 +1089,7 @@ def compute_binary_derivatives_ell1(
     # Compute orbital phase
     phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
     
-    # nhat = 2π / PB (mean angular velocity in rad/s)
+    # nhat = 2pi / PB (mean angular velocity in rad/s)
     nhat = 2 * jnp.pi / pb_sec
     
     # Compute Dre, Drep, Drepp (inverse delay quantities)
@@ -1123,10 +1108,9 @@ def compute_binary_derivatives_ell1(
     # Inverse delay correction factors
     nhat_Drep = nhat * Drep
     
-    # d(delayI)/d(Dre)
+    # d(delayI)/d(Dre) -- product rule gives two 0.5 terms that combine
     d_delayI_d_Dre = (
-        1 - nhat_Drep + nhat_Drep**2 + 0.5 * nhat**2 * Dre * Drepp
-        + Dre * 0.5 * nhat**2 * Drepp
+        1 - nhat_Drep + nhat_Drep**2 + nhat**2 * Dre * Drepp
     )
     
     # d(delayI)/d(Drep)
@@ -1137,6 +1121,19 @@ def compute_binary_derivatives_ell1(
     
     # d(delayI)/d(nhat)
     d_delayI_d_nhat = Dre * (-Drep + 2 * nhat_Drep * Drep + nhat * Dre * Drepp)
+    
+    # Precompute eps cross-derivatives (shared by TASC, EPS1, EPS2, EPS1DOT, EPS2DOT)
+    # Each function computes trig internally, so calling each once here avoids
+    # redundant recomputation when multiple eps-dependent params are fitted.
+    _eps_params = {'TASC', 'EPS1', 'EPS2', 'EPS1DOT', 'EPS2DOT'}
+    _needs_eps = any(p.upper() in _eps_params for p in fit_params)
+    if _needs_eps:
+        _d_R_deps1 = d_delayR_da1_d_eps1(phi, eps1_eff, eps2_eff)
+        _d_R_deps2 = d_delayR_da1_d_eps2(phi, eps1_eff, eps2_eff)
+        _d_dR_deps1 = d_d_delayR_dPhi_da1_d_eps1(phi, eps1_eff, eps2_eff)
+        _d_dR_deps2 = d_d_delayR_dPhi_da1_d_eps2(phi, eps1_eff, eps2_eff)
+        _d_ddR_deps1 = d_dd_delayR_dPhi2_da1_d_eps1(phi, eps1_eff, eps2_eff)
+        _d_ddR_deps2 = d_dd_delayR_dPhi2_da1_d_eps2(phi, eps1_eff, eps2_eff)
     
     derivatives = {}
     
@@ -1173,7 +1170,7 @@ def compute_binary_derivatives_ell1(
             # d(Phi)/d(PB) - from orbital phase dependence
             d_Phi_d_pb = d_Phi_d_PB(ttasc_sec, pb_sec, pbdot)
             
-            # d(nhat)/d(PB) = -2π / PB²
+            # d(nhat)/d(PB) = -2pi / PB^2
             d_nhat_d_pb = -2 * jnp.pi / pb_sec**2
             
             # d(Dre)/d(PB) = d(Dre)/d(Phi) * d(Phi)/d(PB) = Drep * d_Phi_d_pb
@@ -1218,24 +1215,24 @@ def compute_binary_derivatives_ell1(
             d_Dre_d_tasc = (
                 Drep * d_Phi_d_tasc
                 + d_R_da1 * d_a1_d_tasc
-                + a1_eff * d_delayR_da1_d_eps1(phi, eps1_eff, eps2_eff) * d_eps1_d_tasc
-                + a1_eff * d_delayR_da1_d_eps2(phi, eps1_eff, eps2_eff) * d_eps2_d_tasc
+                + a1_eff * _d_R_deps1 * d_eps1_d_tasc
+                + a1_eff * _d_R_deps2 * d_eps2_d_tasc
             )
             
             # d(Drep)/d(TASC)
             d_Drep_d_tasc = (
                 Drepp * d_Phi_d_tasc
                 + d_dR_dPhi_da1 * d_a1_d_tasc
-                + a1_eff * d_d_delayR_dPhi_da1_d_eps1(phi, eps1_eff, eps2_eff) * d_eps1_d_tasc
-                + a1_eff * d_d_delayR_dPhi_da1_d_eps2(phi, eps1_eff, eps2_eff) * d_eps2_d_tasc
+                + a1_eff * _d_dR_deps1 * d_eps1_d_tasc
+                + a1_eff * _d_dR_deps2 * d_eps2_d_tasc
             )
             
             # d(Drepp)/d(TASC)
             d_Drepp_d_tasc = (
                 Dreppp * d_Phi_d_tasc
                 + d_ddR_dPhi2_da1 * d_a1_d_tasc
-                + a1_eff * d_dd_delayR_dPhi2_da1_d_eps1(phi, eps1_eff, eps2_eff) * d_eps1_d_tasc
-                + a1_eff * d_dd_delayR_dPhi2_da1_d_eps2(phi, eps1_eff, eps2_eff) * d_eps2_d_tasc
+                + a1_eff * _d_ddR_deps1 * d_eps1_d_tasc
+                + a1_eff * _d_ddR_deps2 * d_eps2_d_tasc
             )
             
             d_delayI_d_tasc = (
@@ -1256,9 +1253,9 @@ def compute_binary_derivatives_ell1(
         elif param_upper == 'EPS1':
             # d(eps1)/d(EPS1) = 1
             # d(Dre)/d(EPS1) = a1 * d(d_delayR_da1)/d(eps1)
-            d_Dre_d_eps1 = a1_eff * d_delayR_da1_d_eps1(phi, eps1_eff, eps2_eff)
-            d_Drep_d_eps1 = a1_eff * d_d_delayR_dPhi_da1_d_eps1(phi, eps1_eff, eps2_eff)
-            d_Drepp_d_eps1 = a1_eff * d_dd_delayR_dPhi2_da1_d_eps1(phi, eps1_eff, eps2_eff)
+            d_Dre_d_eps1 = a1_eff * _d_R_deps1
+            d_Drep_d_eps1 = a1_eff * _d_dR_deps1
+            d_Drepp_d_eps1 = a1_eff * _d_ddR_deps1
             
             d_delayI_d_eps1 = (
                 d_delayI_d_Dre * d_Dre_d_eps1
@@ -1272,9 +1269,9 @@ def compute_binary_derivatives_ell1(
         # EPS2 derivative
         # =================================================================
         elif param_upper == 'EPS2':
-            d_Dre_d_eps2 = a1_eff * d_delayR_da1_d_eps2(phi, eps1_eff, eps2_eff)
-            d_Drep_d_eps2 = a1_eff * d_d_delayR_dPhi_da1_d_eps2(phi, eps1_eff, eps2_eff)
-            d_Drepp_d_eps2 = a1_eff * d_dd_delayR_dPhi2_da1_d_eps2(phi, eps1_eff, eps2_eff)
+            d_Dre_d_eps2 = a1_eff * _d_R_deps2
+            d_Drep_d_eps2 = a1_eff * _d_dR_deps2
+            d_Drepp_d_eps2 = a1_eff * _d_ddR_deps2
             
             d_delayI_d_eps2 = (
                 d_delayI_d_Dre * d_Dre_d_eps2
@@ -1318,12 +1315,6 @@ def compute_binary_derivatives_ell1(
             d_Dre_d_a1dot = d_R_da1 * d_a1_d_a1dot
             d_Drep_d_a1dot = d_dR_dPhi_da1 * d_a1_d_a1dot
             d_Drepp_d_a1dot = d_ddR_dPhi2_da1 * d_a1_d_a1dot
-            
-            d_delayI_d_a1dot = (
-                d_delayI_d_Dre * d_Dre_d_a1dot
-                + d_delayI_d_Drep * d_Drep_d_a1dot
-                + d_delayI_d_Drepp * d_Drepp_d_a1dot
-            )
             
             d_delayI_d_a1dot = (
                 d_delayI_d_Dre * d_Dre_d_a1dot
@@ -1400,7 +1391,7 @@ def compute_binary_derivatives_ell1(
                 derivatives[param] = (d_shapiro_d_M2(phi, sini_h3h4) * dM2_dH3 +
                                       d_shapiro_d_SINI(phi, sini_h3h4, m2_h3h4) * dSINI_dH3)
             else:
-                # H3-only: Δ_S = -(4/3)*H3*sin(3*Phi)
+                # H3-only: Delta_S = -(4/3)*H3*sin(3*Phi)
                 derivatives[param] = -(4.0 / 3.0) * jnp.sin(3.0 * phi)
         
         # =================================================================
@@ -1454,9 +1445,9 @@ def compute_binary_derivatives_ell1(
             # d(eps1)/d(EPS1DOT) = ttasc
             d_eps1_d_eps1dot = ttasc_sec
             
-            d_Dre_d_eps1dot = a1_eff * d_delayR_da1_d_eps1(phi, eps1_eff, eps2_eff) * d_eps1_d_eps1dot
-            d_Drep_d_eps1dot = a1_eff * d_d_delayR_dPhi_da1_d_eps1(phi, eps1_eff, eps2_eff) * d_eps1_d_eps1dot
-            d_Drepp_d_eps1dot = a1_eff * d_dd_delayR_dPhi2_da1_d_eps1(phi, eps1_eff, eps2_eff) * d_eps1_d_eps1dot
+            d_Dre_d_eps1dot = a1_eff * _d_R_deps1 * d_eps1_d_eps1dot
+            d_Drep_d_eps1dot = a1_eff * _d_dR_deps1 * d_eps1_d_eps1dot
+            d_Drepp_d_eps1dot = a1_eff * _d_ddR_deps1 * d_eps1_d_eps1dot
             
             d_delayI_d_eps1dot = (
                 d_delayI_d_Dre * d_Dre_d_eps1dot
@@ -1472,9 +1463,9 @@ def compute_binary_derivatives_ell1(
         elif param_upper == 'EPS2DOT':
             d_eps2_d_eps2dot = ttasc_sec
             
-            d_Dre_d_eps2dot = a1_eff * d_delayR_da1_d_eps2(phi, eps1_eff, eps2_eff) * d_eps2_d_eps2dot
-            d_Drep_d_eps2dot = a1_eff * d_d_delayR_dPhi_da1_d_eps2(phi, eps1_eff, eps2_eff) * d_eps2_d_eps2dot
-            d_Drepp_d_eps2dot = a1_eff * d_dd_delayR_dPhi2_da1_d_eps2(phi, eps1_eff, eps2_eff) * d_eps2_d_eps2dot
+            d_Dre_d_eps2dot = a1_eff * _d_R_deps2 * d_eps2_d_eps2dot
+            d_Drep_d_eps2dot = a1_eff * _d_dR_deps2 * d_eps2_d_eps2dot
+            d_Drepp_d_eps2dot = a1_eff * _d_ddR_deps2 * d_eps2_d_eps2dot
             
             d_delayI_d_eps2dot = (
                 d_delayI_d_Dre * d_Dre_d_eps2dot

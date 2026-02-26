@@ -136,7 +136,7 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
         elif keyword == 'T2EQUAD':
             # Tempo2 convention: value is EQUAD in microseconds.
             # Some TempoNest-generated files erroneously use T2EQUAD with
-            # log10(seconds) values — detect via negative values (EQUAD in μs
+            # log10(seconds) values -- detect via negative values (EQUAD in mus
             # is always positive).
             if len(parts) < 4:
                 continue
@@ -147,7 +147,7 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
             except ValueError:
                 continue
             if raw_val < 0:
-                # Negative → must be log10(seconds) (TempoNest convention)
+                # Negative -> must be log10(seconds) (TempoNest convention)
                 equad_us = 10**raw_val * 1e6
             else:
                 equad_us = raw_val  # microseconds
@@ -188,7 +188,7 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
                 log10_val = float(parts[3])
             except ValueError:
                 continue
-            ecorr_us = 10**log10_val * 1e6  # log10(seconds) → microseconds
+            ecorr_us = 10**log10_val * 1e6  # log10(seconds) -> microseconds
             entries.append(WhiteNoiseEntry('ECORR', flag_name, flag_value, ecorr_us))
 
         # -----------------------------------------------------------------
@@ -251,7 +251,7 @@ def parse_noise_params_from_file(par_path: str) -> List[WhiteNoiseEntry]:
 
 
 # ---------------------------------------------------------------------------
-# TOA–backend matching
+# TOA-backend matching
 # ---------------------------------------------------------------------------
 
 def build_backend_mask(
@@ -300,7 +300,7 @@ def _apply_efac_equad_jax(
     efac: jnp.ndarray,
     equad: jnp.ndarray,
 ) -> jnp.ndarray:
-    """σ_eff = sqrt(EFAC² * (σ² + EQUAD²)), JIT-compiled."""
+    """sigma_eff = sqrt(EFAC^2 * (sigma^2 + EQUAD^2)), JIT-compiled."""
     return jnp.sqrt(efac**2 * (errors_us**2 + equad**2))
 
 
@@ -353,7 +353,7 @@ def apply_white_noise(
             equad[mask] = entry.value
         # ECORR is not applied here (requires block-diagonal covariance)
 
-    # σ_eff² = EFAC² * (σ² + EQUAD²)  — JIT-compiled via JAX
+    # sigma_eff^2 = EFAC^2 * (sigma^2 + EQUAD^2)  -- JIT-compiled via JAX
     return np.asarray(
         _apply_efac_equad_jax(jnp.array(errors_us), jnp.array(efac), jnp.array(equad))
     )

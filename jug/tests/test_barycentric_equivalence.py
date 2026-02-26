@@ -79,22 +79,22 @@ def test_gcrs_posvel_vs_baseline():
         f"Position shape mismatch: {pos_baseline.shape} vs {pos_gcrs.shape}"
     assert vel_baseline.shape == vel_gcrs.shape, \
         f"Velocity shape mismatch: {vel_baseline.shape} vs {vel_gcrs.shape}"
-    print(f"✓ Shapes match: pos={pos_baseline.shape}, vel={vel_baseline.shape}")
+    print(f"[x] Shapes match: pos={pos_baseline.shape}, vel={vel_baseline.shape}")
     
     # Check dtypes
     assert pos_baseline.dtype == pos_gcrs.dtype == np.float64, \
         f"Position dtype mismatch: {pos_baseline.dtype} vs {pos_gcrs.dtype}"
     assert vel_baseline.dtype == vel_gcrs.dtype == np.float64, \
         f"Velocity dtype mismatch: {vel_baseline.dtype} vs {vel_gcrs.dtype}"
-    print(f"✓ Dtypes match: float64")
+    print(f"[x] Dtypes match: float64")
     
     # STRICT position comparison
     pos_identical = np.array_equal(pos_baseline, pos_gcrs)
     if pos_identical:
-        print("✓ Positions: BIT-FOR-BIT IDENTICAL")
+        print("[x] Positions: BIT-FOR-BIT IDENTICAL")
     else:
         pos_diff = np.abs(pos_baseline - pos_gcrs)
-        print(f"✗ Positions: DIFFER")
+        print(f"[ ] Positions: DIFFER")
         print(f"    Max difference: {np.max(pos_diff):.6e} km")
         print(f"    Mean difference: {np.mean(pos_diff):.6e} km")
         print(f"    Max relative: {np.max(pos_diff / np.abs(pos_baseline + 1e-30)):.6e}")
@@ -102,10 +102,10 @@ def test_gcrs_posvel_vs_baseline():
     # STRICT velocity comparison
     vel_identical = np.array_equal(vel_baseline, vel_gcrs)
     if vel_identical:
-        print("✓ Velocities: BIT-FOR-BIT IDENTICAL")
+        print("[x] Velocities: BIT-FOR-BIT IDENTICAL")
     else:
         vel_diff = np.abs(vel_baseline - vel_gcrs)
-        print(f"✗ Velocities: DIFFER")
+        print(f"[ ] Velocities: DIFFER")
         print(f"    Max difference: {np.max(vel_diff):.6e} km/s")
         print(f"    Mean difference: {np.mean(vel_diff):.6e} km/s")
         print(f"    Max relative: {np.max(vel_diff / np.abs(vel_baseline + 1e-30)):.6e}")
@@ -155,7 +155,7 @@ def test_clock_caching():
     assert np.array_equal(result1['offset'], result2['offset']), "Offset arrays differ on cache hit"
     assert np.array_equal(result1['mjd'], result3['mjd']), "MJD arrays differ with path string"
     
-    print(f"✓ Clock file caching works correctly")
+    print(f"[x] Clock file caching works correctly")
     print(f"  Entries: {len(result1['mjd'])}")
     print(f"  Cache info: {_parse_clock_file_cached.cache_info()}")
 

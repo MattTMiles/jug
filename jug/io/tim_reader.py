@@ -223,7 +223,7 @@ def compute_tdb_standalone_vectorized(
     gps_clock : dict
         GPS clock correction data {'mjd': array, 'offset': array}
     bipm_clock : dict
-        BIPM clock correction data (TAI→TT) {'mjd': array, 'offset': array}
+        BIPM clock correction data (TAI->TT) {'mjd': array, 'offset': array}
     location : EarthLocation
         Observatory location for TDB conversion
     time_offsets : np.ndarray or None, optional
@@ -238,9 +238,9 @@ def compute_tdb_standalone_vectorized(
     Notes
     -----
     Clock correction chain:
-        Observatory → UTC → GPS/TAI → TT → TDB
+        Observatory -> UTC -> GPS/TAI -> TT -> TDB
 
-    The BIPM correction includes the TAI→TT offset (32.184 seconds).
+    The BIPM correction includes the TAI->TT offset (32.184 seconds).
 
     Examples
     --------
@@ -284,13 +284,13 @@ def compute_tdb_standalone_vectorized(
     frac_arr = np.array(mjd_fracs, dtype=np.float64)
 
     # Add clock corrections to the fractional day
-    frac_arr = frac_arr + total_corrs / 86400.0
+    frac_arr = frac_arr + total_corrs / SECS_PER_DAY
 
     # Convert MJD integer+frac to calendar date via ERFA
     y, mo, d, fd = erfa.jd2cal(erfa.DJM0 + int_arr, frac_arr)
 
     # Convert fractional day to H:M:S using 86400 s/day (pulsar convention)
-    fd_sec = fd * 86400.0
+    fd_sec = fd * SECS_PER_DAY
     h = np.floor(fd_sec / 3600.0).astype(int)
     fd_sec -= h * 3600.0
     m = np.floor(fd_sec / 60.0).astype(int)

@@ -214,7 +214,7 @@ class DECJCodec(Codec):
     """
     Declination codec: DD:MM:SS.sss <-> radians
 
-    .par format: "±DD:MM:SS.ssssssss" (sexagesimal)
+    .par format: "+/-DD:MM:SS.ssssssss" (sexagesimal)
     Internal: radians [-pi/2, pi/2]
 
     Examples:
@@ -232,7 +232,7 @@ class DECJCodec(Codec):
         Parameters
         ----------
         par_value : str
-            DEC in format "±DD:MM:SS.sss"
+            DEC in format "+/-DD:MM:SS.sss"
 
         Returns
         -------
@@ -284,7 +284,7 @@ class DECJCodec(Codec):
         Returns
         -------
         str
-            DEC in format "±DD:MM:SS.sssssss"
+            DEC in format "+/-DD:MM:SS.sssssss"
         """
         # Convert radians to degrees
         dec_degrees = internal_value * (180.0 / math.pi)

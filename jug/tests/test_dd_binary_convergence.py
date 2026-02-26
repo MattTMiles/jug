@@ -45,17 +45,17 @@ def test_dd_binary_convergence():
     print(f"\nDD Binary Convergence Test (J0614-3329)")
     print(f"  Converged: {converged}")
     print(f"  Iterations: {iterations}")
-    print(f"  Final RMS: {final_rms:.6f} µs")
+    print(f"  Final RMS: {final_rms:.6f} mus")
 
     # Success criteria:
     # 1. Must converge
     # 2. Must converge within 10 iterations (typically 4-5)
-    # 3. Final RMS must be close to expected (~2.34 µs)
+    # 3. Final RMS must be close to expected (~2.34 mus)
     assert converged, f"Fit did not converge after {iterations} iterations"
-    assert iterations <= 10, f"Too many iterations: {iterations} (expected ≤ 10)"
-    assert final_rms < 5.0, f"Final RMS too high: {final_rms:.6f} µs (expected < 5 µs)"
+    assert iterations <= 10, f"Too many iterations: {iterations} (expected <= 10)"
+    assert final_rms < 5.0, f"Final RMS too high: {final_rms:.6f} mus (expected < 5 mus)"
 
-    print("  ✓ Test PASSED: DD binary fitting converges efficiently")
+    print("  [x] Test PASSED: DD binary fitting converges efficiently")
 
 
 def test_dd_binary_fitting_all_params():
@@ -85,13 +85,13 @@ def test_dd_binary_fitting_all_params():
     print(f"\nDD Binary Multi-Param Test (J0614-3329)")
     print(f"  Converged: {converged}")
     print(f"  Iterations: {iterations}")
-    print(f"  Final RMS: {final_rms:.6f} µs")
+    print(f"  Final RMS: {final_rms:.6f} mus")
 
     assert converged, f"Fit did not converge"
     assert iterations <= 10, f"Too many iterations: {iterations}"
-    assert final_rms < 5.0, f"Final RMS too high: {final_rms:.6f} µs"
+    assert final_rms < 5.0, f"Final RMS too high: {final_rms:.6f} mus"
 
-    print("  ✓ Test PASSED: Multi-param DD binary fitting works")
+    print("  [x] Test PASSED: Multi-param DD binary fitting works")
 
 
 if __name__ == "__main__":
@@ -104,13 +104,13 @@ if __name__ == "__main__":
     try:
         all_passed &= test_dd_binary_convergence()
     except AssertionError as e:
-        print(f"  ✗ FAILED: {e}")
+        print(f"  [ ] FAILED: {e}")
         all_passed = False
 
     try:
         all_passed &= test_dd_binary_fitting_all_params()
     except AssertionError as e:
-        print(f"  ✗ FAILED: {e}")
+        print(f"  [ ] FAILED: {e}")
         all_passed = False
 
     print("\n" + "=" * 70)

@@ -57,7 +57,7 @@ class ValidationIssue:
     def __str__(self) -> str:
         prefix = "ERROR" if self.severity == Severity.ERROR else "WARNING"
         idx_str = f" [TOA indices: {list(self.indices)}]" if self.indices else ""
-        return f"{prefix}: {self.code} — {self.message}{idx_str}"
+        return f"{prefix}: {self.code} -- {self.message}{idx_str}"
 
 
 # ---------------------------------------------------------------------------

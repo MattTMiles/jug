@@ -82,14 +82,14 @@ class TestEpochConversion:
         assert mjd_tcb > mjd_tdb
     
     def test_round_trip_tcb_tdb_tcb(self):
-        """Converting TCB → TDB → TCB should recover original."""
+        """Converting TCB -> TDB -> TCB should recover original."""
         mjd_tcb_orig = np.longdouble("55000.123456789")
         mjd_tdb = convert_tcb_epoch_to_tdb(mjd_tcb_orig)
         mjd_tcb_final = convert_tdb_epoch_to_tcb(mjd_tdb)
         assert abs(mjd_tcb_final - mjd_tcb_orig) < 1e-12
     
     def test_round_trip_tdb_tcb_tdb(self):
-        """Converting TDB → TCB → TDB should recover original."""
+        """Converting TDB -> TCB -> TDB should recover original."""
         mjd_tdb_orig = np.longdouble("55000.987654321")
         mjd_tcb = convert_tdb_epoch_to_tcb(mjd_tdb_orig)
         mjd_tdb_final = convert_tcb_epoch_to_tdb(mjd_tcb)
@@ -97,7 +97,7 @@ class TestEpochConversion:
     
     def test_known_value_pepoch(self):
         """Test with a known PEPOCH value from PINT documentation."""
-        # From PINT docs: PEPOCH 55000 (TCB) ≈ 54999.99914475 (TDB)
+        # From PINT docs: PEPOCH 55000 (TCB) ~= 54999.99914475 (TDB)
         mjd_tcb = np.longdouble("55000.0")
         mjd_tdb = convert_tcb_epoch_to_tdb(mjd_tcb)
         expected_tdb = (55000.0 - float(IFTE_MJD0)) / float(IFTE_K) + float(IFTE_MJD0)
@@ -143,7 +143,7 @@ class TestParameterScaling:
         assert abs(pb_tdb - expected) < 1e-12
     
     def test_scale_inverse_tcb_to_tdb_to_tcb(self):
-        """Scaling TCB → TDB → TCB should recover original."""
+        """Scaling TCB -> TDB -> TCB should recover original."""
         val_tcb = 123.456
         eff_dim = -2
         val_tdb = scale_parameter_tcb_to_tdb(val_tcb, eff_dim)
@@ -319,7 +319,7 @@ class TestConvertParParamsToTDB:
         assert params['_par_timescale'] == 'TDB'
     
     def test_round_trip_conversion(self):
-        """Test that TCB → TDB → TCB recovers original values."""
+        """Test that TCB -> TDB -> TCB recovers original values."""
         params_tcb_orig = {
             '_par_timescale': 'TCB',
             'PEPOCH': 55000.0,

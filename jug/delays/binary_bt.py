@@ -6,14 +6,14 @@ binary delay models for eccentric pulsar orbits using Keplerian + 1PN parameters
 References
 ----------
 - Blandford & Teukolsky (1976), ApJ 205, 580
-- Damour & Deruelle (1985), Ann. Inst. H. Poincaré (Physique Théorique) 43, 107
+- Damour & Deruelle (1985), Ann. Inst. H. Poincare (Physique Theorique) 43, 107
 - Tempo2: T2model_BTmodel.C
 - PINT: pint/models/binary_bt.py, pint/models/binary_dd.py
 """
 
 import jax
 import jax.numpy as jnp
-from jug.utils.constants import SECS_PER_DAY
+from jug.utils.constants import SECS_PER_DAY, T_SUN
 
 
 @jax.jit
@@ -100,7 +100,7 @@ def bt_binary_delay(
     implementation in pint/models/stand_alone_psr_binaries/DD_model.py
 
     References:
-    - Damour & Deruelle (1985), Ann. Inst. H. Poincaré 43, 107
+    - Damour & Deruelle (1985), Ann. Inst. H. Poincare 43, 107
     - Damour & Deruelle (1986), paper with equations [25]-[52]
 
     The DD model includes:
@@ -190,8 +190,6 @@ def bt_binary_delay(
     # Following PINT's DD_model.py: delayS()
     # Reference: Damour & Deruelle (1986) equation [26]
     # =========================================================================
-
-    T_SUN = 4.925490947e-6  # Solar mass in seconds (G*Msun/c^3)
 
     # DD Shapiro delay uses full orbital geometry, not just sin(omega+nu)
     # delayS = -2*r*log(1 - e*cos(E) - SINI*[sin(omega)*(cos(E)-e) +

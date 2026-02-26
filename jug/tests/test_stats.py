@@ -48,19 +48,19 @@ def test_compute_residual_stats_basic():
     n_match = stats['n_toas'] == 5
     
     if rms_match:
-        print("✓ Weighted RMS: MATCH (within float64 precision)")
+        print("[x] Weighted RMS: MATCH (within float64 precision)")
     else:
-        print(f"✗ Weighted RMS: DIFFER by {abs(stats['weighted_rms_us'] - wrms_expected)}")
+        print(f"[ ] Weighted RMS: DIFFER by {abs(stats['weighted_rms_us'] - wrms_expected)}")
     
     if mean_match:
-        print("✓ Weighted mean: MATCH (within float64 precision)")
+        print("[x] Weighted mean: MATCH (within float64 precision)")
     else:
-        print(f"✗ Weighted mean: DIFFER by {abs(stats['weighted_mean_us'] - wmean)}")
+        print(f"[ ] Weighted mean: DIFFER by {abs(stats['weighted_mean_us'] - wmean)}")
     
     if n_match:
-        print("✓ N TOAs: CORRECT")
+        print("[x] N TOAs: CORRECT")
     else:
-        print(f"✗ N TOAs: MISMATCH ({stats['n_toas']} vs 5)")
+        print(f"[ ] N TOAs: MISMATCH ({stats['n_toas']} vs 5)")
 
 
 def test_compute_residual_stats_empty():
@@ -83,14 +83,14 @@ def test_compute_residual_stats_empty():
     n_ok = stats['n_toas'] == 0
     
     if rms_ok:
-        print("✓ RMS is 0 for empty array")
+        print("[x] RMS is 0 for empty array")
     else:
-        print("✗ RMS should be 0 for empty array")
+        print("[ ] RMS should be 0 for empty array")
     
     if n_ok:
-        print("✓ N TOAs is 0")
+        print("[x] N TOAs is 0")
     else:
-        print("✗ N TOAs should be 0")
+        print("[ ] N TOAs should be 0")
 
 
 def test_compute_residual_stats_no_errors():
@@ -117,14 +117,14 @@ def test_compute_residual_stats_no_errors():
     mean_match = stats['weighted_mean_us'] == expected_mean
     
     if rms_match:
-        print("✓ RMS matches equal-weight expectation")
+        print("[x] RMS matches equal-weight expectation")
     else:
-        print(f"✗ RMS mismatch: {abs(stats['weighted_rms_us'] - expected_rms)}")
+        print(f"[ ] RMS mismatch: {abs(stats['weighted_rms_us'] - expected_rms)}")
     
     if mean_match:
-        print("✓ Mean matches equal-weight expectation")
+        print("[x] Mean matches equal-weight expectation")
     else:
-        print(f"✗ Mean mismatch")
+        print(f"[ ] Mean mismatch")
 
 
 def test_engine_gui_consistency():
@@ -148,23 +148,23 @@ def test_engine_gui_consistency():
     engine_rms = result['rms_us']
     engine_weighted_rms = result['weighted_rms_us']
     
-    print(f"  Engine RMS (primary): {engine_rms:.6f} μs")
-    print(f"  Engine weighted RMS: {engine_weighted_rms:.6f} μs")
+    print(f"  Engine RMS (primary): {engine_rms:.6f} mus")
+    print(f"  Engine weighted RMS: {engine_weighted_rms:.6f} mus")
     
     # Compute using canonical stats function (same as GUI would use)
     stats = compute_residual_stats(result['residuals_us'], result['errors_us'])
     gui_style_rms = stats['weighted_rms_us']
     
-    print(f"  GUI-style RMS (via stats): {gui_style_rms:.6f} μs")
+    print(f"  GUI-style RMS (via stats): {gui_style_rms:.6f} mus")
     
     # They should match exactly
     rms_match = gui_style_rms == engine_weighted_rms
     
     if rms_match:
-        print("✓ GUI stats EXACTLY MATCH engine weighted RMS")
+        print("[x] GUI stats EXACTLY MATCH engine weighted RMS")
     else:
         diff = abs(gui_style_rms - engine_weighted_rms)
-        print(f"✗ Mismatch: {diff:.10e} μs")
+        print(f"[ ] Mismatch: {diff:.10e} mus")
 
 
 def test_deletion_mask_consistency():
@@ -190,7 +190,7 @@ def test_deletion_mask_consistency():
     
     n_full = len(residuals_full)
     print(f"  Full dataset: {n_full} TOAs")
-    print(f"  Full RMS: {result['rms_us']:.6f} μs")
+    print(f"  Full RMS: {result['rms_us']:.6f} mus")
     
     # Simulate deletion: keep only first 1000 TOAs
     keep_mask = np.zeros(n_full, dtype=bool)
@@ -203,21 +203,21 @@ def test_deletion_mask_consistency():
     stats_kept = compute_residual_stats(residuals_kept, errors_kept)
     
     print(f"  After deletion: {len(residuals_kept)} TOAs")
-    print(f"  RMS after deletion: {stats_kept['weighted_rms_us']:.6f} μs")
+    print(f"  RMS after deletion: {stats_kept['weighted_rms_us']:.6f} mus")
     
     # Manually verify
     weights = 1.0 / errors_kept**2
     expected_rms = np.sqrt(np.sum(weights * residuals_kept**2) / np.sum(weights))
     
-    print(f"  Expected RMS: {expected_rms:.6f} μs")
+    print(f"  Expected RMS: {expected_rms:.6f} mus")
     
     rms_match = stats_kept['weighted_rms_us'] == expected_rms
     
     if rms_match:
-        print("✓ Deletion stats EXACTLY MATCH manual calculation")
+        print("[x] Deletion stats EXACTLY MATCH manual calculation")
     else:
         diff = abs(stats_kept['weighted_rms_us'] - expected_rms)
-        print(f"✗ Mismatch: {diff:.10e} μs")
+        print(f"[ ] Mismatch: {diff:.10e} mus")
 
 
 def test_chi2_calculation():
@@ -248,19 +248,19 @@ def test_chi2_calculation():
     chi2_red_ok = abs(chi2_stats['chi2_reduced'] - expected_chi2_red) < 1e-10
     
     if chi2_ok:
-        print("✓ Chi2 correct")
+        print("[x] Chi2 correct")
     else:
-        print("✗ Chi2 incorrect")
+        print("[ ] Chi2 incorrect")
     
     if dof_ok:
-        print("✓ DOF correct")
+        print("[x] DOF correct")
     else:
-        print("✗ DOF incorrect")
+        print("[ ] DOF incorrect")
     
     if chi2_red_ok:
-        print("✓ Chi2/DOF correct")
+        print("[x] Chi2/DOF correct")
     else:
-        print("✗ Chi2/DOF incorrect")
+        print("[ ] Chi2/DOF incorrect")
 
 
 def run_all_tests():
@@ -284,7 +284,7 @@ def run_all_tests():
     
     all_passed = True
     for test_name, passed in results.items():
-        status = "✓ PASS" if passed else "✗ FAIL"
+        status = "[x] PASS" if passed else "[ ] FAIL"
         print(f"  {test_name}: {status}")
         if not passed:
             all_passed = False

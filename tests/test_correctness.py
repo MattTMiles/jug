@@ -14,6 +14,7 @@ For PINT cross-validation (optional):
 """
 
 import argparse
+import glob
 import json
 import os
 import sys
@@ -160,24 +161,61 @@ def test_residual_determinism():
     return True, "OK (deterministic)"
 
 
+def _compare_jug_pint(par_path, tim_path, tol_pct=1.0):
+    """Compare JUG vs PINT WRMS for a single pulsar.
+    
+    Uses EFAC/EQUAD-scaled errors for both (weighted_rms_scaled_us for JUG,
+    rms_weighted() for PINT) and passes the correct ephemeris from the par
+    file to PINT's get_TOAs().
+    
+    Returns (passed, message) tuple.
+    """
+    import pint.models
+    import pint.toa
+    import pint.residuals
+    import logging
+    logging.getLogger('pint').setLevel(logging.ERROR)
+    
+    from jug.residuals.simple_calculator import compute_residuals_simple
+    
+    par_path, tim_path = str(par_path), str(tim_path)
+    
+    # JUG
+    jug_result = compute_residuals_simple(par_path, tim_path, verbose=False)
+    jug_wrms = jug_result['weighted_rms_scaled_us']
+    n_jug = jug_result['n_toas']
+    
+    # PINT — use ephemeris from par file to avoid DE421 default mismatch
+    pint_model = pint.models.get_model(par_path)
+    ephem = pint_model.EPHEM.value if hasattr(pint_model, 'EPHEM') else None
+    pint_toas = pint.toa.get_TOAs(tim_path, planets=True, ephem=ephem)
+    pint_res = pint.residuals.Residuals(pint_toas, pint_model)
+    pint_wrms = pint_res.rms_weighted().to('us').value
+    n_pint = pint_toas.ntoas
+    
+    if n_jug != n_pint:
+        return False, f"n_toas differ: JUG={n_jug}, PINT={n_pint}"
+    
+    delta = abs(jug_wrms - pint_wrms)
+    pct = delta / pint_wrms * 100 if pint_wrms > 0 else 0
+    
+    if pct > tol_pct:
+        return False, (f"WRMS mismatch: JUG={jug_wrms:.4f}µs, "
+                       f"PINT={pint_wrms:.4f}µs ({pct:.2f}%)")
+    
+    return True, f"OK (JUG={jug_wrms:.4f}µs, PINT={pint_wrms:.4f}µs, Δ={pct:.3f}%)"
+
+
 def test_pint_cross_validation():
-    """Cross-validate JUG results against PINT (optional).
+    """Cross-validate JUG against PINT on golden mini dataset.
     
     Only runs when --pint flag is passed or JUG_TEST_PINT=1 env var is set.
     
-    Note: This test is informational. JUG and PINT may produce different
-    residuals due to:
-    - Different ephemeris versions (DE440 vs DE421)
-    - Different clock correction handling
-    - Different binary delay algorithms
-    
-    The test checks that both produce reasonable residual patterns (same
-    number of TOAs, similar RMS magnitude) rather than exact agreement.
+    Compares EFAC/EQUAD-scaled WRMS between JUG and PINT, using the
+    correct ephemeris from the par file for both codes.
     """
     try:
         import pint.models
-        import pint.toa
-        import pint.residuals
     except ImportError:
         return None, "PINT not installed (optional)"
     
@@ -188,72 +226,70 @@ def test_pint_cross_validation():
     if not par.exists() or not tim.exists():
         return False, "mini dataset not found"
     
-    # JUG computation
-    from jug.residuals.simple_calculator import compute_residuals_simple
-    jug_result = compute_residuals_simple(str(par), str(tim), verbose=False)
-    jug_residuals = np.array(jug_result['residuals_us'])
+    return _compare_jug_pint(par, tim, tol_pct=1.0)
+
+
+def test_pint_parity_ng15yr():
+    """Cross-validate JUG against PINT on all NANOGrav 15yr pulsars.
     
-    # PINT computation
+    Only runs when --pint-ng flag is passed or JUG_TEST_PINT_NG=1 env var
+    is set. Requires NG 15yr data in data/pulsars/NG_data/NG_15yr_partim/.
+    
+    Compares EFAC/EQUAD-scaled WRMS (weighted_rms_scaled_us vs
+    rms_weighted()) with the correct ephemeris from each par file.
+    All 76 pulsars must match within 1%.
+    """
     try:
-        # Suppress PINT debug/info logging
-        import logging
-        logging.getLogger('pint').setLevel(logging.ERROR)
+        import pint.models
+    except ImportError:
+        return None, "PINT not installed (optional)"
+    
+    import glob
+    ng_dir = repo_root / "data" / "pulsars" / "NG_data" / "NG_15yr_partim"
+    par_files = sorted(glob.glob(str(ng_dir / "*.par")))
+    
+    if not par_files:
+        return None, f"NG data not found in {ng_dir}"
+    
+    n_pass = 0
+    n_fail = 0
+    failures = []
+    
+    for par in par_files:
+        name = os.path.basename(par).replace('.nb.par', '').split('_PINT')[0]
+        tim = par.replace('.nb.par', '.nb.tim')
+        if not os.path.exists(tim):
+            continue
         
-        pint_model = pint.models.get_model(str(par))
-        # Use planets=True for Shapiro delay computation
-        pint_toas = pint.toa.get_TOAs(str(tim), planets=True)
-        pint_res = pint.residuals.Residuals(pint_toas, pint_model)
-        pint_residuals_us = pint_res.time_resids.to('us').value
-    except Exception as e:
-        return False, f"PINT failed: {e}"
+        try:
+            passed, msg = _compare_jug_pint(par, tim, tol_pct=1.0)
+            if passed:
+                n_pass += 1
+            else:
+                n_fail += 1
+                failures.append(f"{name}: {msg}")
+        except Exception as e:
+            n_fail += 1
+            failures.append(f"{name}: {type(e).__name__}: {e}")
     
-    # Compare basic properties
-    if len(jug_residuals) != len(pint_residuals_us):
-        return False, f"n_toas differ: JUG={len(jug_residuals)}, PINT={len(pint_residuals_us)}"
+    total = n_pass + n_fail
+    if n_fail > 0:
+        return False, f"{n_fail}/{total} failed: {'; '.join(failures[:3])}"
     
-    # Compare RMS magnitudes (should be same order of magnitude)
-    jug_rms = np.sqrt(np.mean(jug_residuals**2))
-    pint_rms = np.sqrt(np.mean(pint_residuals_us**2))
-    
-    # Allow RMS to differ by up to 10x (very lenient - just sanity check)
-    rms_ratio = max(jug_rms, pint_rms) / max(min(jug_rms, pint_rms), 1e-10)
-    if rms_ratio > 10:
-        return False, f"RMS magnitudes differ too much: JUG={jug_rms:.2f}µs, PINT={pint_rms:.2f}µs (ratio={rms_ratio:.1f})"
-    
-    # Check that both have reasonable variance (not all zeros)
-    if np.std(jug_residuals) < 1e-10:
-        return False, "JUG residuals have zero variance"
-    if np.std(pint_residuals_us) < 1e-10:
-        return False, "PINT residuals have zero variance"
-    
-    # Center both (remove mean) for correlation comparison
-    jug_centered = jug_residuals - np.mean(jug_residuals)
-    pint_centered = pint_residuals_us - np.mean(pint_residuals_us)
-    
-    # Check correlation - may not be high due to different algorithms
-    # This is informational only, not a hard requirement
-    correlation = np.corrcoef(jug_centered, pint_centered)[0, 1]
-    
-    # Compute RMS difference for reporting
-    rms_diff = np.sqrt(np.mean((jug_centered - pint_centered)**2))
-    
-    # Check std agreement
-    jug_std = np.std(jug_residuals)
-    pint_std = np.std(pint_residuals_us)
-    std_rel_diff = abs(jug_std - pint_std) / pint_std
-    
-    # Report as informational - test passes if both codes produce reasonable residuals
-    return True, f"OK (JUG_rms={jug_rms:.1f}µs, PINT_rms={pint_rms:.1f}µs, corr={correlation:.4f})"
+    return True, f"OK ({n_pass}/{total} pulsars match PINT within 1%)"
 
 
 def main():
     """Run all correctness tests."""
     parser = argparse.ArgumentParser(description="JUG correctness tests")
-    parser.add_argument("--pint", action="store_true", help="Include PINT cross-validation")
+    parser.add_argument("--pint", action="store_true",
+                        help="Include PINT cross-validation (golden mini dataset)")
+    parser.add_argument("--pint-ng", action="store_true",
+                        help="Run full NG 15yr parity test against PINT (76 pulsars)")
     args = parser.parse_args()
     
-    # Also check env var for PINT
     run_pint = args.pint or os.environ.get('JUG_TEST_PINT', '').lower() in ('1', 'true', 'yes')
+    run_pint_ng = args.pint_ng or os.environ.get('JUG_TEST_PINT_NG', '').lower() in ('1', 'true', 'yes')
     
     print("=" * 60)
     print("Correctness Tests")
@@ -266,7 +302,9 @@ def main():
     ]
     
     if run_pint:
-        tests.append(("PINT Cross-Validation", test_pint_cross_validation))
+        tests.append(("PINT Cross-Validation (mini)", test_pint_cross_validation))
+    if run_pint_ng:
+        tests.append(("PINT Parity (NG 15yr, 76 pulsars)", test_pint_parity_ng15yr))
     
     all_passed = True
     for name, test_fn in tests:

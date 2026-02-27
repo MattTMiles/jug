@@ -186,15 +186,15 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
             warnings.warn(f"Unknown UNITS value '{params['UNITS']}' in par file, assuming TDB")
             params['_par_timescale'] = 'TDB'
     else:
-        # No UNITS keyword - default to TDB
-        # Warn if filename suggests TCB
-        params['_par_timescale'] = 'TDB'
-        if 'tcb' in par_filename:
-            import warnings
-            warnings.warn(
-                f"Par file '{path.name}' has 'tcb' in filename but no UNITS keyword. "
-                f"Assuming TDB timescale. If this is a TCB file, add 'UNITS TCB' to the par file."
-            )
+        # No UNITS keyword — follow TEMPO2 convention:
+        #   EPHVER < 5 (or TEMPO1 keyword present) → TDB
+        #   EPHVER >= 5 (or EPHVER absent, defaulting to 5) → TCB/SI
+        ephver = int(float(params.get('EPHVER', 5)))
+        is_tempo1 = 'TEMPO1' in params
+        if is_tempo1 or ephver < 5:
+            params['_par_timescale'] = 'TDB'
+        else:
+            params['_par_timescale'] = 'TCB'
     
     # Convert ecliptic coordinates to equatorial if needed
     _convert_ecliptic_to_equatorial(params)

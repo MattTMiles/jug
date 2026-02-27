@@ -46,7 +46,7 @@ class SimpleTOA:
     flags: Dict[str, str] = field(default_factory=dict)
 
 
-def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
+def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[SimpleTOA]:
     """Parse TIM file to extract all TOA information.
 
     Extracts:
@@ -56,10 +56,16 @@ def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
     - Observatory codes
     - Additional flags (e.g., -fe, -be, -sys)
 
+    Supports TEMPO2 ``TIME`` directives which add cumulative time offsets
+    (in seconds) to subsequent TOA MJDs.
+
     Parameters
     ----------
     path : Path or str
         Path to .tim file
+    _state : dict or None
+        Internal parsing state (for recursive INCLUDE handling).
+        Users should not pass this parameter.
 
     Returns
     -------
@@ -82,8 +88,10 @@ def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
     """
     toas = []
     path = Path(path)
+    if _state is None:
+        _state = {'time_offset': 0.0, 'tim_format': 1}
     # Default to Tempo2 FORMAT 1 (filename freq mjd error site [flags...])
-    tim_format = 1
+    tim_format = _state['tim_format']
 
     with open(path) as f:
         for line in f:
@@ -92,7 +100,7 @@ def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
             # Skip empty lines, comments, and directives
             if not line or line.startswith('#'):
                 continue
-            if line.startswith('C '):
+            if line.startswith(('C ', 'CC ')):
                 continue
 
             # Track FORMAT/MODE directives
@@ -100,13 +108,27 @@ def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
                 parts_fmt = line.split()
                 if len(parts_fmt) >= 2:
                     tim_format = int(parts_fmt[1])
+                    _state['tim_format'] = tim_format
                 continue
             if line.startswith('MODE'):
                 parts_fmt = line.split()
                 if len(parts_fmt) >= 2:
                     tim_format = int(parts_fmt[1])
+                    _state['tim_format'] = tim_format
                 continue
-            if line.startswith(('JUMP', 'PHASE', 'INCLUDE', 'END')):
+            if line.startswith('INCLUDE'):
+                inc_parts = line.split(None, 1)
+                if len(inc_parts) == 2:
+                    inc_path = path.parent / inc_parts[1].strip()
+                    toas.extend(parse_tim_file_mjds(inc_path, _state=_state))
+                continue
+            # TIME directive: cumulative time offset in seconds added to MJDs
+            if line.startswith('TIME'):
+                parts_time = line.split()
+                if len(parts_time) >= 2:
+                    _state['time_offset'] += float(parts_time[1])
+                continue
+            if line.startswith(('JUMP', 'PHASE', 'END')):
                 continue
 
             parts = line.split()
@@ -132,6 +154,18 @@ def parse_tim_file_mjds(path: Path | str) -> List[SimpleTOA]:
 
             # Parse MJD with high precision
             mjd_int, mjd_frac = parse_mjd_string(mjd_str)
+
+            # Apply cumulative TIME offset (seconds -> fractional day)
+            if _state['time_offset'] != 0.0:
+                mjd_frac += _state['time_offset'] / 86400.0
+                # Normalize: handle overflow/underflow of fractional day
+                if mjd_frac >= 1.0:
+                    mjd_int += int(mjd_frac)
+                    mjd_frac -= int(mjd_frac)
+                elif mjd_frac < 0.0:
+                    shift = int(-mjd_frac) + 1
+                    mjd_int -= shift
+                    mjd_frac += shift
 
             # Parse optional flags (format: -flag value)
             # Duplicate flag names (e.g. -j MEDUSA_58925 -j MEDUSA_59200) are

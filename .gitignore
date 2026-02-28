@@ -82,3 +82,8 @@ data/pulsars/NG_15yr_partim/*
 # !data/clock/.gitkeep
 # data/earth/*
 # !data/earth/.gitkeep
+
+# Playground / scratch
+playground/
+
+

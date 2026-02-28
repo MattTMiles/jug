@@ -60,10 +60,79 @@ _OBS_CLOCK_FILES = {
     'parkes': 'pks2gps.clk', 'pks': 'pks2gps.clk', 'pk': 'pks2gps.clk', '7': 'pks2gps.clk',
     'jb': 'jb2gps.clk', 'jodrell': 'jb2gps.clk', '8': 'jb2gps.clk',
     'ef': 'eff2gps.clk', 'eff': 'eff2gps.clk', 'effelsberg': 'eff2gps.clk', 'g': 'eff2gps.clk',
+    'effix': 'effix2gps.clk',
+    'leap': ['leap2effix.clk', 'effix2gps.clk'],
     'nc': 'ncy2gps.clk', 'ncy': 'ncy2gps.clk', 'nancay': 'ncy2gps.clk', 'f': 'ncy2gps.clk',
+    'ncyobs': ['ncyobs2obspm.clk', 'obspm2gps.clk'],
     'wsrt': 'wsrt2gps.clk', 'we': 'wsrt2gps.clk', 'i': 'wsrt2gps.clk',
     'vla': 'vla2gps.clk', 'vl': 'vla2gps.clk',
+    'jbroach': ['jbroach2jb.clk', 'jb2gps.clk'],
+    'jbdfb': ['jbdfb2jb.clk', 'jb2gps.clk'],
+    'jbmk2roach': 'jb2gps.clk',
+    'gmrt': 'gmrt2gps.clk',
 }
+
+
+# Parameters recognized by JUG (from PARAMETER_REGISTRY + metadata/directives)
+_KNOWN_PAR_KEYWORDS = None  # Lazily initialized
+
+def _get_known_par_keywords():
+    """Return the set of all par file keywords JUG recognizes."""
+    global _KNOWN_PAR_KEYWORDS
+    if _KNOWN_PAR_KEYWORDS is not None:
+        return _KNOWN_PAR_KEYWORDS
+    from jug.model.parameter_spec import PARAMETER_REGISTRY, _ALIAS_MAP
+    known = set(PARAMETER_REGISTRY.keys()) | set(_ALIAS_MAP.keys())
+    # Metadata/directives that are valid but not timing parameters
+    known |= {
+        'PSRJ', 'PSRB', 'PSR', 'PSRNAME',
+        'EPHEM', 'EPHVER', 'CLK', 'UNITS', 'TIMEEPH', 'T2CMETHOD',
+        'MODE', 'NITS', 'NTOA', 'TRES', 'CHI2R',
+        'START', 'FINISH', 'TRACK',
+        'TZRMJD', 'TZRFRQ', 'TZRSITE',
+        'BINARY', 'INFO', 'PLANET_SHAPIRO',
+        'CORRECT_TROPOSPHERE', 'K96',
+        'RNAMP', 'RNIDX', 'TNRedAmp', 'TNRedGam', 'TNRedC',
+        'TNDMAMP', 'TNDMGam', 'TNDMC',
+        'TNSUBTRACTDM', 'TNSUBTRACTPOLY',
+        'DMMODEL', 'CONSTRAIN', 'NCOEFF',
+        'RM', 'SWM', 'SOLARN0',
+    }
+    # DMX ranges: DMX_nnnn, DMXR1_nnnn, DMXR2_nnnn, DMXF1_nnnn, DMXF2_nnnn, DMXEP_nnnn
+    _KNOWN_PAR_KEYWORDS = known
+    return known
+
+
+def _is_known_param(key):
+    """Check if a par file keyword is recognized by JUG."""
+    known = _get_known_par_keywords()
+    if key in known:
+        return True
+    # Dynamic parameter patterns: DMX_nnnn, DMXR1_nnnn, JUMP1, FBn, FDn, etc.
+    import re
+    if re.match(r'^(DMX|DMXR1|DMXR2|DMXF1|DMXF2|DMXEP)_\d+$', key):
+        return True
+    if re.match(r'^(JUMP|CM)\d+$', key):
+        return True
+    return False
+
+
+def _warn_unrecognized_params(params, verbose=True):
+    """Warn about par file parameters not recognized by JUG."""
+    unknown = []
+    for key in params:
+        if key.startswith('_'):  # Internal metadata keys
+            continue
+        if not _is_known_param(key):
+            unknown.append(key)
+    if unknown:
+        # Bold yellow via ANSI escape codes
+        BOLD_YELLOW = '\033[1;33m'
+        RESET = '\033[0m'
+        msg = (f"{BOLD_YELLOW}[!] Unrecognized par file parameters "
+               f"(ignored by JUG): {', '.join(sorted(unknown))}{RESET}")
+        print(msg)
+    return unknown
 
 
 def _resolve_ephemeris(name: str) -> str:
@@ -225,6 +294,58 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     return residuals_us, residuals_sec
 
 
+def _load_obs_clock(clock_dir, obs_code, verbose=False):
+    """Load observatory clock, combining multi-hop chains if needed.
+
+    When _OBS_CLOCK_FILES maps an observatory to a list of files,
+    all corrections are summed on a merged MJD grid that captures
+    step functions and fine structure from every file in the chain.
+    """
+    entry = _OBS_CLOCK_FILES.get(obs_code)
+    if entry is None:
+        if verbose:
+            print(f"   No clock file for '{obs_code}' (assuming zero correction)")
+        return {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
+
+    files = [entry] if isinstance(entry, str) else list(entry)
+
+    # Load first file
+    first_file = files[0]
+    if not (clock_dir / first_file).exists():
+        if verbose:
+            print(f"   Clock file {first_file} not found for '{obs_code}' (assuming zero)")
+        return {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
+
+    if len(files) == 1:
+        clk = parse_clock_file(clock_dir / first_file)
+        if verbose:
+            print(f"   Loaded clock for {obs_code}: {first_file}")
+        return clk
+
+    # Multi-hop: load all files, merge MJD grids, sum corrections
+    from jug.io.clock import interpolate_clock_vectorized
+    clks = []
+    for f in files:
+        if (clock_dir / f).exists():
+            clks.append(parse_clock_file(clock_dir / f))
+        else:
+            if verbose:
+                print(f"   [!] Clock file {f} not found in chain for '{obs_code}'")
+            clks.append({'mjd': np.array([0.0, 100000.0]),
+                         'offset': np.array([0.0, 0.0])})
+
+    # Merge all MJD grids (preserving duplicate MJDs for step functions)
+    mjd_grid = np.sort(np.unique(np.concatenate([c['mjd'] for c in clks])))
+    combined_offset = np.zeros_like(mjd_grid)
+    for clk in clks:
+        combined_offset += interpolate_clock_vectorized(clk, mjd_grid)
+
+    if verbose:
+        print(f"   Loaded clock chain for {obs_code}: {' → '.join(files)}")
+    return {'mjd': mjd_grid, 'offset': combined_offset,
+            'path': ' + '.join(files)}
+
+
 def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
                             mjd_utc, verbose):
     """Load observatory, GPS, and BIPM clock files; validate coverage.
@@ -236,14 +357,8 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
     """
     clock_dir = Path(clock_dir)
 
-    # Primary observatory clock
-    obs_clock_file = _OBS_CLOCK_FILES.get(observatory.lower())
-    if obs_clock_file and (clock_dir / obs_clock_file).exists():
-        obs_clock = parse_clock_file(clock_dir / obs_clock_file)
-        if verbose: print(f"   Loaded observatory clock: {obs_clock_file}")
-    else:
-        obs_clock = {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
-        if verbose: print(f"   No observatory clock file for '{observatory}' (assuming zero correction)")
+    # Primary observatory clock (may be multi-hop chain)
+    obs_clock = _load_obs_clock(clock_dir, observatory.lower(), verbose=verbose)
 
     # Pre-load clocks for all observatories (multi-obs support)
     obs_clocks = {observatory.lower(): obs_clock}
@@ -251,13 +366,7 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
         for obs_code in all_obs_codes:
             if obs_code == observatory.lower():
                 continue
-            clk_file = _OBS_CLOCK_FILES.get(obs_code)
-            if clk_file and (clock_dir / clk_file).exists():
-                obs_clocks[obs_code] = parse_clock_file(clock_dir / clk_file)
-                if verbose: print(f"   Loaded clock for {obs_code}: {clk_file}")
-            else:
-                obs_clocks[obs_code] = {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
-                if verbose: print(f"   No clock file for '{obs_code}' (assuming zero correction)")
+            obs_clocks[obs_code] = _load_obs_clock(clock_dir, obs_code, verbose=verbose)
 
     gps_clock = parse_clock_file(clock_dir / "gps2utc.clk")
 
@@ -571,7 +680,7 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
 
 def _compute_tzr_phase(params, bp, dm_jax, ddk,
                        obs_clock, gps_clock, bipm_clock,
-                       observatory, location, obs_itrf_km,
+                       observatory, location, obs_itrf_km, obs_clocks,
                        ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day,
                        posepoch, parallax_mas, ephem,
                        F0, F1_half, F2_sixth, PEPOCH_sec,
@@ -609,6 +718,9 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
             tzr_obs_itrf_km[0] * u.km, tzr_obs_itrf_km[1] * u.km, tzr_obs_itrf_km[2] * u.km
         )
 
+    # Use the TZRSITE-specific clock for UTC->TDB conversion
+    tzr_clock = obs_clocks.get(tzr_site, obs_clock) if obs_clocks else obs_clock
+
     # Convert TZRMJD to TDB
     tzrmjd_scale_resolved = "UTC"
     tzrmjd_scale_upper = tzrmjd_scale.upper()
@@ -621,10 +733,10 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         tzrmjd_scale_resolved = "UTC"
         if verbose:
             label = "AUTO -> UTC" if tzrmjd_scale_upper == "AUTO" else "UTC (explicit override)"
-            print(f"   TZRMJD scale: {label} (site arrival time, converting to TDB)")
+            print(f"   TZRMJD scale: {label} (site arrival time, converting to TDB via {tzr_site} clock)")
         TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
             [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
-            obs_clock, gps_clock, bipm_clock, tzr_location
+            tzr_clock, gps_clock, bipm_clock, tzr_location
         )[0]
         TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
         delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * SECS_PER_DAY
@@ -869,6 +981,9 @@ def compute_residuals_simple(
     if verbose: print(f"   Loaded {len(toas)} TOAs from {Path(tim_file).name}")
     if verbose: print(f"   Loaded timing model from {Path(par_file).name}")
 
+    # Warn about unrecognized parameters
+    _warn_unrecognized_params(params, verbose=verbose)
+
     # Observatory location - auto-detect from TOAs if not explicitly set.
     # Collect all unique observatories in the dataset for multi-obs support.
     if observatory == "auto" and toas:
@@ -881,6 +996,10 @@ def compute_residuals_simple(
 
     # Detect all unique observatories in the TOA list
     all_obs_codes = sorted(set(toa.observatory.lower() for toa in toas))
+    # Ensure TZRSITE clock is loaded even if it's not among TOA observatories
+    tzr_site_code = str(params.get('TZRSITE', '')).lower()
+    if tzr_site_code and tzr_site_code not in all_obs_codes and tzr_site_code not in ('ssb', '@', 'coe', ''):
+        all_obs_codes = sorted(set(all_obs_codes) | {tzr_site_code})
     is_multi_obs = len(all_obs_codes) > 1
     if is_multi_obs and verbose:
         print(f"   Multi-observatory dataset: {all_obs_codes}")
@@ -1184,6 +1303,21 @@ def compute_residuals_simple(
         if verbose and n_jumps_applied:
             print(f"   Applied {n_jumps_applied} JUMPs as phase offsets")
 
+    # Apply -padd (phase offset, cycles) and -radd (time offset, seconds → cycles)
+    # flags from TIM files, matching TEMPO2's formResiduals.C behaviour.
+    n_padd = 0
+    for i, toa in enumerate(toas):
+        if 'padd' in toa.flags:
+            padd_val = np.longdouble(toa.flags['padd'])
+            jump_phase[i] += padd_val
+            n_padd += 1
+        if 'radd' in toa.flags:
+            radd_val = np.longdouble(toa.flags['radd'])
+            jump_phase[i] += radd_val * F0_jump
+            n_padd += 1
+    if verbose and n_padd:
+        print(f"   Applied -padd/-radd phase offsets to {n_padd} TOAs")
+
     # NOTE: DMJUMP is NOT applied in prefit residuals.
     # Neither Tempo2 nor PINT apply DMJUMP as a delay in prefit;
     # it is only used as design-matrix columns in the fitter.
@@ -1233,7 +1367,7 @@ def compute_residuals_simple(
         tzr_phase = _compute_tzr_phase(
             params, bp, dm_jax, ddk,
             obs_clock, gps_clock, bipm_clock,
-            observatory, location, obs_itrf_km,
+            observatory, location, obs_itrf_km, obs_clocks,
             ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day,
             posepoch, parallax_mas, ephem,
             F0, F1_half, F2_sixth, PEPOCH_sec,

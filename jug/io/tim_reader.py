@@ -100,8 +100,19 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
             # Skip empty lines, comments, and directives
             if not line or line.startswith('#'):
                 continue
-            if line.startswith(('C ', 'CC ')):
+
+            # Tempo2 convention: any line starting with uppercase 'C'
+            # (that isn't a directive) is a comment.
+            if line[0] == 'C' and len(line) > 1 and line[1] != ' ':
+                # Could be CC, CC?, C??, Cfilename — all comments
+                if not line.startswith(('CLK', 'CLOCK')):
+                    continue
+            if line.startswith('C '):
                 continue
+
+            # 'end' directive: stop reading current file (Tempo2 convention)
+            if line.lower().startswith('end'):
+                break
 
             # Track FORMAT/MODE directives
             if line.startswith('FORMAT'):
@@ -128,7 +139,7 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
                 if len(parts_time) >= 2:
                     _state['time_offset'] += float(parts_time[1])
                 continue
-            if line.startswith(('JUMP', 'PHASE', 'END')):
+            if line.startswith(('JUMP', 'PHASE')):
                 continue
 
             parts = line.split()
@@ -139,7 +150,12 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
                 # FORMAT 1 (Tempo2): filename freq mjd error site [flags...]
                 if len(parts) < 5:
                     continue
-                freq_mhz = float(parts[1])
+                try:
+                    freq_mhz = float(parts[1])
+                except ValueError:
+                    # Unparseable frequency — likely a commented-out TOA
+                    # (e.g. 'C' prepended to filename: Cc059968.align...)
+                    continue
                 mjd_str = parts[2]
                 error_us = float(parts[3])
                 observatory = parts[4].lower()

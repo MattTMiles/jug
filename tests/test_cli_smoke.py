@@ -41,7 +41,7 @@ CLI_COMMANDS = [
 ]
 
 
-def test_module_invocation(module_path: str, args: list) -> tuple[bool, str]:
+def _check_module_invocation(module_path: str, args: list) -> tuple[bool, str]:
     """Test module responds to args via python -m (reliable, no PATH issues)."""
     try:
         result = subprocess.run(
@@ -64,7 +64,7 @@ def test_module_invocation(module_path: str, args: list) -> tuple[bool, str]:
         return False, str(e)
 
 
-def test_help_flag(cmd: str) -> tuple[bool | None, str]:
+def _check_help_flag(cmd: str) -> tuple[bool | None, str]:
     """Test that console script responds to --help (optional)."""
     try:
         result = subprocess.run(
@@ -85,7 +85,7 @@ def test_help_flag(cmd: str) -> tuple[bool | None, str]:
         return False, str(e)
 
 
-def test_import_module(module_path: str) -> tuple[bool, str]:
+def _check_import_module(module_path: str) -> tuple[bool, str]:
     """Test that module is importable."""
     try:
         result = subprocess.run(
@@ -114,7 +114,7 @@ def main():
     # Test module imports (most reliable, required)
     print("\n--- Module Imports (required) ---")
     for module_path, _, desc in CLI_MODULES:
-        passed, msg = test_import_module(module_path)
+        passed, msg = _check_import_module(module_path)
         status = "PASS" if passed else "FAIL"
         print(f"  [{status}] import {module_path}: {msg}")
         all_passed = all_passed and passed
@@ -122,7 +122,7 @@ def main():
     # Test module invocation with --help (required, reliable)
     print("\n--- Module Invocation (python -m, required) ---")
     for module_path, args, desc in CLI_MODULES:
-        passed, msg = test_module_invocation(module_path, args)
+        passed, msg = _check_module_invocation(module_path, args)
         status = "PASS" if passed else "FAIL"
         print(f"  [{status}] python -m {module_path} {' '.join(args)}: {msg}")
         all_passed = all_passed and passed
@@ -130,7 +130,7 @@ def main():
     # Test console scripts (optional - may be skipped if not installed)
     print("\n--- Console Scripts (optional, may skip) ---")
     for cmd in CLI_COMMANDS:
-        result = test_help_flag(cmd)
+        result = _check_help_flag(cmd)
         if result[0] is None:  # Skip
             print(f"  [SKIP] {cmd} --help: {result[1]}")
             skipped += 1

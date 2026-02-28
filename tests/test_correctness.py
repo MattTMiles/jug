@@ -232,17 +232,18 @@ def test_pint_cross_validation():
 def test_pint_parity_ng15yr():
     """Cross-validate JUG against PINT on all NANOGrav 15yr pulsars.
     
-    Only runs when --pint-ng flag is passed or JUG_TEST_PINT_NG=1 env var
-    is set. Requires NG 15yr data in data/pulsars/NG_data/NG_15yr_partim/.
+    Uses pre-computed PINT golden data (tests/data_golden/ng15yr_pint_golden.json)
+    when available, avoiding the ~6 minute PINT computation. Regenerate the golden
+    file with: python tests/generate_golden.py --pint-ng
     
-    Compares EFAC/EQUAD-scaled WRMS (weighted_rms_scaled_us vs
-    rms_weighted()) with the correct ephemeris from each par file.
+    Falls back to live PINT comparison if the golden file is absent and PINT is
+    installed.
+    
+    Only runs when --pint-ng flag is passed or JUG_TEST_PINT_NG=1 env var is set.
+    Requires NG 15yr data in data/pulsars/NG_data/NG_15yr_partim/.
     All 76 pulsars must match within 1%.
     """
-    try:
-        import pint.models
-    except ImportError:
-        return None, "PINT not installed (optional)"
+    from jug.residuals.simple_calculator import compute_residuals_simple
     
     import glob
     ng_dir = repo_root / "data" / "pulsars" / "NG_data" / "NG_15yr_partim"
@@ -250,6 +251,20 @@ def test_pint_parity_ng15yr():
     
     if not par_files:
         return None, f"NG data not found in {ng_dir}"
+    
+    # Try pre-computed PINT golden data first
+    golden_file = get_golden_dir() / "ng15yr_pint_golden.json"
+    pint_golden = None
+    if golden_file.exists():
+        with open(golden_file) as f:
+            pint_golden = json.load(f).get('pulsars', {})
+    
+    use_golden = pint_golden is not None
+    if not use_golden:
+        try:
+            import pint.models
+        except ImportError:
+            return None, "PINT not installed and golden file not found"
     
     n_pass = 0
     n_fail = 0
@@ -262,21 +277,40 @@ def test_pint_parity_ng15yr():
             continue
         
         try:
-            passed, msg = _compare_jug_pint(par, tim, tol_pct=1.0)
-            if passed:
-                n_pass += 1
+            if use_golden:
+                ref = pint_golden.get(name)
+                if ref is None or 'wrms_us' not in ref:
+                    failures.append(f"{name}: missing from golden file")
+                    n_fail += 1
+                    continue
+                pint_wrms = ref['wrms_us']
+                jug_result = compute_residuals_simple(par, tim, verbose=False)
+                jug_wrms = jug_result['weighted_rms_scaled_us']
+                delta = abs(jug_wrms - pint_wrms)
+                pct = delta / pint_wrms * 100 if pint_wrms > 0 else 0
+                if pct > 1.0:
+                    n_fail += 1
+                    failures.append(f"{name}: WRMS mismatch: JUG={jug_wrms:.4f}µs, "
+                                    f"PINT={pint_wrms:.4f}µs ({pct:.2f}%)")
+                else:
+                    n_pass += 1
             else:
-                n_fail += 1
-                failures.append(f"{name}: {msg}")
+                passed, msg = _compare_jug_pint(par, tim, tol_pct=1.0)
+                if passed:
+                    n_pass += 1
+                else:
+                    n_fail += 1
+                    failures.append(f"{name}: {msg}")
         except Exception as e:
             n_fail += 1
             failures.append(f"{name}: {type(e).__name__}: {e}")
     
     total = n_pass + n_fail
+    source = "golden" if use_golden else "live PINT"
     if n_fail > 0:
-        return False, f"{n_fail}/{total} failed: {'; '.join(failures[:3])}"
+        return False, f"{n_fail}/{total} failed (vs {source}): {'; '.join(failures[:3])}"
     
-    return True, f"OK ({n_pass}/{total} pulsars match PINT within 1%)"
+    return True, f"OK ({n_pass}/{total} pulsars match PINT within 1%, vs {source})"
 
 
 def main():

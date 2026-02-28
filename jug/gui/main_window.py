@@ -3120,9 +3120,15 @@ class MainWindow(QMainWindow):
         initial = getattr(self, 'initial_params', {})
         if final:
             from jug.io.par_reader import parse_ra, parse_dec, format_ra, format_dec
+            # Order fitted params by their position in the par file
+            par_order = getattr(self, 'available_params', [])
+            ordered = [p for p in par_order if p in final]
+            for p in final:
+                if p not in ordered:
+                    ordered.append(p)
             print(f" {'Parameter':<16s} {'Pre-fit value':>22s} {'Post-fit value':>22s} {'Uncertainty':>14s} {'Difference':>14s}")
             print(f" {'-'*16} {'-'*22} {'-'*22} {'-'*14} {'-'*14}")
-            for p in final:
+            for p in ordered:
                 val = final[p]
                 unc = uncert.get(p, 0.0)
                 pre = initial.get(p, '')

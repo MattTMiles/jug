@@ -85,3 +85,6 @@ data/pulsars/NG_15yr_partim/*
 
 # Playground / scratch
 playground/
+
+# Pre-computed PINT golden data (dev-only, do not merge to main)
+tests/data_golden/ng15yr_pint_golden.json

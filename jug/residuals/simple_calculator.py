@@ -342,7 +342,8 @@ def _load_obs_clock(clock_dir, obs_code, verbose=False):
 
     if verbose:
         print(f"   Loaded clock chain for {obs_code}: {' → '.join(files)}")
-    return {'mjd': mjd_grid, 'offset': combined_offset}
+    return {'mjd': mjd_grid, 'offset': combined_offset,
+            'path': ' + '.join(files)}
 
 
 def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
@@ -679,7 +680,7 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
 
 def _compute_tzr_phase(params, bp, dm_jax, ddk,
                        obs_clock, gps_clock, bipm_clock,
-                       observatory, location, obs_itrf_km,
+                       observatory, location, obs_itrf_km, obs_clocks,
                        ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day,
                        posepoch, parallax_mas, ephem,
                        F0, F1_half, F2_sixth, PEPOCH_sec,
@@ -717,6 +718,9 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
             tzr_obs_itrf_km[0] * u.km, tzr_obs_itrf_km[1] * u.km, tzr_obs_itrf_km[2] * u.km
         )
 
+    # Use the TZRSITE-specific clock for UTC->TDB conversion
+    tzr_clock = obs_clocks.get(tzr_site, obs_clock) if obs_clocks else obs_clock
+
     # Convert TZRMJD to TDB
     tzrmjd_scale_resolved = "UTC"
     tzrmjd_scale_upper = tzrmjd_scale.upper()
@@ -729,10 +733,10 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         tzrmjd_scale_resolved = "UTC"
         if verbose:
             label = "AUTO -> UTC" if tzrmjd_scale_upper == "AUTO" else "UTC (explicit override)"
-            print(f"   TZRMJD scale: {label} (site arrival time, converting to TDB)")
+            print(f"   TZRMJD scale: {label} (site arrival time, converting to TDB via {tzr_site} clock)")
         TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
             [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
-            obs_clock, gps_clock, bipm_clock, tzr_location
+            tzr_clock, gps_clock, bipm_clock, tzr_location
         )[0]
         TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
         delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * SECS_PER_DAY
@@ -992,6 +996,10 @@ def compute_residuals_simple(
 
     # Detect all unique observatories in the TOA list
     all_obs_codes = sorted(set(toa.observatory.lower() for toa in toas))
+    # Ensure TZRSITE clock is loaded even if it's not among TOA observatories
+    tzr_site_code = str(params.get('TZRSITE', '')).lower()
+    if tzr_site_code and tzr_site_code not in all_obs_codes and tzr_site_code not in ('ssb', '@', 'coe', ''):
+        all_obs_codes = sorted(set(all_obs_codes) | {tzr_site_code})
     is_multi_obs = len(all_obs_codes) > 1
     if is_multi_obs and verbose:
         print(f"   Multi-observatory dataset: {all_obs_codes}")
@@ -1359,7 +1367,7 @@ def compute_residuals_simple(
         tzr_phase = _compute_tzr_phase(
             params, bp, dm_jax, ddk,
             obs_clock, gps_clock, bipm_clock,
-            observatory, location, obs_itrf_km,
+            observatory, location, obs_itrf_km, obs_clocks,
             ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day,
             posepoch, parallax_mas, ephem,
             F0, F1_half, F2_sixth, PEPOCH_sec,

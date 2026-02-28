@@ -7,6 +7,7 @@ correction files for the observatory -> UTC -> TAI -> TT clock chain.
 from functools import lru_cache
 from pathlib import Path
 from bisect import bisect_left
+import warnings
 import numpy as np
 
 
@@ -131,18 +132,24 @@ def interpolate_clock(clock_data: dict, mjd: float) -> float:
     return off0 + frac * (off1 - off0)
 
 
-def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray) -> np.ndarray:
+def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray,
+                                 clock_name: str = "") -> np.ndarray:
     """Vectorized clock interpolation using np.searchsorted.
 
     ~10x faster than looping over interpolate_clock() for large arrays.
     Maintains identical accuracy to scalar version.
 
+    For MJDs outside the clock file range, the nearest boundary value
+    is returned (constant extrapolation) and a warning is emitted.
+
     Parameters
     ----------
     clock_data : dict
-        Clock data with 'mjd' and 'offset' arrays
+        Clock data with 'mjd' and 'offset' arrays (and optional 'path')
     mjd_array : np.ndarray
         Array of MJD values to interpolate
+    clock_name : str, optional
+        Override name for warning messages (defaults to clock_data['path'])
 
     Returns
     -------
@@ -167,6 +174,26 @@ def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray) -> np.
     # Handle empty clock data
     if len(mjds) == 0:
         return np.zeros_like(mjd_array)
+
+    # Warn if TOAs are outside clock file range (like PINT)
+    if len(mjd_array) > 0 and len(mjds) > 1:
+        n_before = np.sum(mjd_array < mjds[0])
+        n_after = np.sum(mjd_array > mjds[-1])
+        label = clock_name or clock_data.get('path', '')
+        if label:
+            label = Path(label).name
+        if n_before > 0:
+            warnings.warn(
+                f"Clock file '{label}': {n_before} TOA(s) before clock data "
+                f"start (MJD {mjds[0]:.1f}); using constant extrapolation",
+                stacklevel=2,
+            )
+        if n_after > 0:
+            warnings.warn(
+                f"Clock file '{label}': {n_after} TOA(s) after clock data "
+                f"end (MJD {mjds[-1]:.1f}); using constant extrapolation",
+                stacklevel=2,
+            )
 
     # Find insertion indices (right side gives us the upper bracket)
     idx = np.searchsorted(mjds, mjd_array, side='right')

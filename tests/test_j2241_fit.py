@@ -10,6 +10,8 @@ import sys
 import jax
 import time
 
+import pytest
+
 # Import test path utilities
 try:
     from tests.test_paths import get_j2241_paths, skip_if_missing
@@ -25,8 +27,7 @@ jax.config.update("jax_enable_x64", True)
 # Get paths from environment or defaults
 par_path, tim_path = get_j2241_paths()
 if not skip_if_missing(par_path, tim_path, "j2241_fit"):
-    print("\nSKIPPED: Test data not available")
-    sys.exit(0)
+    pytest.skip("J2241 test data not available", allow_module_level=True)
 
 par_file = str(par_path)
 tim_file = str(tim_path)

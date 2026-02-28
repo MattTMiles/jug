@@ -9,8 +9,17 @@ These tests verify that:
 
 import sys
 import tempfile
+import pytest
 import numpy as np
 from pathlib import Path
+
+_J1909_PAR = Path('data/pulsars/J1909-3744_tdb.par')
+_J1909_TIM = Path('data/pulsars/J1909-3744.tim')
+
+pytestmark = pytest.mark.skipif(
+    not _J1909_PAR.exists() or not _J1909_TIM.exists(),
+    reason="J1909 test data not found",
+)
 
 # Add JUG to path
 sys.path.insert(0, str(Path(__file__).parent))

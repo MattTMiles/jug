@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Test astrometry derivatives against PINT"""
 
+import os
+import pytest
 import numpy as np
+from pathlib import Path
+
+parfile = 'data/pulsars/J1909-3744_tdb.par'
+timfile = 'data/pulsars/J1909-3744.tim'
+
+if not (Path(parfile).exists() and Path(timfile).exists()):
+    pytest.skip("J1909 test data not available", allow_module_level=True)
+
 from jug.fitting.derivatives_astrometry import compute_astrometry_derivatives
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.io.par_reader import parse_par_file, parse_ra, parse_dec
 import pint.toa as toa
 import pint.models as models
-
-# Use the simpler approach - get data from PINT itself for testing
-parfile = 'data/pulsars/J1909-3744_tdb.par'
-timfile = 'data/pulsars/J1909-3744.tim'
 
 # PINT setup
 print("Loading PINT data...")

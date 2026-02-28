@@ -2,12 +2,18 @@
 """Test astrometry parameter fitting integration."""
 
 import numpy as np
+import pytest
 from pathlib import Path
-from jug.fitting.optimized_fitter import fit_parameters_optimized
 
 # Test data
 par_file = Path("data/pulsars/J1909-3744_tdb.par")
 tim_file = Path("data/pulsars/J1909-3744.tim")
+
+if not (par_file.exists() and tim_file.exists()):
+    pytest.skip("J1909 test data not available", allow_module_level=True)
+
+from jug.fitting.optimized_fitter import fit_parameters_optimized
+
 clock_dir = None  # Skip clock corrections for testing
 
 print("=" * 80)

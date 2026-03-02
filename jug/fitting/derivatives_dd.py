@@ -286,36 +286,42 @@ def compute_dd_binary_delay(
         sini = float(sini_raw)
     
     # Check for orthometric parameters if SINI/M2 not set
+    # Only convert when the derived STIG is physically valid (0 < STIG ≤ 1).
+    # When H4 ≤ 0 or STIG out of range, leave sini/m2 = 0 (no Shapiro delay).
     if sini == 0.0 or m2 == 0.0:
         h3 = float(params.get('H3', 0.0))
         stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
         h4 = float(params.get('H4', 0.0))
 
-        if h3 != 0.0 and stig != 0.0:
+        if h3 != 0.0 and stig > 0.0 and stig <= 1.0:
             if h4 != 0.0:
                 warnings.warn(
                     "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
                     UserWarning, stacklevel=2
                 )
-            # H3/STIG parameterization (DDH)
+            # H3/STIG parameterization (DDH) — valid STIG
             sini = 2 * stig / (1 + stig**2)
             m2 = h3 / (stig**3 * T_SUN)
-        elif h3 != 0.0 and h4 != 0.0:
-            # H3/H4 parameterization (Freire & Wex 2010, PINT convention)
-            h3h4_denom = h3**2 + h4**2
-            sini = min(2.0 * h3 * h4 / h3h4_denom, 1.0)
-            m2 = h3**4 / (h4**3 * T_SUN)
-        elif h3 != 0.0 and h4 == 0.0:
+        elif h3 > 0.0 and h4 > 0.0:
+            # H3/H4 parameterization — check derived STIG validity
+            stig_derived = h4 / h3
+            if 0.0 < stig_derived <= 1.0:
+                sini = 2.0 * stig_derived / (1.0 + stig_derived**2)
+                m2 = h3 / (stig_derived**3 * T_SUN)
+        elif h3 != 0.0 and h4 == 0.0 and stig == 0.0:
             warnings.warn(
-                "H3/H4 parameterization with H4=0: M2 is ill-conditioned; Shapiro delay will be zero",
+                "H3/H4 parameterization with H4=0: M2 is ill-conditioned; derivative will be zero",
                 UserWarning, stacklevel=2
             )
 
     omdot = float(params.get('OMDOT', 0.0))  # deg/yr
+    xdot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
+    edot = float(params.get('EDOT', 0.0))
 
     return _compute_dd_binary_delay_jit(
         jnp.asarray(toas_bary_mjd),
-        a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, float(sini), m2
+        a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, float(sini), m2,
+        xdot, edot
     )
 
 
@@ -323,21 +329,29 @@ def compute_dd_binary_delay(
 def _compute_dd_binary_delay_jit(
     toas_bary_mjd: jnp.ndarray,
     a1: float, pb: float, t0: float, ecc: float, om_deg: float, omdot_deg_yr: float,
-    pbdot: float, gamma: float, sini: float, m2: float
+    pbdot: float, gamma: float, sini: float, m2: float,
+    xdot: float, edot: float
 ) -> jnp.ndarray:
     """JIT-compiled DD binary delay computation."""
+    # Time since T0
+    dt = toas_bary_mjd - t0  # days
+    dt_sec = dt * SECS_PER_DAY
+
+    # Apply secular changes to a1 and eccentricity
+    a1_current = a1 + xdot * dt_sec
+    ecc_current = ecc + edot * dt_sec
+
     # Mean anomaly
     M = compute_mean_anomaly_dd(toas_bary_mjd, pb, t0, pbdot)
 
     # Solve Kepler's equation for eccentric anomaly
-    E = solve_kepler(M, ecc)
+    E = solve_kepler(M, ecc_current)
 
     # True anomaly
-    theta = compute_true_anomaly(E, ecc)
+    theta = compute_true_anomaly(E, ecc_current)
 
     # Periastron advance: D&D 1986 eq [25]: omega = omega_0 + k*Ae
     # k = OMDOT / n (dimensionless); Ae = accumulated true anomaly
-    dt = toas_bary_mjd - t0  # days
     orbits = dt / pb - 0.5 * pbdot * (dt / pb) ** 2
     norbits = jnp.floor(orbits)
     Ae = 2.0 * jnp.pi * norbits + theta  # accumulated true anomaly
@@ -345,15 +359,15 @@ def _compute_dd_binary_delay_jit(
     om_rad = jnp.deg2rad(om_deg) + k_omdot * Ae
 
     # Roemer delay
-    roemer = compute_dd_roemer_delay(E, theta, a1, ecc, om_rad)
+    roemer = compute_dd_roemer_delay(E, theta, a1_current, ecc_current, om_rad)
 
     # Einstein delay
-    einstein = compute_dd_einstein_delay(E, gamma, ecc)
+    einstein = compute_dd_einstein_delay(E, gamma, ecc_current)
 
     # Shapiro delay
     shapiro = jnp.where(
         (sini > 0) & (m2 > 0),
-        compute_dd_shapiro_delay(E, theta, om_rad, ecc, sini, m2),
+        compute_dd_shapiro_delay(E, theta, om_rad, ecc_current, sini, m2),
         0.0
     )
 
@@ -458,18 +472,19 @@ def compute_binary_derivatives_dd(
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
             h4_val = float(params.get('H4', 0.0))
-            if stig_val != 0.0:
+            if stig_val > 0.0 and stig_val <= 1.0:
                 if h4_val != 0.0:
                     warnings.warn(
                         "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
                         UserWarning, stacklevel=2
                     )
-                # DDH model: H3/STIG parameterization
+                # DDH model: H3/STIG parameterization — valid STIG
                 deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, stig_val)
-            elif h4_val != 0.0:
-                # H3/H4 parameterization (Freire & Wex 2010)
+            elif h4_val > 0.0 and h3_val > 0.0 and (h4_val / h3_val) <= 1.0:
+                # H3/H4 parameterization — valid STIG = H4/H3 ∈ (0, 1]
                 deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3_val, h4_val)
             else:
+                # Invalid STIG — Shapiro delay is unconstrained, return zero derivative
                 if h3_val != 0.0:
                     warnings.warn(
                         "H3/H4 parameterization with H4=0: M2 is ill-conditioned; derivative will be zero",
@@ -482,7 +497,10 @@ def compute_binary_derivatives_dd(
             # DDH model: H3/STIG parameterization
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3_val, stig_val)
+            if stig_val > 0.0 and stig_val <= 1.0 and h3_val != 0.0:
+                deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3_val, stig_val)
+            else:
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
         elif param_upper == 'OMDOT':
@@ -507,7 +525,11 @@ def compute_binary_derivatives_dd(
             # Orthometric Shapiro parameter H4 (DD/DDH model, H3/H4 parameterization)
             h3 = float(params.get('H3', 0.0))
             h4 = float(params.get('H4', 0.0))
-            deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3, h4)
+            if h3 > 0.0 and h4 > 0.0 and (h4 / h3) <= 1.0:
+                deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3, h4)
+            else:
+                # Invalid STIG — return zero derivative
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
     return derivatives
@@ -1317,14 +1339,14 @@ def compute_binary_derivatives_ddk(
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
             h4_val = float(params.get('H4', 0.0))
-            if stig_val != 0.0:
+            if stig_val > 0.0 and stig_val <= 1.0:
                 if h4_val != 0.0:
                     warnings.warn(
                         "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
                         UserWarning, stacklevel=2
                     )
                 deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, stig_val)
-            elif h4_val != 0.0:
+            elif h4_val > 0.0 and h3_val > 0.0 and (h4_val / h3_val) <= 1.0:
                 deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, h4_val)
             else:
                 if h3_val != 0.0:
@@ -1338,13 +1360,19 @@ def compute_binary_derivatives_ddk(
         elif param_upper in ('STIG', 'STIGMA'):
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, stig_val)
+            if stig_val > 0.0 and stig_val <= 1.0 and h3_val != 0.0:
+                deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, stig_val)
+            else:
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
         elif param_upper == 'H4':
             h3_val = float(params.get('H3', 0.0))
             h4_val = float(params.get('H4', 0.0))
-            deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, h4_val)
+            if h3_val > 0.0 and h4_val > 0.0 and (h4_val / h3_val) <= 1.0:
+                deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, h4_val)
+            else:
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
     # Now handle KIN and KOM using chain rule

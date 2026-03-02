@@ -1698,26 +1698,35 @@ def _run_general_fit_iterations(
         chi2_decrease = 0
         
         if n_augmented == 0:
-            # WLS: accept full step unconditionally (Tempo2-style)
+            # WLS: accept step only if linearized chi2 improves
             trial_param_values = [
                 param_values_curr[i] + delta_params[i]
                 for i in range(len(fit_params))
             ]
             if not any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
-                step_accepted = True
-                param_values_curr = trial_param_values
-                best_param_values = trial_param_values.copy()
-                # Compute linearized RMS for convergence tracking
                 r_lin = residuals - M @ _wls_delta_all
-                current_rms_us = np.sqrt(np.sum(r_lin**2 * weights) / sum_weights) * 1e6
-                current_chi2 = np.sum((r_lin / errors_sec) ** 2)
-                best_chi2 = current_chi2
-                # Save linearized postfit residuals for WLS
-                # (delta-based nonlinear evaluation accumulates cross-term errors)
-                _saved_residuals_sec = residuals.copy()
-                _saved_M = M.copy()
-                _saved_delta_all = _wls_delta_all.copy()
-                _saved_lambda = 1.0
+                trial_rms_us = np.sqrt(np.sum(r_lin**2 * weights) / sum_weights) * 1e6
+                trial_chi2 = np.sum((r_lin / errors_sec) ** 2)
+                chi2_decrease = current_chi2 - trial_chi2
+
+                if trial_chi2 <= best_chi2 * (1.0 + 1e-10) or iteration == 0:
+                    step_accepted = True
+                    param_values_curr = trial_param_values
+                    best_param_values = trial_param_values.copy()
+                    current_rms_us = trial_rms_us
+                    current_chi2 = trial_chi2
+                    best_chi2 = trial_chi2
+                    _saved_residuals_sec = residuals.copy()
+                    _saved_M = M.copy()
+                    _saved_delta_all = _wls_delta_all.copy()
+                    _saved_lambda = 1.0
+                else:
+                    # Step worsened chi2 — reject and restore best parameters
+                    if verbose:
+                        print(f"         (WLS step rejected: chi2 {trial_chi2:.1f} > best {best_chi2:.1f})")
+                    param_values_curr = list(best_param_values)
+                    converged = True
+                    break
         else:
             # GLS: damping with full-model validation
             while lambda_ >= min_lambda:
@@ -1864,9 +1873,10 @@ def _run_general_fit_iterations(
             for i, param in enumerate(fit_params):
                 _update_param(params, param, param_values_curr[i])
     else:
-        # WLS: use converged parameters (Tempo2-style, no damping)
+        # WLS: use best parameters found during iteration
         for i, param in enumerate(fit_params):
-            _update_param(params, param, param_values_curr[i])
+            _update_param(params, param, best_param_values[i])
+            param_values_curr[i] = best_param_values[i]
     
     # Compute final residuals.
     # For augmented fits (DMX/noise basis columns), use LINEAR postfit residuals

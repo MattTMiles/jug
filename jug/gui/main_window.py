@@ -1235,6 +1235,15 @@ class MainWindow(QMainWindow):
         restart_action = tools_menu.addAction("Restart")
         restart_action.setShortcut("Ctrl+R")
         restart_action.triggered.connect(self.on_restart_clicked)
+
+        tools_menu.addSeparator()
+        avg_action = tools_menu.addAction("Average TOAs...")
+        avg_action.setShortcut("Ctrl+A")
+        avg_action.triggered.connect(self.on_average_toas)
+
+        restore_action = tools_menu.addAction("Restore Original TOAs")
+        restore_action.setShortcut("Ctrl+Shift+A")
+        restore_action.triggered.connect(self.on_restore_toas)
         
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -1359,6 +1368,8 @@ class MainWindow(QMainWindow):
         m = MenuBarOverlayMenu(self.centralWidget())
         m.add_action("Run Fit", self.on_fit_clicked, shortcut="Ctrl+F")
         m.add_action("Restart", self.on_restart_clicked, shortcut="Ctrl+R")
+        m.add_action("Average TOAs...", self.on_average_toas, shortcut="Ctrl+A")
+        m.add_action("Restore Original TOAs", self.on_restore_toas, shortcut="Ctrl+Shift+A")
         return m
 
     def _build_help_overlay(self):
@@ -1382,6 +1393,8 @@ class MainWindow(QMainWindow):
             ("Ctrl+0", self.on_zoom_fit),
             ("Ctrl+F", self.on_fit_clicked),
             ("Ctrl+R", self.on_restart_clicked),
+            ("Ctrl+A", self.on_average_toas),
+            ("Ctrl+Shift+A", self.on_restore_toas),
         ]
         for shortcut_str, callback in shortcuts:
             action = QAction(self)
@@ -2493,6 +2506,119 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Restarted: restored {len(self.mjd)} TOAs")
         elif self.par_file and self.tim_file:
             self._compute_initial_residuals()
+
+    # -----------------------------------------------------------------
+    # TOA averaging
+    # -----------------------------------------------------------------
+
+    def on_average_toas(self):
+        """Average residuals for display (visualization only, no session mutation)."""
+        if self.mjd is None or self.residuals_us is None:
+            self.status_bar.showMessage("No data loaded")
+            return
+
+        from jug.gui.averaging_dialog import AveragingDialog
+        n_orig = len(self.mjd)
+        dlg = AveragingDialog(self, n_toas=n_orig)
+        if dlg.exec() != AveragingDialog.Accepted:
+            return
+
+        settings = dlg.get_settings()
+        mode = settings["mode"]
+        window = settings["window_days"]
+        window_mhz = settings.get("window_mhz", 100.0)
+
+        from jug.engine.averaging import average_residuals
+
+        # Save pre-averaging display data for restore (only first time)
+        if not hasattr(self, '_pre_avg_mjd') or self._pre_avg_mjd is None:
+            self._pre_avg_mjd = self.mjd.copy()
+            self._pre_avg_residuals = self.residuals_us.copy()
+            self._pre_avg_errors = self.errors_us.copy() if self.errors_us is not None else None
+            self._pre_avg_freqs = self.toa_freqs.copy() if self.toa_freqs is not None else None
+            self._pre_avg_flags = self.toa_flags
+
+        # Always average from the original data (allows re-averaging)
+        src_mjd = self._pre_avg_mjd
+        src_res = self._pre_avg_residuals
+        src_err = self._pre_avg_errors
+        src_freqs = self._pre_avg_freqs
+        src_flags = self._pre_avg_flags
+
+        avg = average_residuals(
+            mjd=src_mjd,
+            residuals_us=src_res,
+            errors_us=src_err,
+            toa_flags=src_flags,
+            mode=mode,
+            window_days=window,
+            window_mhz=window_mhz,
+            freq_mhz=src_freqs,
+        )
+
+        n_after = len(avg["mjd"])
+
+        # Replace display arrays (session/fitting data untouched)
+        self.mjd = avg["mjd"]
+        self.residuals_us = avg["residuals_us"]
+        self.errors_us = avg["errors_us"]
+        if "freq_mhz" in avg:
+            self.toa_freqs = avg["freq_mhz"]
+        self.toa_flags = avg.get("toa_flags", None)
+        self._backend_brushes_cache = None
+
+        # Recalculate RMS
+        from jug.engine.stats import compute_residual_stats
+        stats = compute_residual_stats(self.residuals_us, self.errors_us)
+        self._update_rms_from_stats(stats)
+
+        # Update plot (auto-range to fit averaged data)
+        self._update_plot(auto_range=True)
+        self._update_plot_title()
+        self.ntoa_label.setText(f"{n_after}")
+        self.rms_label.setText(f"{self.rms_us:.6f} mus")
+        if mode == "frequency":
+            win_str = f"{window_mhz:.0f} MHz"
+        else:
+            win_str = f"{window:.1f}d"
+        self.status_bar.showMessage(
+            f"Averaged {n_orig} → {n_after} residuals "
+            f"(mode={mode}, window={win_str})"
+        )
+        print(f"[Average] {n_orig} → {n_after} residuals "
+              f"(mode={mode}, window={win_str})")
+
+    def on_restore_toas(self):
+        """Restore original (pre-averaging) display data."""
+        if not hasattr(self, '_pre_avg_mjd') or self._pre_avg_mjd is None:
+            self.status_bar.showMessage("No averaged data to restore")
+            return
+
+        n_restored = len(self._pre_avg_mjd)
+        self.mjd = self._pre_avg_mjd
+        self.residuals_us = self._pre_avg_residuals
+        self.errors_us = self._pre_avg_errors
+        self.toa_freqs = self._pre_avg_freqs
+        self.toa_flags = self._pre_avg_flags
+        self._backend_brushes_cache = None
+
+        self._pre_avg_mjd = None
+        self._pre_avg_residuals = None
+        self._pre_avg_errors = None
+        self._pre_avg_freqs = None
+        self._pre_avg_flags = None
+
+        # Recalculate RMS
+        from jug.engine.stats import compute_residual_stats
+        stats = compute_residual_stats(self.residuals_us, self.errors_us)
+        self._update_rms_from_stats(stats)
+
+        self._update_plot(auto_range=True)
+        self._update_plot_title()
+        self.ntoa_label.setText(f"{n_restored}")
+        self.rms_label.setText(f"{self.rms_us:.6f} mus")
+        self.status_bar.showMessage(f"Restored {n_restored} original residuals")
+        print(f"[Restore] Restored {n_restored} original residuals")
     
     def on_show_parameters(self):
         """Show parameter editor dialog."""

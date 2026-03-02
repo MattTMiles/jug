@@ -16,6 +16,13 @@ def _parse_clock_file_cached(path_str: str) -> tuple:
     """Internal cached clock file parser.
     
     Returns tuple of (mjd_tuple, offset_tuple) for hashability.
+    
+    Handles sentinel entries at the end of clock files (e.g. MJD 60000
+    or 99999 with offset=0) that are used to mark the extrapolation
+    boundary.  When the last entry is separated from the previous one
+    by more than 100 days and its offset differs, the sentinel's offset
+    is replaced with the last real value so that linear interpolation
+    in the gap is equivalent to constant extrapolation.
     """
     mjds = []
     offsets = []
@@ -35,6 +42,14 @@ def _parse_clock_file_cached(path_str: str) -> tuple:
                     offsets.append(offset)
                 except ValueError:
                     continue
+
+    # Fix sentinel entries: if the last entry is far from the previous
+    # one (>100 days gap) and has a different offset, replace its offset
+    # with the last real value to ensure constant extrapolation.
+    if len(mjds) >= 2:
+        gap = mjds[-1] - mjds[-2]
+        if gap > 100 and abs(offsets[-1] - offsets[-2]) > 1e-15:
+            offsets[-1] = offsets[-2]
 
     return (tuple(mjds), tuple(offsets))
 
@@ -211,6 +226,9 @@ def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray,
     # Vectorized linear interpolation
     # Handle edge cases: if mjd0 == mjd1, frac should be 0 (use first offset)
     frac = np.where(mjd1 != mjd0, (mjd_array - mjd0) / (mjd1 - mjd0), 0.0)
+
+    # Clamp frac to [0, 1] for constant extrapolation outside the range
+    frac = np.clip(frac, 0.0, 1.0)
 
     return off0 + frac * (off1 - off0)
 

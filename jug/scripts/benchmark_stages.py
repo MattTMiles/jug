@@ -308,6 +308,7 @@ def benchmark_residuals_detailed(
             ne_sw_jax, fd_coeffs_jax, has_fd_jax,
             roemer_shapiro_jax, has_binary_jax,
             pb_jax, a1_jax, tasc_jax, eps1_jax, eps2_jax,
+            jnp.array(0.0), jnp.array(0.0),  # eps1dot, eps2dot
             pbdot_jax, xdot_jax, gamma_jax, r_shap_jax, s_shap_jax
         ).block_until_ready()
     

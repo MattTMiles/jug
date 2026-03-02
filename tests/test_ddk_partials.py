@@ -1124,6 +1124,8 @@ class TestDDKEndToEndSmoke:
             tasc=0.0,
             eps1=0.0,
             eps2=0.0,
+            eps1dot=0.0,
+            eps2dot=0.0,
             pbdot=params['PBDOT'],
             xdot=params['XDOT'],
             gamma=params['GAMMA'],

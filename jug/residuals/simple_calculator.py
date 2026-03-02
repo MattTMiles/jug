@@ -97,6 +97,7 @@ def _get_known_par_keywords():
         'TNSUBTRACTDM', 'TNSUBTRACTPOLY',
         'DMMODEL', 'CONSTRAIN', 'NCOEFF',
         'RM', 'SWM', 'SOLARN0',
+        'DMX',
     }
     # DMX ranges: DMX_nnnn, DMXR1_nnnn, DMXR2_nnnn, DMXF1_nnnn, DMXF2_nnnn, DMXEP_nnnn
     _KNOWN_PAR_KEYWORDS = known
@@ -461,6 +462,8 @@ def _extract_binary_params(params, verbose):
     om_val = float(params.get('OM', 0.0))
     eps1_val = float(params.get('EPS1', 0.0))
     eps2_val = float(params.get('EPS2', 0.0))
+    eps1dot_val = float(params.get('EPS1DOT', 0.0))
+    eps2dot_val = float(params.get('EPS2DOT', 0.0))
 
     # ELL1-to-Keplerian conversion for DD/T2/DDK models
     if model_id > 1:
@@ -548,6 +551,7 @@ def _extract_binary_params(params, verbose):
         'tasc_jax': jnp.array(tasc_val), 't0_jax': jnp.array(t0_val),
         'ecc_jax': jnp.array(ecc_val), 'om_jax': jnp.array(om_val),
         'eps1_jax': jnp.array(eps1_val), 'eps2_jax': jnp.array(eps2_val),
+        'eps1dot_jax': jnp.array(eps1dot_val), 'eps2dot_jax': jnp.array(eps2dot_val),
         'gamma_jax': jnp.array(gamma_val), 'pbdot_jax': jnp.array(pbdot_val),
         'xdot_jax': jnp.array(xdot_val), 'omdot_jax': jnp.array(omdot_val),
         'edot_jax': jnp.array(edot_val),
@@ -666,6 +670,7 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         dm_jax['ne_sw_jax'], dm_jax['fd_coeffs_jax'], dm_jax['has_fd_jax'],
         roemer_shapiro_jax, bp['has_binary_jax'], bp['binary_model_id_jax'],
         bp['pb_jax'], bp['a1_jax'], bp['tasc_jax'], bp['eps1_jax'], bp['eps2_jax'],
+        bp['eps1dot_jax'], bp['eps2dot_jax'],
         bp['pbdot_jax'], bp['xdot_jax'], bp['gamma_jax'], bp['r_shap_jax'], bp['s_shap_jax'],
         bp['ecc_jax'], bp['om_jax'], bp['t0_jax'], bp['omdot_jax'], bp['edot_jax'],
         bp['m2_jax'], bp['sini_jax'], bp['kin_jax'], bp['kom_jax'],

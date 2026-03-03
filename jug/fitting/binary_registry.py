@@ -97,7 +97,7 @@ def get_binary_derivatives_func(binary_model: str) -> Optional[DerivativesFunc]:
     return entry[1] if entry else None
 
 
-def compute_binary_delay(toas_bary: np.ndarray, params: Dict) -> np.ndarray:
+def compute_binary_delay(toas_bary: np.ndarray, params: Dict, **kwargs) -> np.ndarray:
     """
     Compute binary delay using the correct model from params['BINARY'].
 
@@ -110,6 +110,9 @@ def compute_binary_delay(toas_bary: np.ndarray, params: Dict) -> np.ndarray:
         Barycentric TOA times in MJD
     params : dict
         Parameter dictionary (checks 'BINARY' key for model name)
+    **kwargs
+        Additional keyword arguments passed to the delay function.
+        For DDK: obs_pos_ls (observer position in light-seconds, shape (N,3)).
 
     Returns
     -------
@@ -136,7 +139,7 @@ def compute_binary_delay(toas_bary: np.ndarray, params: Dict) -> np.ndarray:
             f"To add support, use register_binary_model() in binary_registry.py."
         )
 
-    return np.asarray(delay_func(toas_bary, params))
+    return np.asarray(delay_func(toas_bary, params, **kwargs))
 
 
 def compute_binary_derivatives(
@@ -183,8 +186,8 @@ def compute_binary_derivatives(
             f"Registered models: {registered}."
         )
 
-    # For DDK, pass obs_pos_ls for Kopeikin parallax corrections
-    if binary_model == 'DDK':
+    # For DDK and T2 (which may dispatch to DDK), pass obs_pos_ls
+    if binary_model in ('DDK', 'T2'):
         return deriv_func(params, toas_bary, param_list, obs_pos_ls=obs_pos_ls)
     else:
         return deriv_func(params, toas_bary, param_list)
@@ -211,6 +214,7 @@ def _register_builtin_models():
     # All use the same core DD computation
     from jug.fitting.derivatives_dd import (
         compute_dd_binary_delay,
+        compute_ddk_binary_delay,
         compute_binary_derivatives_dd,
         compute_binary_derivatives_ddk
     )
@@ -221,10 +225,10 @@ def _register_builtin_models():
         compute_binary_derivatives_dd
     )
     
-    # DDK uses dedicated derivatives function with KIN/KOM support
+    # DDK uses Kopeikin-corrected delay and derivatives with KIN/KOM support
     register_binary_model(
         ['DDK'],
-        compute_dd_binary_delay,
+        compute_ddk_binary_delay,
         compute_binary_derivatives_ddk
     )
 

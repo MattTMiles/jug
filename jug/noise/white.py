@@ -179,16 +179,16 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
             entries.append(WhiteNoiseEntry('DMEFAC', flag_name, flag_value, value))
 
         elif keyword == 'TNECORR':
-            # TempoNest convention: value is log10(ECORR in seconds)
+            # TNECORR value is ECORR amplitude in microseconds (same as ECORR).
+            # Tempo2 uses it directly: constraint = 1e6/ecorrval.
             if len(parts) < 4:
                 continue
             flag_name = parts[1].lstrip('-')
             flag_value = parts[2]
             try:
-                log10_val = float(parts[3])
+                ecorr_us = float(parts[3])
             except ValueError:
                 continue
-            ecorr_us = 10**log10_val * 1e6  # log10(seconds) -> microseconds
             entries.append(WhiteNoiseEntry('ECORR', flag_name, flag_value, ecorr_us))
 
         # -----------------------------------------------------------------
@@ -229,6 +229,31 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
                 except ValueError:
                     continue
                 entries.append(WhiteNoiseEntry('EQUAD', '*', '*', value))
+
+        elif keyword == 'TNEF':
+            # TempoNest EFAC: TNEF -group <name> <value>
+            if len(parts) < 4:
+                continue
+            flag_name = parts[1].lstrip('-')
+            flag_value = parts[2]
+            try:
+                value = float(parts[3])
+            except ValueError:
+                continue
+            entries.append(WhiteNoiseEntry('EFAC', flag_name, flag_value, value))
+
+        elif keyword == 'TNEQ':
+            # TempoNest EQUAD: TNEQ -group <name> <log10_seconds>
+            if len(parts) < 4:
+                continue
+            flag_name = parts[1].lstrip('-')
+            flag_value = parts[2]
+            try:
+                log10_val = float(parts[3])
+            except ValueError:
+                continue
+            equad_us = 10**log10_val * 1e6
+            entries.append(WhiteNoiseEntry('EQUAD', flag_name, flag_value, equad_us))
 
     return entries
 

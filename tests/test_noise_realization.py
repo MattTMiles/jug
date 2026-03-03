@@ -100,7 +100,12 @@ class TestComputeNoiseRealization:
         mjd, res, err, freqs = toa_data
         params = {'TNDMAmp': -14.0, 'TNDMGam': 2.5, 'TNDMC': 30}
 
-        legacy = realize_dm_noise(mjd, freqs, res, err, -14.0, 2.5, 30)
+        # TNDMAmp is in T2 convention; realize_dm_noise takes enterprise
+        # convention log10_A, so apply the same conversion.
+        from jug.noise.red_noise import TNDM_OFFSET
+        log10_A_ent = -14.0 - TNDM_OFFSET
+
+        legacy = realize_dm_noise(mjd, freqs, res, err, log10_A_ent, 2.5, 30)
         result = compute_noise_realization(
             'DMNoise', params, mjd, res, err, freq_mhz=freqs,
         )

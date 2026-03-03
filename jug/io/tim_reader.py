@@ -131,7 +131,9 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
                 inc_parts = line.split(None, 1)
                 if len(inc_parts) == 2:
                     inc_path = path.parent / inc_parts[1].strip()
-                    toas.extend(parse_tim_file_mjds(inc_path, _state=_state))
+                    # Tempo2 scopes TIME and FORMAT to each file
+                    # (local variables in readTim reset per recursive call)
+                    toas.extend(parse_tim_file_mjds(inc_path, _state=None))
                 continue
             # TIME directive: cumulative time offset in seconds added to MJDs
             if line.startswith('TIME'):
@@ -203,6 +205,21 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
                     i += 2
                 else:
                     i += 1
+
+            # Apply -addsat flag: adds integer seconds to TOA (satellite pass correction)
+            if 'addsat' in flags:
+                try:
+                    addsat_sec = float(flags['addsat'])
+                    mjd_frac += addsat_sec / 86400.0
+                    if mjd_frac >= 1.0:
+                        mjd_int += int(mjd_frac)
+                        mjd_frac -= int(mjd_frac)
+                    elif mjd_frac < 0.0:
+                        shift = int(-mjd_frac) + 1
+                        mjd_int -= shift
+                        mjd_frac += shift
+                except (ValueError, TypeError):
+                    pass
 
             toas.append(SimpleTOA(
                 mjd_str=mjd_str,
@@ -362,3 +379,38 @@ def compute_tdb_standalone_vectorized(
               np.array(tdb_time.jd2, dtype=np.longdouble)
 
     return tdb_mjd
+
+
+def write_tim_file(toas: List[SimpleTOA], path: Path | str) -> None:
+    """Write a list of SimpleTOA objects to a Tempo2-format .tim file.
+
+    Uses the adjusted ``mjd_int`` / ``mjd_frac`` values (which include any
+    TIME directive offsets applied during parsing) to reconstruct the MJD
+    string with full precision, rather than the raw ``mjd_str`` which may
+    not include those offsets.
+
+    Parameters
+    ----------
+    toas : list of SimpleTOA
+        TOAs to write.
+    path : Path or str
+        Output file path.
+    """
+    path = Path(path)
+    with open(path, 'w') as f:
+        f.write("FORMAT 1\n")
+        for toa in toas:
+            # Reconstruct MJD from int+frac (TIME-adjusted) with full precision
+            frac_ld = np.longdouble(toa.mjd_frac)
+            mjd_str = f"{toa.mjd_int}.{format(frac_ld, '.19f').split('.')[1]}"
+            # Build flags string
+            flags_str = ""
+            if toa.flags:
+                flags_str = " " + " ".join(
+                    f"-{k} {v}" for k, v in toa.flags.items()
+                )
+            # FORMAT 1: filename freq mjd error site [flags...]
+            f.write(
+                f"  jug {toa.freq_mhz:.6f} "
+                f"{mjd_str} {toa.error_us:.4f} {toa.observatory}{flags_str}\n"
+            )

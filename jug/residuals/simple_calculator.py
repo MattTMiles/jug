@@ -281,8 +281,22 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     if tzr_phase is not None:
         phase = phase - np.longdouble(tzr_phase)
 
-    # Wrap to nearest integer pulse
-    frac_phase = phase - np.round(phase)
+    # Phase-connected wrapping (Tempo2 TRACK -2 algorithm):
+    # Sort TOAs by time, then track the integer pulse number from one TOA
+    # to the next, ensuring each residual is within ±0.5 turns of the
+    # model-predicted value. This avoids ambiguities when the absolute
+    # phase drifts by more than ±0.5 turns over the data span.
+    sort_idx = np.argsort(dt)
+    pulse_number = np.zeros(len(phase), dtype=np.longdouble)
+    # First TOA: use nearest integer
+    pulse_number[sort_idx[0]] = np.round(phase[sort_idx[0]])
+    for k in range(1, len(sort_idx)):
+        i = sort_idx[k]
+        i_prev = sort_idx[k - 1]
+        # Predict pulse number from previous TOA's residual
+        predicted_n = phase[i] - (phase[i_prev] - pulse_number[i_prev])
+        pulse_number[i] = np.round(predicted_n)
+    frac_phase = phase - pulse_number
 
     # Convert to float64 seconds
     residuals_sec = np.asarray(frac_phase / F0, dtype=np.float64)

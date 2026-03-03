@@ -102,10 +102,8 @@ class TestComputeNoiseRealization:
 
         # TNDMAmp is in T2 convention; realize_dm_noise takes enterprise
         # convention log10_A, so apply the same conversion.
-        import math
-        _DM_CONST = 2.41e-4
-        offset = math.log10(1400.0**2 * _DM_CONST / math.sqrt(12.0 * math.pi**2))
-        log10_A_ent = -14.0 - offset
+        from jug.noise.red_noise import TNDM_OFFSET
+        log10_A_ent = -14.0 - TNDM_OFFSET
 
         legacy = realize_dm_noise(mjd, freqs, res, err, log10_A_ent, 2.5, 30)
         result = compute_noise_realization(

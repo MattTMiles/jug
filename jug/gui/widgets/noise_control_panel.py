@@ -530,10 +530,28 @@ class NoiseControlPanel(QWidget):
 
         for proc_name in get_noise_display_order():
             detected = self._noise_config.is_enabled(proc_name)
-            proc_params = self._extract_params(proc_name, params, entries)
 
             if not detected:
                 continue
+
+            # Multi-instance noise: create one row per parsed instance
+            if proc_name in ("BandNoise", "GroupNoise"):
+                instances = self._extract_multi_instance_params(
+                    proc_name, params)
+                for inst_name, inst_params in instances:
+                    can_sub = True  # band/group noise can be subtracted
+                    row = NoiseProcessRow(inst_name, False, inst_params,
+                                          can_subtract=can_sub)
+                    row.toggled.connect(self._on_process_toggled)
+                    row.param_changed.connect(self._on_param_value_changed)
+                    row.remove_requested.connect(self._on_remove_process)
+                    row.realise_toggled.connect(self._on_realise_toggled)
+                    row.subtract_toggled.connect(self._on_subtract_toggled)
+                    self._rows[inst_name] = row
+                    self._content_layout.addWidget(row)
+                continue
+
+            proc_params = self._extract_params(proc_name, params, entries)
 
             can_sub = proc_name in self._SUBTRACTABLE
             # Default OFF -- user must explicitly enable before fitting
@@ -671,11 +689,69 @@ class NoiseControlPanel(QWidget):
 
         return result
 
+    def _extract_multi_instance_params(
+        self, proc_name: str, params: dict
+    ) -> list:
+        """Return ``[(instance_name, param_list), ...]`` for multi-instance noise.
+
+        Used for BandNoise and GroupNoise which can have multiple instances
+        parsed from ``TNBandNoise`` / ``TNGroupNoise`` par-file lines.
+        """
+        from jug.noise.red_noise import (
+            parse_band_noise_params,
+            parse_group_noise_params,
+        )
+
+        instances = []
+        if proc_name == "BandNoise":
+            for bp in parse_band_noise_params(params):
+                label = f"BandNoise_{int(bp.freq_lo)}_{int(bp.freq_hi)}"
+                inst_params = [
+                    {"key": "freq_lo", "label": "Freq lo (MHz)",
+                     "value": f"{bp.freq_lo:.0f}", "editable": False},
+                    {"key": "freq_hi", "label": "Freq hi (MHz)",
+                     "value": f"{bp.freq_hi:.0f}", "editable": False},
+                    {"key": "log10_A", "label": "log\u2081\u2080(A)",
+                     "value": f"{bp.log10_A:.4f}", "editable": True},
+                    {"key": "gamma", "label": "\u03b3",
+                     "value": f"{bp.gamma:.4f}", "editable": True},
+                    {"key": "n_harmonics", "label": "N harmonics",
+                     "value": str(bp.n_harmonics), "editable": True},
+                ]
+                instances.append((label, inst_params))
+
+        elif proc_name == "GroupNoise":
+            for gp in parse_group_noise_params(params):
+                label = f"GroupNoise_{gp.group_name}"
+                inst_params = [
+                    {"key": "group_name", "label": "Group",
+                     "value": gp.group_name, "editable": False},
+                    {"key": "log10_A", "label": "log\u2081\u2080(A)",
+                     "value": f"{gp.log10_A:.4f}", "editable": True},
+                    {"key": "gamma", "label": "\u03b3",
+                     "value": f"{gp.gamma:.4f}", "editable": True},
+                    {"key": "n_harmonics", "label": "N harmonics",
+                     "value": str(gp.n_harmonics), "editable": True},
+                ]
+                if gp.Tspan_days is not None:
+                    inst_params.append(
+                        {"key": "Tspan_days", "label": "Tspan (days)",
+                         "value": f"{gp.Tspan_days:.1f}", "editable": True})
+                instances.append((label, inst_params))
+
+        return instances
+
     def _on_process_toggled(self, name: str, enabled: bool):
         if self._noise_config is None:
             return
         if enabled:
             self._noise_config.enable(name)
+            # Multi-instance: also enable the parent process so the fitter
+            # picks up the noise type (e.g. BandNoise_0_1000 -> BandNoise).
+            if name.startswith("BandNoise_"):
+                self._noise_config.enable("BandNoise")
+            elif name.startswith("GroupNoise_"):
+                self._noise_config.enable("GroupNoise")
         else:
             self._noise_config.disable(name)
         self.noise_config_changed.emit(self._noise_config)

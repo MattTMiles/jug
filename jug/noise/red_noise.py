@@ -34,6 +34,7 @@ References
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -283,12 +284,16 @@ class DMNoiseProcess:
 
     The DM noise Fourier basis is identical to red noise but each
     column is multiplied by the DM-delay chromatic weight:
-    ``K_DM / nu^2`` (in seconds per DM unit).
+    ``(1400 / nu)^2``.
+
+    Internally uses the enterprise convention (same as red/chromatic
+    noise).  When read from a par file with ``TNDMAmp``, the amplitude
+    is converted from the Tempo2/TempoNest DM convention.
 
     Attributes
     ----------
     log10_A : float
-        Log10 spectral amplitude [DM units].
+        Log10 spectral amplitude (enterprise convention).
     gamma : float
         Spectral index.
     n_harmonics : int
@@ -312,7 +317,7 @@ class DMNoiseProcess:
         return parse_dm_noise_params(params)
 
     def spectrum(self, freqs_hz: np.ndarray) -> np.ndarray:
-        """Evaluate PSD at given frequencies."""
+        """Evaluate PSD (enterprise convention, same as red/chromatic noise)."""
         return powerlaw_spectrum(freqs_hz, self.log10_A, self.gamma)
 
     def build_basis_and_prior(
@@ -352,7 +357,7 @@ class DMNoiseProcess:
         # Using 1400 MHz as normalisation keeps numerical values ~= O(1)
         chromatic_weight = (1400.0 / freq_mhz) ** 2
         F_dm = F * chromatic_weight[:, None]
-        # Enterprise convention for per-coefficient variance
+        # Enterprise convention: A²/(12π²) · f_yr^(γ−3) · f^(−γ) · Δf
         df = freqs[0]  # = 1/T_span
         A = 10.0 ** self.log10_A
         phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
@@ -452,6 +457,130 @@ class ChromaticNoiseProcess:
         return F_dm, phi
 
 # ---------------------------------------------------------------------------
+# Band noise and Group noise -- per-subset Fourier GP models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BandNoiseProcess:
+    """Achromatic noise restricted to a frequency band.
+
+    The Fourier basis is the same as red noise but only applies to TOAs
+    whose observing frequency falls in [freq_lo, freq_hi) MHz.  Rows
+    outside the band are zeroed, so the noise realisation is non-zero
+    only for in-band TOAs.
+
+    Attributes
+    ----------
+    freq_lo : float
+        Lower edge of the band (MHz, inclusive).
+    freq_hi : float
+        Upper edge of the band (MHz, exclusive).
+    log10_A : float
+        Log10 spectral amplitude.
+    gamma : float
+        Spectral index.
+    n_harmonics : int
+        Number of Fourier harmonics.
+    """
+    freq_lo: float
+    freq_hi: float
+    log10_A: float
+    gamma: float
+    n_harmonics: int = 30
+
+    _needs_freqs = True
+
+    def build_basis_and_prior(
+        self,
+        toas_mjd: np.ndarray,
+        freq_mhz: np.ndarray,
+        Tspan_days: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Build masked Fourier basis and prior for this band.
+
+        TOAs outside [freq_lo, freq_hi) have their rows zeroed.
+        """
+        mask = (freq_mhz >= self.freq_lo) & (freq_mhz < self.freq_hi)
+        F, freqs = build_fourier_design_matrix(
+            toas_mjd, self.n_harmonics, Tspan_days
+        )
+        # Zero out rows for TOAs outside the band
+        F = F * mask[:, None].astype(F.dtype)
+        # Enterprise prior
+        df = freqs[0]
+        A = 10.0 ** self.log10_A
+        phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
+            _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
+        phi = np.repeat(phi_per_harmonic, 2)
+        return F, phi
+
+
+@dataclass
+class GroupNoiseProcess:
+    """Achromatic noise restricted to a TOA group.
+
+    The Fourier basis is the same as red noise but only applies to TOAs
+    whose ``-group`` flag matches ``group_name``.  Rows for non-matching
+    TOAs are zeroed.
+
+    Attributes
+    ----------
+    group_name : str
+        Group identifier (matched against ``-group`` flag in tim file).
+    log10_A : float
+        Log10 spectral amplitude.
+    gamma : float
+        Spectral index.
+    n_harmonics : int
+        Number of Fourier harmonics.
+    Tspan_days : float or None
+        Custom time span for this group (when TNGroupSetSpan=1).
+    """
+    group_name: str
+    log10_A: float
+    gamma: float
+    n_harmonics: int = 30
+    Tspan_days: Optional[float] = None
+
+    _needs_freqs = False
+    _needs_flags = True
+
+    def build_basis_and_prior(
+        self,
+        toas_mjd: np.ndarray,
+        group_flags: np.ndarray,
+        Tspan_days: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Build masked Fourier basis and prior for this group.
+
+        Parameters
+        ----------
+        toas_mjd : (n_toa,)
+        group_flags : (n_toa,) array of str
+            The ``-group`` flag value for each TOA.
+        Tspan_days : float, optional
+            Override time span. If None, uses self.Tspan_days or data span.
+        """
+        mask = np.array([g == self.group_name for g in group_flags])
+        # Use per-group Tspan if specified
+        use_Tspan = Tspan_days or self.Tspan_days
+        if use_Tspan is None and np.any(mask):
+            use_Tspan = float(toas_mjd[mask].max() - toas_mjd[mask].min())
+        F, freqs = build_fourier_design_matrix(
+            toas_mjd, self.n_harmonics, use_Tspan
+        )
+        # Zero out rows for non-matching TOAs
+        F = F * mask[:, None].astype(F.dtype)
+        # Enterprise prior
+        df = freqs[0]
+        A = 10.0 ** self.log10_A
+        phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
+            _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
+        phi = np.repeat(phi_per_harmonic, 2)
+        return F, phi
+
+
+# ---------------------------------------------------------------------------
 # Parsing helpers (for par-file integration)
 # ---------------------------------------------------------------------------
 
@@ -510,22 +639,42 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
     Looks for ``TNDMAmp`` / ``TNDMGam`` / ``TNDMC`` (TempoNest)
     or ``DM_log10_A`` / ``DM_gamma`` conventions.
     Handles both mixed-case and uppercase keys (par reader uppercases).
+
+    TNDMAmp uses the Tempo2/TempoNest convention where:
+
+    * The PSD omits the ``1/(12π²)`` factor present in red/chromatic noise.
+    * The DM basis function is ``1/(DM_CONST × ν²)`` rather than
+      ``(1400/ν)²``.
+
+    Internally, DMNoiseProcess uses the enterprise convention (same as
+    red/chromatic noise): ``P(f) = A²/(12π²) f_yr^{γ−3} f^{−γ}`` with
+    a ``(1400/ν)²`` basis.  The conversion absorbs both differences::
+
+        log10_A_ent = TNDMAmp − log10(1400² × DM_CONST / √(12π²))
+
+    ``DM_log10_A`` is assumed to already be in the enterprise convention.
     """
+    # Conversion factor: accounts for both the 12π² PSD difference and the
+    # basis difference (K_DM_SEC/ν² vs (1400/ν)²).
+    _DM_CONST = 2.41e-4  # Tempo2 DM constant (1/K_DM_SEC)
+    _TNDM_OFFSET = math.log10(1400.0**2 * _DM_CONST / math.sqrt(12.0 * math.pi**2))
+    # _TNDM_OFFSET ≈ 1.6375
+
     # TempoNest convention (mixed case)
     if "TNDMAmp" in params and "TNDMGam" in params:
         return DMNoiseProcess(
-            log10_A=float(params["TNDMAmp"]),
+            log10_A=float(params["TNDMAmp"]) - _TNDM_OFFSET,
             gamma=float(params["TNDMGam"]),
             n_harmonics=int(params.get("TNDMC", 30)),
         )
     # TempoNest convention (uppercase)
     if "TNDMAMP" in params and "TNDMGAM" in params:
         return DMNoiseProcess(
-            log10_A=float(params["TNDMAMP"]),
+            log10_A=float(params["TNDMAMP"]) - _TNDM_OFFSET,
             gamma=float(params["TNDMGAM"]),
             n_harmonics=int(params.get("TNDMC", 30)),
         )
-    # Alternative convention
+    # Alternative convention (enterprise — no conversion needed)
     if "DM_log10_A" in params and "DM_gamma" in params:
         return DMNoiseProcess(
             log10_A=float(params["DM_log10_A"]),
@@ -579,9 +728,70 @@ def parse_chromatic_noise_params(params: dict) -> Optional[ChromaticNoiseProcess
     return None
 
 
-# ---------------------------------------------------------------------------
-# Noise realization -- compute MAP (maximum a-posteriori) realization
-# ---------------------------------------------------------------------------
+def parse_band_noise_params(params: dict) -> list:
+    """Extract BandNoiseProcess instances from par file noise lines.
+
+    Parses ``TNBandNoise freq_lo freq_hi log10_A gamma n_harmonics`` lines.
+
+    Returns
+    -------
+    list of BandNoiseProcess
+        One per TNBandNoise line. Empty list if none found.
+    """
+    processes = []
+    for line in params.get('_noise_lines', []):
+        parts = line.split()
+        if parts[0].upper() == 'TNBANDNOISE':
+            # TNBandNoise freq_lo freq_hi log10_A gamma n_harmonics
+            freq_lo = float(parts[1])
+            freq_hi = float(parts[2])
+            log10_A = float(parts[3])
+            gamma = float(parts[4])
+            n_harmonics = int(parts[5]) if len(parts) > 5 else 30
+            processes.append(BandNoiseProcess(
+                freq_lo=freq_lo, freq_hi=freq_hi,
+                log10_A=log10_A, gamma=gamma, n_harmonics=n_harmonics,
+            ))
+    return processes
+
+
+def parse_group_noise_params(params: dict) -> list:
+    """Extract GroupNoiseProcess instances from par file noise lines.
+
+    Parses ``TNGroupNoise -group <name> log10_A gamma n_harmonics [Tspan_days]``
+    lines. When ``TNGroupSetSpan 1`` is set, the last value is the per-group
+    time span in days.
+
+    Returns
+    -------
+    list of GroupNoiseProcess
+        One per TNGroupNoise line. Empty list if none found.
+    """
+    group_set_span = bool(params.get('TNGROUPSETSPAN', 0))
+    processes = []
+    for line in params.get('_noise_lines', []):
+        parts = line.split()
+        if parts[0].upper() == 'TNGROUPNOISE':
+            # TNGroupNoise -group <name> log10_A gamma n_harmonics [Tspan_days]
+            if parts[1] == '-group':
+                group_name = parts[2]
+                log10_A = float(parts[3])
+                gamma = float(parts[4])
+                n_harmonics = int(parts[5]) if len(parts) > 5 else 30
+                Tspan = float(parts[6]) if (group_set_span and len(parts) > 6) else None
+            else:
+                # No -group flag: TNGroupNoise <name> log10_A gamma n_harmonics
+                group_name = parts[1]
+                log10_A = float(parts[2])
+                gamma = float(parts[3])
+                n_harmonics = int(parts[4]) if len(parts) > 4 else 30
+                Tspan = float(parts[5]) if (group_set_span and len(parts) > 5) else None
+            processes.append(GroupNoiseProcess(
+                group_name=group_name,
+                log10_A=log10_A, gamma=gamma,
+                n_harmonics=n_harmonics, Tspan_days=Tspan,
+            ))
+    return processes
 
 def realize_red_noise(
     toas_mjd: np.ndarray,
@@ -700,3 +910,102 @@ def realize_noise_generic(
     else:
         F, phi = proc.build_basis_and_prior(toas_mjd, Tspan_days)
     return _wiener_filter(F, phi, residuals_sec, errors_sec)
+
+
+def realize_all_noise(
+    processes: list,
+    toas_mjd: np.ndarray,
+    residuals_sec: np.ndarray,
+    errors_sec: np.ndarray,
+    freq_mhz: Optional[np.ndarray] = None,
+    group_flags: Optional[np.ndarray] = None,
+    Tspan_days: Optional[float] = None,
+) -> dict:
+    """Jointly realize multiple noise processes via a combined Wiener filter.
+
+    Builds a single block-diagonal Fourier design matrix concatenating all
+    processes, solves the joint system once, then splits the realization
+    back into per-process contributions.
+
+    Parameters
+    ----------
+    processes : list
+        Noise process instances (RedNoise, DMNoise, BandNoise, GroupNoise, etc.).
+    toas_mjd, residuals_sec, errors_sec : (n_toa,)
+    freq_mhz : (n_toa,), optional
+    group_flags : (n_toa,) array of str, optional
+    Tspan_days : float, optional
+
+    Returns
+    -------
+    dict
+        ``{process_label: realization_sec}`` for each process, plus
+        ``"total"`` for the sum of all realizations.
+    """
+    if not processes:
+        return {"total": np.zeros_like(residuals_sec)}
+
+    F_blocks = []
+    phi_blocks = []
+    labels = []
+
+    for proc in processes:
+        if getattr(proc, '_needs_flags', False):
+            if group_flags is None:
+                raise ValueError(f"{type(proc).__name__} requires group_flags")
+            F, phi = proc.build_basis_and_prior(toas_mjd, group_flags, Tspan_days)
+            label = f"GroupNoise_{proc.group_name}"
+        elif getattr(proc, '_needs_freqs', False):
+            if freq_mhz is None:
+                raise ValueError(f"{type(proc).__name__} requires freq_mhz")
+            F, phi = proc.build_basis_and_prior(toas_mjd, freq_mhz, Tspan_days)
+            if isinstance(proc, BandNoiseProcess):
+                label = f"BandNoise_{int(proc.freq_lo)}_{int(proc.freq_hi)}"
+            elif isinstance(proc, DMNoiseProcess):
+                label = "DMNoise"
+            elif isinstance(proc, ChromaticNoiseProcess):
+                label = "ChromaticNoise"
+            else:
+                label = type(proc).__name__
+        else:
+            F, phi = proc.build_basis_and_prior(toas_mjd, Tspan_days)
+            label = "RedNoise" if isinstance(proc, RedNoiseProcess) else type(proc).__name__
+
+        F_blocks.append(F)
+        phi_blocks.append(phi)
+        labels.append(label)
+
+    # Concatenate into joint system
+    F_joint = np.hstack(F_blocks)
+    phi_joint = np.concatenate(phi_blocks)
+
+    # Solve joint Wiener filter
+    coeffs_joint = _wiener_filter_coeffs(F_joint, phi_joint, residuals_sec, errors_sec)
+
+    # Split into per-process realizations
+    result = {}
+    total = np.zeros_like(residuals_sec)
+    offset = 0
+    for F_block, label in zip(F_blocks, labels):
+        n_cols = F_block.shape[1]
+        realization = F_block @ coeffs_joint[offset:offset + n_cols]
+        result[label] = realization
+        total += realization
+        offset += n_cols
+    result["total"] = total
+    return result
+
+
+def _wiener_filter_coeffs(
+    F: np.ndarray,
+    phi: np.ndarray,
+    residuals: np.ndarray,
+    errors: np.ndarray,
+) -> np.ndarray:
+    """Solve for Wiener filter coefficients (without projecting back to data space)."""
+    N_inv = 1.0 / (errors ** 2)
+    FtNir = F.T @ (N_inv * residuals)
+    FtNiF = F.T @ (N_inv[:, None] * F)
+    phi_inv = 1.0 / phi
+    A = np.diag(phi_inv) + FtNiF
+    return np.linalg.solve(A, FtNir)

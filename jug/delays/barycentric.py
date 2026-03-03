@@ -469,12 +469,14 @@ def compute_shapiro_delay(
 def compute_barycentric_freq(
     freq_topo_mhz: np.ndarray,
     ssb_obs_vel_km_s: np.ndarray,
-    L_hat: np.ndarray
+    L_hat: np.ndarray,
+    einstein_rate: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute barycentric frequency (Doppler-corrected observing frequency).
 
     Corrects the topocentric (observed) frequency for the Doppler shift
-    due to the observatory's motion relative to the Solar System Barycenter.
+    due to the observatory's motion relative to the Solar System Barycenter,
+    and optionally for Einstein time dilation (DILATEFREQ).
 
     Parameters
     ----------
@@ -484,31 +486,64 @@ def compute_barycentric_freq(
         Observatory velocity relative to SSB (km/s), shape (n_times, 3)
     L_hat : np.ndarray
         Pulsar direction unit vectors, shape (n_times, 3)
+    einstein_rate : np.ndarray or None, optional
+        Einstein rate (dTDB/dTT) per TOA, shape (n_times,).
+        If provided (DILATEFREQ=Y), divides freq by this rate.
 
     Returns
     -------
     np.ndarray
         Barycentric frequencies (MHz), shape (n_times,)
-
-    Notes
-    -----
-    The Doppler formula used is:
-        f_bary = f_topo * (1 - v_radial/c)
-
-    where v_radial is the radial velocity (projection of observatory
-    velocity onto pulsar direction).
-
-    Examples
-    --------
-    >>> freq_topo = np.array([1400.0, 1400.0])  # MHz
-    >>> vel = np.array([[30, 0, 0], [-30, 0, 0]])  # km/s
-    >>> L_hat = np.array([[1, 0, 0], [1, 0, 0]])
-    >>> freq_bary = compute_barycentric_freq(freq_topo, vel, L_hat)
-    >>> # freq_bary[0] < freq_topo (moving toward pulsar)
-    >>> # freq_bary[1] > freq_topo (moving away from pulsar)
     """
     # Radial velocity (positive = moving away from pulsar)
     v_radial = np.sum(ssb_obs_vel_km_s * L_hat, axis=1)
 
     # Doppler correction: f_bary = f_topo * (1 - v/c)
-    return freq_topo_mhz * (1.0 - v_radial / C_KM_S)
+    freq_bary = freq_topo_mhz * (1.0 - v_radial / C_KM_S)
+
+    # Einstein rate correction (GR time dilation)
+    if einstein_rate is not None:
+        freq_bary = freq_bary / einstein_rate
+
+    return freq_bary
+
+
+def compute_einstein_rate(tdb_mjd: np.ndarray, units: str = 'TDB') -> np.ndarray:
+    """Compute the Einstein rate (dTDB/dTT) for each TOA.
+
+    This is used by DILATEFREQ to correct observing frequencies for
+    gravitational time dilation in the Solar System.
+
+    Parameters
+    ----------
+    tdb_mjd : np.ndarray
+        TDB MJD values, shape (n_toas,)
+    units : str
+        Timescale units: 'TDB' or 'TCB'. For TDB, rate ≈ 1 ± 7e-10.
+        For TCB, rate includes IFTE_K factor.
+
+    Returns
+    -------
+    np.ndarray
+        Einstein rate per TOA, shape (n_toas,)
+
+    Notes
+    -----
+    Uses numerical differentiation of the TDB-TT relationship via astropy.
+    Matches Tempo2's einsteinRate computation in tt2tdb.C.
+    """
+    from astropy.time import Time
+
+    dt_days = 0.001  # ~86 seconds, small enough for accurate derivative
+    tdb_arr = np.asarray(tdb_mjd, dtype=np.float64)
+    t1 = Time(tdb_arr, format='mjd', scale='tdb')
+    t2 = Time(tdb_arr + dt_days, format='mjd', scale='tdb')
+
+    # Use jd1/jd2 for full precision in the TT conversion
+    # TT difference = (tt2.jd1 - tt1.jd1) + (tt2.jd2 - tt1.jd2)
+    tt1 = t1.tt
+    tt2 = t2.tt
+    tt_diff = (tt2.jd1 - tt1.jd1) + (tt2.jd2 - tt1.jd2)
+    rate = dt_days / tt_diff
+
+    return rate

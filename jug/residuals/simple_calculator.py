@@ -92,9 +92,13 @@ def _get_known_par_keywords():
         'TZRMJD', 'TZRFRQ', 'TZRSITE',
         'BINARY', 'INFO', 'PLANET_SHAPIRO',
         'CORRECT_TROPOSPHERE', 'K96',
-        'RNAMP', 'RNIDX', 'TNRedAmp', 'TNRedGam', 'TNRedC',
-        'TNDMAMP', 'TNDMGam', 'TNDMC',
+        'RNAMP', 'RNIDX', 'TNREDAMP', 'TNREDGAM', 'TNREDC',
+        'TNDMAMP', 'TNDMGAM', 'TNDMC',
+        'TNCHROMAMP', 'TNCHROMGAM', 'TNCHROMC', 'TNCHROMIDX',
+        'TNBANDNOISE', 'TNGROUPNOISE', 'TNGROUPSETSPAN',
         'TNSUBTRACTDM', 'TNSUBTRACTPOLY',
+        'TNSUBTRACTRED', 'TNSUBTRACTCHROM',
+        'DILATEFREQ', 'CLK_CORR_CHAIN',
         'DMMODEL', 'CONSTRAIN', 'NCOEFF',
         'RM', 'SWM', 'SOLARN0',
         'DMX',
@@ -107,13 +111,20 @@ def _get_known_par_keywords():
 def _is_known_param(key):
     """Check if a par file keyword is recognized by JUG."""
     known = _get_known_par_keywords()
-    if key in known:
+    key_upper = key.upper()
+    if key_upper in known or key in known:
         return True
     # Dynamic parameter patterns: DMX_nnnn, DMXR1_nnnn, JUMP1, FBn, FDn, etc.
     import re
-    if re.match(r'^(DMX|DMXR1|DMXR2|DMXF1|DMXF2|DMXEP)_\d+$', key):
+    if re.match(r'^(DMX|DMXR1|DMXR2|DMXF1|DMXF2|DMXEP)_\d+$', key_upper):
         return True
-    if re.match(r'^(JUMP|CM)\d+$', key):
+    if re.match(r'^(JUMP|CM)\d+$', key_upper):
+        return True
+    if re.match(r'^(EXP(EP|PH|TAU|INDEX))_\d+$', key_upper):
+        return True
+    if re.match(r'^FDJUMP\d*(_\d+)?$', key_upper) or key_upper == 'FDJUMP_SCALE' or key_upper == 'FDJUMPDM':
+        return True
+    if re.match(r'^TN(ECORR|EF|EQ|SQ|SECORR)', key_upper):
         return True
     return False
 
@@ -372,6 +383,99 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
     """
     clock_dir = Path(clock_dir)
 
+    # Check for CLK_CORR_CHAIN override
+    clk_corr_chain = params.get('CLK_CORR_CHAIN')
+    if clk_corr_chain:
+        # Parse clock chain file list
+        if isinstance(clk_corr_chain, str):
+            chain_files = clk_corr_chain.split()
+        else:
+            chain_files = list(clk_corr_chain)
+
+        if verbose:
+            print(f"   CLK_CORR_CHAIN: {' → '.join(chain_files)}")
+
+        # Map chain files to the three-stage structure JUG expects:
+        #   obs_clock: observatory → GPS/UTC correction
+        #   gps_clock: GPS → UTC correction
+        #   bipm_clock: TAI → TT correction (includes 32.184 s offset)
+        # The chain may include utc2tai.clk — combine it with the TAI→TT file.
+        obs_files = []
+        gps_file = None
+        bipm_files = []
+        for f in chain_files:
+            fl = f.lower()
+            if 'gps2utc' in fl or 'gpst2utc' in fl:
+                gps_file = f
+            elif 'utc2tai' in fl or 'tai2tt' in fl or 'bipm' in fl:
+                bipm_files.append(f)
+            else:
+                obs_files.append(f)
+
+        # Load obs clock (may be custom file like pks2gps.dr2e.clk)
+        if obs_files:
+            if len(obs_files) == 1:
+                obs_clock = parse_clock_file(clock_dir / obs_files[0])
+            else:
+                from jug.io.clock import interpolate_clock_vectorized
+                clks = [parse_clock_file(clock_dir / f) for f in obs_files]
+                mjd_grid = np.sort(np.unique(np.concatenate([c['mjd'] for c in clks])))
+                combined = np.zeros_like(mjd_grid)
+                for c in clks:
+                    combined += interpolate_clock_vectorized(c, mjd_grid)
+                obs_clock = {'mjd': mjd_grid, 'offset': combined}
+        else:
+            obs_clock = _load_obs_clock(clock_dir, observatory.lower(), verbose=verbose)
+
+        # GPS clock
+        if gps_file:
+            gps_clock = parse_clock_file(clock_dir / gps_file)
+        else:
+            gps_clock = parse_clock_file(clock_dir / "gps2utc.clk")
+
+        # BIPM clock: combine utc2tai + tai2tt files
+        # JUG's compute_tdb_standalone_vectorized subtracts 32.184 from BIPM
+        # so utc2tai (leap seconds) + tai2tt (32.184 + BIPM corrections) works
+        # because the code does: bipm_interp - 32.184
+        # With utc2tai+tai2tt: total = leap_seconds + 32.184 + bipm_corr - 32.184
+        #                            = leap_seconds + bipm_corr
+        # But the default (tai2tt only): total = 32.184 + bipm_corr - 32.184 = bipm_corr
+        # So adding utc2tai gives us extra leap seconds — which astropy already handles!
+        # Therefore we should NOT include utc2tai.clk in the BIPM chain.
+        bipm_only = [f for f in bipm_files if 'utc2tai' not in f.lower()]
+        if bipm_only:
+            bipm_clock = parse_clock_file(clock_dir / bipm_only[0])
+            bipm_version = bipm_only[0].replace('.clk', '').replace('tai2tt_', '')
+        else:
+            bipm_clock = parse_clock_file(clock_dir / "tai2tt_bipm2024.clk")
+            bipm_version = 'bipm2024'
+
+        obs_clocks = {observatory.lower(): obs_clock}
+        if len(all_obs_codes) > 1:
+            for obs_code in all_obs_codes:
+                if obs_code != observatory.lower():
+                    obs_clocks[obs_code] = obs_clock
+
+        if verbose:
+            print(f"   Using clock chain: obs={obs_files}, gps={gps_file}, bipm={bipm_only}")
+
+        # Validate coverage
+        from jug.io.clock import check_clock_files, check_iers_coverage
+        mjd_start = np.min(mjd_utc)
+        mjd_end = np.max(mjd_utc)
+        clock_ok, clock_issues = check_clock_files(
+            mjd_start, mjd_end, obs_clock, gps_clock, bipm_clock,
+            verbose=verbose, clock_dir=str(clock_dir)
+        )
+
+        return {
+            'obs_clock': obs_clock, 'obs_clocks': obs_clocks,
+            'gps_clock': gps_clock, 'bipm_clock': bipm_clock,
+            'bipm_version': bipm_version,
+            'clock_ok': clock_ok, 'clock_issues': clock_issues,
+        }
+
+    # Default clock loading path
     # Primary observatory clock (may be multi-hop chain)
     obs_clock = _load_obs_clock(clock_dir, observatory.lower(), verbose=verbose)
 
@@ -769,6 +873,13 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'AUTO', 'TDB', or 'UTC'.")
 
     # Astrometry at TZR
+    # Check DILATEFREQ flag (needed for barycentric frequency computation)
+    dilate_freq = False
+    if 'DILATEFREQ' in params:
+        flag = str(params['DILATEFREQ']).upper().strip()
+        if flag in ('Y', '1', 'TRUE', 'T'):
+            dilate_freq = True
+
     tzr_tdb_arr = np.array([float(TZRMJD_TDB)])
     if tzr_is_ssb:
         tzr_ssb_obs_pos = np.zeros((1, 3))
@@ -803,7 +914,14 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         tzr_freq = tzr_freq_raw if np.isfinite(tzr_freq_raw) else 1e12
     else:
         tzr_freq = 1400.0
-    tzr_freq_bary = compute_barycentric_freq(np.array([tzr_freq]), tzr_ssb_obs_vel, tzr_L_hat)[0]
+    tzr_einstein_rate = None
+    if dilate_freq:
+        from jug.delays.barycentric import compute_einstein_rate
+        tzr_einstein_rate = compute_einstein_rate(
+            np.array([float(TZRMJD_TDB)]), units=params.get('_par_timescale', 'TDB')
+        )
+    tzr_freq_bary = compute_barycentric_freq(np.array([tzr_freq]), tzr_ssb_obs_vel, tzr_L_hat,
+                                              einstein_rate=tzr_einstein_rate)[0]
 
     # TZR DDK observer position
     model_id = bp['model_id']
@@ -1125,7 +1243,23 @@ def compute_residuals_simple(
 
     # Barycentric frequency (used for DM/SW/FD delays by both Tempo2 and PINT)
     freq_mhz = np.array([toa.freq_mhz for toa in toas])
-    freq_bary_mhz = compute_barycentric_freq(freq_mhz, ssb_obs_vel_km_s, L_hat)
+    # DILATEFREQ: apply Einstein rate correction to barycentric frequency
+    dilate_freq = False
+    if 'DILATEFREQ' in params:
+        df_flag = str(params['DILATEFREQ']).upper().strip()
+        if df_flag in ('Y', '1', 'TRUE', 'T'):
+            dilate_freq = True
+    einstein_rate = None
+    if dilate_freq:
+        from jug.delays.barycentric import compute_einstein_rate
+        units = params.get('_par_timescale', 'TDB')
+        einstein_rate = compute_einstein_rate(tdb_mjd, units=units)
+        if verbose:
+            rate_dev = einstein_rate - 1.0
+            print(f"   DILATEFREQ: Einstein rate deviation from 1: "
+                  f"[{rate_dev.min():.3e}, {rate_dev.max():.3e}]")
+    freq_bary_mhz = compute_barycentric_freq(freq_mhz, ssb_obs_vel_km_s, L_hat,
+                                              einstein_rate=einstein_rate)
 
     # Prepare JAX arrays
     if verbose: print(f"\n5. Running JAX delay kernel...")
@@ -1336,6 +1470,37 @@ def compute_residuals_simple(
             n_padd += 1
     if verbose and n_padd:
         print(f"   Applied -padd/-radd phase offsets to {n_padd} TOAs")
+
+    # Apply FDJUMP delays (frequency-dependent jumps)
+    fdjump_lines = params.get('_fdjump_lines', [])
+    if fdjump_lines:
+        fdjump_applied = 0
+        for key in params:
+            if not key.startswith('FDJUMP') or key.startswith('_'):
+                continue
+            meta = params.get(f'_fdjump_meta_{key}')
+            if meta is None:
+                continue
+            val = float(params.get(key, 0.0))
+            if val == 0.0:
+                continue
+            fd_idx = meta['fd_index']
+            log_scale = meta.get('log_scale', True)
+            flag_name = meta['flag_name']
+            flag_value = meta['flag_value']
+            mask = create_jump_mask_from_flags(
+                [t.flags for t in toas], flag_name, flag_value
+            )
+            if np.any(mask):
+                freq_ghz = np.array(freq_bary_mhz[mask], dtype=np.float64) / 1000.0
+                if log_scale:
+                    freq_term = np.log(freq_ghz) ** fd_idx
+                else:
+                    freq_term = freq_ghz ** fd_idx
+                total_delay_sec[mask] -= val * freq_term
+                fdjump_applied += 1
+        if verbose and fdjump_applied:
+            print(f"   Applied {fdjump_applied} FDJUMPs")
 
     # NOTE: DMJUMP is NOT applied in prefit residuals.
     # Neither Tempo2 nor PINT apply DMJUMP as a delay in prefit;

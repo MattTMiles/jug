@@ -54,6 +54,12 @@ import jax.numpy as jnp
 from jug.utils.constants import SECS_PER_DAY, SECS_PER_YEAR as _SECS_PER_YEAR
 _F_YR = 1.0 / _SECS_PER_YEAR      # 1/yr in Hz
 
+# Tempo2 TNDMAmp → enterprise convention offset.
+# Accounts for 12π² PSD difference and basis difference (K_DM·ν² vs (1400/ν)²).
+_DM_CONST = 2.41e-4  # Tempo2 DM constant (1/K_DM_SEC)
+TNDM_OFFSET = math.log10(1400.0**2 * _DM_CONST / math.sqrt(12.0 * math.pi**2))
+# TNDM_OFFSET ≈ 1.6375
+
 
 # ---------------------------------------------------------------------------
 # Fourier design matrix
@@ -654,23 +660,17 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
 
     ``DM_log10_A`` is assumed to already be in the enterprise convention.
     """
-    # Conversion factor: accounts for both the 12π² PSD difference and the
-    # basis difference (K_DM_SEC/ν² vs (1400/ν)²).
-    _DM_CONST = 2.41e-4  # Tempo2 DM constant (1/K_DM_SEC)
-    _TNDM_OFFSET = math.log10(1400.0**2 * _DM_CONST / math.sqrt(12.0 * math.pi**2))
-    # _TNDM_OFFSET ≈ 1.6375
-
     # TempoNest convention (mixed case)
     if "TNDMAmp" in params and "TNDMGam" in params:
         return DMNoiseProcess(
-            log10_A=float(params["TNDMAmp"]) - _TNDM_OFFSET,
+            log10_A=float(params["TNDMAmp"]) - TNDM_OFFSET,
             gamma=float(params["TNDMGam"]),
             n_harmonics=int(params.get("TNDMC", 30)),
         )
     # TempoNest convention (uppercase)
     if "TNDMAMP" in params and "TNDMGAM" in params:
         return DMNoiseProcess(
-            log10_A=float(params["TNDMAMP"]) - _TNDM_OFFSET,
+            log10_A=float(params["TNDMAMP"]) - TNDM_OFFSET,
             gamma=float(params["TNDMGAM"]),
             n_harmonics=int(params.get("TNDMC", 30)),
         )

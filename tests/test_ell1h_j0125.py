@@ -364,7 +364,7 @@ class TestZeroIterationParity:
         errors_us = result_raw['errors_us']
         weights = 1.0 / (errors_us * 1e-6) ** 2
 
-        resid_us_b, _ = compute_phase_residuals(
+        resid_us_b, _, _ = compute_phase_residuals(
             dt_sec_ld, params, weights, subtract_mean=True
         )
 

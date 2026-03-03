@@ -207,7 +207,8 @@ def _resolve_ephemeris(name: str) -> str:
 
 
 def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
-                            tzr_phase=None, tdb_sec_ld=None, jump_phase=None):
+                            tzr_phase=None, tdb_sec_ld=None, jump_phase=None,
+                            external_pulse_numbers=None):
     """Compute phase residuals from emission-time offsets (canonical implementation).
 
     This is the single shared function used by both the evaluate-only and fitter
@@ -230,6 +231,10 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     tdb_sec_ld : np.ndarray (longdouble), optional
         TDB times in seconds (longdouble). Required for glitch computation.
         If None, glitch contributions are not computed.
+    external_pulse_numbers : np.ndarray (longdouble), optional
+        Externally provided pulse numbers (from -pn flags in tim file).
+        When provided (Tempo2 TRACK -2 mode), these are used directly
+        instead of computing pulse numbers internally.
 
     Returns
     -------
@@ -237,6 +242,8 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         Residuals in microseconds.
     residuals_sec : np.ndarray (float64)
         Residuals in seconds.
+    pulse_number : np.ndarray (longdouble)
+        Integer pulse numbers used for phase wrapping.
     """
     F0 = get_longdouble(params, 'F0')
     F1 = get_longdouble(params, 'F1', default=0.0)
@@ -297,16 +304,25 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     # to the next, ensuring each residual is within ±0.5 turns of the
     # model-predicted value. This avoids ambiguities when the absolute
     # phase drifts by more than ±0.5 turns over the data span.
-    sort_idx = np.argsort(dt)
-    pulse_number = np.zeros(len(phase), dtype=np.longdouble)
-    # First TOA: use nearest integer
-    pulse_number[sort_idx[0]] = np.round(phase[sort_idx[0]])
-    for k in range(1, len(sort_idx)):
-        i = sort_idx[k]
-        i_prev = sort_idx[k - 1]
-        # Predict pulse number from previous TOA's residual
-        predicted_n = phase[i] - (phase[i_prev] - pulse_number[i_prev])
-        pulse_number[i] = np.round(predicted_n)
+    if external_pulse_numbers is not None:
+        # Use externally provided pulse numbers (from -pn flags in tim file,
+        # activated by TRACK -2 in par file). The external values are added
+        # to the nearest-integer phase of the first TOA so they are on the
+        # same absolute scale as the model phase.
+        sort_idx = np.argsort(dt)
+        base_pn = np.round(phase[sort_idx[0]])
+        pulse_number = base_pn + np.asarray(external_pulse_numbers, dtype=np.longdouble)
+    else:
+        sort_idx = np.argsort(dt)
+        pulse_number = np.zeros(len(phase), dtype=np.longdouble)
+        # First TOA: use nearest integer
+        pulse_number[sort_idx[0]] = np.round(phase[sort_idx[0]])
+        for k in range(1, len(sort_idx)):
+            i = sort_idx[k]
+            i_prev = sort_idx[k - 1]
+            # Predict pulse number from previous TOA's residual
+            predicted_n = phase[i] - (phase[i_prev] - pulse_number[i_prev])
+            pulse_number[i] = np.round(predicted_n)
     frac_phase = phase - pulse_number
 
     # Convert to float64 seconds
@@ -317,7 +333,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         residuals_sec = residuals_sec - wm
 
     residuals_us = residuals_sec * 1e6
-    return residuals_us, residuals_sec
+    return residuals_us, residuals_sec, pulse_number
 
 
 def _load_obs_clock(clock_dir, obs_code, verbose=False):
@@ -1565,10 +1581,22 @@ def compute_residuals_simple(
     # identical arithmetic (longdouble precision, Horner's method, np.round wrapping).
     errors_us = np.array([toa.error_us for toa in toas])
     weights = 1.0 / (errors_us ** 2)
-    residuals_us, _ = compute_phase_residuals(
+
+    # Check for TRACK -2 with -pn flags (Tempo2 pulse numbering convention)
+    track_val = params.get('TRACK', None)
+    external_pn = None
+    if track_val is not None and int(track_val) == -2:
+        pn_flags = [toa.flags.get('pn') for toa in toas]
+        if all(pn is not None for pn in pn_flags):
+            external_pn = np.array([int(pn) for pn in pn_flags], dtype=np.longdouble)
+            if verbose:
+                print(f"   TRACK -2: using -pn pulse numbers from tim file")
+
+    residuals_us, _, pulse_number = compute_phase_residuals(
         dt_sec, params, weights, subtract_mean=True,
         tzr_phase=tzr_phase if subtract_tzr else None,
-        jump_phase=jump_phase
+        jump_phase=jump_phase,
+        external_pulse_numbers=external_pn
     )
 
     # Compute weighted RMS using raw errors
@@ -1686,6 +1714,8 @@ def compute_residuals_simple(
         'obs_planet_pos_ls': {k: np.array(v, dtype=np.float64) for k, v in obs_planet_pos_ls.items()} if obs_planet_pos_ls else None,
         'orbital_phase': orbital_phase,
         'toa_flags': [toa.flags for toa in toas],
+        # Pulse numbers used for phase wrapping (for saving pulse-numbered tim files)
+        'pulse_number': np.array(pulse_number, dtype=np.longdouble),
         # Clock / EOP issues collected during loading (for GUI warnings)
         'clock_issues': clock_issues,
     }

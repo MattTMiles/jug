@@ -206,6 +206,21 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
                 else:
                     i += 1
 
+            # Apply -addsat flag: adds integer seconds to TOA (satellite pass correction)
+            if 'addsat' in flags:
+                try:
+                    addsat_sec = float(flags['addsat'])
+                    mjd_frac += addsat_sec / 86400.0
+                    if mjd_frac >= 1.0:
+                        mjd_int += int(mjd_frac)
+                        mjd_frac -= int(mjd_frac)
+                    elif mjd_frac < 0.0:
+                        shift = int(-mjd_frac) + 1
+                        mjd_int -= shift
+                        mjd_frac += shift
+                except (ValueError, TypeError):
+                    pass
+
             toas.append(SimpleTOA(
                 mjd_str=mjd_str,
                 mjd_int=mjd_int,

@@ -16,6 +16,11 @@ def _parse_clock_file_cached(path_str: str) -> tuple:
     """Internal cached clock file parser.
     
     Returns tuple of (mjd_tuple, offset_tuple) for hashability.
+    
+    Sentinel entries at the end of clock files (e.g. MJD 60000 or 99999
+    with offset=0) are kept as-is, matching Tempo2 behaviour: linear
+    interpolation between the last real entry and the sentinel is used
+    for MJDs that fall in the gap.
     """
     mjds = []
     offsets = []
@@ -98,8 +103,8 @@ def interpolate_clock(clock_data: dict, mjd: float) -> float:
 
     Notes
     -----
-    For MJDs outside the clock file range, the nearest boundary value
-    is returned (constant extrapolation).
+    For MJDs outside the clock file range, returns 0 (no correction),
+    matching Tempo2's behaviour where the clock chain falls through.
 
     Examples
     --------
@@ -113,11 +118,12 @@ def interpolate_clock(clock_data: dict, mjd: float) -> float:
     if len(mjds) == 0:
         return 0.0
 
-    # Handle boundaries
+    # Out-of-range: return 0 (matches Tempo2 behaviour where the clock
+    # chain falls through when the file doesn't cover the TOA)
     if mjd <= mjds[0]:
-        return offsets[0]
+        return 0.0
     if mjd >= mjds[-1]:
-        return offsets[-1]
+        return 0.0
 
     # Find bracketing points
     idx = bisect_left(mjds, mjd)
@@ -198,8 +204,12 @@ def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray,
     # Find insertion indices (right side gives us the upper bracket)
     idx = np.searchsorted(mjds, mjd_array, side='right')
 
+    # Identify out-of-range TOAs (before first or after last entry).
+    # Tempo2 drops the clock correction entirely for out-of-range TOAs
+    # (the clock chain falls through), so we return 0 for those.
+    out_of_range = (idx == 0) | (idx >= len(mjds))
+
     # Clip to valid range [1, len(mjds)-1] for interpolation
-    # idx=0 means before first point, idx=len means after last point
     idx = np.clip(idx, 1, len(mjds) - 1)
 
     # Get bracketing points
@@ -212,7 +222,15 @@ def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray,
     # Handle edge cases: if mjd0 == mjd1, frac should be 0 (use first offset)
     frac = np.where(mjd1 != mjd0, (mjd_array - mjd0) / (mjd1 - mjd0), 0.0)
 
-    return off0 + frac * (off1 - off0)
+    # Clamp frac to [0, 1] for in-range values only
+    frac = np.clip(frac, 0.0, 1.0)
+
+    result = off0 + frac * (off1 - off0)
+
+    # Zero out corrections for out-of-range TOAs (matches Tempo2 behaviour)
+    result[out_of_range] = 0.0
+
+    return result
 
 
 def validate_clock_file_coverage(clock_data: dict, mjd_start: float, mjd_end: float, 

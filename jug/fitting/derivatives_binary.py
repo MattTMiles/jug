@@ -860,6 +860,7 @@ def d_shapiro_d_Phi(
 def compute_ell1_binary_delay(
     toas_bary_mjd: jnp.ndarray,
     params: Dict,
+    **kwargs,
 ) -> jnp.ndarray:
     """Compute ELL1 binary delay for given parameters.
 
@@ -897,14 +898,19 @@ def compute_ell1_binary_delay(
     stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
 
     # Convert orthometric Shapiro parameters to SINI/M2
+    # Only convert when the derived STIG is physically valid (0 < STIG ≤ 1).
+    # When H4 ≤ 0 or STIG is out of range, leave sini/m2 = 0 so the
+    # H3-only harmonic expansion path activates (Freire & Wex 2010).
     if sini == 0.0 and m2 == 0.0 and h3 != 0.0:
-        if stig != 0.0:
-            sini = min(2.0 * stig / (1.0 + stig**2), 1.0)
+        if stig > 0.0 and stig <= 1.0:
+            sini = 2.0 * stig / (1.0 + stig**2)
             m2 = h3 / (stig**3 * T_SUN)
-        elif h4 != 0.0:
-            h3h4_denom = h3**2 + h4**2
-            sini = min(2.0 * h3 * h4 / h3h4_denom, 1.0)
-            m2 = h3**4 / (h4**3 * T_SUN)
+        elif h4 > 0.0 and h3 > 0.0:
+            stig_derived = h4 / h3
+            if 0.0 < stig_derived <= 1.0:
+                sini = 2.0 * stig_derived / (1.0 + stig_derived**2)
+                m2 = h3 / (stig_derived**3 * T_SUN)
+                stig = stig_derived
 
     # Extract FB parameters (FB0, FB1, ...)
     fb_coeffs_list = []
@@ -922,11 +928,15 @@ def compute_ell1_binary_delay(
     else:
         fb_coeffs = jnp.array([], dtype=jnp.float64)
 
+    # Extract EPS1DOT/EPS2DOT for time evolution
+    eps1dot = float(params.get('EPS1DOT', 0.0))
+    eps2dot = float(params.get('EPS2DOT', 0.0))
+
     # Call JIT-compiled inner function with extracted numeric values
     return _compute_ell1_binary_delay_jit(
         jnp.asarray(toas_bary_mjd),
         a1, pb, tasc, eps1, eps2, pbdot, a1dot, sini, m2, gamma,
-        h3, stig, fb_coeffs
+        h3, h4, stig, fb_coeffs, eps1dot, eps2dot
     )
 
 
@@ -935,7 +945,8 @@ def _compute_ell1_binary_delay_jit(
     toas_bary_mjd: jnp.ndarray,
     a1: float, pb: float, tasc: float, eps1: float, eps2: float,
     pbdot: float, a1dot: float, sini: float, m2: float, gamma: float,
-    h3: float, stig: float, fb_coeffs: jnp.ndarray
+    h3: float, h4: float, stig: float, fb_coeffs: jnp.ndarray,
+    eps1dot: float = 0.0, eps2dot: float = 0.0
 ) -> jnp.ndarray:
     """JIT-compiled ELL1 binary delay computation."""
     # Time since TASC
@@ -945,16 +956,20 @@ def _compute_ell1_binary_delay_jit(
     # Effective a1 with time evolution
     a1_eff = a1 + a1dot * ttasc_sec
 
+    # Apply EPS1DOT/EPS2DOT time evolution
+    eps1_eff = eps1 + eps1dot * ttasc_sec
+    eps2_eff = eps2 + eps2dot * ttasc_sec
+
     # Orbital phase
     phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
 
     # nhat = 2pi / PB (mean angular velocity in rad/s)
     nhat = 2 * jnp.pi / pb_sec
 
-    # Compute Dre, Drep, Drepp using existing functions
-    d_R_da1 = d_delayR_da1(phi, eps1, eps2)
-    d_dR_dPhi_da1 = d_d_delayR_dPhi_da1(phi, eps1, eps2)
-    d_ddR_dPhi2_da1 = d_dd_delayR_dPhi2_da1(phi, eps1, eps2)
+    # Compute Dre, Drep, Drepp using effective eps1/eps2
+    d_R_da1 = d_delayR_da1(phi, eps1_eff, eps2_eff)
+    d_dR_dPhi_da1 = d_d_delayR_dPhi_da1(phi, eps1_eff, eps2_eff)
+    d_ddR_dPhi2_da1 = d_dd_delayR_dPhi2_da1(phi, eps1_eff, eps2_eff)
 
     Dre = a1_eff * d_R_da1
     Drep = a1_eff * d_dR_dPhi_da1
@@ -972,26 +987,41 @@ def _compute_ell1_binary_delay_jit(
     # Einstein delay (gamma term)
     einstein_delay = gamma * jnp.sin(phi)
 
-    # Shapiro delay (if M2 and SINI are present)
-    TM2 = T_SUN * m2
     sin_phi = jnp.sin(phi)
-    shapiro_delay = jnp.where(
+
+    # ELL1H Shapiro delay (Freire & Wex 2010, orthometric lsc formula)
+    # When 0 < STIG ≤ 1, use: fs = 1 + stig² - 2*stig*sin(Φ)
+    #   lsc = log(fs) + 2*stig*sin(Φ) - stig²*cos(2Φ)
+    #   ds = -2*(H3/stig³)*lsc
+    fs = 1.0 + stig**2 - 2.0 * stig * sin_phi
+    cos_2phi = jnp.cos(2.0 * phi)
+    lsc = jnp.log(fs) + 2.0 * stig * sin_phi - stig**2 * cos_2phi
+    r_ell1h = h3 / jnp.maximum(stig**3, 1e-30)
+    shapiro_ell1h = -2.0 * r_ell1h * lsc
+
+    # Standard log formula for M2/SINI (non-ELL1H)
+    TM2 = T_SUN * m2
+    shapiro_standard = jnp.where(
         (sini > 0) & (m2 > 0),
         -2 * TM2 * jnp.log(jnp.maximum(1 - sini * sin_phi, 1e-10)),
         0.0
     )
 
-    # H3-only Shapiro delay (Freire & Wex 2010 Eq. 19)
-    # When H3 > 0 but no STIG/M2/SINI, use harmonic expansion:
-    #   Delta_S = -(4/3)*H3*sin(3*Phi)
-    # Coefficient 4/3 = 2 * (2/3) from Fourier basis factor 2/k for k=3.
-    shapiro_h3only = jnp.where(
+    # H3/H4 harmonic Shapiro delay (Freire & Wex 2010)
+    shapiro_harmonic = jnp.where(
         (sini == 0.0) & (m2 == 0.0) & (h3 > 0.0) & (stig == 0.0),
-        -(4.0 / 3.0) * h3 * jnp.sin(3.0 * phi),
+        -(4.0 / 3.0) * h3 * jnp.sin(3.0 * phi) + h4 * jnp.cos(4.0 * phi),
         0.0
     )
 
-    return roemer_delay + einstein_delay + shapiro_delay + shapiro_h3only
+    # Select: ELL1H lsc if 0 < stig ≤ 1, else standard/harmonic
+    shapiro_delay = jnp.where(
+        (stig > 0.0) & (stig <= 1.0),
+        shapiro_ell1h,
+        shapiro_standard + shapiro_harmonic
+    )
+
+    return roemer_delay + einstein_delay + shapiro_delay
 
 
 # =============================================================================
@@ -1376,22 +1406,22 @@ def compute_binary_derivatives_ell1(
             h4_val = float(params.get('H4', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
             
-            if stig_val != 0:
-                # H3/STIG parameterization
+            if stig_val > 0.0 and stig_val <= 1.0:
+                # H3/STIG parameterization — valid STIG
                 sini_from_stig = 2 * stig_val / (1 + stig_val**2)
                 dM2_dH3 = 1.0 / (stig_val**3 * T_SUN)
                 derivatives[param] = d_shapiro_d_M2(phi, sini_from_stig) * dM2_dH3
-            elif h4_val != 0 and h3_val != 0:
-                # H3/H4 parameterization (Freire & Wex 2010)
+            elif h4_val > 0.0 and h3_val > 0.0 and (h4_val / h3_val) <= 1.0:
+                # H3/H4 parameterization — valid STIG = H4/H3 ∈ (0, 1]
                 h3h4_denom = h3_val**2 + h4_val**2
-                sini_h3h4 = min(2.0 * h3_val * h4_val / h3h4_denom, 1.0)
+                sini_h3h4 = 2.0 * h3_val * h4_val / h3h4_denom
                 m2_h3h4 = h3_val**4 / (h4_val**3 * T_SUN)
                 dM2_dH3 = 4.0 * h3_val**3 / (h4_val**3 * T_SUN)
                 dSINI_dH3 = 2.0 * h4_val * (h4_val**2 - h3_val**2) / h3h4_denom**2
                 derivatives[param] = (d_shapiro_d_M2(phi, sini_h3h4) * dM2_dH3 +
                                       d_shapiro_d_SINI(phi, sini_h3h4, m2_h3h4) * dSINI_dH3)
             else:
-                # H3-only: Delta_S = -(4/3)*H3*sin(3*Phi)
+                # Harmonic expansion: d/dH3[-(4/3)*H3*sin(3Φ) + H4*cos(4Φ)]
                 derivatives[param] = -(4.0 / 3.0) * jnp.sin(3.0 * phi)
         
         # =================================================================
@@ -1400,16 +1430,18 @@ def compute_binary_derivatives_ell1(
         elif param_upper == 'H4':
             h3_val = float(params.get('H3', 0.0))
             h4_val = float(params.get('H4', 0.0))
-            if h3_val != 0 and h4_val != 0:
+            if h3_val > 0.0 and h4_val > 0.0 and (h4_val / h3_val) <= 1.0:
+                # Valid STIG = H4/H3 ∈ (0, 1] — use chain rule through SINI/M2
                 h3h4_denom = h3_val**2 + h4_val**2
-                sini_h3h4 = min(2.0 * h3_val * h4_val / h3h4_denom, 1.0)
+                sini_h3h4 = 2.0 * h3_val * h4_val / h3h4_denom
                 m2_h3h4 = h3_val**4 / (h4_val**3 * T_SUN)
                 dM2_dH4 = -3.0 * m2_h3h4 / h4_val
                 dSINI_dH4 = 2.0 * h3_val * (h3_val**2 - h4_val**2) / h3h4_denom**2
                 derivatives[param] = (d_shapiro_d_M2(phi, sini_h3h4) * dM2_dH4 +
                                       d_shapiro_d_SINI(phi, sini_h3h4, m2_h3h4) * dSINI_dH4)
             else:
-                derivatives[param] = jnp.zeros(n_toas)
+                # Harmonic expansion: d/dH4[-(4/3)*H3*sin(3Φ) + H4*cos(4Φ)]
+                derivatives[param] = jnp.cos(4.0 * phi)
         
         # =================================================================
         # STIG derivative (orthometric Shapiro - ELL1H model)

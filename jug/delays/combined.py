@@ -28,7 +28,7 @@ def combined_delays(
     dm_coeffs, dm_factorials, dm_epoch,
     ne_sw, fd_coeffs, has_fd,
     roemer_shapiro, has_binary, binary_model_id,
-    pb, a1, tasc, eps1, eps2, pbdot, xdot, gamma, r_shap, s_shap,
+    pb, a1, tasc, eps1, eps2, eps1dot, eps2dot, pbdot, xdot, gamma, r_shap, s_shap,
     ecc, om, t0, omdot, edot, m2, sini, kin, kom, h3, h4, stig,
     fb_coeffs, fb_factorials, fb_epoch, use_fb,
     # DDK Kopeikin parameters (optional, for model_id 5)
@@ -161,35 +161,38 @@ def combined_delays(
             sin_4Phi, cos_4Phi = jnp.sin(4*Phi), jnp.cos(4*Phi)
 
             a1_eff = jnp.where(xdot != 0.0, a1 + xdot * dt_sec_bin, a1)
-            eps1_sq, eps2_sq = eps1**2, eps2**2
-            eps1_cu, eps2_cu = eps1**3, eps2**3
+            # Apply EPS1DOT/EPS2DOT time evolution
+            eps1_eff = eps1 + eps1dot * dt_sec_bin
+            eps2_eff = eps2 + eps2dot * dt_sec_bin
+            eps1_sq, eps2_sq = eps1_eff**2, eps2_eff**2
+            eps1_cu, eps2_cu = eps1_eff**3, eps2_eff**3
 
             Dre_a1 = (
-                sin_Phi + 0.5 * (eps2 * sin_2Phi - eps1 * cos_2Phi)
-                - (1.0/8.0) * (5*eps2_sq*sin_Phi - 3*eps2_sq*sin_3Phi - 2*eps2*eps1*cos_Phi
-                              + 6*eps2*eps1*cos_3Phi + 3*eps1_sq*sin_Phi + 3*eps1_sq*sin_3Phi)
-                - (1.0/12.0) * (5*eps2_cu*sin_2Phi + 3*eps1_sq*eps2*sin_2Phi
-                               - 6*eps1*eps2_sq*cos_2Phi - 4*eps1_cu*cos_2Phi
-                               - 4*eps2_cu*sin_4Phi + 12*eps1_sq*eps2*sin_4Phi
-                               + 12*eps1*eps2_sq*cos_4Phi - 4*eps1_cu*cos_4Phi)
+                sin_Phi + 0.5 * (eps2_eff * sin_2Phi - eps1_eff * cos_2Phi)
+                - (1.0/8.0) * (5*eps2_sq*sin_Phi - 3*eps2_sq*sin_3Phi - 2*eps2_eff*eps1_eff*cos_Phi
+                              + 6*eps2_eff*eps1_eff*cos_3Phi + 3*eps1_sq*sin_Phi + 3*eps1_sq*sin_3Phi)
+                - (1.0/12.0) * (5*eps2_cu*sin_2Phi + 3*eps1_sq*eps2_eff*sin_2Phi
+                               - 6*eps1_eff*eps2_sq*cos_2Phi - 4*eps1_cu*cos_2Phi
+                               - 4*eps2_cu*sin_4Phi + 12*eps1_sq*eps2_eff*sin_4Phi
+                               + 12*eps1_eff*eps2_sq*cos_4Phi - 4*eps1_cu*cos_4Phi)
             )
             Drep_a1 = (
-                cos_Phi + eps1 * sin_2Phi + eps2 * cos_2Phi
-                - (1.0/8.0) * (5*eps2_sq*cos_Phi - 9*eps2_sq*cos_3Phi + 2*eps1*eps2*sin_Phi
-                              - 18*eps1*eps2*sin_3Phi + 3*eps1_sq*cos_Phi + 9*eps1_sq*cos_3Phi)
-                - (1.0/12.0) * (10*eps2_cu*cos_2Phi + 6*eps1_sq*eps2*cos_2Phi
-                               + 12*eps1*eps2_sq*sin_2Phi + 8*eps1_cu*sin_2Phi
-                               - 16*eps2_cu*cos_4Phi + 48*eps1_sq*eps2*cos_4Phi
-                               - 48*eps1*eps2_sq*sin_4Phi + 16*eps1_cu*sin_4Phi)
+                cos_Phi + eps1_eff * sin_2Phi + eps2_eff * cos_2Phi
+                - (1.0/8.0) * (5*eps2_sq*cos_Phi - 9*eps2_sq*cos_3Phi + 2*eps1_eff*eps2_eff*sin_Phi
+                              - 18*eps1_eff*eps2_eff*sin_3Phi + 3*eps1_sq*cos_Phi + 9*eps1_sq*cos_3Phi)
+                - (1.0/12.0) * (10*eps2_cu*cos_2Phi + 6*eps1_sq*eps2_eff*cos_2Phi
+                               + 12*eps1_eff*eps2_sq*sin_2Phi + 8*eps1_cu*sin_2Phi
+                               - 16*eps2_cu*cos_4Phi + 48*eps1_sq*eps2_eff*cos_4Phi
+                               - 48*eps1_eff*eps2_sq*sin_4Phi + 16*eps1_cu*sin_4Phi)
             )
             Drepp_a1 = (
-                -sin_Phi + 2*eps1*cos_2Phi - 2*eps2*sin_2Phi
-                - (1.0/8.0) * (-5*eps2_sq*sin_Phi + 27*eps2_sq*sin_3Phi + 2*eps1*eps2*cos_Phi
-                              - 54*eps1*eps2*cos_3Phi - 3*eps1_sq*sin_Phi - 27*eps1_sq*sin_3Phi)
-                - (1.0/12.0) * (-20*eps2_cu*sin_2Phi - 12*eps1_sq*eps2*sin_2Phi
-                               + 24*eps1*eps2_sq*cos_2Phi + 16*eps1_cu*cos_2Phi
-                               + 64*eps2_cu*sin_4Phi - 192*eps1_sq*eps2*sin_4Phi
-                               - 192*eps1*eps2_sq*cos_4Phi + 64*eps1_cu*cos_4Phi)
+                -sin_Phi + 2*eps1_eff*cos_2Phi - 2*eps2_eff*sin_2Phi
+                - (1.0/8.0) * (-5*eps2_sq*sin_Phi + 27*eps2_sq*sin_3Phi + 2*eps1_eff*eps2_eff*cos_Phi
+                              - 54*eps1_eff*eps2_eff*cos_3Phi - 3*eps1_sq*sin_Phi - 27*eps1_sq*sin_3Phi)
+                - (1.0/12.0) * (-20*eps2_cu*sin_2Phi - 12*eps1_sq*eps2_eff*sin_2Phi
+                               + 24*eps1_eff*eps2_sq*cos_2Phi + 16*eps1_cu*cos_2Phi
+                               + 64*eps2_cu*sin_4Phi - 192*eps1_sq*eps2_eff*sin_4Phi
+                               - 192*eps1_eff*eps2_sq*cos_4Phi + 64*eps1_cu*cos_4Phi)
             )
 
             Dre = a1_eff * Dre_a1
@@ -231,9 +234,9 @@ def combined_delays(
                 -(4.0 / 3.0) * h3 * sin_3Phi + h4 * cos_4Phi,
                 0.0
             )
-            # Select: ELL1H lsc if stig != 0, else h3h4/h3only/standard
+            # Select: ELL1H lsc if 0 < stig <= 1, else h3h4/h3only/standard
             shapiro_binary = jnp.where(
-                stig != 0.0,
+                (stig > 0.0) & (stig <= 1.0),
                 shapiro_ell1h,
                 shapiro_standard + shapiro_h3only + shapiro_h3h4
             )
@@ -403,7 +406,7 @@ def compute_total_delay_jax(
     dm_coeffs, dm_factorials, dm_epoch,
     ne_sw, fd_coeffs, has_fd,
     roemer_shapiro, has_binary, binary_model_id,
-    pb, a1, tasc, eps1, eps2, pbdot, xdot, gamma, r_shap, s_shap,
+    pb, a1, tasc, eps1, eps2, eps1dot, eps2dot, pbdot, xdot, gamma, r_shap, s_shap,
     ecc, om, t0, omdot, edot, m2, sini, kin, kom, h3, h4, stig,
     fb_coeffs, fb_factorials, fb_epoch, use_fb,
     # DDK Kopeikin parameters (optional)
@@ -444,7 +447,7 @@ def compute_total_delay_jax(
         dm_coeffs, dm_factorials, dm_epoch,
         ne_sw, fd_coeffs, has_fd,
         roemer_shapiro, has_binary, binary_model_id,
-        pb, a1, tasc, eps1, eps2, pbdot, xdot, gamma, r_shap, s_shap,
+        pb, a1, tasc, eps1, eps2, eps1dot, eps2dot, pbdot, xdot, gamma, r_shap, s_shap,
         ecc, om, t0, omdot, edot, m2, sini, kin, kom, h3, h4, stig,
         fb_coeffs, fb_factorials, fb_epoch, use_fb,
         obs_pos_ls, px, sin_ra, cos_ra, sin_dec, cos_dec,

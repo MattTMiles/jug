@@ -36,6 +36,8 @@ from jug.utils.constants import (
     MAS_PER_RAD,
     HOURANGLE_PER_RAD,
     DEG_PER_RAD,
+    T_SUN_SEC,
+    T_PLANET,
 )
 
 # Obliquity values (arcseconds) for ecliptic coordinate frames
@@ -506,25 +508,35 @@ def compute_astrometric_delay(
     params: Dict,
     toas_mjd: jnp.ndarray,
     ssb_obs_pos_ls: jnp.ndarray,
+    obs_sun_pos_ls: jnp.ndarray = None,
+    obs_planet_pos_ls: dict = None,
 ) -> jnp.ndarray:
-    """Compute the astrometric (Roemer) delay contribution.
+    """Compute the astrometric (Roemer + Shapiro) delay contribution.
 
     The astrometric delay is the light travel time from the observatory to
-    the SSB along the pulsar direction:
-        tau_astro = -r * n / c  (with parallax correction)
+    the SSB along the pulsar direction, plus the gravitational time delay
+    (Shapiro delay) from the Sun and planets:
+        tau_astro = -r * n / c  (with parallax correction) + Shapiro
 
     Parameters
     ----------
     params : Dict
         Parameter dictionary with:
         - RAJ, DECJ (radians or HMS/DMS strings) - required
-        - POSEPOCH (MJD) - optional, defaults to mean TOA time
+        - POSEPOCH (MJD) - optional, defaults to PEPOCH or mean TOA time
         - PMRA, PMDEC (mas/yr) - optional, for proper motion correction
         - PX (mas) - optional, for parallax correction
     toas_mjd : jnp.ndarray
         TOA times in MJD (TDB), shape (n_toas,)
     ssb_obs_pos_ls : jnp.ndarray
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
+    obs_sun_pos_ls : jnp.ndarray, optional
+        Sun position relative to observatory, shape (n_toas, 3), in light-seconds.
+        If provided, solar Shapiro delay is computed and included.
+    obs_planet_pos_ls : dict, optional
+        Planet positions relative to observatory, in light-seconds.
+        Dict mapping planet name to array of shape (n_toas, 3).
+        If provided, planetary Shapiro delays are computed and included.
 
     Returns
     -------
@@ -537,6 +549,8 @@ def compute_astrometric_delay(
     1. Basic Roemer delay: -r * n / c
     2. Proper motion correction to the pulsar direction
     3. Second-order parallax correction
+    4. Solar Shapiro delay (if obs_sun_pos_ls provided)
+    5. Planetary Shapiro delays (if obs_planet_pos_ls provided)
     """
     from jug.io.par_reader import parse_ra, parse_dec
 
@@ -558,7 +572,7 @@ def compute_astrometric_delay(
     else:
         psr_dec = jnp.float64(decj_value)
 
-    posepoch = jnp.float64(params.get('POSEPOCH', jnp.mean(toas_mjd)))
+    posepoch = jnp.float64(params.get('POSEPOCH', params.get('PEPOCH', float(jnp.mean(toas_mjd)))))
 
     # Get proper motion (convert from mas/yr to rad/yr if present)
     pmra_mas_yr = params.get('PMRA', 0.0)
@@ -605,6 +619,34 @@ def compute_astrometric_delay(
     parallax_delay = 0.5 * px_r_sq / d_ls  # seconds
 
     roemer_delay = roemer_delay + parallax_delay
+
+    # Solar Shapiro delay: -2 * T_sun * ln((r - r*cos(theta)) / AU_LS)
+    # where r is the observer-to-Sun distance and theta is the angle between
+    # the pulsar direction and the observer-to-Sun direction.
+    if obs_sun_pos_ls is not None:
+        obs_sun_pos_ls = jnp.asarray(obs_sun_pos_ls, dtype=jnp.float64)
+        # Pulsar direction unit vector (with proper motion)
+        n_hat = jnp.column_stack([n_x, n_y, n_z])
+        # Observer-to-Sun distance
+        r_sun = jnp.sqrt(jnp.sum(obs_sun_pos_ls**2, axis=1))
+        # Projection of Sun direction onto pulsar direction
+        r_cos_theta = jnp.sum(obs_sun_pos_ls * n_hat, axis=1)
+        # Shapiro delay
+        AU_LS_local = AU_METERS / SPEED_OF_LIGHT
+        sun_shapiro = -2.0 * T_SUN_SEC * jnp.log((r_sun - r_cos_theta) / AU_LS_local)
+        roemer_delay = roemer_delay + sun_shapiro
+
+    # Planetary Shapiro delays: same formula for each planet
+    if obs_planet_pos_ls is not None:
+        AU_LS_planet = AU_METERS / SPEED_OF_LIGHT
+        if obs_sun_pos_ls is None:
+            n_hat = jnp.column_stack([n_x, n_y, n_z])
+        for planet, pos_ls in obs_planet_pos_ls.items():
+            pos_ls = jnp.asarray(pos_ls, dtype=jnp.float64)
+            r_planet = jnp.sqrt(jnp.sum(pos_ls**2, axis=1))
+            r_cos_theta_p = jnp.sum(pos_ls * n_hat, axis=1)
+            planet_shapiro = -2.0 * T_PLANET[planet] * jnp.log((r_planet - r_cos_theta_p) / AU_LS_planet)
+            roemer_delay = roemer_delay + planet_shapiro
 
     return roemer_delay
 
@@ -673,7 +715,7 @@ def compute_astrometry_derivatives(
     else:
         psr_dec = float(decj_value)
     
-    posepoch = float(params.get('POSEPOCH', float(toas_mjd.mean())))
+    posepoch = float(params.get('POSEPOCH', params.get('PEPOCH', float(toas_mjd.mean()))))
     
     # Get proper motion for PX correction (convert from mas/yr to rad/yr if present)
     # PMRA/PMDEC are in mas/yr in par files

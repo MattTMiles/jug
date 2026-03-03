@@ -70,8 +70,9 @@ def _is_ell1_parameterization(params: Dict) -> bool:
 def compute_t2_binary_delay(
     toas_bary_mjd: jnp.ndarray,
     params: Dict,
+    **kwargs,
 ) -> jnp.ndarray:
-    """Compute T2 binary delay by dispatching to ELL1 or DD.
+    """Compute T2 binary delay by dispatching to ELL1 or DD/DDK.
     
     Parameters
     ----------
@@ -80,6 +81,8 @@ def compute_t2_binary_delay(
     params : dict
         Parameter dictionary (must contain BINARY=T2 and either
         TASC/EPS1/EPS2 for ELL1 mode or T0/ECC/OM for DD mode).
+    **kwargs
+        Additional keyword arguments (e.g. obs_pos_ls for DDK).
     
     Returns
     -------
@@ -90,6 +93,10 @@ def compute_t2_binary_delay(
         from jug.fitting.derivatives_binary import compute_ell1_binary_delay
         return compute_ell1_binary_delay(toas_bary_mjd, params)
     else:
+        has_kin_kom = 'KIN' in params or 'KOM' in params
+        if has_kin_kom:
+            from jug.fitting.derivatives_dd import compute_ddk_binary_delay
+            return compute_ddk_binary_delay(toas_bary_mjd, params, **kwargs)
         from jug.fitting.derivatives_dd import compute_dd_binary_delay
         return compute_dd_binary_delay(toas_bary_mjd, params)
 
@@ -98,6 +105,7 @@ def compute_binary_derivatives_t2(
     params: Dict,
     toas_bary_mjd: jnp.ndarray,
     fit_params: List[str],
+    **kwargs,
 ) -> Dict[str, jnp.ndarray]:
     """Compute T2 binary derivatives by dispatching to ELL1 or DD.
     
@@ -109,6 +117,8 @@ def compute_binary_derivatives_t2(
         Barycentric TOA times in MJD.
     fit_params : list of str
         Parameters to compute derivatives for.
+    **kwargs
+        Additional keyword arguments (e.g. obs_pos_ls for DDK derivatives).
     
     Returns
     -------
@@ -123,6 +133,6 @@ def compute_binary_derivatives_t2(
         has_kin_kom = 'KIN' in params or 'KOM' in params
         if has_kin_kom:
             from jug.fitting.derivatives_dd import compute_binary_derivatives_ddk
-            return compute_binary_derivatives_ddk(params, toas_bary_mjd, fit_params)
+            return compute_binary_derivatives_ddk(params, toas_bary_mjd, fit_params, **kwargs)
         from jug.fitting.derivatives_dd import compute_binary_derivatives_dd
         return compute_binary_derivatives_dd(params, toas_bary_mjd, fit_params)

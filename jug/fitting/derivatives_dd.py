@@ -248,9 +248,210 @@ def compute_dd_shapiro_delay(
     return -2 * r * jnp.log(arg)
 
 
+def _extract_dd_params(params: Dict):
+    """Extract common DD binary parameters from params dict.
+
+    Returns a dict of floats: a1, pb, t0, ecc, om_deg, pbdot, gamma, m2,
+    sini, omdot, xdot, edot.
+    """
+    a1 = float(params.get('A1', 0.0))
+    pb = float(params.get('PB', 1.0))
+    t0 = float(params.get('T0', 0.0))
+    ecc = float(params.get('ECC', 0.0))
+    om_deg = float(params.get('OM', 0.0))
+    pbdot = float(params.get('PBDOT', 0.0))
+    gamma = float(params.get('GAMMA', 0.0))
+    m2 = float(params.get('M2', 0.0))
+
+    # Handle SINI - can be numeric or 'KIN' (DDK convention: SINI = sin(KIN))
+    sini_raw = params.get('SINI', 0.0)
+    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
+        kin_deg = float(params.get('KIN', 0.0))
+        sini = float(jnp.sin(jnp.deg2rad(kin_deg)))
+    else:
+        sini = float(sini_raw)
+
+    # Check for orthometric parameters if SINI/M2 not set
+    if sini == 0.0 or m2 == 0.0:
+        h3 = float(params.get('H3', 0.0))
+        stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
+        h4 = float(params.get('H4', 0.0))
+
+        if h3 != 0.0 and stig > 0.0 and stig <= 1.0:
+            if h4 != 0.0:
+                warnings.warn(
+                    "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
+                    UserWarning, stacklevel=2
+                )
+            sini = 2 * stig / (1 + stig**2)
+            m2 = h3 / (stig**3 * T_SUN)
+        elif h3 > 0.0 and h4 > 0.0:
+            stig_derived = h4 / h3
+            if 0.0 < stig_derived <= 1.0:
+                sini = 2.0 * stig_derived / (1.0 + stig_derived**2)
+                m2 = h3 / (stig_derived**3 * T_SUN)
+        elif h3 != 0.0 and h4 == 0.0 and stig == 0.0:
+            warnings.warn(
+                "H3/H4 parameterization with H4=0: M2 is ill-conditioned; derivative will be zero",
+                UserWarning, stacklevel=2
+            )
+
+    omdot = float(params.get('OMDOT', 0.0))
+    xdot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
+    edot = float(params.get('EDOT', 0.0))
+
+    return dict(a1=a1, pb=pb, t0=t0, ecc=ecc, om_deg=om_deg, pbdot=pbdot,
+                gamma=gamma, m2=m2, sini=sini, omdot=omdot, xdot=xdot, edot=edot)
+
+
+def _compute_kopeikin_corrections(
+    params: Dict,
+    toas_bary_mjd: jnp.ndarray,
+    a1: float,
+    t0: float,
+    obs_pos_ls: jnp.ndarray = None,
+):
+    """Compute DDK Kopeikin corrections to A1 and OM.
+
+    Returns (delta_a1, delta_om_deg, sini_eff) where delta_a1 and
+    delta_om_deg are per-TOA arrays, and sini_eff is sin(KIN_eff).
+    """
+    import numpy as np
+    n_toas = len(toas_bary_mjd)
+
+    kin_deg = float(params.get('KIN', 0.0))
+    kom_deg = float(params.get('KOM', 0.0))
+    px_mas = float(params.get('PX', 0.0))
+    kin_rad = jnp.deg2rad(kin_deg)
+    kom_rad = jnp.deg2rad(kom_deg)
+
+    MAS_PER_YR_TO_RAD_PER_SEC = (jnp.pi / 180.0 / 3600.0 / 1000.0) / SECS_PER_YEAR
+    _is_ecliptic = bool(params.get('_ecliptic_coords', False))
+    if _is_ecliptic:
+        pmra_mas_yr = float(params.get('_ecliptic_pm_lon', 0.0))
+        pmdec_mas_yr = float(params.get('_ecliptic_pm_lat', 0.0))
+    else:
+        pmra_mas_yr = float(params.get('PMRA', 0.0))
+        pmdec_mas_yr = float(params.get('PMDEC', 0.0))
+    pmra_rad_per_sec = pmra_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
+    pmdec_rad_per_sec = pmdec_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
+
+    # K96 flag
+    k96_flag = True
+    if 'K96' in params and params['K96'] is not None:
+        k96_param = params['K96']
+        if isinstance(k96_param, bool):
+            k96_flag = k96_param
+        elif isinstance(k96_param, str):
+            k96_flag = k96_param.upper() not in ('N', 'NO', 'FALSE', '0', 'F')
+        else:
+            k96_flag = bool(k96_param)
+    use_k96 = k96_flag and (pmra_mas_yr != 0 or pmdec_mas_yr != 0)
+    has_parallax = px_mas > 0.0 and abs(kin_deg) > 0.0
+
+    dt_days = toas_bary_mjd - t0
+    tt0_sec = dt_days * SECS_PER_DAY
+
+    sin_kom = jnp.sin(kom_rad)
+    cos_kom = jnp.cos(kom_rad)
+
+    # K96 proper motion corrections
+    delta_kin_pm = jnp.where(
+        use_k96,
+        (-pmra_rad_per_sec * sin_kom + pmdec_rad_per_sec * cos_kom) * tt0_sec,
+        0.0
+    )
+    kin_eff_rad = kin_rad + delta_kin_pm
+    tan_kin_eff = jnp.tan(kin_eff_rad)
+    tan_kin_eff_safe = jnp.where(jnp.abs(tan_kin_eff) < 1e-10, 1e-10, tan_kin_eff)
+    sin_kin_eff = jnp.sin(kin_eff_rad)
+    sin_kin_eff_safe = jnp.where(jnp.abs(sin_kin_eff) < 1e-10, 1e-10, sin_kin_eff)
+
+    delta_a1_pm = jnp.where(use_k96, a1 * delta_kin_pm / tan_kin_eff_safe, 0.0)
+    delta_omega_pm_rad = jnp.where(
+        use_k96,
+        (1.0 / sin_kin_eff_safe) * (pmra_rad_per_sec * cos_kom + pmdec_rad_per_sec * sin_kom) * tt0_sec,
+        0.0
+    )
+
+    # Kopeikin 1995 annual orbital parallax corrections
+    if obs_pos_ls is None:
+        obs_pos_ls = jnp.zeros((n_toas, 3))
+    obs_pos_ls = jnp.asarray(obs_pos_ls)
+
+    # Coordinate frame rotation for ecliptic pulsars
+    if _is_ecliptic:
+        from jug.io.par_reader import OBLIQUITY_ARCSEC
+        _ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010')).upper()
+        _obl_rad = OBLIQUITY_ARCSEC.get(_ecl_frame, OBLIQUITY_ARCSEC['IERS2010']) * float(jnp.pi) / (180.0 * 3600.0)
+        _cos_obl = jnp.cos(_obl_rad)
+        _sin_obl = jnp.sin(_obl_rad)
+        _x = obs_pos_ls[:, 0]
+        _y = obs_pos_ls[:, 1] * _cos_obl + obs_pos_ls[:, 2] * _sin_obl
+        _z = -obs_pos_ls[:, 1] * _sin_obl + obs_pos_ls[:, 2] * _cos_obl
+        obs_pos_ls = jnp.column_stack([_x, _y, _z])
+
+    # Pulsar position for K95 projections
+    if _is_ecliptic:
+        _ecl_lon_rad = float(jnp.pi) / 180.0 * float(params.get('_ecliptic_lon_deg', 0.0))
+        _ecl_lat_rad = float(jnp.pi) / 180.0 * float(params.get('_ecliptic_lat_deg', 0.0))
+        sin_ra = jnp.sin(_ecl_lon_rad)
+        cos_ra = jnp.cos(_ecl_lon_rad)
+        sin_dec = jnp.sin(_ecl_lat_rad)
+        cos_dec = jnp.cos(_ecl_lat_rad)
+    else:
+        from jug.io.par_reader import parse_ra, parse_dec
+        raj_val = params.get('RAJ', 0.0)
+        decj_val = params.get('DECJ', 0.0)
+        ra_rad = parse_ra(raj_val) if isinstance(raj_val, str) and ':' in raj_val else float(raj_val)
+        dec_rad = parse_dec(decj_val) if isinstance(decj_val, str) and ':' in decj_val else float(decj_val)
+        sin_ra = jnp.sin(ra_rad)
+        cos_ra = jnp.cos(ra_rad)
+        sin_dec = jnp.sin(dec_rad)
+        cos_dec = jnp.cos(dec_rad)
+
+    x = obs_pos_ls[:, 0]
+    y = obs_pos_ls[:, 1]
+    z = obs_pos_ls[:, 2]
+    delta_I0 = -x * sin_ra + y * cos_ra
+    delta_J0 = -x * sin_dec * cos_ra - y * sin_dec * sin_ra + z * cos_dec
+
+    px_safe = max(abs(px_mas), 1e-10)
+    d_ls = 1000.0 * PC_TO_LIGHT_SEC / px_safe
+
+    delta_a1_px = jnp.where(
+        has_parallax,
+        (a1 / tan_kin_eff_safe / d_ls) * (delta_I0 * sin_kom - delta_J0 * cos_kom),
+        0.0
+    )
+    delta_omega_px_rad = jnp.where(
+        has_parallax,
+        -(1.0 / sin_kin_eff_safe / d_ls) * (delta_I0 * cos_kom + delta_J0 * sin_kom),
+        0.0
+    )
+
+    delta_a1 = delta_a1_pm + delta_a1_px
+    delta_om_deg = jnp.rad2deg(delta_omega_pm_rad) + jnp.rad2deg(delta_omega_px_rad)
+
+    # SINI from effective KIN
+    sini_raw = params.get('SINI', 0.0)
+    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
+        sini_explicit = 0.0
+    else:
+        sini_explicit = float(sini_raw)
+    sini_eff = jnp.where(
+        (sini_explicit == 0.0) & (jnp.abs(kin_deg) > 0.0),
+        jnp.sin(kin_eff_rad),
+        sini_explicit
+    )
+
+    return delta_a1, delta_om_deg, sini_eff
+
+
 def compute_dd_binary_delay(
     toas_bary_mjd: jnp.ndarray,
-    params: Dict
+    params: Dict,
+    **kwargs,
 ) -> jnp.ndarray:
     """Compute total DD binary delay.
     
@@ -266,56 +467,57 @@ def compute_dd_binary_delay(
     delay : jnp.ndarray
         Total binary delay in seconds
     """
-    # Extract parameters
-    a1 = float(params.get('A1', 0.0))
-    pb = float(params.get('PB', 1.0))
-    t0 = float(params.get('T0', 0.0))
-    ecc = float(params.get('ECC', 0.0))
-    om_deg = float(params.get('OM', 0.0))
-    pbdot = float(params.get('PBDOT', 0.0))
-    gamma = float(params.get('GAMMA', 0.0))
-    m2 = float(params.get('M2', 0.0))
-    
-    # Handle SINI - can be numeric or 'KIN' (DDK convention: SINI = sin(KIN))
-    sini_raw = params.get('SINI', 0.0)
-    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
-        # DDK convention: SINI derived from KIN (orbital inclination)
-        kin_deg = float(params.get('KIN', 0.0))
-        sini = jnp.sin(jnp.deg2rad(kin_deg))
-    else:
-        sini = float(sini_raw)
-    
-    # Check for orthometric parameters if SINI/M2 not set
-    if sini == 0.0 or m2 == 0.0:
-        h3 = float(params.get('H3', 0.0))
-        stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
-        h4 = float(params.get('H4', 0.0))
-
-        if h3 != 0.0 and stig != 0.0:
-            if h4 != 0.0:
-                warnings.warn(
-                    "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
-                    UserWarning, stacklevel=2
-                )
-            # H3/STIG parameterization (DDH)
-            sini = 2 * stig / (1 + stig**2)
-            m2 = h3 / (stig**3 * T_SUN)
-        elif h3 != 0.0 and h4 != 0.0:
-            # H3/H4 parameterization (Freire & Wex 2010, PINT convention)
-            h3h4_denom = h3**2 + h4**2
-            sini = min(2.0 * h3 * h4 / h3h4_denom, 1.0)
-            m2 = h3**4 / (h4**3 * T_SUN)
-        elif h3 != 0.0 and h4 == 0.0:
-            warnings.warn(
-                "H3/H4 parameterization with H4=0: M2 is ill-conditioned; Shapiro delay will be zero",
-                UserWarning, stacklevel=2
-            )
-
-    omdot = float(params.get('OMDOT', 0.0))  # deg/yr
+    p = _extract_dd_params(params)
 
     return _compute_dd_binary_delay_jit(
         jnp.asarray(toas_bary_mjd),
-        a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, float(sini), m2
+        p['a1'], p['pb'], p['t0'], p['ecc'], p['om_deg'], p['omdot'],
+        p['pbdot'], p['gamma'], p['sini'], p['m2'], p['xdot'], p['edot']
+    )
+
+
+def compute_ddk_binary_delay(
+    toas_bary_mjd: jnp.ndarray,
+    params: Dict,
+    obs_pos_ls: jnp.ndarray = None,
+    **kwargs,
+) -> jnp.ndarray:
+    """Compute DDK binary delay (DD + Kopeikin corrections to A1/OM).
+
+    Applies K96 proper motion and K95 annual orbital parallax corrections
+    to the projected semi-major axis and longitude of periastron before
+    computing the standard DD delay.
+
+    Parameters
+    ----------
+    toas_bary_mjd : jnp.ndarray
+        Barycentric TOA times in MJD
+    params : Dict
+        DDK model parameters (must include KIN, KOM)
+    obs_pos_ls : jnp.ndarray, optional
+        Observer position in light-seconds relative to SSB, shape (N, 3).
+        Required for Kopeikin 1995 annual parallax corrections.
+
+    Returns
+    -------
+    delay : jnp.ndarray
+        Total binary delay in seconds
+    """
+    p = _extract_dd_params(params)
+    toas_bary_mjd = jnp.asarray(toas_bary_mjd)
+
+    delta_a1, delta_om_deg, sini_eff = _compute_kopeikin_corrections(
+        params, toas_bary_mjd, p['a1'], p['t0'], obs_pos_ls
+    )
+
+    # Per-TOA effective A1 and OM
+    a1_eff = p['a1'] + delta_a1
+    om_eff_deg = p['om_deg'] + delta_om_deg
+
+    return _compute_dd_binary_delay_jit(
+        toas_bary_mjd,
+        a1_eff, p['pb'], p['t0'], p['ecc'], om_eff_deg, p['omdot'],
+        p['pbdot'], p['gamma'], sini_eff, p['m2'], p['xdot'], p['edot']
     )
 
 
@@ -323,21 +525,29 @@ def compute_dd_binary_delay(
 def _compute_dd_binary_delay_jit(
     toas_bary_mjd: jnp.ndarray,
     a1: float, pb: float, t0: float, ecc: float, om_deg: float, omdot_deg_yr: float,
-    pbdot: float, gamma: float, sini: float, m2: float
+    pbdot: float, gamma: float, sini: float, m2: float,
+    xdot: float, edot: float
 ) -> jnp.ndarray:
     """JIT-compiled DD binary delay computation."""
+    # Time since T0
+    dt = toas_bary_mjd - t0  # days
+    dt_sec = dt * SECS_PER_DAY
+
+    # Apply secular changes to a1 and eccentricity
+    a1_current = a1 + xdot * dt_sec
+    ecc_current = ecc + edot * dt_sec
+
     # Mean anomaly
     M = compute_mean_anomaly_dd(toas_bary_mjd, pb, t0, pbdot)
 
     # Solve Kepler's equation for eccentric anomaly
-    E = solve_kepler(M, ecc)
+    E = solve_kepler(M, ecc_current)
 
     # True anomaly
-    theta = compute_true_anomaly(E, ecc)
+    theta = compute_true_anomaly(E, ecc_current)
 
     # Periastron advance: D&D 1986 eq [25]: omega = omega_0 + k*Ae
     # k = OMDOT / n (dimensionless); Ae = accumulated true anomaly
-    dt = toas_bary_mjd - t0  # days
     orbits = dt / pb - 0.5 * pbdot * (dt / pb) ** 2
     norbits = jnp.floor(orbits)
     Ae = 2.0 * jnp.pi * norbits + theta  # accumulated true anomaly
@@ -345,15 +555,15 @@ def _compute_dd_binary_delay_jit(
     om_rad = jnp.deg2rad(om_deg) + k_omdot * Ae
 
     # Roemer delay
-    roemer = compute_dd_roemer_delay(E, theta, a1, ecc, om_rad)
+    roemer = compute_dd_roemer_delay(E, theta, a1_current, ecc_current, om_rad)
 
     # Einstein delay
-    einstein = compute_dd_einstein_delay(E, gamma, ecc)
+    einstein = compute_dd_einstein_delay(E, gamma, ecc_current)
 
     # Shapiro delay
     shapiro = jnp.where(
         (sini > 0) & (m2 > 0),
-        compute_dd_shapiro_delay(E, theta, om_rad, ecc, sini, m2),
+        compute_dd_shapiro_delay(E, theta, om_rad, ecc_current, sini, m2),
         0.0
     )
 
@@ -408,6 +618,13 @@ def compute_binary_derivatives_dd(
     else:
         sini = float(sini_raw)
     
+    # Apply XDOT/EDOT secular evolution to get effective per-TOA a1 and ecc
+    xdot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
+    edot = float(params.get('EDOT', 0.0))
+    dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
+    a1_eff = a1 + xdot * dt_sec
+    ecc_eff = ecc + edot * dt_sec
+
     # Apply periastron advance for omega
     dt_yr = (toas_bary_mjd - t0) / 365.25
     om_rad = (om_deg + omdot * dt_yr) * DEG_TO_RAD
@@ -419,57 +636,58 @@ def compute_binary_derivatives_dd(
         
         if param_upper == 'A1':
             # d(delay)/d(A1) - simple scaling
-            deriv = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot)
+            deriv = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot)
             derivatives[param] = deriv
             
         elif param_upper == 'PB':
-            deriv = _d_delay_d_PB(toas_bary_mjd, a1, pb, t0, ecc, om_rad, pbdot, sini, m2)
+            deriv = _d_delay_d_PB(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad, pbdot, sini, m2)
             derivatives[param] = deriv  # Already in s/day units
             
         elif param_upper == 'T0':
-            deriv = _d_delay_d_T0(toas_bary_mjd, a1, pb, t0, ecc, om_rad, pbdot, sini, m2)
+            deriv = _d_delay_d_T0(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad, pbdot, sini, m2)
             derivatives[param] = deriv  # Already in s/day units
             
         elif param_upper == 'ECC':
-            deriv = _d_delay_d_ECC(toas_bary_mjd, a1, pb, t0, ecc, om_rad, pbdot, gamma, sini, m2)
+            deriv = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad, pbdot, gamma, sini, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'OM':
-            deriv = _d_delay_d_OM(toas_bary_mjd, a1, pb, t0, ecc, om_rad, pbdot, sini, m2)
+            deriv = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad, pbdot, sini, m2)
             derivatives[param] = deriv * DEG_TO_RAD  # Convert to per-degree units
             
         elif param_upper == 'PBDOT':
-            deriv = _d_delay_d_PBDOT(toas_bary_mjd, a1, pb, t0, ecc, om_rad, sini, m2)
+            deriv = _d_delay_d_PBDOT(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad, sini, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'GAMMA':
-            deriv = _d_delay_d_GAMMA(toas_bary_mjd, pb, t0, ecc, pbdot)
+            deriv = _d_delay_d_GAMMA(toas_bary_mjd, pb, t0, ecc_eff, pbdot)
             derivatives[param] = deriv
             
         elif param_upper == 'SINI':
-            deriv = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini, m2)
+            deriv = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, sini, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'M2':
-            deriv = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, sini)
+            deriv = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, sini)
             derivatives[param] = deriv
             
         elif param_upper == 'H3':
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
             h4_val = float(params.get('H4', 0.0))
-            if stig_val != 0.0:
+            if stig_val > 0.0 and stig_val <= 1.0:
                 if h4_val != 0.0:
                     warnings.warn(
                         "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
                         UserWarning, stacklevel=2
                     )
-                # DDH model: H3/STIG parameterization
-                deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, stig_val)
-            elif h4_val != 0.0:
-                # H3/H4 parameterization (Freire & Wex 2010)
-                deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3_val, h4_val)
+                # DDH model: H3/STIG parameterization — valid STIG
+                deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, stig_val)
+            elif h4_val > 0.0 and h3_val > 0.0 and (h4_val / h3_val) <= 1.0:
+                # H3/H4 parameterization — valid STIG = H4/H3 ∈ (0, 1]
+                deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, h3_val, h4_val)
             else:
+                # Invalid STIG — Shapiro delay is unconstrained, return zero derivative
                 if h3_val != 0.0:
                     warnings.warn(
                         "H3/H4 parameterization with H4=0: M2 is ill-conditioned; derivative will be zero",
@@ -482,32 +700,36 @@ def compute_binary_derivatives_dd(
             # DDH model: H3/STIG parameterization
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3_val, stig_val)
+            if stig_val > 0.0 and stig_val <= 1.0 and h3_val != 0.0:
+                deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, h3_val, stig_val)
+            else:
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
         elif param_upper == 'OMDOT':
-            deriv = _d_delay_d_OMDOT(toas_bary_mjd, a1, pb, t0, ecc, om_deg, omdot, pbdot, sini, m2)
+            deriv = _d_delay_d_OMDOT(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_deg, omdot, pbdot, sini, m2)
             # OMDOT is in deg/yr, convert appropriately
             derivatives[param] = deriv
             
         elif param_upper == 'XDOT' or param_upper == 'A1DOT':
-            # A1 derivative - d(delay)/d(A1DOT) = d(delay)/d(A1) * t
-            dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
-            d_a1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot)
+            # d(delay)/d(XDOT) = d(delay)/d(A1) * dt_sec (chain rule through a1_eff)
+            d_a1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot)
             derivatives[param] = d_a1 * dt_sec
 
         elif param_upper == 'EDOT':
-            # Eccentricity derivative - d(delay)/d(EDOT) = d(delay)/d(ECC) * dt_sec
-            # Analogous to XDOT through A1: ecc_current = ecc + edot * dt_sec
-            dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
-            d_ecc = _d_delay_d_ECC(toas_bary_mjd, a1, pb, t0, ecc, om_rad, pbdot, gamma, sini, m2)
+            # d(delay)/d(EDOT) = d(delay)/d(ECC) * dt_sec (chain rule through ecc_eff)
+            d_ecc = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad, pbdot, gamma, sini, m2)
             derivatives[param] = d_ecc * dt_sec
 
         elif param_upper == 'H4':
             # Orthometric Shapiro parameter H4 (DD/DDH model, H3/H4 parameterization)
             h3 = float(params.get('H3', 0.0))
             h4 = float(params.get('H4', 0.0))
-            deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc, om_rad, pbdot, h3, h4)
+            if h3 > 0.0 and h4 > 0.0 and (h4 / h3) <= 1.0:
+                deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, h3, h4)
+            else:
+                # Invalid STIG — return zero derivative
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
     return derivatives
@@ -1076,6 +1298,11 @@ def compute_binary_derivatives_ddk(
     m2 = float(params.get('M2', 0.0))
     omdot = float(params.get('OMDOT', 0.0))
     
+    # Apply EDOT secular evolution to get effective per-TOA ecc
+    edot = float(params.get('EDOT', 0.0))
+    dt_sec_from_t0 = (toas_bary_mjd - t0) * SECS_PER_DAY
+    ecc_eff = ecc + edot * dt_sec_from_t0
+    
     # DDK-specific parameters
     kin_deg = float(params.get('KIN', 0.0))
     
@@ -1212,8 +1439,9 @@ def compute_binary_derivatives_ddk(
         0.0
     )
     
-    # Effective parameters
-    a1_eff = a1 + delta_a1_pm + delta_a1_px
+    # Effective parameters (Kopeikin + XDOT)
+    xdot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
+    a1_eff = a1 + delta_a1_pm + delta_a1_px + xdot * dt_sec_from_t0
     om_eff_deg = om_deg + jnp.rad2deg(delta_omega_pm_rad) + jnp.rad2deg(delta_omega_px_rad)
     
     # For SINI: use sin(KIN_eff) if SINI not explicitly set or if SINI='KIN'
@@ -1248,14 +1476,8 @@ def compute_binary_derivatives_ddk(
         param_upper = param.upper()
         
         if param_upper == 'A1':
-            # For A1, the effective derivative needs adjustment
-            # d(delay)/d(A1) through effective A1
-            # d(A1_eff)/d(A1) = 1 + d(delta_A1)/d(A1) where delta_A1 terms ~ A1
-            # delta_A1_pm = A1 * delta_kin_pm / tan(KIN) -> d/dA1 = delta_kin_pm / tan(KIN)
-            # delta_A1_px = A1 / tan(KIN) / d * (...) -> d/dA1 = 1/tan(KIN)/d * (...)
-            
             # Get base derivative for A1
-            deriv = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
+            deriv = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot)
             
             # Adjustment factor for effective A1 dependence on A1
             d_A1_eff_d_A1 = 1.0
@@ -1267,65 +1489,63 @@ def compute_binary_derivatives_ddk(
             derivatives[param] = deriv * d_A1_eff_d_A1
             
         elif param_upper == 'PB':
-            deriv = _d_delay_d_PB(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+            deriv = _d_delay_d_PB(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, pbdot, sini_eff, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'T0':
-            deriv = _d_delay_d_T0(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+            deriv = _d_delay_d_T0(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, pbdot, sini_eff, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'ECC':
-            deriv = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, gamma, sini_eff, m2)
+            deriv = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, pbdot, gamma, sini_eff, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'OM':
             # d(delay)/d(OM) - OM_eff = OM + corrections, so d(OM_eff)/d(OM) = 1
-            deriv = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+            deriv = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, pbdot, sini_eff, m2)
             derivatives[param] = deriv * DEG_TO_RAD
             
         elif param_upper == 'PBDOT':
-            deriv = _d_delay_d_PBDOT(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, sini_eff, m2)
+            deriv = _d_delay_d_PBDOT(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, sini_eff, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'GAMMA':
-            deriv = _d_delay_d_GAMMA(toas_bary_mjd, pb, t0, ecc, pbdot)
+            deriv = _d_delay_d_GAMMA(toas_bary_mjd, pb, t0, ecc_eff, pbdot)
             derivatives[param] = deriv
             
         elif param_upper == 'SINI':
-            deriv = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+            deriv = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, sini_eff, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'M2':
-            deriv = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, sini_eff)
+            deriv = _d_delay_d_M2(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, sini_eff)
             derivatives[param] = deriv
             
         elif param_upper == 'OMDOT':
-            deriv = _d_delay_d_OMDOT(toas_bary_mjd, a1_eff, pb, t0, ecc, float(jnp.mean(om_eff_deg)), omdot, pbdot, sini_eff, m2)
+            deriv = _d_delay_d_OMDOT(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, float(jnp.mean(om_eff_deg)), omdot, pbdot, sini_eff, m2)
             derivatives[param] = deriv
             
         elif param_upper == 'XDOT' or param_upper == 'A1DOT':
-            dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
-            d_a1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
-            derivatives[param] = d_a1 * dt_sec
+            d_a1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot)
+            derivatives[param] = d_a1 * dt_sec_from_t0
 
         elif param_upper == 'EDOT':
-            dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
-            d_ecc = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, gamma, sini_eff, m2)
-            derivatives[param] = d_ecc * dt_sec
+            d_ecc = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, pbdot, gamma, sini_eff, m2)
+            derivatives[param] = d_ecc * dt_sec_from_t0
 
         elif param_upper == 'H3':
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
             h4_val = float(params.get('H4', 0.0))
-            if stig_val != 0.0:
+            if stig_val > 0.0 and stig_val <= 1.0:
                 if h4_val != 0.0:
                     warnings.warn(
                         "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
                         UserWarning, stacklevel=2
                     )
-                deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, stig_val)
-            elif h4_val != 0.0:
-                deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, h4_val)
+                deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, stig_val)
+            elif h4_val > 0.0 and h3_val > 0.0 and (h4_val / h3_val) <= 1.0:
+                deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, h3_val, h4_val)
             else:
                 if h3_val != 0.0:
                     warnings.warn(
@@ -1338,13 +1558,19 @@ def compute_binary_derivatives_ddk(
         elif param_upper in ('STIG', 'STIGMA'):
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, stig_val)
+            if stig_val > 0.0 and stig_val <= 1.0 and h3_val != 0.0:
+                deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, h3_val, stig_val)
+            else:
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
         elif param_upper == 'H4':
             h3_val = float(params.get('H3', 0.0))
             h4_val = float(params.get('H4', 0.0))
-            deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, h3_val, h4_val)
+            if h3_val > 0.0 and h4_val > 0.0 and (h4_val / h3_val) <= 1.0:
+                deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, h3_val, h4_val)
+            else:
+                deriv = jnp.zeros_like(toas_bary_mjd)
             derivatives[param] = deriv
 
     # Now handle KIN and KOM using chain rule
@@ -1362,9 +1588,9 @@ def compute_binary_derivatives_ddk(
         )
         
         # Get base derivatives
-        d_delay_d_A1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
-        d_delay_d_OM = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
-        d_delay_d_SINI = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+        d_delay_d_A1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot)
+        d_delay_d_OM = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, pbdot, sini_eff, m2)
+        d_delay_d_SINI = _d_delay_d_SINI(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, sini_eff, m2)
         
         # Chain rule (note: d_OM_eff_d_KIN_rad is in radians/radian, d_delay_d_OM is in sec/radian)
         d_delay_d_KIN_rad = (
@@ -1387,8 +1613,8 @@ def compute_binary_derivatives_ddk(
             use_k96, has_parallax
         )
         
-        d_delay_d_A1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc, om_rad_eff, pbdot)
-        d_delay_d_OM = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc, om_rad_eff, pbdot, sini_eff, m2)
+        d_delay_d_A1 = _d_delay_d_A1(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot)
+        d_delay_d_OM = _d_delay_d_OM(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, pbdot, sini_eff, m2)
         
         d_delay_d_KOM_rad = (
             d_delay_d_A1 * d_A1_eff_d_KOM +

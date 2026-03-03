@@ -136,7 +136,18 @@ class TimingSession:
         import tempfile
 
         def format_param_value(param_name: str, value: Any) -> str:
-            """Format parameter value for par file."""
+            """Format parameter value for par file.
+
+            Uses the ``_high_precision`` string cache when available so that
+            parameters like F0, F1, PEPOCH, TASC, etc. are written with their
+            full original precision rather than being truncated to 15
+            significant digits of float64.
+            """
+            # Check _high_precision cache first (updated by _update_param)
+            hp = params.get('_high_precision', {})
+            hp_str = hp.get(param_name)
+            if hp_str is not None:
+                return f"{param_name:<12} {hp_str}"
             # String values (like BINARY, EPHEM, etc.) - keep as-is
             if isinstance(value, str):
                 return f"{param_name:<12} {value}"
@@ -147,15 +158,9 @@ class TimingSession:
             if param_name == 'DECJ' and isinstance(value, (int, float)):
                 from jug.io.par_reader import format_dec
                 return f"{param_name:<12} {format_dec(float(value))}"
-            # Numeric values - format appropriately
-            if param_name == 'F0':
-                return f"{param_name:<12} {value:.15f}"
-            elif param_name.startswith('F') and param_name[1:].isdigit():
-                return f"{param_name:<12} {value:.15e}"
-            elif param_name.startswith('DM'):
-                return f"{param_name:<12} {value:.15f}"
-            elif isinstance(value, float):
-                return f"{param_name:<12} {value:.15e}"
+            # Numeric values - use repr(float()) for max float64 precision
+            if isinstance(value, (int, float)) or hasattr(value, '__float__'):
+                return f"{param_name:<12} {repr(float(value))}"
             else:
                 return f"{param_name:<12} {value}"
 
@@ -198,6 +203,7 @@ class TimingSession:
 
         updated_lines = []
         updated_params = set()
+        jump_index = 0  # Track JUMP line index for JUMP1, JUMP2, ... mapping
 
         for line in original_lines:
             line_stripped = line.strip()
@@ -208,8 +214,37 @@ class TimingSession:
             parts = line_stripped.split()
             if parts:
                 param_name = parts[0]
+
+                # JUMP lines need special handling: par file has "JUMP"
+                # but fitted values are stored as JUMP1, JUMP2, ...
+                if param_name == 'JUMP':
+                    jump_index += 1
+                    jump_key = f'JUMP{jump_index}'
+                    if jump_key in params:
+                        new_val = params[jump_key]
+                        # Reconstruct JUMP line with updated offset value
+                        if parts[1].upper() == 'MJD' and len(parts) >= 5:
+                            # MJD-based: JUMP MJD start end offset [fit] [unc]
+                            parts[4] = f'{new_val:.15e}'
+                        elif len(parts) >= 4:
+                            # Flag-based: JUMP -flag val offset [fit] [unc]
+                            parts[3] = f'{new_val:.15e}'
+                        updated_lines.append(' '.join(parts) + '\n')
+                        updated_params.add(jump_key)
+                    else:
+                        updated_lines.append(line)
+                    continue
+
                 if param_name in params:
                     new_value = params[param_name]
+                    # If value hasn't changed from initial, keep original line
+                    # to preserve full precision (avoids float64 truncation)
+                    initial_val = self._initial_params.get(param_name)
+                    if initial_val is not None and initial_val == new_value:
+                        updated_lines.append(line)
+                        updated_params.add(param_name)
+                        continue
+
                     new_line = format_param_value(param_name, new_value)
 
                     # Preserve flags if present (for numeric params with fit flags)
@@ -288,7 +323,7 @@ class TimingSession:
         # Check if we can use cache (must match subtract_tzr mode!)
         use_cache = (
             subtract_tzr in self._cached_result_by_mode
-            and params is None 
+            and params is None
             and not force_recompute
         )
         
@@ -347,6 +382,7 @@ class TimingSession:
             # Update parameters
             updated_lines = []
             updated_params = set()
+            jump_index = 0  # Track JUMP line index for JUMP1, JUMP2, ... mapping
             
             for line in par_lines:
                 line_stripped = line.strip()
@@ -357,6 +393,24 @@ class TimingSession:
                 parts = line_stripped.split()
                 if parts:
                     param_name = parts[0]
+
+                    # JUMP lines need special handling: par file has "JUMP"
+                    # but fitted values are stored as JUMP1, JUMP2, ...
+                    if param_name == 'JUMP':
+                        jump_index += 1
+                        jump_key = f'JUMP{jump_index}'
+                        if jump_key in params:
+                            new_val = params[jump_key]
+                            if parts[1].upper() == 'MJD' and len(parts) >= 5:
+                                parts[4] = f'{new_val:.15e}'
+                            elif len(parts) >= 4:
+                                parts[3] = f'{new_val:.15e}'
+                            updated_lines.append(' '.join(parts) + '\n')
+                            updated_params.add(jump_key)
+                        else:
+                            updated_lines.append(line)
+                        continue
+
                     if param_name in params:
                         # Update this parameter
                         new_value = params[param_name]
@@ -687,8 +741,30 @@ class TimingSession:
                     updated_params['PMBETA'] = ecl['PMBETA']
             self.params.update(updated_params)
 
-        # Invalidate residuals cache since parameters changed
-        self._cached_result_by_mode.clear()
+        # Cache the fitter's own post-fit residuals directly.
+        # This avoids the temp-par-file round-trip which loses precision
+        # for high-precision parameters (F0, PB, TASC, etc.) causing
+        # catastrophic errors in the recomputed residuals.
+        if 'residuals_us' in result and 'tdb_mjd' in result:
+            fitter_result = {
+                'residuals_us': result['residuals_us'],
+                'tdb_mjd': result['tdb_mjd'],
+                'errors_us': result.get('errors_us'),
+            }
+            # Carry forward freq/dt_sec from the pre-fit cache if available
+            prefit_cache = self._cached_result_by_mode.get(True) or self._cached_result_by_mode.get(False)
+            if prefit_cache is not None:
+                for key in ('freq_bary_mhz', 'dt_sec', 'dt_sec_ld',
+                            'roemer_shapiro_sec', 'prebinary_delay_sec',
+                            'ssb_obs_pos_ls', 'sw_geometry_pc',
+                            'jump_phase', 'tzr_phase', 'clock_issues'):
+                    if key in prefit_cache:
+                        fitter_result[key] = prefit_cache[key]
+            self._cached_result_by_mode.clear()
+            self._cached_result_by_mode[True] = fitter_result
+        else:
+            self._cached_result_by_mode.clear()
+
         # Also invalidate cached TOA data -- the fast evaluator only handles
         # spin/DM changes, so stale dt_sec causes wrong postfit residuals
         # when binary, astrometric, FD, or SW parameters were fitted.
@@ -721,9 +797,9 @@ class TimingSession:
         import re
         all_flags = sorted(self.params.get('_fit_flags', {}).keys())
         # Filter out parametric families handled automatically by the fitter
-        # (DMX_nnnn, JUMP1..N are auto-detected from the par file)
+        # (DMX_nnnn are auto-detected from the par file)
         return [p for p in all_flags
-                if not re.match(r'^DMX_\d+$', p) and not re.match(r'^JUMP\d+$', p)]
+                if not re.match(r'^DMX_\d+$', p)]
 
     def set_free(self, *param_names):
         """Turn on the fit flag for one or more parameters.

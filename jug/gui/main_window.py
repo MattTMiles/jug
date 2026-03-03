@@ -2819,16 +2819,23 @@ class MainWindow(QMainWindow):
         Delegates to the central noise registry -- no per-process branching needed.
         """
         from jug.engine.noise_mode import compute_noise_realization
+        import numpy as np
 
         params = self.session.params
         errors_us = self.errors_us
         if errors_us is None:
             return None
 
+        # Extract group flags for GroupNoise processes
+        group_flags = None
+        if self.toa_flags is not None:
+            group_flags = np.array([f.get('group', '') for f in self.toa_flags])
+
         real_sec = compute_noise_realization(
             process_name, params,
             self.mjd, self.residuals_us.copy() * 1e-6, errors_us * 1e-6,
             freq_mhz=self.toa_freqs,
+            group_flags=group_flags,
         )
         if real_sec is not None:
             return real_sec * 1e6

@@ -264,6 +264,14 @@ class GeneralFitSetup:
     chromatic_noise_prior: Optional[np.ndarray]   # (2*n_harmonics,) diagonal prior variances
     ecorr_basis: Optional[np.ndarray]      # (n_toa, n_epochs) quantization matrix
     ecorr_prior: Optional[np.ndarray]      # (n_epochs,) ECORR^2 prior variances (s^2)
+    # Band noise (multiple frequency bands)
+    band_noise_bases: Optional[List[np.ndarray]]   # list of (n_toa, 2*n_harmonics) per band
+    band_noise_priors: Optional[List[np.ndarray]]  # list of (2*n_harmonics,) per band
+    band_noise_labels: Optional[List[str]]         # e.g. ["BandNoise_0_1000", "BandNoise_1000_2000"]
+    # Group noise (multiple backend groups)
+    group_noise_bases: Optional[List[np.ndarray]]  # list of (n_toa, 2*n_harmonics) per group
+    group_noise_priors: Optional[List[np.ndarray]] # list of (2*n_harmonics,) per group
+    group_noise_labels: Optional[List[str]]        # e.g. ["GroupNoise_CPSR2_20CM"]
     # DMX design matrix (Phase 2 integration)
     dmx_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmx_ranges) DMX design matrix
     dmx_labels: Optional[List[str]]          # DMX parameter labels
@@ -272,6 +280,10 @@ class GeneralFitSetup:
     dmjump_labels: Optional[List[str]]          # DMJUMP parameter labels
     # JUMP masks {JUMP1: bool_mask, JUMP2: bool_mask, ...}
     jump_masks: Optional[Dict[str, np.ndarray]]
+    # FDJUMP masks and metadata
+    fdjump_masks: Optional[Dict[str, np.ndarray]]
+    fdjump_params: List[str]
+    initial_fdjump_delay: Optional[np.ndarray]  # For FDJUMP fitting iteration
     # JUMP phase offsets from par file (longdouble, F0 * JUMP_value per TOA)
     jump_phase: Optional[np.ndarray]
     # TZR phase for correct pulse numbering (longdouble scalar)
@@ -506,6 +518,279 @@ def _solve_augmented_cholesky(M2, r1, prior_inv, col_norms, n_timing_cols, has_o
     cov = cov_all[t0:n_timing_cols, t0:n_timing_cols]
     noise_coeffs = delta_params_all[n_timing_cols:]
     return delta_params, cov, delta_params_all, cov_all, noise_coeffs
+
+
+def _solve_gls_woodbury(M_timing, F_noise, residuals, sigma, phiinv_noise,
+                         has_offset, n_timing_params,
+                         precomputed=None, compute_noise_cov=False):
+    """Solve GLS timing fit using the Woodbury identity (Tempo2-equivalent).
+
+    Mathematically equivalent to Tempo2's cholesky plugin:
+      C = N + F φ F^T
+      M^T C^{-1} M δp = M^T C^{-1} y
+    but avoids forming the full n_toa × n_toa covariance matrix by using
+      C^{-1} = N^{-1} - N^{-1} F (φ^{-1} + F^T N^{-1} F)^{-1} F^T N^{-1}
+
+    After solving for timing parameters, noise coefficients are extracted
+    via the Wiener filter: a = Σ^{-1} F^T N^{-1} (y - M δp).
+
+    Parameters
+    ----------
+    M_timing : (n_toa, n_timing_cols) unweighted timing design matrix
+    F_noise : (n_toa, n_noise) unweighted noise basis functions
+    residuals : (n_toa,) residuals in seconds
+    sigma : (n_toa,) TOA uncertainties in seconds
+    phiinv_noise : (n_noise,) inverse prior variance for noise coefficients
+    has_offset : bool
+    n_timing_params : int
+    precomputed : dict or None
+        Cached products from _precompute_woodbury_products(). When provided,
+        skips recomputing FtNiF, L_sigma, Ni, and GPU-resident arrays.
+    compute_noise_cov : bool
+        If True, compute noise posterior covariance diagonal (expensive).
+        Only needed on the final iteration for error bars.
+
+    Returns
+    -------
+    delta_params, cov, delta_params_all, cov_all, noise_coeffs
+    """
+    n_toa, n_tcols = M_timing.shape
+    n_noise = F_noise.shape[1]
+
+    if precomputed is not None:
+        Ni = precomputed['Ni']
+        FtNiF = precomputed['FtNiF']
+        L_sigma = precomputed['L_sigma']
+        F_j = precomputed.get('F_j')
+        Ni_j = precomputed.get('Ni_j')
+        use_gpu = F_j is not None
+    else:
+        Ni = 1.0 / (sigma ** 2)
+        use_gpu = _has_gpu()
+        F_j = None
+        Ni_j = None
+
+    # Compute iteration-dependent products (M and y change each iteration)
+    if use_gpu:
+        if F_j is None:
+            F_j = jnp.asarray(F_noise)
+            Ni_j = jnp.asarray(Ni)
+        M_j = jnp.asarray(M_timing)
+        y_j = jnp.asarray(residuals)
+        NiM_j = M_j * Ni_j[:, None]
+        Niy_j = y_j * Ni_j
+        if precomputed is None:
+            NiF_j = F_j * Ni_j[:, None]
+            FtNiF = np.asarray(F_j.T @ NiF_j)
+        FtNiM = np.asarray(F_j.T @ NiM_j)
+        MtNiM = np.asarray(M_j.T @ NiM_j)
+        FtNiy = np.asarray(F_j.T @ Niy_j)
+        MtNiy = np.asarray(M_j.T @ Niy_j)
+    else:
+        NiM = M_timing * Ni[:, None]
+        Niy = residuals * Ni
+        if precomputed is None:
+            NiF = F_noise * Ni[:, None]
+            FtNiF = F_noise.T @ NiF
+        FtNiM = F_noise.T @ NiM
+        MtNiM = M_timing.T @ NiM
+        FtNiy = F_noise.T @ Niy
+        MtNiy = M_timing.T @ Niy
+
+    # Σ = φ^{-1} + F^T N^{-1} F (factorized once, reused from precomputed)
+    if precomputed is None:
+        Sigma = FtNiF.copy()
+        Sigma[np.diag_indices(n_noise)] += phiinv_noise
+        try:
+            L_sigma = _scipy_linalg.cho_factor(Sigma, lower=True, check_finite=False)
+        except _scipy_linalg.LinAlgError:
+            Sigma[np.diag_indices(n_noise)] += 1e-10 * np.max(np.diag(Sigma))
+            L_sigma = _scipy_linalg.cho_factor(Sigma, lower=True, check_finite=False)
+
+    # Woodbury terms
+    B = _scipy_linalg.cho_solve(L_sigma, FtNiM, check_finite=False)
+    c = _scipy_linalg.cho_solve(L_sigma, FtNiy, check_finite=False)
+
+    # GLS timing normal equations
+    MtCiM = MtNiM - FtNiM.T @ B
+    MtCiy = MtNiy - FtNiM.T @ c
+
+    # Symmetric normalization for conditioning
+    d = np.sqrt(np.maximum(np.diag(MtCiM), 0.0))
+    d = np.where(d == 0, 1.0, d)
+    MtCiM_n = MtCiM / d[:, None] / d[None, :]
+    MtCiy_n = MtCiy / d
+
+    # Solve normalized timing system
+    try:
+        L_t = _scipy_linalg.cho_factor(MtCiM_n, lower=True, check_finite=False)
+        dp_n = _scipy_linalg.cho_solve(L_t, MtCiy_n, check_finite=False)
+        cov_n = _scipy_linalg.cho_solve(L_t, np.eye(n_tcols), check_finite=False)
+    except _scipy_linalg.LinAlgError:
+        U, S, VT = _scipy_linalg.svd(MtCiM_n, full_matrices=False)
+        thresh = 1e-14 * S[0] * n_tcols
+        S_inv = np.where(S > thresh, 1.0 / S, 0.0)
+        dp_n = VT.T @ (S_inv * (U.T @ MtCiy_n))
+        cov_n = (VT.T * S_inv) @ VT
+
+    # Unnormalize
+    delta_timing = dp_n / d
+    cov_timing = cov_n / d[:, None] / d[None, :]
+
+    # Noise coefficients via Wiener filter
+    r_post = residuals - M_timing @ delta_timing
+    if use_gpu:
+        FtNi_rpost = np.asarray(F_j.T @ jnp.asarray(r_post * Ni))
+    else:
+        FtNi_rpost = F_noise.T @ (r_post * Ni)
+    noise_coeffs = _scipy_linalg.cho_solve(L_sigma, FtNi_rpost, check_finite=False)
+
+    # Build output
+    t0 = 1 if has_offset else 0
+    delta_params = delta_timing[t0:]
+    cov = cov_timing[t0:, t0:]
+    delta_params_all = np.concatenate([delta_timing, noise_coeffs])
+
+    n_all = n_tcols + n_noise
+    cov_all = np.zeros((n_all, n_all))
+    cov_all[:n_tcols, :n_tcols] = cov_timing
+
+    if compute_noise_cov:
+        try:
+            L_S = _scipy_linalg.cho_factor(MtCiM, lower=True, check_finite=False)
+            B_hat = _scipy_linalg.cho_solve(L_S, B.T, check_finite=False)
+            noise_cov_correction_diag = np.sum(B * B_hat.T, axis=1)
+            SigmaInv_diag = _scipy_linalg.cho_solve(
+                L_sigma, np.eye(n_noise), check_finite=False
+            ).diagonal()
+            noise_cov_diag = SigmaInv_diag + noise_cov_correction_diag
+            np.fill_diagonal(cov_all[n_tcols:, n_tcols:], noise_cov_diag)
+        except _scipy_linalg.LinAlgError:
+            pass
+
+    return delta_params, cov, delta_params_all, cov_all, noise_coeffs
+
+
+def _compute_FtNiF_sparse(F_noise, Ni, blocks):
+    """Compute F^T N^{-1} F exploiting block sparsity structure.
+
+    For ECORR (disjoint 0/1 indicators), the self-block is diagonal.
+    For masked blocks (band/group noise), only TOAs within the mask contribute.
+    Cross-blocks between non-overlapping masks are zero and skipped.
+    """
+    n_noise = F_noise.shape[1]
+    FtNiF = np.zeros((n_noise, n_noise))
+
+    for i, bi in enumerate(blocks):
+        si, ni = bi['offset'], bi['ncols']
+        Fi = F_noise[:, si:si+ni]
+
+        # Self-block
+        if bi['type'] == 'ecorr':
+            # ECORR is 0/1 indicators with disjoint groups → diagonal
+            for k, idx in enumerate(bi['group_indices']):
+                FtNiF[si+k, si+k] = np.sum(Ni[idx])
+        elif bi['type'] == 'masked':
+            m = bi['mask']
+            Fi_m = Fi[m]
+            Ni_m = Ni[m]
+            FtNiF[si:si+ni, si:si+ni] = Fi_m.T @ (Fi_m * Ni_m[:, None])
+        else:  # dense
+            FtNiF[si:si+ni, si:si+ni] = Fi.T @ (Fi * Ni[:, None])
+
+        # Cross-blocks with subsequent blocks
+        for j in range(i+1, len(blocks)):
+            bj = blocks[j]
+            sj, nj = bj['offset'], bj['ncols']
+            Fj = F_noise[:, sj:sj+nj]
+
+            # Determine overlapping TOA mask
+            if bi['type'] == 'masked' and bj['type'] == 'masked':
+                overlap = bi['mask'] & bj['mask']
+                if not np.any(overlap):
+                    continue
+                cross = Fi[overlap].T @ (Fj[overlap] * Ni[overlap, None])
+            elif bi['type'] == 'masked':
+                m = bi['mask']
+                cross = Fi[m].T @ (Fj[m] * Ni[m, None])
+            elif bj['type'] == 'masked':
+                m = bj['mask']
+                cross = Fi[m].T @ (Fj[m] * Ni[m, None])
+            elif bi['type'] == 'ecorr':
+                # ECORR cross dense/masked: sum within each group
+                cross = np.zeros((ni, nj))
+                for k, idx in enumerate(bi['group_indices']):
+                    cross[k, :] = Ni[idx] @ Fj[idx]
+            elif bj['type'] == 'ecorr':
+                cross = np.zeros((ni, nj))
+                for k, idx in enumerate(bj['group_indices']):
+                    cross[:, k] = Fi[idx].T @ Ni[idx]
+            else:
+                cross = Fi.T @ (Fj * Ni[:, None])
+
+            FtNiF[si:si+ni, sj:sj+nj] = cross
+            FtNiF[sj:sj+nj, si:si+ni] = cross.T
+
+    return FtNiF
+
+
+def _precompute_woodbury_products(F_noise, sigma, phiinv_noise, noise_block_info=None):
+    """Precompute constant Woodbury products for reuse across iterations.
+
+    Since F_noise (noise basis) and sigma (TOA errors) don't change between
+    iterations, FtNiF and L_sigma can be computed once.
+
+    Parameters
+    ----------
+    F_noise : (n_toa, n_noise) noise basis matrix
+    sigma : (n_toa,) TOA uncertainties
+    phiinv_noise : (n_noise,) inverse prior variance
+    noise_block_info : list of dict, optional
+        Block structure for sparse-aware FtNiF computation. Each dict has:
+        - 'offset': column offset in F_noise
+        - 'ncols': number of columns
+        - 'type': 'dense', 'ecorr', or 'masked'
+        - 'mask': (n_toa,) bool array for 'masked' type
+        - 'group_indices': list of arrays for 'ecorr' type
+
+    Returns
+    -------
+    dict with keys: Ni, FtNiF, L_sigma, F_j (GPU), Ni_j (GPU)
+    """
+    n_noise = F_noise.shape[1]
+    Ni = 1.0 / (sigma ** 2)
+
+    if noise_block_info is not None:
+        FtNiF = _compute_FtNiF_sparse(F_noise, Ni, noise_block_info)
+    elif _has_gpu():
+        F_j = jnp.asarray(F_noise)
+        Ni_j = jnp.asarray(Ni)
+        NiF_j = F_j * Ni_j[:, None]
+        FtNiF = np.asarray(F_j.T @ NiF_j)
+    else:
+        NiF = F_noise * Ni[:, None]
+        FtNiF = F_noise.T @ NiF
+
+    # GPU-resident copies for per-iteration products
+    if _has_gpu():
+        F_j = jnp.asarray(F_noise)
+        Ni_j = jnp.asarray(Ni)
+    else:
+        F_j = None
+        Ni_j = None
+
+    Sigma = FtNiF.copy()
+    Sigma[np.diag_indices(n_noise)] += phiinv_noise
+    try:
+        L_sigma = _scipy_linalg.cho_factor(Sigma, lower=True, check_finite=False)
+    except _scipy_linalg.LinAlgError:
+        Sigma[np.diag_indices(n_noise)] += 1e-10 * np.max(np.diag(Sigma))
+        L_sigma = _scipy_linalg.cho_factor(Sigma, lower=True, check_finite=False)
+
+    return {
+        'Ni': Ni, 'FtNiF': FtNiF, 'L_sigma': L_sigma,
+        'F_j': F_j, 'Ni_j': Ni_j,
+    }
 
 
 def fit_parameters_optimized(
@@ -752,6 +1037,47 @@ def _build_setup_common(
                   f"chrom_idx={chromatic_noise_proc.chrom_idx:.3f}, "
                   f"{chromatic_noise_proc.n_harmonics} harmonics -> {chromatic_noise_basis.shape[1]} columns")
 
+    # --- Band noise and Group noise Fourier bases ----------------------------
+    band_noise_bases = None
+    band_noise_priors = None
+    band_noise_labels = None
+    group_noise_bases = None
+    group_noise_priors = None
+    group_noise_labels = None
+    from jug.noise.red_noise import parse_band_noise_params, parse_group_noise_params
+    if noise_config.is_enabled("BandNoise"):
+        band_procs = parse_band_noise_params(params)
+        if band_procs:
+            band_noise_bases = []
+            band_noise_priors = []
+            band_noise_labels = []
+            for bp in band_procs:
+                F, phi = bp.build_basis_and_prior(toas_mjd, freq_mhz_bary)
+                band_noise_bases.append(F)
+                band_noise_priors.append(phi)
+                label = f"BandNoise_{int(bp.freq_lo)}_{int(bp.freq_hi)}"
+                band_noise_labels.append(label)
+                n_cols = F.shape[1]
+                print(f"[SETUP] Building BAND NOISE basis ({label}): {n_cols} columns")
+
+    if noise_config.is_enabled("GroupNoise"):
+        group_procs = parse_group_noise_params(params)
+        if group_procs:
+            group_flags = None
+            if toa_flags is not None:
+                group_flags = np.array([f.get('group', '') for f in toa_flags])
+            group_noise_bases = []
+            group_noise_priors = []
+            group_noise_labels = []
+            for gp in group_procs:
+                F, phi = gp.build_basis_and_prior(toas_mjd, group_flags=group_flags)
+                group_noise_bases.append(F)
+                group_noise_priors.append(phi)
+                label = f"GroupNoise_{gp.group_name}"
+                group_noise_labels.append(label)
+                n_cols = F.shape[1]
+                print(f"[SETUP] Building GROUP NOISE basis ({label}): {n_cols} columns")
+
     # --- DMX design matrix -------------------------------------------------
     dmx_design_matrix = None
     dmx_labels = None
@@ -865,6 +1191,18 @@ def _build_setup_common(
         if added_jumps:
             print(f"[SETUP] Auto-added {len(added_jumps)} fit-flagged JUMPs for GLS noise fit")
 
+        # Also auto-add fit-flagged FDJUMPs
+        existing_fdjumps = {p for p in fit_params if p.startswith('FDJUMP')}
+        fit_flags = params.get('_fit_flags', {})
+        added_fdjumps = []
+        for key in sorted(params.keys()):
+            if key.startswith('FDJUMP') and not key.startswith('_') and key not in existing_fdjumps:
+                if fit_flags.get(key):
+                    fit_params = list(fit_params) + [key]
+                    added_fdjumps.append(key)
+        if added_fdjumps:
+            print(f"[SETUP] Auto-added {len(added_fdjumps)} fit-flagged FDJUMPs for GLS noise fit")
+
     # --- Derived weight arrays ---------------------------------------------
     errors_sec = errors_us * 1e-6
     weights = 1.0 / errors_sec**2
@@ -943,6 +1281,28 @@ def _build_setup_common(
             jump_params_list = [p for p in jump_params_list if p not in remove_set]
             if verbose:
                 print(f"  Skipped {len(empty_jumps)} JUMPs with no matching TOAs: {empty_jumps}")
+
+    # --- FDJUMP masks ------------------------------------------------------
+    fdjump_params_list = [p for p in fit_params if p.startswith('FDJUMP')]
+    fdjump_masks = None
+    initial_fdjump_delay = None
+    if fdjump_params_list and toa_flags:
+        from jug.noise.white import build_backend_mask
+        fdjump_masks = {}
+        for fp in fdjump_params_list:
+            meta = params.get(f'_fdjump_meta_{fp}')
+            if meta:
+                mask = build_backend_mask(toa_flags, meta['flag_name'], meta['flag_value'])
+                if mask.any():
+                    fdjump_masks[fp] = mask
+                else:
+                    if verbose:
+                        print(f"  Skipped FDJUMP {fp} with no matching TOAs")
+        if fdjump_masks:
+            from jug.fitting.derivatives_fdjump import compute_fdjump_delay
+            initial_fdjump_delay = compute_fdjump_delay(
+                params, freq_mhz_bary, fdjump_params_list, fdjump_masks
+            )
 
     # --- DM delay cache ----------------------------------------------------
     initial_dm_delay = None
@@ -1051,11 +1411,20 @@ def _build_setup_common(
         chromatic_noise_prior=chromatic_noise_prior,
         ecorr_basis=ecorr_basis,
         ecorr_prior=ecorr_prior,
+        band_noise_bases=band_noise_bases,
+        band_noise_priors=band_noise_priors,
+        band_noise_labels=band_noise_labels,
+        group_noise_bases=group_noise_bases,
+        group_noise_priors=group_noise_priors,
+        group_noise_labels=group_noise_labels,
         dmx_design_matrix=dmx_design_matrix,
         dmx_labels=dmx_labels,
         dmjump_design_matrix=dmjump_design_matrix,
         dmjump_labels=dmjump_labels,
         jump_masks=jump_masks,
+        fdjump_masks=fdjump_masks,
+        fdjump_params=fdjump_params_list,
+        initial_fdjump_delay=initial_fdjump_delay,
         jump_phase=jump_phase,
         tzr_phase=tzr_phase,
         noise_config=noise_config,
@@ -1221,6 +1590,18 @@ def _compute_full_model_residuals(
         new_fd_delay = np.asarray(compute_fd_delay(freq_mhz, current_fd_params), dtype=np.float64)
         fd_delay_change = new_fd_delay - setup.initial_fd_delay
         dt_sec_np = dt_sec_np - fd_delay_change
+
+    # Apply FDJUMP delay correction
+    if setup.fdjump_params and setup.fdjump_masks:
+        from jug.fitting.derivatives_fdjump import compute_fdjump_delay
+        new_fdjump_delay = compute_fdjump_delay(
+            params, freq_mhz, setup.fdjump_params, setup.fdjump_masks
+        )
+        if setup.initial_fdjump_delay is not None:
+            fdjump_delay_change = new_fdjump_delay - setup.initial_fdjump_delay
+        else:
+            fdjump_delay_change = new_fdjump_delay
+        dt_sec_np = dt_sec_np - fdjump_delay_change
 
     # Apply solar wind delay correction
     sw_params = setup.sw_params
@@ -1395,6 +1776,130 @@ def _run_general_fit_iterations(
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
 
+    # Precompute noise column counts (constant across iterations)
+    n_red_noise_cols = setup.red_noise_basis.shape[1] if getattr(setup, 'red_noise_basis', None) is not None else 0
+    n_dm_noise_cols = setup.dm_noise_basis.shape[1] if getattr(setup, 'dm_noise_basis', None) is not None else 0
+    n_chromatic_noise_cols = setup.chromatic_noise_basis.shape[1] if getattr(setup, 'chromatic_noise_basis', None) is not None else 0
+    n_ecorr_cols = setup.ecorr_basis.shape[1] if getattr(setup, 'ecorr_basis', None) is not None else 0
+    n_dmx_cols = setup.dmx_design_matrix.shape[1] if getattr(setup, 'dmx_design_matrix', None) is not None else 0
+    n_dmjump_cols = setup.dmjump_design_matrix.shape[1] if getattr(setup, 'dmjump_design_matrix', None) is not None else 0
+    n_band_noise_cols_list = []
+    n_band_noise_total = 0
+    if getattr(setup, 'band_noise_bases', None):
+        for F in setup.band_noise_bases:
+            n = F.shape[1]
+            n_band_noise_cols_list.append(n)
+            n_band_noise_total += n
+    n_group_noise_cols_list = []
+    n_group_noise_total = 0
+    if getattr(setup, 'group_noise_bases', None):
+        for F in setup.group_noise_bases:
+            n = F.shape[1]
+            n_group_noise_cols_list.append(n)
+            n_group_noise_total += n
+    n_augmented = (n_red_noise_cols + n_dm_noise_cols + n_chromatic_noise_cols
+                   + n_ecorr_cols + n_dmx_cols + n_dmjump_cols
+                   + n_band_noise_total + n_group_noise_total)
+
+    # Precompute GLS Woodbury products once (noise bases and errors are constant)
+    _woodbury_precomputed = None
+    _gls_phiinv_raw = None
+    _gls_F_noise = None
+    if n_augmented > 0:
+        # Build phiinv
+        _gls_phiinv_raw = np.zeros(n_augmented)
+        offset_p = 0
+        if n_red_noise_cols > 0:
+            _gls_phiinv_raw[offset_p:offset_p + n_red_noise_cols] = 1.0 / setup.red_noise_prior
+            offset_p += n_red_noise_cols
+        if n_dm_noise_cols > 0:
+            _gls_phiinv_raw[offset_p:offset_p + n_dm_noise_cols] = 1.0 / setup.dm_noise_prior
+            offset_p += n_dm_noise_cols
+        if n_chromatic_noise_cols > 0:
+            _gls_phiinv_raw[offset_p:offset_p + n_chromatic_noise_cols] = 1.0 / setup.chromatic_noise_prior
+            offset_p += n_chromatic_noise_cols
+        if n_ecorr_cols > 0:
+            _gls_phiinv_raw[offset_p:offset_p + n_ecorr_cols] = 1.0 / setup.ecorr_prior
+            offset_p += n_ecorr_cols
+        if n_band_noise_total > 0:
+            for bi, bp in enumerate(setup.band_noise_priors):
+                nc = n_band_noise_cols_list[bi]
+                _gls_phiinv_raw[offset_p:offset_p + nc] = 1.0 / bp
+                offset_p += nc
+        if n_group_noise_total > 0:
+            for gi, gp in enumerate(setup.group_noise_priors):
+                nc = n_group_noise_cols_list[gi]
+                _gls_phiinv_raw[offset_p:offset_p + nc] = 1.0 / gp
+                offset_p += nc
+        if n_dmx_cols + n_dmjump_cols > 0:
+            _gls_phiinv_raw[offset_p:] = 1e-40
+
+        # Build concatenated noise basis and block info for sparse FtNiF
+        noise_parts = []
+        noise_block_info = []
+        col_off = 0
+        n_toa = len(toas_mjd)
+        for label, basis, btype in [
+            ('red', setup.red_noise_basis, 'dense'),
+            ('dm', setup.dm_noise_basis, 'dense'),
+            ('chrom', setup.chromatic_noise_basis, 'dense'),
+        ]:
+            if basis is not None and basis.shape[1] > 0:
+                nc = basis.shape[1]
+                noise_parts.append(basis)
+                noise_block_info.append({'offset': col_off, 'ncols': nc, 'type': btype})
+                col_off += nc
+        if setup.ecorr_basis is not None and n_ecorr_cols > 0:
+            E = setup.ecorr_basis
+            noise_parts.append(E)
+            # Extract group indices for sparse ECORR computation
+            group_indices = []
+            for k in range(n_ecorr_cols):
+                group_indices.append(np.nonzero(E[:, k])[0])
+            noise_block_info.append({
+                'offset': col_off, 'ncols': n_ecorr_cols,
+                'type': 'ecorr', 'group_indices': group_indices
+            })
+            col_off += n_ecorr_cols
+        if n_band_noise_total > 0:
+            for F in setup.band_noise_bases:
+                nc = F.shape[1]
+                mask = np.any(F != 0, axis=1)
+                noise_parts.append(F)
+                noise_block_info.append({
+                    'offset': col_off, 'ncols': nc,
+                    'type': 'masked', 'mask': mask
+                })
+                col_off += nc
+        if n_group_noise_total > 0:
+            for F in setup.group_noise_bases:
+                nc = F.shape[1]
+                mask = np.any(F != 0, axis=1)
+                noise_parts.append(F)
+                noise_block_info.append({
+                    'offset': col_off, 'ncols': nc,
+                    'type': 'masked', 'mask': mask
+                })
+                col_off += nc
+        if n_dmx_cols > 0:
+            noise_parts.append(setup.dmx_design_matrix)
+            noise_block_info.append({
+                'offset': col_off, 'ncols': n_dmx_cols, 'type': 'dense'
+            })
+            col_off += n_dmx_cols
+        if n_dmjump_cols > 0:
+            noise_parts.append(setup.dmjump_design_matrix)
+            noise_block_info.append({
+                'offset': col_off, 'ncols': n_dmjump_cols, 'type': 'dense'
+            })
+            col_off += n_dmjump_cols
+
+        _gls_F_noise = np.hstack(noise_parts)
+        _woodbury_precomputed = _precompute_woodbury_products(
+            _gls_F_noise, errors_sec, _gls_phiinv_raw,
+            noise_block_info=noise_block_info
+        )
+
     if verbose:
         print(f"\n{'Iter':<6} {'RMS (mus)':<12} {'DeltaParam':<15} {'lambda_':<8} {'Status':<20}")
         print("-" * 75)
@@ -1442,6 +1947,21 @@ def _run_general_fit_iterations(
             new_fd_delay = np.asarray(compute_fd_delay(freq_mhz, current_fd_params), dtype=np.float64)
             fd_delay_change = new_fd_delay - initial_fd_delay
             dt_sec_np = dt_sec_np - fd_delay_change
+
+        # If fitting FDJUMP parameters, update dt_sec with new FDJUMP delay
+        fdjump_params_iter = setup.fdjump_params
+        fdjump_masks_iter = setup.fdjump_masks
+        if fdjump_params_iter and fdjump_masks_iter:
+            from jug.fitting.derivatives_fdjump import compute_fdjump_delay
+            new_fdjump_delay = compute_fdjump_delay(
+                params, freq_mhz, fdjump_params_iter, fdjump_masks_iter
+            )
+            initial_fdj = setup.initial_fdjump_delay
+            if initial_fdj is not None:
+                fdjump_delay_change = new_fdjump_delay - initial_fdj
+            else:
+                fdjump_delay_change = new_fdjump_delay
+            dt_sec_np = dt_sec_np - fdjump_delay_change
 
         # If fitting SW parameters, update dt_sec with new solar wind delay
         if sw_params_iter and initial_sw_delay is not None:
@@ -1534,6 +2054,17 @@ def _run_general_fit_iterations(
                 if mask is not None:
                     jump_derivs[jp] = mask.astype(np.float64)
 
+        # FDJUMP parameters: frequency-dependent jumps
+        fdjump_derivs = {}
+        fdjump_params_list = setup.fdjump_params
+        fdjump_masks = setup.fdjump_masks
+        if fdjump_params_list and fdjump_masks:
+            from jug.fitting.derivatives_fdjump import compute_fdjump_derivatives
+            fdjump_derivs = compute_fdjump_derivatives(
+                params, freq_mhz, fdjump_params_list,
+                fdjump_masks=fdjump_masks,
+            )
+
         # Merge all derivative dicts into one lookup table
         all_derivs = {}
         all_derivs.update(spin_derivs)
@@ -1543,6 +2074,7 @@ def _run_general_fit_iterations(
         all_derivs.update(fd_derivs)
         all_derivs.update(sw_derivs)
         all_derivs.update(jump_derivs)
+        all_derivs.update(fdjump_derivs)
 
         # Assemble columns in original fit_params order
         for param in fit_params:
@@ -1553,26 +2085,13 @@ def _run_general_fit_iterations(
                 )
             M_columns.append(all_derivs[param])
         
-        # Count columns first
+        # Column counts already precomputed outside loop
         n_timing_params = len(M_columns)
-        n_red_noise_cols = setup.red_noise_basis.shape[1] if getattr(setup, 'red_noise_basis', None) is not None else 0
-        n_dm_noise_cols = setup.dm_noise_basis.shape[1] if getattr(setup, 'dm_noise_basis', None) is not None else 0
-        n_chromatic_noise_cols = setup.chromatic_noise_basis.shape[1] if getattr(setup, 'chromatic_noise_basis', None) is not None else 0
-        n_ecorr_cols = setup.ecorr_basis.shape[1] if getattr(setup, 'ecorr_basis', None) is not None else 0
-        n_dmx_cols = setup.dmx_design_matrix.shape[1] if getattr(setup, 'dmx_design_matrix', None) is not None else 0
-        n_dmjump_cols = setup.dmjump_design_matrix.shape[1] if getattr(setup, 'dmjump_design_matrix', None) is not None else 0
-        n_augmented = n_red_noise_cols + n_dm_noise_cols + n_chromatic_noise_cols + n_ecorr_cols + n_dmx_cols + n_dmjump_cols
-        # Always include offset column to absorb weighted mean (matches Tempo2's
-        # GLOBAL OFFSET). This is essential when subtract_mean=True is used in
-        # the residuals, so that the design matrix derivative for JUMPs and other
-        # parameters correctly accounts for the mean redistribution.
-        # For GLS (augmented) fits, include an offset column to absorb the mean.
-        # For WLS fits, the design matrix columns are mean-subtracted instead,
-        # which is mathematically equivalent and avoids numerical issues.
         has_offset = n_augmented > 0
         total_cols = (1 if has_offset else 0) + n_timing_params + n_augmented
 
-        # Pre-allocate design matrix
+        # Build design matrix: timing columns + precomputed noise basis
+        n_timing_cols = (1 if has_offset else 0) + n_timing_params
         M = np.empty((len(toas_mjd), total_cols), dtype=np.float64)
         col = 0
         if has_offset:
@@ -1581,26 +2100,8 @@ def _run_general_fit_iterations(
         for i, mc in enumerate(M_columns):
             M[:, col + i] = np.asarray(mc, dtype=np.float64)
         col += n_timing_params
-        n_timing_cols = (1 if has_offset else 0) + n_timing_params
-
-        if n_red_noise_cols > 0:
-            M[:, col:col + n_red_noise_cols] = setup.red_noise_basis
-            col += n_red_noise_cols
-        if n_dm_noise_cols > 0:
-            M[:, col:col + n_dm_noise_cols] = setup.dm_noise_basis
-            col += n_dm_noise_cols
-        if n_chromatic_noise_cols > 0:
-            M[:, col:col + n_chromatic_noise_cols] = setup.chromatic_noise_basis
-            col += n_chromatic_noise_cols
-        if n_ecorr_cols > 0:
-            M[:, col:col + n_ecorr_cols] = setup.ecorr_basis
-            col += n_ecorr_cols
-        if n_dmx_cols > 0:
-            M[:, col:col + n_dmx_cols] = setup.dmx_design_matrix
-            col += n_dmx_cols
-        if n_dmjump_cols > 0:
-            M[:, col:col + n_dmjump_cols] = setup.dmjump_design_matrix
-            col += n_dmjump_cols
+        if n_augmented > 0:
+            M[:, col:] = _gls_F_noise
 
         # Mean subtraction for WLS (non-augmented) path
         if not has_offset:
@@ -1626,87 +2127,53 @@ def _run_general_fit_iterations(
         _iter_noise_coeffs = None  # noise Fourier/DMX coefficients this iteration
         _wls_delta_all = None  # full delta including offset for WLS linearized RMS
 
-        if solver_mode == "fast":
-            # FAST solver: QR-based lstsq with proper conditioning
+        if n_augmented > 0:
+            # GLS path: Woodbury solver with precomputed products
+            M_t = M_solve[:, :n_timing_cols]
+            F_n = M_solve[:, n_timing_cols:]
+            is_final = (iteration == max_iter - 1)
+            delta_params, cov, delta_params_all, cov_all, _iter_noise_coeffs = \
+                _solve_gls_woodbury(M_t, F_n, r_solve, sigma_solve,
+                                    _gls_phiinv_raw, has_offset, n_timing_params,
+                                    precomputed=_woodbury_precomputed,
+                                    compute_noise_cov=is_final)
+        elif solver_mode == "fast":
+            # WLS FAST solver: QR-based lstsq with proper conditioning
             r1 = r_solve / sigma_solve
             M1 = M_solve / sigma_solve[:, None]
             col_norms = np.asarray(jnp.sqrt(jnp.sum(jnp.array(M1)**2, axis=0)))
             col_norms = np.where(col_norms == 0, 1.0, col_norms)
             M2 = M1 / col_norms[None, :]
-            
-            if n_augmented > 0:
-                n_cols = M2.shape[1]
-                prior_inv = np.zeros(n_cols)
-                offset = n_timing_cols
-                if n_red_noise_cols > 0:
-                    prior_inv[offset:offset + n_red_noise_cols] = 1.0 / (setup.red_noise_prior * col_norms[offset:offset + n_red_noise_cols]**2)
-                    offset += n_red_noise_cols
-                if n_dm_noise_cols > 0:
-                    prior_inv[offset:offset + n_dm_noise_cols] = 1.0 / (setup.dm_noise_prior * col_norms[offset:offset + n_dm_noise_cols]**2)
-                    offset += n_dm_noise_cols
-                if n_chromatic_noise_cols > 0:
-                    prior_inv[offset:offset + n_chromatic_noise_cols] = 1.0 / (setup.chromatic_noise_prior * col_norms[offset:offset + n_chromatic_noise_cols]**2)
-                    offset += n_chromatic_noise_cols
-                if n_ecorr_cols > 0:
-                    prior_inv[offset:offset + n_ecorr_cols] = 1.0 / (setup.ecorr_prior * col_norms[offset:offset + n_ecorr_cols]**2)
-                    offset += n_ecorr_cols
-                delta_params, cov, delta_params_all, cov_all, _iter_noise_coeffs = \
-                    _solve_augmented_cholesky(M2, r1, prior_inv, col_norms, n_timing_cols, has_offset)
-            else:
-                delta_normalized = np.asarray(jnp.linalg.lstsq(jnp.array(M2), jnp.array(r1), rcond=None)[0])
-                delta_all = delta_normalized / col_norms
-                M2tM2 = M2.T @ M2
-                M2tM2_j = jnp.array(M2tM2)
-                try:
-                    cov_normalized = np.asarray(jnp.linalg.inv(M2tM2_j))
-                except Exception:
-                    cov_normalized = np.asarray(jnp.linalg.pinv(M2tM2_j))
-                cov_all = (cov_normalized / col_norms).T / col_norms
-                # Strip offset column from delta_params and cov
-                t0 = 1 if has_offset else 0
-                delta_params = delta_all[t0:]
-                cov = cov_all[t0:, t0:]
-                _wls_delta_all = delta_all
+            delta_normalized = np.asarray(jnp.linalg.lstsq(jnp.array(M2), jnp.array(r1), rcond=None)[0])
+            delta_all = delta_normalized / col_norms
+            M2tM2 = M2.T @ M2
+            M2tM2_j = jnp.array(M2tM2)
+            try:
+                cov_normalized = np.asarray(jnp.linalg.inv(M2tM2_j))
+            except Exception:
+                cov_normalized = np.asarray(jnp.linalg.pinv(M2tM2_j))
+            cov_all = (cov_normalized / col_norms).T / col_norms
+            # Strip offset column from delta_params and cov
+            t0 = 1 if has_offset else 0
+            delta_params = delta_all[t0:]
+            cov = cov_all[t0:, t0:]
+            _wls_delta_all = delta_all
         else:
-            if n_augmented > 0:
-                r1 = r_solve / sigma_solve
-                M1 = M_solve / sigma_solve[:, None]
-                col_norms = np.asarray(jnp.sqrt(jnp.sum(jnp.array(M1)**2, axis=0)))
-                col_norms = np.where(col_norms == 0, 1.0, col_norms)
-                M2 = M1 / col_norms[None, :]
-                n_cols = M2.shape[1]
-                prior_inv = np.zeros(n_cols)
-                offset = n_timing_cols
-                if n_red_noise_cols > 0:
-                    prior_inv[offset:offset + n_red_noise_cols] = 1.0 / (setup.red_noise_prior * col_norms[offset:offset + n_red_noise_cols]**2)
-                    offset += n_red_noise_cols
-                if n_dm_noise_cols > 0:
-                    prior_inv[offset:offset + n_dm_noise_cols] = 1.0 / (setup.dm_noise_prior * col_norms[offset:offset + n_dm_noise_cols]**2)
-                    offset += n_dm_noise_cols
-                if n_chromatic_noise_cols > 0:
-                    prior_inv[offset:offset + n_chromatic_noise_cols] = 1.0 / (setup.chromatic_noise_prior * col_norms[offset:offset + n_chromatic_noise_cols]**2)
-                    offset += n_chromatic_noise_cols
-                if n_ecorr_cols > 0:
-                    prior_inv[offset:offset + n_ecorr_cols] = 1.0 / (setup.ecorr_prior * col_norms[offset:offset + n_ecorr_cols]**2)
-                    offset += n_ecorr_cols
-                delta_params, cov, delta_params_all, cov_all, _iter_noise_coeffs = \
-                    _solve_augmented_cholesky(M2, r1, prior_inv, col_norms, n_timing_cols, has_offset)
-            else:
-                # EXACT solver: SVD-based (bit-for-bit reproducible, no augmentation)
-                delta_all, cov_all, _ = wls_solve_svd(
-                    residuals=r_solve,
-                    sigma=sigma_solve,
-                    M=M_solve,
-                    threshold=1e-14,
-                    negate_dpars=False
-                )
-                delta_all = np.array(delta_all)
-                cov_all = np.array(cov_all)
-                # Strip offset column
-                t0 = 1 if has_offset else 0
-                delta_params = delta_all[t0:]
-                cov = cov_all[t0:, t0:]
-                _wls_delta_all = delta_all
+            # WLS EXACT solver: SVD-based (bit-for-bit reproducible)
+            delta_all, cov_all, _ = wls_solve_svd(
+                residuals=r_solve,
+                sigma=sigma_solve,
+                M=M_solve,
+                threshold=1e-14,
+                negate_dpars=False
+            )
+            delta_all = np.array(delta_all)
+            cov_all = np.array(cov_all)
+            # Strip offset column
+            t0 = 1 if has_offset else 0
+            delta_params = delta_all[t0:]
+            cov = cov_all[t0:, t0:]
+            _wls_delta_all = delta_all
         
         # Step acceptance strategy depends on fit type:
         # - WLS (n_augmented == 0): Take the full Newton-Gauss step unconditionally,
@@ -1749,77 +2216,41 @@ def _run_general_fit_iterations(
                     converged = True
                     break
         else:
-            # GLS: damping with full-model validation
-            while lambda_ >= min_lambda:
-                trial_param_values = [
-                    param_values_curr[i] + lambda_ * delta_params[i]
-                    for i in range(len(fit_params))
-                ]
-                
-                if any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
-                    lambda_ /= 2
-                    continue
-                
-                trial_params = params.copy()
-                if '_high_precision' in trial_params:
-                    trial_params['_high_precision'] = dict(trial_params['_high_precision'])
-                for i, param in enumerate(fit_params):
-                    _update_param(trial_params, param, trial_param_values[i])
-                
-                try:
-                    trial_resid_sec, trial_chi2, trial_rms_us, _ = _compute_full_model_residuals(trial_params, setup)
-                except Exception:
-                    lambda_ /= 2
-                    continue
-
-                # Subtract noise realization and offset from trial residuals
-                if _iter_noise_coeffs is not None:
-                    aug_bases = []
-                    if n_red_noise_cols > 0 and setup.red_noise_basis is not None:
-                        aug_bases.append(setup.red_noise_basis)
-                    if n_dm_noise_cols > 0 and setup.dm_noise_basis is not None:
-                        aug_bases.append(setup.dm_noise_basis)
-                    if n_chromatic_noise_cols > 0 and setup.chromatic_noise_basis is not None:
-                        aug_bases.append(setup.chromatic_noise_basis)
-                    if n_ecorr_cols > 0 and setup.ecorr_basis is not None:
-                        aug_bases.append(setup.ecorr_basis)
-                    if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
-                        aug_bases.append(setup.dmx_design_matrix)
-                    if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
-                        aug_bases.append(setup.dmjump_design_matrix)
-                    if aug_bases:
-                        F_aug = np.column_stack(aug_bases)
-                        noise_real = F_aug @ (lambda_ * _iter_noise_coeffs)
-                        trial_resid_sec = trial_resid_sec - noise_real
-                    if has_offset:
-                        trial_offset = np.sum(trial_resid_sec * weights) / sum_weights
-                        trial_resid_sec = trial_resid_sec - trial_offset
-                    if aug_bases or has_offset:
-                        trial_chi2 = np.sum((trial_resid_sec / errors_sec) ** 2)
-                        trial_rms_us = np.sqrt(np.mean(trial_resid_sec**2)) * 1e6
-                
+            # GLS: use linearized residuals for step acceptance (matching Tempo2).
+            # The noise coefficients are only valid in the linearized context,
+            # so we evaluate r_lin = residuals - M @ delta_all which jointly
+            # accounts for timing corrections, noise, and offset.
+            trial_param_values = [
+                param_values_curr[i] + delta_params[i]
+                for i in range(len(fit_params))
+            ]
+            if not any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
+                r_lin = residuals - M @ delta_params_all
+                trial_chi2 = np.sum((r_lin / errors_sec) ** 2)
+                trial_rms_us = np.sqrt(np.sum(r_lin**2 * weights) / sum_weights) * 1e6
                 chi2_decrease = current_chi2 - trial_chi2
-                max_chi2_increase = max_chi2_increase_frac * current_chi2
 
-                if chi2_decrease < -max_chi2_increase:
-                    lambda_ /= 2
-                else:
+                if trial_chi2 <= best_chi2 * (1.0 + 1e-10) or iteration == 0:
                     step_accepted = True
                     param_values_curr = trial_param_values
-                    current_chi2 = trial_chi2
+                    best_param_values = trial_param_values.copy()
                     current_rms_us = trial_rms_us
-                    
+                    current_chi2 = trial_chi2
+                    best_chi2 = trial_chi2
+
                     if _iter_noise_coeffs is not None:
                         best_noise_coeffs = _iter_noise_coeffs.copy()
-                    
+
                     _saved_residuals_sec = residuals.copy()
                     _saved_M = M.copy()
                     _saved_delta_all = delta_params_all.copy()
-                    _saved_lambda = lambda_
-                    
-                    if trial_chi2 < best_chi2:
-                        best_chi2 = trial_chi2
-                        best_param_values = trial_param_values.copy()
+                    _saved_lambda = 1.0
+                    _saved_cov_all = cov_all
+                else:
+                    if verbose:
+                        print(f"         (GLS step rejected: chi2 {trial_chi2:.1f} > best {best_chi2:.1f})")
+                    param_values_curr = list(best_param_values)
+                    converged = True
                     break
         
         if not step_accepted:
@@ -1872,7 +2303,7 @@ def _run_general_fit_iterations(
 
         if converged:
             break
-    
+
     # Use the best state found
     # For GLS (noise-augmented) fits, the noise is re-estimated at each iteration,
     # making chi2 comparisons across iterations unreliable. Use the converged
@@ -1912,12 +2343,17 @@ def _run_general_fit_iterations(
     if _saved_residuals_sec is not None:
         if n_augmented > 0:
             # GLS: Subtract only the timing model correction (timing params + offset
-            # + DMX + DMJUMP). Noise realizations (RedNoise, DMNoise, ECORR) are left
-            # in the residuals for GUI subtract-realization workflow.
+            # + DMX + DMJUMP). All noise realizations (Red, DM, Chromatic, ECORR,
+            # Band, Group) are left in the residuals for GUI subtract workflow.
             delta_model_only = _saved_delta_all.copy()
             noise_start = n_timing_cols
-            noise_end = n_timing_cols + n_red_noise_cols + n_dm_noise_cols + n_chromatic_noise_cols + n_ecorr_cols
+            noise_end = (n_timing_cols + n_red_noise_cols + n_dm_noise_cols
+                         + n_chromatic_noise_cols + n_ecorr_cols)
             delta_model_only[noise_start:noise_end] = 0.0
+            # Band and group noise columns sit after DMX/DMJUMP
+            bg_start = noise_end + n_dmx_cols + n_dmjump_cols
+            bg_end = bg_start + n_band_noise_total + n_group_noise_total
+            delta_model_only[bg_start:bg_end] = 0.0
             linear_correction = _saved_M @ delta_model_only
         else:
             # WLS: Subtract full linearized correction
@@ -1950,6 +2386,17 @@ def _run_general_fit_iterations(
     # contribution to the residual covariance structure.
     noise_realizations = {}
     if n_augmented > 0 and best_noise_coeffs is not None:
+        # Recompute noise posterior covariance on the best accepted step
+        if _saved_M is not None and _woodbury_precomputed is not None:
+            n_timing_cols_final = _saved_M.shape[1] - n_augmented
+            M_t_final = _saved_M[:, :n_timing_cols_final]
+            F_n_final = _saved_M[:, n_timing_cols_final:]
+            _, _, _, cov_all, _ = _solve_gls_woodbury(
+                M_t_final, F_n_final, _saved_residuals_sec, errors_sec,
+                _gls_phiinv_raw, True, n_timing_cols_final - 1,
+                precomputed=_woodbury_precomputed, compute_noise_cov=True)
+        elif '_saved_cov_all' in dir():
+            cov_all = _saved_cov_all
         # Posterior covariance of noise coefficients from the full joint covariance
         try:
             C_post = cov_all[n_timing_cols:, n_timing_cols:]
@@ -1965,14 +2412,6 @@ def _run_general_fit_iterations(
                 C_rn = C_post[offset:offset + n_red_noise_cols, offset:offset + n_red_noise_cols]
                 noise_realizations['RedNoise_err'] = np.sqrt(np.sum((F_rn @ C_rn) * F_rn, axis=1)) * 1e6
             offset += n_red_noise_cols
-        if n_chromatic_noise_cols > 0 and setup.chromatic_noise_basis is not None:
-            chrom_coeffs = best_noise_coeffs[offset:offset + n_chromatic_noise_cols]
-            F_chrom = setup.chromatic_noise_basis
-            noise_realizations['ChromNoise'] = (F_chrom @ chrom_coeffs) * 1e6
-            if C_post is not None:
-                C_chrom = C_post[offset:offset + n_chromatic_noise_cols, offset:offset + n_chromatic_noise_cols]
-                noise_realizations['ChromNoise_err'] = np.sqrt(np.sum((F_chrom @ C_chrom) * F_chrom, axis=1)) * 1e6
-            offset += n_chromatic_noise_cols
         if n_dm_noise_cols > 0 and setup.dm_noise_basis is not None:
             dm_coeffs = best_noise_coeffs[offset:offset + n_dm_noise_cols]
             F_dm = setup.dm_noise_basis
@@ -1981,6 +2420,14 @@ def _run_general_fit_iterations(
                 C_dm = C_post[offset:offset + n_dm_noise_cols, offset:offset + n_dm_noise_cols]
                 noise_realizations['DMNoise_err'] = np.sqrt(np.sum((F_dm @ C_dm) * F_dm, axis=1)) * 1e6
             offset += n_dm_noise_cols
+        if n_chromatic_noise_cols > 0 and setup.chromatic_noise_basis is not None:
+            chrom_coeffs = best_noise_coeffs[offset:offset + n_chromatic_noise_cols]
+            F_chrom = setup.chromatic_noise_basis
+            noise_realizations['ChromaticNoise'] = (F_chrom @ chrom_coeffs) * 1e6
+            if C_post is not None:
+                C_chrom = C_post[offset:offset + n_chromatic_noise_cols, offset:offset + n_chromatic_noise_cols]
+                noise_realizations['ChromaticNoise_err'] = np.sqrt(np.sum((F_chrom @ C_chrom) * F_chrom, axis=1)) * 1e6
+            offset += n_chromatic_noise_cols
         if n_ecorr_cols > 0 and setup.ecorr_basis is not None:
             ecorr_coeffs = best_noise_coeffs[offset:offset + n_ecorr_cols]
             F_ec = setup.ecorr_basis
@@ -1989,6 +2436,26 @@ def _run_general_fit_iterations(
                 C_ec = C_post[offset:offset + n_ecorr_cols, offset:offset + n_ecorr_cols]
                 noise_realizations['ECORR_err'] = np.sqrt(np.sum((F_ec @ C_ec) * F_ec, axis=1)) * 1e6
             offset += n_ecorr_cols
+        if n_band_noise_total > 0 and setup.band_noise_bases is not None:
+            for bi, F in enumerate(setup.band_noise_bases):
+                nc = n_band_noise_cols_list[bi]
+                coeffs = best_noise_coeffs[offset:offset + nc]
+                label = setup.band_noise_labels[bi]
+                noise_realizations[label] = (F @ coeffs) * 1e6
+                if C_post is not None:
+                    C_bn = C_post[offset:offset + nc, offset:offset + nc]
+                    noise_realizations[f'{label}_err'] = np.sqrt(np.sum((F @ C_bn) * F, axis=1)) * 1e6
+                offset += nc
+        if n_group_noise_total > 0 and setup.group_noise_bases is not None:
+            for gi, F in enumerate(setup.group_noise_bases):
+                nc = n_group_noise_cols_list[gi]
+                coeffs = best_noise_coeffs[offset:offset + nc]
+                label = setup.group_noise_labels[gi]
+                noise_realizations[label] = (F @ coeffs) * 1e6
+                if C_post is not None:
+                    C_gn = C_post[offset:offset + nc, offset:offset + nc]
+                    noise_realizations[f'{label}_err'] = np.sqrt(np.sum((F @ C_gn) * F, axis=1)) * 1e6
+                offset += nc
         if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
             dmx_coeffs = best_noise_coeffs[offset:offset + n_dmx_cols]
             F_dmx = setup.dmx_design_matrix

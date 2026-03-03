@@ -26,7 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
-from jug.noise.red_noise import RedNoiseProcess, DMNoiseProcess, ChromaticNoiseProcess
+from jug.noise.red_noise import (RedNoiseProcess, DMNoiseProcess, ChromaticNoiseProcess,
+                                  BandNoiseProcess, GroupNoiseProcess)
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,8 @@ RED_NOISE = "RedNoise"
 DM_NOISE = "DMNoise"
 DMX = "DMX"
 CHROMATIC_NOISE = "ChromaticNoise"
+BAND_NOISE = "BandNoise"
+GROUP_NOISE = "GroupNoise"
 CW = "CW"
 BWM = "BWM"
 CHROMATIC_EVENT = "ChromaticEvent"
@@ -52,7 +55,7 @@ CHROMATIC_EVENT = "ChromaticEvent"
 def _has_efac(params: dict) -> bool:
     for line in params.get("_noise_lines", []):
         key = line.split()[0].upper()
-        if key in ("EFAC", "T2EFAC"):
+        if key in ("EFAC", "T2EFAC", "TNEF"):
             return True
     return False
 
@@ -60,7 +63,7 @@ def _has_efac(params: dict) -> bool:
 def _has_equad(params: dict) -> bool:
     for line in params.get("_noise_lines", []):
         key = line.split()[0].upper()
-        if key in ("EQUAD", "T2EQUAD"):
+        if key in ("EQUAD", "T2EQUAD", "TNEQ"):
             return True
     return False
 
@@ -106,6 +109,20 @@ def _has_chromatic_noise(params: dict) -> bool:
 
 def _has_dmx(params: dict) -> bool:
     return any(k.startswith("DMXR1_") for k in params)
+
+
+def _has_band_noise(params: dict) -> bool:
+    for line in params.get("_noise_lines", []):
+        if line.split()[0].upper() == "TNBANDNOISE":
+            return True
+    return False
+
+
+def _has_group_noise(params: dict) -> bool:
+    for line in params.get("_noise_lines", []):
+        if line.split()[0].upper() == "TNGROUPNOISE":
+            return True
+    return False
 
 
 # Deterministic signal detectors
@@ -185,6 +202,18 @@ _NOISE_SPECS = [
         display_order=6, detector=_has_chromatic_noise, is_power_law=True,
         impl_class=ChromaticNoiseProcess,
     ),
+    NoiseProcessSpec(
+        name=BAND_NOISE, label="Band Noise",
+        tooltip="Per-frequency-band achromatic noise (power-law)",
+        display_order=7, detector=_has_band_noise, is_power_law=True,
+        impl_class=BandNoiseProcess,
+    ),
+    NoiseProcessSpec(
+        name=GROUP_NOISE, label="Group Noise",
+        tooltip="Per-backend-group achromatic noise (power-law)",
+        display_order=8, detector=_has_group_noise, is_power_law=True,
+        impl_class=GroupNoiseProcess,
+    ),
     # Deterministic signals (subtract-only, no realisation)
     NoiseProcessSpec(
         name=CW, label="CW Signal",
@@ -214,13 +243,30 @@ for _spec in _NOISE_SPECS:
 def get_noise_label(name: str) -> str:
     """Return the display label for a noise process, or *name* if unknown."""
     spec = NOISE_REGISTRY.get(name)
-    return spec.label if spec else name
+    if spec:
+        return spec.label
+    # Multi-instance names: "BandNoise_0_1000" -> "Band 0–1000 MHz"
+    if name.startswith("BandNoise_"):
+        parts = name.split("_", 1)[1]  # "0_1000"
+        lo_hi = parts.split("_")
+        if len(lo_hi) == 2:
+            return f"Band {lo_hi[0]}\u2013{lo_hi[1]} MHz"
+    if name.startswith("GroupNoise_"):
+        gname = name.split("_", 1)[1]
+        return f"Group {gname}"
+    return name
 
 
 def get_noise_tooltip(name: str) -> str:
     """Return the tooltip for a noise process, or empty string if unknown."""
     spec = NOISE_REGISTRY.get(name)
-    return spec.tooltip if spec else ""
+    if spec:
+        return spec.tooltip
+    if name.startswith("BandNoise_"):
+        return "Per-frequency-band achromatic noise (power-law)"
+    if name.startswith("GroupNoise_"):
+        return "Per-backend-group achromatic noise (power-law)"
+    return ""
 
 
 def get_noise_display_order() -> List[str]:
@@ -384,8 +430,12 @@ def compute_noise_realization(
     residuals_sec,
     errors_sec,
     freq_mhz=None,
+    group_flags=None,
 ):
     """Compute MAP noise realization for any registered power-law process.
+
+    For multi-instance processes (BandNoise, GroupNoise), jointly realizes
+    all sub-processes and returns their combined realization.
 
     Returns realization in seconds, or None if the process can't be parsed.
     """
@@ -393,6 +443,30 @@ def compute_noise_realization(
     if spec is None or spec.impl_class is None:
         return None
 
+    # Multi-instance processes: BandNoise, GroupNoise
+    if proc_name == BAND_NOISE:
+        from jug.noise.red_noise import parse_band_noise_params, realize_all_noise
+        processes = parse_band_noise_params(params)
+        if not processes:
+            return None
+        result = realize_all_noise(
+            processes, toas_mjd, residuals_sec, errors_sec,
+            freq_mhz=freq_mhz,
+        )
+        return result["total"]
+
+    if proc_name == GROUP_NOISE:
+        from jug.noise.red_noise import parse_group_noise_params, realize_all_noise
+        processes = parse_group_noise_params(params)
+        if not processes:
+            return None
+        result = realize_all_noise(
+            processes, toas_mjd, residuals_sec, errors_sec,
+            group_flags=group_flags,
+        )
+        return result["total"]
+
+    # Single-instance processes
     cls = spec.impl_class
     from_par = getattr(cls, 'from_par', None)
     if from_par is None:

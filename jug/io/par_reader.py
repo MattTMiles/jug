@@ -92,9 +92,12 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
     fit_flags = {}  # Track which parameters have fit flag = 1
     noise_lines = []  # Collect EFAC/EQUAD/ECORR lines (non-standard multi-token format)
     jump_lines = []   # Collect JUMP lines (multi-token format: JUMP -flag val value)
+    fdjump_lines = []  # Collect FDJUMP lines (multi-token format: FDJUMP1 -flag val value fit)
 
     # Keywords that use multi-token format: T2EFAC -f <val> <num>, etc.
-    _NOISE_KEYWORDS = {'T2EFAC', 'T2EQUAD', 'EFAC', 'EQUAD', 'ECORR', 'TNECORR', 'DMEFAC', 'DMJUMP'}
+    _NOISE_KEYWORDS = {'T2EFAC', 'T2EQUAD', 'EFAC', 'EQUAD', 'ECORR', 'TNECORR',
+                       'TNEF', 'TNEQ', 'DMEFAC', 'DMJUMP',
+                       'TNBANDNOISE', 'TNGROUPNOISE'}
 
     path = Path(path)
     par_filename = path.name.lower()
@@ -119,6 +122,16 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                 # JUMP parameters have multi-token format -- store raw line
                 if key == 'JUMP':
                     jump_lines.append(line)
+                    continue
+
+                # FDJUMP parameters: FDJUMP1 -flag val value [fit]
+                if key.startswith('FDJUMP'):
+                    fdjump_lines.append(line)
+                    continue
+
+                # CLK_CORR_CHAIN has multi-token value (list of clock files)
+                if key == 'CLK_CORR_CHAIN':
+                    params[key] = ' '.join(parts[1:])
                     continue
 
                 value_str = parts[1]
@@ -174,6 +187,47 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
             if fit_idx > 0 and len(jparts) > fit_idx and jparts[fit_idx] == '1':
                 fit_flags[jump_key] = True
     
+    # Store raw FDJUMP lines for later parsing
+    # Format: FDJUMP<idx> -<flag> <value> <offset> [fit_flag]
+    # or:     FDJUMP<idx> -<flag> <value> <offset> <fit_flag>
+    if fdjump_lines:
+        params['_fdjump_lines'] = fdjump_lines
+        fdjump_log = True  # Default: log scale (Tempo2 default)
+        for idx, fl in enumerate(fdjump_lines):
+            fparts = fl.strip().split()
+            key_raw = fparts[0].upper()
+            # Check for FDJUMP_SCALE
+            if key_raw == 'FDJUMP_SCALE':
+                if len(fparts) >= 2 and fparts[1].upper() == 'LINEAR':
+                    fdjump_log = False
+                continue
+            # Parse FDJUMP index from keyword (e.g., FDJUMP1 -> 1)
+            import re
+            m = re.match(r'FDJUMP(\d+)', key_raw)
+            if not m:
+                continue
+            fd_idx = int(m.group(1))
+            # Flag-based: FDJUMP1 -group <name> <value> [fit]
+            if len(fparts) >= 4 and fparts[1].startswith('-'):
+                flag_name = fparts[1].lstrip('-')
+                flag_value = fparts[2]
+                try:
+                    val = float(fparts[3])
+                except (IndexError, ValueError):
+                    val = 0.0
+                fit = len(fparts) >= 5 and fparts[4] == '1'
+                fdjump_key = f'FDJUMP{fd_idx}_{idx + 1}'
+                params[fdjump_key] = val
+                params[f'_fdjump_meta_{fdjump_key}'] = {
+                    'fd_index': fd_idx,
+                    'flag_name': flag_name,
+                    'flag_value': flag_value,
+                    'log_scale': fdjump_log,
+                }
+                if fit:
+                    fit_flags[fdjump_key] = True
+        params['_fdjump_log'] = fdjump_log
+
     # Determine and store par file timescale
     # UNITS keyword is the authoritative source (PINT/Tempo2 convention)
     if 'UNITS' in params:

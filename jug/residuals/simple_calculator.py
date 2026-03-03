@@ -1427,6 +1427,17 @@ def compute_residuals_simple(
     # Convert ssb_obs_pos from km to light-seconds for astrometry derivatives
     SPEED_OF_LIGHT_KM_S = C_KM_S
     ssb_obs_pos_ls = ssb_obs_pos_km / SPEED_OF_LIGHT_KM_S
+    # Sun position relative to observer in light-seconds (for Shapiro recomputation in fitter)
+    obs_sun_pos_ls = obs_sun_pos_km / SPEED_OF_LIGHT_KM_S
+    # Planet positions relative to observer in light-seconds (for planet Shapiro recomputation)
+    obs_planet_pos_ls = None
+    if planet_shapiro_enabled:
+        obs_planet_pos_ls = {}
+        with solar_system_ephemeris.set(ephem):
+            for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
+                planet_pos = get_body_barycentric_posvel(planet, times)[0].xyz.to(u.km).value.T
+                obs_planet_km = planet_pos - ssb_obs_pos_km
+                obs_planet_pos_ls[planet] = obs_planet_km / SPEED_OF_LIGHT_KM_S
     
     # Compute pre-binary delay: roemer_shapiro + DM + SW + tropo (NOT FD)
     # This is the PINT-compatible time for binary model evaluation
@@ -1490,6 +1501,10 @@ def compute_residuals_simple(
         'tropo_delay_sec': np.array(tropo_delay_sec, dtype=np.float64),
         # SSB to observatory position in light-seconds (needed for astrometry derivatives)
         'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),
+        # Sun position relative to observer in light-seconds (for Shapiro recomputation)
+        'obs_sun_pos_ls': np.array(obs_sun_pos_ls, dtype=np.float64),
+        # Planet positions relative to observer in light-seconds (for planet Shapiro recomputation)
+        'obs_planet_pos_ls': {k: np.array(v, dtype=np.float64) for k, v in obs_planet_pos_ls.items()} if obs_planet_pos_ls else None,
         'orbital_phase': orbital_phase,
         'toa_flags': [toa.flags for toa in toas],
         # Clock / EOP issues collected during loading (for GUI warnings)

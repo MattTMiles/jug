@@ -247,6 +247,8 @@ class GeneralFitSetup:
     prebinary_delay_sec: Optional[np.ndarray]  # PINT-compatible pre-binary time
     initial_binary_delay: Optional[np.ndarray]  # For binary fitting iteration
     ssb_obs_pos_ls: Optional[np.ndarray]
+    obs_sun_pos_ls: Optional[np.ndarray]  # Sun position relative to observer (for Shapiro recomputation)
+    obs_planet_pos_ls: Optional[dict]  # Planet positions relative to observer (for planet Shapiro)
     initial_astrometric_delay: Optional[np.ndarray]  # For astrometry fitting iteration
     initial_fd_delay: Optional[np.ndarray]  # For FD fitting iteration
     initial_sw_delay: Optional[np.ndarray]  # For SW fitting iteration
@@ -949,6 +951,13 @@ def _build_setup_common(
         initial_dm_params = {p: params[p] for p in dm_params if p in params}
         initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
 
+    # --- Observer position (needed for DDK binary and astrometry) ----------
+    ssb_obs_pos_ls = extras.get('ssb_obs_pos_ls')
+    # Sun position relative to observer (for Shapiro delay recomputation)
+    obs_sun_pos_ls = extras.get('obs_sun_pos_ls')
+    # Planet positions relative to observer (for planet Shapiro recomputation)
+    obs_planet_pos_ls = extras.get('obs_planet_pos_ls')
+
     # --- Binary delay setup ------------------------------------------------
     roemer_shapiro_sec = extras.get('roemer_shapiro_sec')
     prebinary_delay_sec = extras.get('prebinary_delay_sec')
@@ -962,16 +971,18 @@ def _build_setup_common(
                 )
             prebinary_delay_sec = roemer_shapiro_sec  # Fallback
         toas_prebinary = tdb_mjd - prebinary_delay_sec / SECS_PER_DAY
-        initial_binary_delay = np.array(compute_binary_delay(toas_prebinary, params))
+        initial_binary_delay = np.array(compute_binary_delay(
+            toas_prebinary, params, obs_pos_ls=ssb_obs_pos_ls))
 
     # --- Astrometry delay setup --------------------------------------------
-    ssb_obs_pos_ls = extras.get('ssb_obs_pos_ls')
     initial_astrometric_delay = None
     if astrometry_params:
         if ssb_obs_pos_ls is None:
             raise ValueError("Astrometry fitting requires ssb_obs_pos_ls in compute_residuals output.")
         from jug.fitting.derivatives_astrometry import compute_astrometric_delay
-        initial_astrometric_delay = np.array(compute_astrometric_delay(params, tdb_mjd, ssb_obs_pos_ls))
+        initial_astrometric_delay = np.array(compute_astrometric_delay(
+            params, tdb_mjd, ssb_obs_pos_ls, obs_sun_pos_ls=obs_sun_pos_ls,
+            obs_planet_pos_ls=obs_planet_pos_ls))
 
     # --- FD delay setup ----------------------------------------------------
     initial_fd_delay = None
@@ -1024,6 +1035,8 @@ def _build_setup_common(
         prebinary_delay_sec=prebinary_delay_sec,
         initial_binary_delay=initial_binary_delay,
         ssb_obs_pos_ls=ssb_obs_pos_ls,
+        obs_sun_pos_ls=obs_sun_pos_ls,
+        obs_planet_pos_ls=obs_planet_pos_ls,
         initial_astrometric_delay=initial_astrometric_delay,
         initial_fd_delay=initial_fd_delay,
         initial_sw_delay=initial_sw_delay,
@@ -1120,6 +1133,8 @@ def _build_general_fit_setup_from_files(
             'prebinary_delay_sec': result.get('prebinary_delay_sec'),
             'roemer_shapiro_sec': result.get('roemer_shapiro_sec'),
             'ssb_obs_pos_ls': result.get('ssb_obs_pos_ls'),
+            'obs_sun_pos_ls': result.get('obs_sun_pos_ls'),
+            'obs_planet_pos_ls': result.get('obs_planet_pos_ls'),
             'sw_geometry_pc': result.get('sw_geometry_pc'),
             'jump_phase': result.get('jump_phase'),
         },
@@ -1181,7 +1196,8 @@ def _compute_full_model_residuals(
     binary_params = setup.binary_params
     if binary_params and setup.initial_binary_delay is not None:
         toas_prebinary = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
-        new_binary_delay = np.array(compute_binary_delay(toas_prebinary, params))
+        new_binary_delay = np.array(compute_binary_delay(
+            toas_prebinary, params, obs_pos_ls=setup.ssb_obs_pos_ls))
         binary_delay_change = new_binary_delay - setup.initial_binary_delay
         dt_sec_np = dt_sec_np - binary_delay_change
 
@@ -1190,7 +1206,9 @@ def _compute_full_model_residuals(
     if astrometry_params and setup.initial_astrometric_delay is not None:
         from jug.fitting.derivatives_astrometry import compute_astrometric_delay
         new_astrometric_delay = np.array(compute_astrometric_delay(
-            params, tdb_mjd, setup.ssb_obs_pos_ls
+            params, tdb_mjd, setup.ssb_obs_pos_ls,
+            obs_sun_pos_ls=setup.obs_sun_pos_ls,
+            obs_planet_pos_ls=setup.obs_planet_pos_ls
         ))
         astrometric_delay_change = new_astrometric_delay - setup.initial_astrometric_delay
         dt_sec_np = dt_sec_np - astrometric_delay_change
@@ -1403,14 +1421,17 @@ def _run_general_fit_iterations(
         # If fitting binary parameters, update dt_sec with new binary delay
         # Use PINT-compatible pre-binary time (roemer_shapiro + DM + SW + tropo)
         if binary_params and initial_binary_delay is not None:
-            new_binary_delay = np.array(compute_binary_delay(toas_prebinary_for_binary, params))
+            new_binary_delay = np.array(compute_binary_delay(
+                toas_prebinary_for_binary, params, obs_pos_ls=ssb_obs_pos_ls))
             binary_delay_change = new_binary_delay - initial_binary_delay
             dt_sec_np = dt_sec_np - binary_delay_change
 
         # If fitting astrometric parameters, update dt_sec with new astrometric delay
         if astrometry_params and initial_astrometric_delay is not None:
             new_astrometric_delay = np.array(compute_astrometric_delay(
-                params, tdb_mjd, ssb_obs_pos_ls
+                params, tdb_mjd, ssb_obs_pos_ls,
+                obs_sun_pos_ls=setup.obs_sun_pos_ls,
+                obs_planet_pos_ls=setup.obs_planet_pos_ls
             ))
             astrometric_delay_change = new_astrometric_delay - initial_astrometric_delay
             dt_sec_np = dt_sec_np - astrometric_delay_change

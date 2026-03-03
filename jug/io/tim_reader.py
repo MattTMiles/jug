@@ -131,7 +131,9 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
                 inc_parts = line.split(None, 1)
                 if len(inc_parts) == 2:
                     inc_path = path.parent / inc_parts[1].strip()
-                    toas.extend(parse_tim_file_mjds(inc_path, _state=_state))
+                    # Tempo2 scopes TIME and FORMAT to each file
+                    # (local variables in readTim reset per recursive call)
+                    toas.extend(parse_tim_file_mjds(inc_path, _state=None))
                 continue
             # TIME directive: cumulative time offset in seconds added to MJDs
             if line.startswith('TIME'):

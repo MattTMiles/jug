@@ -1628,7 +1628,7 @@ def _compute_full_model_residuals(
                     current_jump_phase[mask] += F0_ld * np.longdouble(current_val - initial_val)
 
     # Phase computation via shared canonical function (longdouble precision)
-    residuals_us, residuals_sec = compute_phase_residuals(
+    residuals_us, residuals_sec, _ = compute_phase_residuals(
         dt_sec_np, params, weights, subtract_mean=True,
         tzr_phase=setup.tzr_phase,
         jump_phase=current_jump_phase
@@ -1984,7 +1984,7 @@ def _run_general_fit_iterations(
                     current_jump_phase[mask] += F0_ld * np.longdouble(current_val - initial_val)
 
         # Compute phase residuals from updated dt_sec via shared function (longdouble)
-        _, residuals = compute_phase_residuals(
+        _, residuals, _ = compute_phase_residuals(
             dt_sec_np, params, weights, subtract_mean=True,
             tzr_phase=setup.tzr_phase,
             jump_phase=current_jump_phase

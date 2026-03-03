@@ -69,6 +69,7 @@ class ComputeWorker(QRunnable):
                 'freq_bary_mhz': np.array(result['freq_bary_mhz']) if result.get('freq_bary_mhz') is not None else None,
                 'toa_flags': result.get('toa_flags'),  # list of dicts, not array
                 'orbital_phase': np.array(result['orbital_phase']) if result.get('orbital_phase') is not None else None, # Phase 4.3 update
+                'pulse_number': np.array(result['pulse_number']) if result.get('pulse_number') is not None else None,
             }
             
             self.signals.progress.emit(f"RMS: {result_safe['rms_us']:.6f} μs")

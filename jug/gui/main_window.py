@@ -438,6 +438,8 @@ class MainWindow(QMainWindow):
         # Deleted TOA indices (track which original TOAs have been deleted)
         self.deleted_indices = set()
 
+        # Pulse numbers from residual calculation (for saving pulse-numbered tim files)
+        self.pulse_number = None
         # Fit state
         self.prefit_residuals_us = None
         self.postfit_residuals_us = None
@@ -1121,6 +1123,11 @@ class MainWindow(QMainWindow):
         self.save_tim_action.triggered.connect(self.on_save_tim)
         self.save_tim_action.setEnabled(False)
         
+        self.save_pn_tim_action = file_menu.addAction("Save pulse-numbered .tim...")
+        self.save_pn_tim_action.setShortcut("Ctrl+N")
+        self.save_pn_tim_action.triggered.connect(self.on_save_pn_tim)
+        self.save_pn_tim_action.setEnabled(False)
+        
         file_menu.addSeparator()
         
         exit_action = file_menu.addAction("E&xit")
@@ -1336,6 +1343,8 @@ class MainWindow(QMainWindow):
                       enabled=False, name="save_par")
         m.add_action("Save .tim...", self.on_save_tim, shortcut="Ctrl+Shift+S",
                       enabled=False, name="save_tim")
+        m.add_action("Save pulse-numbered .tim...", self.on_save_pn_tim,
+                      shortcut="Ctrl+N", enabled=False, name="save_pn_tim")
         m.add_separator()
         m.add_action("Exit", self.close, shortcut="Ctrl+Q")
         return m
@@ -1388,6 +1397,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+T", self.on_open_tim),
             ("Ctrl+S", self.on_save_par),
             ("Ctrl+Shift+S", self.on_save_tim),
+            ("Ctrl+N", self.on_save_pn_tim),
             ("Ctrl+Q", self.close),
             ("Ctrl+E", self.on_show_parameters),
             ("Ctrl+0", self.on_zoom_fit),
@@ -1578,6 +1588,7 @@ class MainWindow(QMainWindow):
         self.toa_freqs = result.get('freq_bary_mhz', None)  # Phase 4.3
         self.toa_flags = result.get('toa_flags', None)       # Phase 4.4
         self.orbital_phase = result.get('orbital_phase', None) # Phase 4.3 fix
+        self.pulse_number = result.get('pulse_number', None)
         self._update_rms_from_result(result)
         self.prefit_weighted_rms_us = self.weighted_rms_us
         self.prefit_unweighted_rms_us = self.unweighted_rms_us
@@ -1622,9 +1633,11 @@ class MainWindow(QMainWindow):
         if self.is_remote:
             self._file_overlay.set_item_enabled("save_tim", True)
             self._file_overlay.set_item_enabled("save_par", True)
+            self._file_overlay.set_item_enabled("save_pn_tim", True)
         else:
             self.save_tim_action.setEnabled(True)
             self.save_par_action.setEnabled(True)
+            self.save_pn_tim_action.setEnabled(True)
 
         # Update statistics (now just values, labels are separate)
         self.rms_label.setText(f"{self.rms_us:.6f} mus")
@@ -4621,6 +4634,43 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save .tim file:\n\n{e}")
 
+    def on_save_pn_tim(self):
+        """Save current TOAs to a .tim file with -pn (pulse number) flags."""
+        if self.tim_file is None:
+            QMessageBox.warning(self, "No Data", "No .tim file loaded")
+            return
+
+        if self.pulse_number is None:
+            QMessageBox.warning(self, "No Pulse Numbers",
+                                "Pulse numbers have not been computed yet.\n"
+                                "Load a par and tim file first.")
+            return
+
+        # Default to {timfile_name}_pn.tim
+        tim_path = Path(self.tim_file)
+        default_name = tim_path.stem + "_pn" + tim_path.suffix
+        default_path = str(tim_path.parent / default_name)
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Pulse-Numbered .tim File", default_path,
+            "Tim Files (*.tim);;All Files (*)"
+        )
+
+        if not filename:
+            return  # User cancelled
+
+        try:
+            from jug.io.tim_writer import write_tim_file_with_pn
+            n_kept = write_tim_file_with_pn(
+                self.tim_file, filename, self.pulse_number,
+                deleted_indices=self.deleted_indices
+            )
+            self.status_bar.showMessage(
+                f"Saved {n_kept} pulse-numbered TOAs to {Path(filename).name}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error",
+                                 f"Failed to save pulse-numbered .tim file:\n\n{e}")
     def _write_filtered_tim(self, output_path):
         """Write filtered TOAs to a new .tim file."""
         # Read original .tim file

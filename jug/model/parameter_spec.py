@@ -156,32 +156,6 @@ _SPIN_PARAMS = [
         high_precision=True,
     ),
     ParameterSpec(
-        name="F2",
-        group="spin",
-        derivative_group=DerivativeGroup.SPIN,
-        dtype="longdouble",  # High-order terms need precision
-        internal_unit="Hz/s^2",
-        par_unit_str="s^-3",
-        display_unit="Hz/s^2",
-        requires=("PEPOCH",),
-        display_format=".6e",
-        tcb_scaling_dim=-3,
-        high_precision=True,
-    ),
-    ParameterSpec(
-        name="F3",
-        group="spin",
-        derivative_group=DerivativeGroup.SPIN,
-        dtype="longdouble",
-        internal_unit="Hz/s^3",
-        par_unit_str="s^-4",
-        display_unit="Hz/s^3",
-        requires=("PEPOCH",),
-        display_format=".6e",
-        tcb_scaling_dim=-4,
-        high_precision=True,
-    ),
-    ParameterSpec(
         name="PEPOCH",
         group="epoch",
         derivative_group=DerivativeGroup.EPOCH,
@@ -194,6 +168,24 @@ _SPIN_PARAMS = [
         high_precision=True,
     ),
 ]
+
+# Add F2-F20 (higher-order spin derivatives, matching FB pattern)
+for i in range(2, 21):
+    _SPIN_PARAMS.append(
+        ParameterSpec(
+            name=f"F{i}",
+            group="spin",
+            derivative_group=DerivativeGroup.SPIN,
+            dtype="longdouble",
+            internal_unit=f"Hz/s^{i}",
+            par_unit_str=f"s^-{i + 1}",
+            display_unit=f"Hz/s^{i}",
+            requires=("PEPOCH",),
+            display_format=".6e",
+            tcb_scaling_dim=-(i + 1),
+            high_precision=True,
+        )
+    )
 
 # DM parameters
 _DM_PARAMS = [
@@ -247,6 +239,23 @@ _DM_PARAMS = [
         high_precision=True,
     ),
 ]
+
+# Add DM3-DM20 (higher-order DM derivatives, matching FB pattern)
+for i in range(3, 21):
+    _DM_PARAMS.append(
+        ParameterSpec(
+            name=f"DM{i}",
+            group="dm",
+            derivative_group=DerivativeGroup.DM,
+            dtype="float64",
+            internal_unit=f"pc/cm^3/yr^{i}",
+            par_unit_str=f"pc cm^-3 yr^-{i}",
+            display_unit=f"pc/cm^3/yr^{i}",
+            requires=("DMEPOCH",),
+            display_format=".10f",
+            tcb_scaling_dim=-(i + 1),
+        )
+    )
 
 # Astrometry parameters
 _ASTROMETRY_PARAMS = [
@@ -657,90 +666,20 @@ for i in range(21):
         )
     )
 
-# FD (frequency-dependent) parameters
-_FD_PARAMS = [
-    ParameterSpec(
-        name="FD1",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-    ParameterSpec(
-        name="FD2",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-    ParameterSpec(
-        name="FD3",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-    ParameterSpec(
-        name="FD4",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-    ParameterSpec(
-        name="FD5",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-    ParameterSpec(
-        name="FD6",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-    ParameterSpec(
-        name="FD7",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-    ParameterSpec(
-        name="FD8",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-    ParameterSpec(
-        name="FD9",
-        group="fd",
-        derivative_group=DerivativeGroup.FD,
-        dtype="float64",
-        internal_unit="s",
-        par_unit_str="s",
-        display_format=".6e",
-    ),
-]
+# FD (frequency-dependent) parameters — FD1 to FD20
+_FD_PARAMS = []
+for i in range(1, 21):
+    _FD_PARAMS.append(
+        ParameterSpec(
+            name=f"FD{i}",
+            group="fd",
+            derivative_group=DerivativeGroup.FD,
+            dtype="float64",
+            internal_unit="s",
+            par_unit_str="s",
+            display_format=".6e",
+        )
+    )
 
 # Solar wind parameters
 _SW_PARAMS = [
@@ -1297,15 +1236,15 @@ def validate_fit_param(name: str) -> bool:
     if fdjump_match:
         return True
 
-    # Check FD pattern - registered FD1..FD9, higher indices not yet implemented
+    # Check FD pattern - registered FD1..FD20, higher indices not yet implemented
     fd_match = re.match(r'^FD(\d+)$', canonical)
     if fd_match:
         fd_idx = int(fd_match.group(1))
-        if 1 <= fd_idx <= 9:
-            return True  # FD1-FD9 are registered
+        if 1 <= fd_idx <= 20:
+            return True  # FD1-FD20 are registered
         raise ValueError(
             f"Parameter '{name}' (FD{fd_idx}) is out of range. "
-            f"FD1-FD9 are registered; parametric families (FDn>9) are not yet implemented as first-class families."
+            f"FD1-FD20 are registered; parametric families (FDn>20) are not yet implemented as first-class families."
         )
 
     # Check FB pattern - registered FB0..FB20, higher indices not yet implemented
@@ -1322,5 +1261,5 @@ def validate_fit_param(name: str) -> bool:
     # Unknown parameter
     raise ValueError(
         f"Parameter '{name}' is not registered. "
-        f"Parametric families (JUMP1..N, DMX_*, FDn>9, FBn>20) are not yet implemented as first-class families."
+        f"Parametric families (JUMP1..N, DMX_*, FDn>20, FBn>20) are not yet implemented as first-class families."
     )

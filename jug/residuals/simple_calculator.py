@@ -246,15 +246,22 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         Integer pulse numbers used for phase wrapping.
     """
     F0 = get_longdouble(params, 'F0')
-    F1 = get_longdouble(params, 'F1', default=0.0)
-    F2 = get_longdouble(params, 'F2', default=0.0)
-    F1_half = F1 / np.longdouble(2.0)
-    F2_sixth = F2 / np.longdouble(6.0)
+
+    # Collect all spin frequency derivatives F0, F1, F2, ... FN
+    f_coeffs = [F0]
+    k = 1
+    while f'F{k}' in params:
+        f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
+        k += 1
 
     dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
 
-    # Phase using Horner's method (longdouble precision)
-    phase = dt * (F0 + dt * (F1_half + dt * F2_sixth))
+    # Phase via Taylor series: phase = sum(F_k * dt^(k+1) / (k+1)!)
+    # Horner form with math.factorial (same factorial pattern as FB computation).
+    n_coeffs = len(f_coeffs)
+    phase = np.longdouble(0.0)
+    for i in range(n_coeffs - 1, -1, -1):
+        phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
 
     # Glitch contributions
     # Glitch phase is computed at TDB (not emission time) following PINT/Tempo2 convention.
@@ -822,7 +829,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
                        observatory, location, obs_itrf_km, obs_clocks,
                        ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day,
                        posepoch, parallax_mas, ephem,
-                       F0, F1_half, F2_sixth, PEPOCH_sec,
+                       f_coeffs, PEPOCH_sec,
                        is_ecliptic, ssb_obs_pos_km, fd_coeffs,
                        planet_shapiro_enabled,
                        tzrmjd_scale, verbose):
@@ -1030,9 +1037,12 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         print(f"     Binary:         {tzr_binary_delay:.9f} s")
         print(f"     TOTAL:          {float(tzr_delay):.9f} s")
 
-    # Compute phase at TZR
+    # Compute phase at TZR using generic Taylor series (same as FB pattern)
     tzr_dt_sec = TZRMJD_TDB * np.longdouble(SECS_PER_DAY) - PEPOCH_sec - tzr_delay
-    tzr_phase = F0 * tzr_dt_sec + F1_half * tzr_dt_sec**2 + F2_sixth * tzr_dt_sec**3
+    n_f = len(f_coeffs)
+    tzr_phase = np.longdouble(0.0)
+    for i in range(n_f - 1, -1, -1):
+        tzr_phase = (tzr_phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * tzr_dt_sec
 
     if verbose:
         print(f"   TZRMJD (raw):  {float(TZRMJD_raw):.15f}")
@@ -1542,15 +1552,14 @@ def compute_residuals_simple(
     if verbose: print(f"\n7. Computing phase residuals...")
     delay_sec = total_delay_sec
 
-    # Spin parameters (high precision)
+    # Spin parameters (high precision) — collect all F derivatives
     F0 = get_longdouble(params, 'F0')
-    F1 = get_longdouble(params, 'F1', default=0.0)
-    F2 = get_longdouble(params, 'F2', default=0.0)
+    f_coeffs = [F0]
+    k = 1
+    while f'F{k}' in params:
+        f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
+        k += 1
     PEPOCH = get_longdouble(params, 'PEPOCH')
-
-    # Pre-compute coefficients
-    F1_half = F1 / np.longdouble(2.0)
-    F2_sixth = F2 / np.longdouble(6.0)
     PEPOCH_sec = PEPOCH * np.longdouble(SECS_PER_DAY)
 
     # Time at emission (TDB - all delays) -- longdouble for phase precision
@@ -1570,7 +1579,7 @@ def compute_residuals_simple(
             observatory, location, obs_itrf_km, obs_clocks,
             ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day,
             posepoch, parallax_mas, ephem,
-            F0, F1_half, F2_sixth, PEPOCH_sec,
+            f_coeffs, PEPOCH_sec,
             is_ecliptic, ssb_obs_pos_km, fd_coeffs,
             planet_shapiro_enabled,
             tzrmjd_scale, verbose,

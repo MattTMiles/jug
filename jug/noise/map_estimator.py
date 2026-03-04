@@ -466,15 +466,14 @@ def estimate_noise_parameters(
         from jax import random
         import numpyro
         import numpyro.infer.autoguide
-        from pulsar_map_noise_estimates.map_noise_estimate import (
+        from jug.noise.map_noise_estimate import (
             setup_svi,
             run_svi_early_stopping,
         )
     except ImportError as e:
         raise ImportError(
-            "MAP noise estimation requires jax, numpyro, and "
-            "pulsar-map-noise-estimates. Install with: "
-            "pip install pulsar-map-noise-estimates"
+            "MAP noise estimation requires jax, numpyro, and optax. "
+            "Install with: pip install jax numpyro optax"
         ) from e
 
     # Auto-detect device: try GPU with a small test op, fall back to CPU

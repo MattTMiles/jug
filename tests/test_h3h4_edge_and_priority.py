@@ -153,13 +153,14 @@ class TestValidateFitParam:
         from jug.model.parameter_spec import validate_fit_param
         assert validate_fit_param('FD1') is True
         assert validate_fit_param('FD9') is True
+        assert validate_fit_param('FD20') is True
 
     def test_fd_out_of_range_raises(self):
         from jug.model.parameter_spec import validate_fit_param
         with pytest.raises(ValueError, match="not yet implemented"):
-            validate_fit_param('FD10')
+            validate_fit_param('FD21')
         with pytest.raises(ValueError, match="not yet implemented"):
-            validate_fit_param('FD15')
+            validate_fit_param('FD25')
 
     def test_fb_in_range_valid(self):
         from jug.model.parameter_spec import validate_fit_param

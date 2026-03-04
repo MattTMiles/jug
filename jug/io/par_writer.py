@@ -11,7 +11,10 @@ from typing import Any, Dict, List, Optional, Set, Union
 
 
 # Parameters that need high-precision string representations
-_HIGH_PRECISION_PARAMS = {'F0', 'F1', 'F2', 'F3', 'PEPOCH', 'POSEPOCH', 'DMEPOCH', 'TZRMJD'}
+_HIGH_PRECISION_PARAMS = (
+    {f'F{i}' for i in range(21)} |
+    {'PEPOCH', 'POSEPOCH', 'DMEPOCH', 'TZRMJD'}
+)
 
 # Metadata keys (written first, in this order)
 _METADATA_ORDER = ['PSR', 'EPHEM', 'CLK', 'CLOCK', 'UNITS', 'TIMEEPH', 'T2CMETHOD',

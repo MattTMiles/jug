@@ -633,15 +633,16 @@ class TimingSession:
                 print(f"  Fitting {len(fit_params)} parameters: {', '.join(fit_params)}")
         
         # FAST PATH: Use cached arrays if available
-        # Ensure we have cached residuals with subtract_tzr=False (needed for fitting)
-        if False not in self._cached_result_by_mode:
+        # The fitter needs geometry arrays (dt_sec, tdb_mjd, freq_bary_mhz, etc.)
+        # which are identical regardless of subtract_tzr mode, so accept either.
+        cached_result = self._cached_result_by_mode.get(False) or self._cached_result_by_mode.get(True)
+        if cached_result is None:
             if verbose:
-                print("  Computing residuals (subtract_tzr=False) for fitting cache...")
-            # Populate cache with subtract_tzr=False
+                print("  Computing residuals for fitting cache...")
             self.compute_residuals(subtract_tzr=False, force_recompute=False)
+            cached_result = self._cached_result_by_mode.get(False)
         
         # Check if we have all required cached data
-        cached_result = self._cached_result_by_mode.get(False)
         has_required_cache = (
             cached_result is not None
             and 'dt_sec' in cached_result

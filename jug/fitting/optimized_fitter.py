@@ -123,11 +123,14 @@ def _update_param(params: Dict, param: str, value: float) -> None:
         _reconvert_ecliptic_to_equatorial(params)
         return
 
-    params[param] = value
+    params[param_upper] = value
+    # Keep _high_precision in sync so get_longdouble() returns the fitted
+    # value during iterations (otherwise compute_phase_residuals uses stale
+    # F0/F1 from the original par file, breaking the nonlinear model).
+    # Session.py reconstructs full longdouble HP after the fit completes.
     hp = params.get('_high_precision')
-    if hp is not None and param_upper in HIGH_PRECISION_PARAMS:
-        # Use repr() to preserve all float64 significant digits
-        hp[param] = repr(float(value))
+    if hp is not None and param_upper in hp:
+        hp[param_upper] = repr(float(value))
 
 
 def _reconvert_ecliptic_to_equatorial(params: Dict) -> None:
@@ -1751,13 +1754,6 @@ def _run_general_fit_iterations(
 
     # Convergence criteria
     xtol = 1e-12
-    required_chi2_decrease = 1e-2  # Minimum chi2 decrease to continue
-    # Allow temporary chi2 increase of up to 10% of current chi2.
-    # Tempo2 takes the full WLS step without validation; a relative threshold
-    # provides a reasonable middle ground between strict (0.01 absolute, which
-    # prevents convergence on J0125-2327) and no validation at all.
-    max_chi2_increase_frac = 0.10  # 10% of current chi2
-    min_lambda = 1e-3  # Minimum step scaling factor
     min_iterations = 5
     
     # Compute initial full-model chi2 for comparison
@@ -1766,6 +1762,7 @@ def _run_general_fit_iterations(
     _, current_chi2, current_rms_us, _ = _compute_full_model_residuals(params, setup)
     best_chi2 = current_chi2
     best_param_values = param_values_curr.copy()
+    best_nonlinear_rms = current_rms_us
     best_noise_coeffs = None  # Fourier/DMX coefficients from augmented solve
     # Save solver data for linear postfit (needed for augmented fits)
     _saved_residuals_sec = None
@@ -1775,6 +1772,15 @@ def _run_general_fit_iterations(
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
+    # Accumulated noise signal for TNsubtractPoly (Tempo2 algorithm):
+    # Subtract previously estimated noise from residuals before GLS so
+    # the noise model only estimates the DELTA noise each iteration.
+    _accumulated_noise_sec = np.zeros(len(toas_mjd))
+    # Track red and DM noise signals separately for polynomial subtraction
+    _accumulated_red_noise_sec = np.zeros(len(toas_mjd))
+    _accumulated_dm_noise_sec = np.zeros(len(toas_mjd))
+    _accumulated_other_noise_sec = np.zeros(len(toas_mjd))
+    _best_ns_rms = None  # best noise-subtracted RMS for GLS damping
 
     # Precompute noise column counts (constant across iterations)
     n_red_noise_cols = setup.red_noise_basis.shape[1] if getattr(setup, 'red_noise_basis', None) is not None else 0
@@ -1904,7 +1910,7 @@ def _run_general_fit_iterations(
         print(f"\n{'Iter':<6} {'RMS (mus)':<12} {'DeltaParam':<15} {'lambda_':<8} {'Status':<20}")
         print("-" * 75)
     
-    # ITERATION LOOP (PINT-style damping with full-model validation)
+    # ITERATION LOOP (Tempo2-style: full step + re-baseline)
     for iteration in range(max_iter):
         # Update params dict with current values
         for i, param in enumerate(fit_params):
@@ -1989,6 +1995,11 @@ def _run_general_fit_iterations(
             tzr_phase=setup.tzr_phase,
             jump_phase=current_jump_phase
         )
+
+        # TNsubtractPoly: subtract accumulated noise from previous iterations
+        # so GLS only estimates the delta-noise this iteration
+        if n_augmented > 0 and np.any(_accumulated_noise_sec != 0):
+            residuals = residuals - _accumulated_noise_sec
 
         # Build design matrix - BATCHED derivative computation
         M_columns = []
@@ -2176,109 +2187,204 @@ def _run_general_fit_iterations(
             _wls_delta_all = delta_all
         
         # Step acceptance strategy depends on fit type:
-        # - WLS (n_augmented == 0): Take the full Newton-Gauss step unconditionally,
-        #   matching Tempo2's approach. Re-linearization at the next iteration handles
-        #   nonlinear effects. The offset column ensures the step is consistent.
-        # - GLS (n_augmented > 0): Validate step against full model with damping,
-        #   subtracting the noise realization before chi2 comparison.
+        # - WLS (n_augmented == 0): Damping loop with raw RMS comparison.
+        # - GLS (n_augmented > 0): Damping loop using noise-subtracted RMS.
+        #   The raw RMS is dominated by correlated noise and barely changes
+        #   between iterations, causing over-damping. By subtracting the
+        #   Wiener-filter noise estimate, we expose the true timing improvement.
         lambda_ = 1.0
         step_accepted = False
         chi2_decrease = 0
         
-        if n_augmented == 0:
-            # WLS: accept step only if linearized chi2 improves
-            trial_param_values = [
-                param_values_curr[i] + delta_params[i]
-                for i in range(len(fit_params))
-            ]
-            if not any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
-                r_lin = residuals - M @ _wls_delta_all
-                trial_rms_us = np.sqrt(np.sum(r_lin**2 * weights) / sum_weights) * 1e6
-                trial_chi2 = np.sum((r_lin / errors_sec) ** 2)
-                chi2_decrease = current_chi2 - trial_chi2
+        # NaN/Inf guard
+        trial_param_values = [
+            param_values_curr[i] + delta_params[i]
+            for i in range(len(fit_params))
+        ]
+        if any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
+            if verbose:
+                print(f"         (step rejected: NaN/Inf in parameters)")
+            param_values_curr = list(best_param_values)
+            converged = True
+            break
 
-                if trial_chi2 <= best_chi2 * (1.0 + 1e-10) or iteration == 0:
+        if n_augmented > 0:
+            # GLS path: damping with noise-subtracted RMS comparison
+            lambda_ = 1.0
+            for damping_iter in range(8):
+                trial_param_values = [
+                    param_values_curr[i] + lambda_ * delta_params[i]
+                    for i in range(len(fit_params))
+                ]
+                for i, p in enumerate(fit_params):
+                    _update_param(params, p, trial_param_values[i])
+                nl_resid_sec, trial_nl_chi2, trial_nl_rms, _ = _compute_full_model_residuals(params, setup)
+
+                # Compute noise-subtracted RMS for this trial
+                # Re-solve noise coefficients via Wiener filter for trial residuals
+                trial_noise_signal = np.zeros_like(nl_resid_sec)
+                if _iter_noise_coeffs is not None:
+                    trial_noise_signal = _gls_F_noise @ (lambda_ * _iter_noise_coeffs)
+                trial_clean = nl_resid_sec - _accumulated_noise_sec - trial_noise_signal
+                trial_ns_rms = np.sqrt(np.mean(trial_clean**2)) * 1e6
+
+                # Compare noise-subtracted RMS (initialise reference on first iteration)
+                if _best_ns_rms is None or (iteration == 1 and damping_iter == 0):
+                    _best_ns_rms = trial_ns_rms + 1.0  # ensure first step accepted
+
+                if trial_ns_rms < _best_ns_rms * (1.0 + 1e-6):
                     step_accepted = True
+                    _best_ns_rms = min(_best_ns_rms, trial_ns_rms)
                     param_values_curr = trial_param_values
                     best_param_values = trial_param_values.copy()
-                    current_rms_us = trial_rms_us
-                    current_chi2 = trial_chi2
-                    best_chi2 = trial_chi2
+                    best_nonlinear_rms = trial_nl_rms
+                    current_rms_us = trial_nl_rms
+                    current_chi2 = trial_nl_chi2
+                    best_chi2 = trial_nl_chi2
+
                     _saved_residuals_sec = residuals.copy()
                     _saved_M = M.copy()
-                    _saved_delta_all = _wls_delta_all.copy()
-                    _saved_lambda = 1.0
-                else:
-                    # Step worsened chi2 — reject and restore best parameters
-                    if verbose:
-                        print(f"         (WLS step rejected: chi2 {trial_chi2:.1f} > best {best_chi2:.1f})")
-                    param_values_curr = list(best_param_values)
-                    converged = True
-                    break
-        else:
-            # GLS: use linearized residuals for step acceptance (matching Tempo2).
-            # The noise coefficients are only valid in the linearized context,
-            # so we evaluate r_lin = residuals - M @ delta_all which jointly
-            # accounts for timing corrections, noise, and offset.
-            trial_param_values = [
-                param_values_curr[i] + delta_params[i]
-                for i in range(len(fit_params))
-            ]
-            if not any(np.isnan(v) or np.isinf(v) for v in trial_param_values):
-                r_lin = residuals - M @ delta_params_all
-                trial_chi2 = np.sum((r_lin / errors_sec) ** 2)
-                trial_rms_us = np.sqrt(np.sum(r_lin**2 * weights) / sum_weights) * 1e6
-                chi2_decrease = current_chi2 - trial_chi2
-
-                if trial_chi2 <= best_chi2 * (1.0 + 1e-10) or iteration == 0:
-                    step_accepted = True
-                    param_values_curr = trial_param_values
-                    best_param_values = trial_param_values.copy()
-                    current_rms_us = trial_rms_us
-                    current_chi2 = trial_chi2
-                    best_chi2 = trial_chi2
-
+                    _saved_delta_all = (lambda_ * delta_params_all).copy()
+                    _saved_cov_all = cov_all
                     if _iter_noise_coeffs is not None:
                         best_noise_coeffs = _iter_noise_coeffs.copy()
+                    _saved_lambda = lambda_
+                    break
+                lambda_ *= 0.5
+        else:
+            # WLS path: damping loop — try full step, halve if nonlinear model worsens.
+            lambda_ = 1.0
+            for damping_iter in range(8):
+                trial_param_values = [
+                    param_values_curr[i] + lambda_ * delta_params[i]
+                    for i in range(len(fit_params))
+                ]
+                for i, p in enumerate(fit_params):
+                    _update_param(params, p, trial_param_values[i])
+                _, trial_nl_chi2, trial_nl_rms, _ = _compute_full_model_residuals(params, setup)
+
+                if trial_nl_rms < best_nonlinear_rms * (1.0 + 1e-6):
+                    step_accepted = True
+                    param_values_curr = trial_param_values
+                    best_param_values = trial_param_values.copy()
+                    best_nonlinear_rms = min(best_nonlinear_rms, trial_nl_rms)
+                    current_rms_us = trial_nl_rms
+                    current_chi2 = trial_nl_chi2
+                    best_chi2 = trial_nl_chi2
 
                     _saved_residuals_sec = residuals.copy()
                     _saved_M = M.copy()
-                    _saved_delta_all = delta_params_all.copy()
-                    _saved_lambda = 1.0
-                    _saved_cov_all = cov_all
-                else:
-                    if verbose:
-                        print(f"         (GLS step rejected: chi2 {trial_chi2:.1f} > best {best_chi2:.1f})")
-                    param_values_curr = list(best_param_values)
-                    converged = True
+                    _saved_delta_all = (lambda_ * _wls_delta_all).copy()
+                    _saved_lambda = lambda_
                     break
-        
+                lambda_ *= 0.5
+
         if not step_accepted:
-            # Couldn't improve even with very small steps
-            # But don't exit until we've done minimum iterations
+            # Restore best params
+            param_values_curr = list(best_param_values)
+            for i, p in enumerate(fit_params):
+                _update_param(params, p, param_values_curr[i])
             if iteration >= min_iterations:
                 if verbose:
-                    print(f"         (step rejected at lambda_={lambda_:.4f}, converged at minimum)")
+                    print(f"         (step rejected: nonlinear RMS {trial_nl_rms:.3f} > best {best_nonlinear_rms:.3f}, converged)")
                 converged = True
                 break
             else:
-                # Continue anyway to let linearization settle
                 if verbose:
-                    print(f"         (step rejected at lambda_={lambda_:.4f}, continuing...)")
+                    print(f"         (step rejected: nonlinear RMS {trial_nl_rms:.3f} > best {best_nonlinear_rms:.3f}, continuing...)")
+
+        # Re-baseline after accepted step: recompute all fitted delays at
+        # accepted params and update dt_sec_cached + initial_*_delay so the
+        # next iteration computes only SMALL delay changes.
+        if step_accepted:
+            if dm_params:
+                dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+                accepted_dm = compute_dm_delay_fast(tdb_mjd, freq_mhz,
+                    {p: params[p] for p in dm_params}, dm_epoch)
+                dt_sec_cached = dt_sec_cached - (accepted_dm - initial_dm_delay)
+                initial_dm_delay = accepted_dm
+                setup.initial_dm_delay = accepted_dm
+
+            if binary_params and initial_binary_delay is not None:
+                accepted_binary = np.array(compute_binary_delay(
+                    toas_prebinary_for_binary, params, obs_pos_ls=ssb_obs_pos_ls))
+                dt_sec_cached = dt_sec_cached - (accepted_binary - initial_binary_delay)
+                initial_binary_delay = accepted_binary
+                setup.initial_binary_delay = accepted_binary
+
+            if astrometry_params and initial_astrometric_delay is not None:
+                accepted_astro = np.array(compute_astrometric_delay(
+                    params, tdb_mjd, ssb_obs_pos_ls,
+                    obs_sun_pos_ls=setup.obs_sun_pos_ls,
+                    obs_planet_pos_ls=setup.obs_planet_pos_ls))
+                dt_sec_cached = dt_sec_cached - (accepted_astro - initial_astrometric_delay)
+                initial_astrometric_delay = accepted_astro
+                setup.initial_astrometric_delay = accepted_astro
+
+            if fd_params and initial_fd_delay is not None:
+                accepted_fd = np.asarray(compute_fd_delay(freq_mhz,
+                    {p: params[p] for p in fd_params if p in params}), dtype=np.float64)
+                dt_sec_cached = dt_sec_cached - (accepted_fd - initial_fd_delay)
+                initial_fd_delay = accepted_fd
+                setup.initial_fd_delay = accepted_fd
+
+            if sw_params_iter and initial_sw_delay is not None:
+                ne_sw_val = float(params.get('NE_SW', params.get('NE1AU', 0.0)))
+                accepted_sw = K_DM_SEC * ne_sw_val * sw_geometry_pc / (freq_mhz ** 2)
+                dt_sec_cached = dt_sec_cached - (accepted_sw - initial_sw_delay)
+                initial_sw_delay = accepted_sw
+                setup.initial_sw_delay = accepted_sw
+
+            # Update setup's dt_sec baseline so _compute_full_model_residuals
+            # evaluates from the re-baselined state (not original params).
+            if setup.dt_sec_ld is not None:
+                setup.dt_sec_ld = dt_sec_cached.copy()
+            setup.dt_sec_cached = np.float64(dt_sec_cached).copy()
+
+            # Re-evaluate nonlinear RMS with fresh baselines
+            nl_resid_sec, current_chi2, current_rms_us, _ = _compute_full_model_residuals(params, setup)
+            best_nonlinear_rms = current_rms_us
+            best_chi2 = current_chi2
+
+            # ----- Accumulated noise tracking + TNsubtractPoly -----
+            # Track the noise contribution and remove polynomial component.
+            # Tempo2 applies TNsubtractPoly once after convergence, not every
+            # iteration.  We track noise each iteration but only decompose
+            # the polynomial at the end (see post-convergence block below).
+            if n_augmented > 0 and _iter_noise_coeffs is not None:
+                # Split noise coefficients into red and DM components
+                damped_coeffs = lambda_ * _iter_noise_coeffs
+                coeff_offset = 0
+                if n_red_noise_cols > 0:
+                    red_coeffs = damped_coeffs[coeff_offset:coeff_offset + n_red_noise_cols]
+                    _accumulated_red_noise_sec += setup.red_noise_basis @ red_coeffs
+                    coeff_offset += n_red_noise_cols
+                if n_dm_noise_cols > 0:
+                    dm_coeffs = damped_coeffs[coeff_offset:coeff_offset + n_dm_noise_cols]
+                    _accumulated_dm_noise_sec += setup.dm_noise_basis @ dm_coeffs
+                    coeff_offset += n_dm_noise_cols
+
+                # Rebuild combined accumulated noise for subtraction
+                _accumulated_noise_sec = (
+                    _accumulated_red_noise_sec.copy()
+                    + _accumulated_dm_noise_sec.copy()
+                    + _accumulated_other_noise_sec.copy()
+                )
+                # Accumulate remaining noise components (chromatic, ecorr, etc.)
+                if coeff_offset < len(damped_coeffs):
+                    other_delta = (
+                        _gls_F_noise[:, coeff_offset:] @ damped_coeffs[coeff_offset:]
+                    )
+                    _accumulated_other_noise_sec += other_delta
+                    _accumulated_noise_sec += other_delta
         
         # Track RMS history (full-model RMS)
         rms_history.append(current_rms_us)
 
-        # Check convergence
-        max_chi2_increase = max_chi2_increase_frac * current_chi2
+        # Check convergence based on parameter changes becoming small
         param_norm = np.linalg.norm(param_values_curr)
-        delta_norm = np.linalg.norm([lambda_ * d for d in delta_params])
+        delta_norm = np.linalg.norm(delta_params)
         param_converged = delta_norm <= xtol * (param_norm + xtol)
-        
-        chi2_converged = False
-        if -max_chi2_increase <= chi2_decrease < required_chi2_decrease and lambda_ == 1.0:
-            # Full step taken but chi2 didn't improve much - converged
-            chi2_converged = True
         
         # Also check RMS convergence (if RMS change is tiny, we've converged)
         rms_converged = False
@@ -2286,49 +2392,91 @@ def _run_general_fit_iterations(
             rms_change = abs(rms_history[-1] - rms_history[-2])
             rms_converged = rms_change < 1e-8  # Less than 0.01 ns change
         
-        converged = iteration >= min_iterations and (param_converged or chi2_converged or rms_converged)
+        converged = iteration >= min_iterations and (param_converged or rms_converged)
 
         if verbose:
             status = ""
             if converged:
                 if param_converged:
                     status = "[x] Params converged"
-                elif chi2_converged:
-                    status = "[x] Chi2 stable"
                 elif rms_converged:
                     status = "[x] RMS stable"
-            max_delta = np.max(np.abs([lambda_ * d for d in delta_params]))
-            lambda_str = f"{lambda_:.3f}" if lambda_ < 1.0 else "1.0"
-            print(f"{iteration+1:<6} {current_rms_us:>11.6f}  {max_delta:>13.6e}  {lambda_str:<8} {status:<20}")
+            max_delta = np.max(np.abs(delta_params))
+            print(f"{iteration+1:<6} {current_rms_us:>11.6f}  {max_delta:>13.6e}  1.0      {status:<20}")
 
         if converged:
             break
 
-    # Use the best state found
-    # For GLS (noise-augmented) fits, the noise is re-estimated at each iteration,
-    # making chi2 comparisons across iterations unreliable. Use the converged
-    # (last-accepted) parameters instead of best_chi2 intermediate.
-    if n_augmented > 0:
-        # GLS/augmented: use full-step (undamped) parameter values.
-        # The damped param_values_curr may be only a fraction of the solver
-        # step due to the broken nonlinear validation rejecting good steps.
-        # Use param_start + delta_params (full step) for consistency with the
-        # linear postfit residuals (r - M @ delta).
-        if _saved_delta_all is not None and len(fit_params) <= len(_saved_delta_all):
-            # Skip offset column: _saved_delta_all includes offset at index 0
-            # when has_offset is True, but fit_params does not.
-            t0_saved = 1 if has_offset else 0
-            for i, param in enumerate(fit_params):
-                _update_param(params, param, param_values_start[i] + float(_saved_delta_all[t0_saved + i]))
-                param_values_curr[i] = param_values_start[i] + float(_saved_delta_all[t0_saved + i])
-        else:
-            for i, param in enumerate(fit_params):
-                _update_param(params, param, param_values_curr[i])
-    else:
-        # WLS: use best parameters found during iteration
-        for i, param in enumerate(fit_params):
-            _update_param(params, param, best_param_values[i])
-            param_values_curr[i] = best_param_values[i]
+    # Use best parameters found
+    for i, param in enumerate(fit_params):
+        _update_param(params, param, best_param_values[i])
+        param_values_curr[i] = best_param_values[i]
+
+    # ----- TNsubtractPoly (post-convergence) -----
+    # Tempo2 algorithm: fit timing-model polynomials to the accumulated
+    # noise signals and transfer the polynomial component into timing
+    # parameters.  This prevents the correlated-noise model from absorbing
+    # low-order polynomial timing signal (F0/F1 in red noise, DM/DM1/DM2
+    # in DM noise).  Applied once after convergence, matching Tempo2.
+    if n_augmented > 0 and (np.any(_accumulated_red_noise_sec != 0)
+                            or np.any(_accumulated_dm_noise_sec != 0)):
+
+        # Red noise → F0/F1 + offset
+        _tn_spin_fit = [p for p in ['F0', 'F1'] if p in fit_params]
+        if n_red_noise_cols > 0 and _tn_spin_fit:
+            _tn_spin_derivs = compute_spin_derivatives(
+                params, toas_mjd, _tn_spin_fit)
+            _tn_cols = [_tn_spin_derivs[p] for p in _tn_spin_fit]
+            _tn_cols.append(np.ones(len(toas_mjd)))  # constant offset
+            M_poly = np.column_stack(_tn_cols)
+            w = 1.0 / errors_sec
+            Mw = M_poly * w[:, None]
+            yw = _accumulated_red_noise_sec * w
+            try:
+                dp = np.linalg.lstsq(Mw, yw, rcond=None)[0]
+                poly_signal = M_poly @ dp
+                _accumulated_red_noise_sec -= poly_signal
+                for ci, sp in enumerate(_tn_spin_fit):
+                    pi = fit_params.index(sp)
+                    param_values_curr[pi] += dp[ci]
+                    _update_param(params, sp, param_values_curr[pi])
+                    best_param_values[pi] = param_values_curr[pi]
+                if verbose:
+                    dp_strs = [f"{sp}={dp[ci]:+.6e}" for ci, sp in enumerate(_tn_spin_fit)]
+                    print(f"TNsubtractPoly (red): {', '.join(dp_strs)}")
+            except Exception:
+                pass
+
+        # DM noise → DM/DM1/DM2
+        _tn_dm_fit = [p for p in ['DM', 'DM1', 'DM2'] if p in fit_params]
+        if n_dm_noise_cols > 0 and _tn_dm_fit:
+            _tn_dm_derivs = compute_dm_derivatives(
+                params, toas_mjd, freq_mhz, _tn_dm_fit)
+            _tn_dm_cols = [_tn_dm_derivs[p] for p in _tn_dm_fit]
+            M_dm_poly = np.column_stack(_tn_dm_cols)
+            w = 1.0 / errors_sec
+            Mw = M_dm_poly * w[:, None]
+            yw = _accumulated_dm_noise_sec * w
+            try:
+                dp = np.linalg.lstsq(Mw, yw, rcond=None)[0]
+                poly_signal = M_dm_poly @ dp
+                _accumulated_dm_noise_sec -= poly_signal
+                for ci, dp_name in enumerate(_tn_dm_fit):
+                    pi = fit_params.index(dp_name)
+                    param_values_curr[pi] += dp[ci]
+                    _update_param(params, dp_name, param_values_curr[pi])
+                    best_param_values[pi] = param_values_curr[pi]
+                if verbose:
+                    dp_strs = [f"{dp_name}={dp[ci]:+.6e}" for ci, dp_name in enumerate(_tn_dm_fit)]
+                    print(f"TNsubtractPoly (DM):  {', '.join(dp_strs)}")
+            except Exception:
+                pass
+
+        # Update accumulated noise after polynomial subtraction
+        _accumulated_noise_sec = (
+            _accumulated_red_noise_sec + _accumulated_dm_noise_sec
+            + _accumulated_other_noise_sec
+        )
     
     # Compute final residuals.
     # For augmented fits (DMX/noise basis columns), use LINEAR postfit residuals
@@ -2378,103 +2526,92 @@ def _run_general_fit_iterations(
     # Compute uncertainties
     uncertainties = {param: np.sqrt(cov[i, i]) for i, param in enumerate(fit_params)}
 
-    # Use noise coefficients from the joint GLS solve (not a post-hoc Wiener filter).
-    # The joint solve simultaneously estimates timing parameters and noise amplitudes,
-    # correctly accounting for the timing-noise correlation via the full augmented
-    # system [M_timing | F_noise]. A noise-only Wiener filter on the non-linear
-    # post-fit residuals gives WRONG results because it ignores the timing model's
-    # contribution to the residual covariance structure.
+    # Use noise coefficients from the joint GLS solve.
+    # After damped iterations, the noise coefficients may correspond to a
+    # different timing solution. Re-solve for optimal noise at the final
+    # nonlinear residuals using the Woodbury identity (noise-only Wiener filter).
+    # This is appropriate post-convergence because the timing model is fixed.
     noise_realizations = {}
-    if n_augmented > 0 and best_noise_coeffs is not None:
-        # Recompute noise posterior covariance on the best accepted step
-        if _saved_M is not None and _woodbury_precomputed is not None:
-            n_timing_cols_final = _saved_M.shape[1] - n_augmented
-            M_t_final = _saved_M[:, :n_timing_cols_final]
-            F_n_final = _saved_M[:, n_timing_cols_final:]
-            _, _, _, cov_all, _ = _solve_gls_woodbury(
-                M_t_final, F_n_final, _saved_residuals_sec, errors_sec,
-                _gls_phiinv_raw, True, n_timing_cols_final - 1,
-                precomputed=_woodbury_precomputed, compute_noise_cov=True)
-        elif '_saved_cov_all' in dir():
-            cov_all = _saved_cov_all
-        # Posterior covariance of noise coefficients from the full joint covariance
-        try:
-            C_post = cov_all[n_timing_cols:, n_timing_cols:]
-        except Exception:
-            C_post = None
+    if n_augmented > 0:
+        # Re-solve noise at the final nonlinear residuals
+        nl_resid_sec, _, _, _ = _compute_full_model_residuals(params, setup)
 
+        # Collect noise basis and prior
+        noise_bases = []
+        noise_labels = []
+        noise_ncols = []
         offset = 0
         if n_red_noise_cols > 0 and setup.red_noise_basis is not None:
-            rn_coeffs = best_noise_coeffs[offset:offset + n_red_noise_cols]
-            F_rn = setup.red_noise_basis
-            noise_realizations['RedNoise'] = (F_rn @ rn_coeffs) * 1e6
-            if C_post is not None:
-                C_rn = C_post[offset:offset + n_red_noise_cols, offset:offset + n_red_noise_cols]
-                noise_realizations['RedNoise_err'] = np.sqrt(np.sum((F_rn @ C_rn) * F_rn, axis=1)) * 1e6
-            offset += n_red_noise_cols
+            noise_bases.append(setup.red_noise_basis)
+            noise_labels.append(('RedNoise', n_red_noise_cols))
+            noise_ncols.append(n_red_noise_cols)
         if n_dm_noise_cols > 0 and setup.dm_noise_basis is not None:
-            dm_coeffs = best_noise_coeffs[offset:offset + n_dm_noise_cols]
-            F_dm = setup.dm_noise_basis
-            noise_realizations['DMNoise'] = (F_dm @ dm_coeffs) * 1e6
-            if C_post is not None:
-                C_dm = C_post[offset:offset + n_dm_noise_cols, offset:offset + n_dm_noise_cols]
-                noise_realizations['DMNoise_err'] = np.sqrt(np.sum((F_dm @ C_dm) * F_dm, axis=1)) * 1e6
-            offset += n_dm_noise_cols
+            noise_bases.append(setup.dm_noise_basis)
+            noise_labels.append(('DMNoise', n_dm_noise_cols))
+            noise_ncols.append(n_dm_noise_cols)
         if n_chromatic_noise_cols > 0 and setup.chromatic_noise_basis is not None:
-            chrom_coeffs = best_noise_coeffs[offset:offset + n_chromatic_noise_cols]
-            F_chrom = setup.chromatic_noise_basis
-            noise_realizations['ChromaticNoise'] = (F_chrom @ chrom_coeffs) * 1e6
-            if C_post is not None:
-                C_chrom = C_post[offset:offset + n_chromatic_noise_cols, offset:offset + n_chromatic_noise_cols]
-                noise_realizations['ChromaticNoise_err'] = np.sqrt(np.sum((F_chrom @ C_chrom) * F_chrom, axis=1)) * 1e6
-            offset += n_chromatic_noise_cols
+            noise_bases.append(setup.chromatic_noise_basis)
+            noise_labels.append(('ChromaticNoise', n_chromatic_noise_cols))
+            noise_ncols.append(n_chromatic_noise_cols)
         if n_ecorr_cols > 0 and setup.ecorr_basis is not None:
-            ecorr_coeffs = best_noise_coeffs[offset:offset + n_ecorr_cols]
-            F_ec = setup.ecorr_basis
-            noise_realizations['ECORR'] = (F_ec @ ecorr_coeffs) * 1e6
-            if C_post is not None:
-                C_ec = C_post[offset:offset + n_ecorr_cols, offset:offset + n_ecorr_cols]
-                noise_realizations['ECORR_err'] = np.sqrt(np.sum((F_ec @ C_ec) * F_ec, axis=1)) * 1e6
-            offset += n_ecorr_cols
+            noise_bases.append(setup.ecorr_basis)
+            noise_labels.append(('ECORR', n_ecorr_cols))
+            noise_ncols.append(n_ecorr_cols)
         if n_band_noise_total > 0 and setup.band_noise_bases is not None:
             for bi, F in enumerate(setup.band_noise_bases):
-                nc = n_band_noise_cols_list[bi]
-                coeffs = best_noise_coeffs[offset:offset + nc]
-                label = setup.band_noise_labels[bi]
-                noise_realizations[label] = (F @ coeffs) * 1e6
-                if C_post is not None:
-                    C_bn = C_post[offset:offset + nc, offset:offset + nc]
-                    noise_realizations[f'{label}_err'] = np.sqrt(np.sum((F @ C_bn) * F, axis=1)) * 1e6
-                offset += nc
+                noise_bases.append(F)
+                noise_labels.append((setup.band_noise_labels[bi], n_band_noise_cols_list[bi]))
+                noise_ncols.append(n_band_noise_cols_list[bi])
         if n_group_noise_total > 0 and setup.group_noise_bases is not None:
             for gi, F in enumerate(setup.group_noise_bases):
-                nc = n_group_noise_cols_list[gi]
-                coeffs = best_noise_coeffs[offset:offset + nc]
-                label = setup.group_noise_labels[gi]
+                noise_bases.append(F)
+                noise_labels.append((setup.group_noise_labels[gi], n_group_noise_cols_list[gi]))
+                noise_ncols.append(n_group_noise_cols_list[gi])
+        if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
+            noise_bases.append(setup.dmx_design_matrix)
+            noise_labels.append(('DMX', n_dmx_cols))
+            noise_ncols.append(n_dmx_cols)
+        if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
+            noise_bases.append(setup.dmjump_design_matrix)
+            noise_labels.append(('DMJUMP', n_dmjump_cols))
+            noise_ncols.append(n_dmjump_cols)
+
+        if noise_bases:
+            F_all = np.hstack(noise_bases)
+            # Solve: c = (Phi^{-1} + F^T N^{-1} F)^{-1} F^T N^{-1} r
+            Ninv = 1.0 / errors_sec**2
+            FtNi = F_all.T * Ninv[np.newaxis, :]
+            FtNiF = FtNi @ F_all
+            FtNiF[np.diag_indices_from(FtNiF)] += _gls_phiinv_raw
+            try:
+                L = _scipy_linalg.cho_factor(FtNiF)
+                optimal_noise_coeffs = _scipy_linalg.cho_solve(L, FtNi @ nl_resid_sec)
+                C_post = _scipy_linalg.cho_solve(L, np.eye(FtNiF.shape[0]))
+            except Exception:
+                optimal_noise_coeffs = best_noise_coeffs if best_noise_coeffs is not None else np.zeros(n_augmented)
+                C_post = None
+
+            # Build noise realizations from re-solved coefficients
+            offset = 0
+            for label, nc in noise_labels:
+                coeffs = optimal_noise_coeffs[offset:offset + nc]
+                idx = [i for i, (l, _) in enumerate(noise_labels) if l == label][0]
+                F = noise_bases[idx]
                 noise_realizations[label] = (F @ coeffs) * 1e6
                 if C_post is not None:
-                    C_gn = C_post[offset:offset + nc, offset:offset + nc]
-                    noise_realizations[f'{label}_err'] = np.sqrt(np.sum((F @ C_gn) * F, axis=1)) * 1e6
+                    C_block = C_post[offset:offset + nc, offset:offset + nc]
+                    noise_realizations[f'{label}_err'] = np.sqrt(np.sum((F @ C_block) * F, axis=1)) * 1e6
+
+                # DMX/DMJUMP: subtract from residuals (timing model, not noise)
+                if label == 'DMX':
+                    if _saved_residuals_sec is None:
+                        residuals_final_sec = residuals_final_sec - F @ coeffs
+                        residuals_final_us = residuals_final_sec * 1e6
+                elif label == 'DMJUMP':
+                    if _saved_residuals_sec is None:
+                        residuals_final_sec = residuals_final_sec - F @ coeffs
+                        residuals_final_us = residuals_final_sec * 1e6
                 offset += nc
-        if n_dmx_cols > 0 and setup.dmx_design_matrix is not None:
-            dmx_coeffs = best_noise_coeffs[offset:offset + n_dmx_cols]
-            F_dmx = setup.dmx_design_matrix
-            # DMX is timing model, not noise -- subtract from residuals
-            # (only needed for nonlinear path; linear postfit already includes DMX)
-            if _saved_residuals_sec is None:
-                dmx_realization_sec = F_dmx @ dmx_coeffs
-                residuals_final_sec = residuals_final_sec - dmx_realization_sec
-                residuals_final_us = residuals_final_sec * 1e6
-            offset += n_dmx_cols
-        if n_dmjump_cols > 0 and setup.dmjump_design_matrix is not None:
-            dmjump_coeffs = best_noise_coeffs[offset:offset + n_dmjump_cols]
-            F_dmjump = setup.dmjump_design_matrix
-            # DMJUMP is timing model, not noise -- subtract from residuals
-            if _saved_residuals_sec is None:
-                dmjump_realization_sec = F_dmjump @ dmjump_coeffs
-                residuals_final_sec = residuals_final_sec - dmjump_realization_sec
-                residuals_final_us = residuals_final_sec * 1e6
-            offset += n_dmjump_cols
 
     # Recompute final stats with DMX-absorbed residuals
     # Re-subtract weighted mean (DMX absorption shifts the mean)
@@ -2492,6 +2629,35 @@ def _run_general_fit_iterations(
     final_rms_us = np.sqrt(np.sum(residuals_final_sec**2 * weights) / sum_weights) * 1e6
     final_wrms_us = np.sqrt(np.sum((residuals_final_sec * 1e6)**2 * weights) / sum_weights)
 
+    # Always compute full nonlinear RMS for accurate reporting.
+    # The linearized residuals are kept for display but final_rms should
+    # reflect the actual timing model accuracy.
+    nl_residuals_sec, nl_chi2, nl_rms_us, nl_wrms_us = _compute_full_model_residuals(params, setup)
+    final_rms_us = nl_rms_us
+
+    # For GLS fits, compute chi2 from noise-subtracted nonlinear residuals.
+    # The raw nonlinear chi2 ignores the correlated noise model, giving
+    # artificially high chi2/dof. Tempo2 reports chi2 after subtracting
+    # the noise realization (red noise + DM noise Fourier components).
+    if n_augmented > 0 and noise_realizations:
+        nl_residuals_us = nl_residuals_sec * 1e6
+        noise_total_us = np.zeros(len(nl_residuals_us))
+        for key, vals in noise_realizations.items():
+            if not key.endswith('_err') and len(vals) == len(noise_total_us):
+                noise_total_us += vals
+        whitened_us = nl_residuals_us - noise_total_us
+        whitened_sec = whitened_us * 1e-6
+        if ecorr_w is not None:
+            ecorr_w.prepare(errors_sec)
+            final_chi2 = ecorr_w.chi2(whitened_sec)
+        else:
+            final_chi2 = np.sum((whitened_sec / errors_sec) ** 2)
+        # Return raw (non-noise-subtracted) nonlinear residuals.
+        # Users can subtract noise_realizations themselves if desired.
+        residuals_final_us = nl_residuals_us
+    else:
+        final_chi2 = nl_chi2
+
     return {
         'final_params': {param: params[param] for param in fit_params},
         'uncertainties': uncertainties,
@@ -2506,6 +2672,7 @@ def _run_general_fit_iterations(
         'covariance': cov,
         'final_chi2': final_chi2,
         'noise_realizations': noise_realizations,
+        'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
     }
 
 

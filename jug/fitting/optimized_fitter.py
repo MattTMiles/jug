@@ -2418,8 +2418,11 @@ def _run_general_fit_iterations(
     # parameters.  This prevents the correlated-noise model from absorbing
     # low-order polynomial timing signal (F0/F1 in red noise, DM/DM1/DM2
     # in DM noise).  Applied once after convergence, matching Tempo2.
-    if n_augmented > 0 and (np.any(_accumulated_red_noise_sec != 0)
-                            or np.any(_accumulated_dm_noise_sec != 0)):
+    # Controlled by par file parameter TNsubtractPoly (default: 1 = on).
+    _tn_subtract_poly = int(params.get('TNSUBTRACTPOLY', 1))
+    if n_augmented > 0 and _tn_subtract_poly and (
+            np.any(_accumulated_red_noise_sec != 0)
+            or np.any(_accumulated_dm_noise_sec != 0)):
 
         # Red noise → F0/F1 + offset
         _tn_spin_fit = [p for p in ['F0', 'F1'] if p in fit_params]

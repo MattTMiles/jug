@@ -2136,10 +2136,11 @@ class MainWindow(QMainWindow):
             # Calculate chi-squared if we have errors
             if self.errors_us is not None:
                 n_toas = len(self.mjd)
-                n_params = len(fit_result['final_params'])
-                dof = n_toas - n_params
-                # Calculate proper chi-squared with postfit residuals
-                chi2 = np.sum((self.residuals_us / self.errors_us) ** 2)
+                n_timing_params = len(fit_result['final_params'])
+                n_noise_params = fit_result.get('n_noise_params', 0)
+                dof = max(1, n_toas - n_timing_params - n_noise_params)
+                # Use chi2 from fitter if available (accounts for ECORR whitening)
+                chi2 = fit_result.get('final_chi2', np.sum((self.residuals_us / self.errors_us) ** 2))
                 chi2_dof = chi2 / dof
                 self.chi2_label.setText(f"{chi2_dof:.2f}")
 
@@ -2230,7 +2231,7 @@ class MainWindow(QMainWindow):
 
         new_value = result['final_params'][param]
         uncertainty = result['uncertainties'][param]
-        prev_value = self.initial_params.get(param, 0.0)
+        prev_value = result.get('prefit_params', self.initial_params).get(param, 0.0)
         unit = get_display_unit(param)
 
         # Special cases requiring custom logic (sexagesimal, KIN->SINI)
@@ -2250,7 +2251,8 @@ class MainWindow(QMainWindow):
             unit = "Delta arcsec"
         elif param == 'SINI':
             if isinstance(prev_value, str) and prev_value.upper() == 'KIN':
-                kin_deg = float(self.initial_params.get('KIN', 0.0))
+                prefit = result.get('prefit_params', self.initial_params)
+                kin_deg = float(prefit.get('KIN', 0.0))
                 prev_value_num = float(np.sin(np.deg2rad(kin_deg)))
             else:
                 prev_value_num = float(prev_value)
@@ -3237,10 +3239,11 @@ class MainWindow(QMainWindow):
         wrms = self.weighted_rms_us or 0.0
         rms = self.unweighted_rms_us or 0.0
         n_params = len(fit_result.get('final_params', {}))
-        dof = max(n - n_params, 1)
+        n_noise_params = fit_result.get('n_noise_params', 0)
+        dof = max(n - n_params - n_noise_params, 1)
         chi2_dof = 0.0
         if self.errors_us is not None and self.residuals_us is not None:
-            chi2 = float(np.sum((self.residuals_us / self.errors_us) ** 2))
+            chi2 = fit_result.get('final_chi2', float(np.sum((self.residuals_us / self.errors_us) ** 2)))
             chi2_dof = chi2 / dof
 
         pre_wrms = getattr(self, 'prefit_weighted_rms_us', None)
@@ -3248,7 +3251,11 @@ class MainWindow(QMainWindow):
         print(f"\n{'='*60}")
         print(f" Post-fit summary for {name}")
         print(f"{'='*60}")
-        print(f" Fit parameters:    {n_params}")
+        print(f" Fit parameters:    {n_params}", end="")
+        if n_noise_params > 0:
+            print(f" + {n_noise_params} noise coefficients")
+        else:
+            print()
         print(f" Iterations:        {fit_result.get('iterations', '?')}")
         print(f" Converged:         {'yes' if fit_result.get('converged') else 'no'}")
         print(f" RMS residual:      {rms:.4f} mus")
@@ -3263,7 +3270,7 @@ class MainWindow(QMainWindow):
         # Parameter table
         final = fit_result.get('final_params', {})
         uncert = fit_result.get('uncertainties', {})
-        initial = getattr(self, 'initial_params', {})
+        initial = fit_result.get('prefit_params', getattr(self, 'initial_params', {}))
         if final:
             from jug.io.par_reader import parse_ra, parse_dec, format_ra, format_dec
             # Order fitted params by their position in the par file

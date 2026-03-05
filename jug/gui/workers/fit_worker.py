@@ -94,11 +94,14 @@ class FitWorker(QRunnable):
                 'iterations': int(result['iterations']),
                 'converged': bool(result['converged']),
                 'total_time': float(result['total_time']),
+                'prefit_params': dict(result['prefit_params']),
                 # Pass fitter's own residuals/errors so the GUI uses them
                 # directly (avoids divergence from a separate recompute path).
                 'tdb_mjd': np.array(result['tdb_mjd']),
                 'residuals_us': np.array(result['residuals_us']),
                 'errors_us': np.array(result['errors_us']),
+                'final_chi2': float(result.get('final_chi2', 0.0)),
+                'n_noise_params': int(result.get('n_noise_params', 0)),
             }
 
             # Pass noise realizations through to the GUI

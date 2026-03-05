@@ -109,6 +109,9 @@ class TimingSession:
         
         self.toas_data = parse_tim_file_mjds(self.tim_file)
         self._initial_params = dict(self.params)  # Copy for comparison
+        # Snapshot original _high_precision strings (never modified)
+        hp = self.params.get('_high_precision')
+        self._original_high_precision = dict(hp) if hp else {}
         
         # Cache for expensive computations
         # Key change: cache separately by subtract_tzr mode for correctness
@@ -201,9 +204,21 @@ class TimingSession:
         with open(self.par_file, 'r') as f:
             original_lines = f.readlines()
 
+        # If the original par file was TCB and we converted to TDB at init,
+        # we must NOT keep any original lines verbatim — they contain TCB
+        # values.  Keeping them in a file that will be read as TCB causes
+        # double-conversion for any params that DID change (written as TDB)
+        # while unchanged params keep TCB values → inconsistent model.
+        # Instead, we skip the "keep original line" optimisation so every
+        # param is written from self.params (all TDB).
+        tcb_converted = params.get('_tcb_converted', False)
+
         updated_lines = []
         updated_params = set()
         jump_index = 0  # Track JUMP line index for JUMP1, JUMP2, ... mapping
+
+        # Build case-insensitive lookup: map uppercase key → actual key in params
+        params_upper = {k.upper(): k for k in params if not k.startswith('_')}
 
         for line in original_lines:
             line_stripped = line.strip()
@@ -214,6 +229,12 @@ class TimingSession:
             parts = line_stripped.split()
             if parts:
                 param_name = parts[0]
+
+                # Force UNITS to TDB when session did TCB→TDB conversion
+                if param_name == 'UNITS' and tcb_converted:
+                    updated_lines.append(f"UNITS        TDB\n")
+                    updated_params.add('UNITS')
+                    continue
 
                 # JUMP lines need special handling: par file has "JUMP"
                 # but fitted values are stored as JUMP1, JUMP2, ...
@@ -235,17 +256,23 @@ class TimingSession:
                         updated_lines.append(line)
                     continue
 
-                if param_name in params:
-                    new_value = params[param_name]
-                    # If value hasn't changed from initial, keep original line
-                    # to preserve full precision (avoids float64 truncation)
-                    initial_val = self._initial_params.get(param_name)
-                    if initial_val is not None and initial_val == new_value:
-                        updated_lines.append(line)
-                        updated_params.add(param_name)
-                        continue
+                # Case-insensitive lookup: par file may have TNRedAmp, params has TNREDAMP
+                actual_key = params_upper.get(param_name.upper())
+                if actual_key is not None:
+                    new_value = params[actual_key]
+                    # If value hasn't changed from initial AND the file was
+                    # NOT TCB-converted, keep original line to preserve full
+                    # precision (avoids float64 truncation).
+                    # For TCB-converted files we must NOT keep original lines
+                    # because they contain TCB values while params are TDB.
+                    if not tcb_converted:
+                        initial_val = self._initial_params.get(actual_key)
+                        if initial_val is not None and initial_val == new_value:
+                            updated_lines.append(line)
+                            updated_params.add(actual_key)
+                            continue
 
-                    new_line = format_param_value(param_name, new_value)
+                    new_line = format_param_value(actual_key, new_value)
 
                     # Preserve flags if present (for numeric params with fit flags)
                     if len(parts) > 2 and not isinstance(new_value, str):
@@ -253,7 +280,7 @@ class TimingSession:
                         new_line += f" {flags}"
 
                     updated_lines.append(new_line + '\n')
-                    updated_params.add(param_name)
+                    updated_params.add(actual_key)
                 else:
                     updated_lines.append(line)
             else:
@@ -383,6 +410,9 @@ class TimingSession:
             updated_lines = []
             updated_params = set()
             jump_index = 0  # Track JUMP line index for JUMP1, JUMP2, ... mapping
+
+            # Build case-insensitive lookup: map uppercase key → actual key in params
+            params_upper = {k.upper(): k for k in params if not k.startswith('_')}
             
             for line in par_lines:
                 line_stripped = line.strip()
@@ -411,29 +441,30 @@ class TimingSession:
                             updated_lines.append(line)
                         continue
 
-                    if param_name in params:
+                    actual_key = params_upper.get(param_name.upper())
+                    if actual_key is not None:
                         # Update this parameter
-                        new_value = params[param_name]
+                        new_value = params[actual_key]
                         # Format appropriately based on parameter type
                         if isinstance(new_value, str):
                             # Already a string (sexagesimal or other)
-                            new_line = f"{param_name:<12} {new_value}"
-                        elif param_name == 'RAJ':
+                            new_line = f"{actual_key:<12} {new_value}"
+                        elif actual_key == 'RAJ':
                             # RAJ in radians - convert to sexagesimal
                             from jug.model.codecs import RAJCodec
-                            new_line = f"{param_name:<12} {RAJCodec().encode(new_value)}"
-                        elif param_name == 'DECJ':
+                            new_line = f"{actual_key:<12} {RAJCodec().encode(new_value)}"
+                        elif actual_key == 'DECJ':
                             # DECJ in radians - convert to sexagesimal
                             from jug.model.codecs import DECJCodec
-                            new_line = f"{param_name:<12} {DECJCodec().encode(new_value)}"
-                        elif param_name == 'F0':
-                            new_line = f"{param_name:<12} {new_value:.15f}"
-                        elif param_name.startswith('F') and param_name[1:].isdigit():
-                            new_line = f"{param_name:<12} {new_value:.15e}"
-                        elif param_name.startswith('DM'):
-                            new_line = f"{param_name:<12} {new_value:.15f}"
+                            new_line = f"{actual_key:<12} {DECJCodec().encode(new_value)}"
+                        elif actual_key == 'F0':
+                            new_line = f"{actual_key:<12} {new_value:.15f}"
+                        elif actual_key.startswith('F') and actual_key[1:].isdigit():
+                            new_line = f"{actual_key:<12} {new_value:.15e}"
+                        elif actual_key.startswith('DM'):
+                            new_line = f"{actual_key:<12} {new_value:.15f}"
                         else:
-                            new_line = f"{param_name:<12} {new_value:.15e}"
+                            new_line = f"{actual_key:<12} {new_value:.15e}"
                         
                         # Preserve flags if present
                         if len(parts) > 2:
@@ -444,7 +475,7 @@ class TimingSession:
                             new_line += f" {parts[1]}"
                         
                         updated_lines.append(new_line + '\n')
-                        updated_params.add(param_name)
+                        updated_params.add(actual_key)
                     else:
                         updated_lines.append(line)
                 else:
@@ -631,6 +662,10 @@ class TimingSession:
                 print(f"  Fitting {len(fit_params)} parameters: {', '.join(fit_params)} ({n_used}/{n_toas} TOAs)")
             else:
                 print(f"  Fitting {len(fit_params)} parameters: {', '.join(fit_params)}")
+
+        # Snapshot current params before fitting so the fit report can show
+        # changes relative to what went INTO this fit, not the original par file.
+        prefit_params = dict(self.params)
         
         # FAST PATH: Use cached arrays if available
         # The fitter needs geometry arrays (dt_sec, tdb_mjd, freq_bary_mhz, etc.)
@@ -742,34 +777,55 @@ class TimingSession:
                     updated_params['PMBETA'] = ecl['PMBETA']
             self.params.update(updated_params)
 
-        # Cache the fitter's own post-fit residuals directly.
-        # This avoids the temp-par-file round-trip which loses precision
-        # for high-precision parameters (F0, PB, TASC, etc.) causing
-        # catastrophic errors in the recomputed residuals.
-        if 'residuals_us' in result and 'tdb_mjd' in result:
-            fitter_result = {
-                'residuals_us': result['residuals_us'],
-                'tdb_mjd': result['tdb_mjd'],
-                'errors_us': result.get('errors_us'),
-            }
-            # Carry forward freq/dt_sec from the pre-fit cache if available
-            prefit_cache = self._cached_result_by_mode.get(True) or self._cached_result_by_mode.get(False)
-            if prefit_cache is not None:
-                for key in ('freq_bary_mhz', 'dt_sec', 'dt_sec_ld',
-                            'roemer_shapiro_sec', 'prebinary_delay_sec',
-                            'ssb_obs_pos_ls', 'sw_geometry_pc',
-                            'jump_phase', 'tzr_phase', 'clock_issues'):
-                    if key in prefit_cache:
-                        fitter_result[key] = prefit_cache[key]
-            self._cached_result_by_mode.clear()
-            self._cached_result_by_mode[True] = fitter_result
-        else:
-            self._cached_result_by_mode.clear()
+            # Update _high_precision strings for fitted parameters whose
+            # values changed.  Always compute from the ORIGINAL longdouble
+            # string + cumulative float64 delta from _initial_params.
+            # new_ld = original_ld + (current_f64 - initial_f64)
+            # This avoids double-counting corrections across successive fits
+            # and preserves sub-float64 digits — critical for F0 where a
+            # naive float64→string conversion loses ~3 digits and causes
+            # multi-cycle phase errors (~ΔF0 × dt_max).
+            hp = self.params.get('_high_precision')
+            if hp is not None:
+                for p, new_val in updated_params.items():
+                    if p.startswith('_') or not isinstance(new_val, (int, float)):
+                        continue
+                    init_val = self._initial_params.get(p)
+                    orig_hp_str = self._original_high_precision.get(p)
+                    if init_val is not None and orig_hp_str is not None and float(init_val) != float(new_val):
+                        orig_ld = np.longdouble(orig_hp_str)
+                        delta = np.longdouble(float(new_val) - float(init_val))
+                        new_ld = orig_ld + delta
+                        # Match original notation style
+                        if 'e' in orig_hp_str or 'E' in orig_hp_str:
+                            n_digits = len(orig_hp_str.split('e')[0].split('E')[0].replace('-', '').replace('.', '')) - 1
+                            hp[p] = np.format_float_scientific(
+                                new_ld, precision=max(n_digits, 15), trim='0',
+                            )
+                        else:
+                            n_dec = len(orig_hp_str.split('.')[-1]) if '.' in orig_hp_str else 15
+                            hp[p] = np.format_float_positional(
+                                new_ld, precision=max(n_dec, 15),
+                                unique=False, trim='0',
+                            )
+
+        # Clear ALL cached geometry after a fit.
+        # Delay arrays (dt_sec, roemer_shapiro_sec, prebinary_delay_sec, etc.)
+        # depend on parameter values which just changed. Carrying forward stale
+        # geometry causes the fitter's differential approach to accumulate
+        # errors across fits (dt_sec has old delays baked in, but initial_*_delay
+        # is computed with new params → inconsistency → parameter drift).
+        # The next fit_parameters or compute_residuals call will recompute
+        # everything fresh with the updated params.
+        self._cached_result_by_mode.clear()
 
         # Also invalidate cached TOA data -- the fast evaluator only handles
         # spin/DM changes, so stale dt_sec causes wrong postfit residuals
         # when binary, astrometric, FD, or SW parameters were fitted.
         self._cached_toa_data = None
+
+        # Attach prefit snapshot so fit report can show per-fit changes
+        result['prefit_params'] = prefit_params
 
         return result
     
@@ -1109,20 +1165,26 @@ class TimingSession:
         print(text)
 
     def parameter_table(self, fit_result: Optional[Dict[str, Any]] = None) -> None:
-        """Print a table comparing initial and current parameter values.
+        """Print a table comparing pre-fit and post-fit parameter values.
 
         Parameters
         ----------
         fit_result : dict, optional
-            Fit result dict (with 'final_params' and 'uncertainties').
-            If provided, shows fitted values and uncertainties.
+            Fit result dict (with 'final_params', 'uncertainties', and
+            'prefit_params'). If provided, shows fitted values and
+            uncertainties relative to the pre-fit snapshot.
 
         Returns
         -------
         str
             Formatted table string.
         """
-        initial = self._initial_params
+        # Use prefit snapshot from this fit if available, else fall back to
+        # the original par file values.
+        if fit_result is not None:
+            initial = fit_result.get('prefit_params', self._initial_params)
+        else:
+            initial = self._initial_params
         current = self.params
 
         if fit_result is not None:
@@ -1139,7 +1201,7 @@ class TimingSession:
                            and k not in ('NTOA', 'CHI2', 'START', 'FINISH')]
 
         lines = []
-        hdr = f"{'Parameter':<14s} {'Initial':>22s} {'Current':>22s}"
+        hdr = f"{'Parameter':<14s} {'Pre-fit':>22s} {'Post-fit':>22s}"
         if fit_result is not None:
             hdr += f" {'Uncertainty':>14s} {'Delta/sigma':>12s}"
         lines.append(hdr)

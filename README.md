@@ -107,6 +107,9 @@ See [`notebooks/jug_example_j1909.ipynb`](notebooks/jug_example_j1909.ipynb) for
 - PySide6 + pyqtgraph (GUI)
 - matplotlib (plotting)
 
+## Hardware requirements
+- JUG needs longdouble precision for some of its calculations. For that reason, it must be run on hardware that allows for this. This means that Apple Silicon chips can not run this software without hitting numerical precision errors.
+
 ## License
 
 MIT

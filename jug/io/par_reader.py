@@ -17,6 +17,8 @@ are preserved under private keys for round-trip fidelity.
 
 from pathlib import Path
 from typing import Dict, Any, Optional
+import re
+
 import numpy as np
 
 from jug.utils.constants import HIGH_PRECISION_PARAMS
@@ -56,6 +58,10 @@ def _parse_float(value_str: str) -> float:
     try:
         return float(value_str)
     except ValueError:
+        # Handle NumPy ≥2.0 repr strings: np.float64(...), np.int64(...), etc.
+        if value_str.startswith('np.') and value_str.endswith(')'):
+            inner = value_str[value_str.index('(') + 1 : -1]
+            return float(inner)
         # Handle Fortran D-notation: replace 'D' or 'd' with 'E'
         converted = value_str.replace('D', 'E').replace('d', 'e')
         return float(converted)
@@ -97,7 +103,8 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
     # Keywords that use multi-token format: T2EFAC -f <val> <num>, etc.
     _NOISE_KEYWORDS = {'T2EFAC', 'T2EQUAD', 'EFAC', 'EQUAD', 'ECORR', 'TNECORR',
                        'TNEF', 'TNEQ', 'DMEFAC', 'DMJUMP',
-                       'TNBANDNOISE', 'TNGROUPNOISE'}
+                       'TNBANDNOISE', 'TNGROUPNOISE',
+                       'BANDNOISE', 'GROUPNOISE'}
 
     path = Path(path)
     par_filename = path.name.lower()
@@ -174,10 +181,10 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
             # MJD-based:  JUMP MJD start end offset [fit] [unc]
             try:
                 if jparts[1].upper() == 'MJD':
-                    val = float(jparts[4])
+                    val = _parse_float(jparts[4])
                     fit_idx = 5
                 else:
-                    val = float(jparts[3])
+                    val = _parse_float(jparts[3])
                     fit_idx = 4
             except (IndexError, ValueError):
                 val = 0.0
@@ -202,7 +209,6 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                     fdjump_log = False
                 continue
             # Parse FDJUMP index from keyword (e.g., FDJUMP1 -> 1)
-            import re
             m = re.match(r'FDJUMP(\d+)', key_raw)
             if not m:
                 continue
@@ -212,7 +218,7 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                 flag_name = fparts[1].lstrip('-')
                 flag_value = fparts[2]
                 try:
-                    val = float(fparts[3])
+                    val = _parse_float(fparts[3])
                 except (IndexError, ValueError):
                     val = 0.0
                 fit = len(fparts) >= 5 and fparts[4] == '1'
@@ -519,6 +525,9 @@ def get_longdouble(params: Dict[str, Any], key: str, default: Optional[float] = 
     if key in hp:
         # Use original string for maximum precision
         val_str = hp[key]
+        # Handle NumPy ≥2.0 repr strings: np.float64(...), etc.
+        if val_str.startswith('np.') and val_str.endswith(')'):
+            val_str = val_str[val_str.index('(') + 1 : -1]
         # Handle Fortran D-notation (e.g., -6.205D-16)
         if 'D' in val_str or 'd' in val_str:
             val_str = val_str.replace('D', 'E').replace('d', 'e')

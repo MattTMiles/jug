@@ -54,7 +54,7 @@ import math
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.io.par_reader import parse_par_file, validate_par_timescale
+from jug.io.par_reader import parse_par_file, validate_par_timescale, _parse_float
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
@@ -766,8 +766,8 @@ def _build_jump_masks(
             # MJD range: JUMP MJD <start> <end> <value> ...
             if len(parts) < 5:
                 continue
-            mjd_start = float(parts[2])
-            mjd_end = float(parts[3])
+            mjd_start = _parse_float(parts[2])
+            mjd_end = _parse_float(parts[3])
             toas_mjd = np.array([f.get('__mjd', 0.0) for f in toa_flags])
             # Need actual MJDs -- fall back to all-ones if not available
             masks[jump_name] = np.ones(n_toas, dtype=bool)

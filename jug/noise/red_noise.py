@@ -236,9 +236,9 @@ class RedNoiseProcess:
 
     _gui_labels = {"log10_A": "log_{10}(A)", "gamma": r"\gamma (spectral)", "n_harmonics": "N harmonics"}
     _par_keys = {
-        "log10_A": ["TNREDAMP", "TNRedAmp", "RN_log10_A"],
-        "gamma": ["TNREDGAM", "TNRedGam", "RN_gamma"],
-        "n_harmonics": ["TNREDC", "TNRedC", "RN_ncoeff"],
+        "log10_A": ["REDAMP", "TNREDAMP", "TNRedAmp", "RN_log10_A"],
+        "gamma": ["REDGAM", "TNREDGAM", "TNRedGam", "RN_gamma"],
+        "n_harmonics": ["REDC", "TNREDC", "TNRedC", "RN_ncoeff"],
     }
     _gui_defaults = {"log10_A": -14.0, "gamma": 3.0}
     _needs_freqs = False
@@ -314,9 +314,9 @@ class DMNoiseProcess:
 
     _gui_labels = {"log10_A": "log_{10}(A)", "gamma": r"\gamma (spectral)", "n_harmonics": "N harmonics"}
     _par_keys = {
-        "log10_A": ["TNDMAMP", "TNDMAmp", "DM_log10_A"],
-        "gamma": ["TNDMGAM", "TNDMGam", "DM_gamma"],
-        "n_harmonics": ["TNDMC", "DM_ncoeff"],
+        "log10_A": ["DMAMP", "TNDMAMP", "TNDMAmp", "DM_log10_A"],
+        "gamma": ["DMGAM", "TNDMGAM", "TNDMGam", "DM_gamma"],
+        "n_harmonics": ["DMC", "TNDMC", "DM_ncoeff"],
     }
     _gui_defaults = {"log10_A": -14.0, "gamma": 3.0}
     _needs_freqs = True
@@ -404,10 +404,10 @@ class ChromaticNoiseProcess:
         "chrom_idx": r"Chrom. index \beta", "n_harmonics": "N harmonics",
     }
     _par_keys = {
-        "log10_A": ["TNCHROMAMP", "TNChromAmp", "CHROM_log10_A"],
-        "gamma": ["TNCHROMGAM", "TNChromGam", "CHROM_gamma"],
-        "chrom_idx": ["TNCHROMIDX", "TNChromIdx", "CHROM_idx"],
-        "n_harmonics": ["TNCHROMC", "TNChromC", "CHROM_ncoeff"],
+        "log10_A": ["CHROMAMP", "TNCHROMAMP", "TNChromAmp", "CHROM_log10_A"],
+        "gamma": ["CHROMGAM", "TNCHROMGAM", "TNChromGam", "CHROM_gamma"],
+        "chrom_idx": ["CHROMIDX", "TNCHROMIDX", "TNChromIdx", "CHROM_idx"],
+        "n_harmonics": ["CHROMC", "TNCHROMC", "TNChromC", "CHROM_ncoeff"],
     }
     _gui_defaults = {"log10_A": -14.0, "gamma": 3.0}
     _needs_freqs = True
@@ -593,155 +593,124 @@ class GroupNoiseProcess:
 # Parsing helpers (for par-file integration)
 # ---------------------------------------------------------------------------
 
+def _find_key(params: dict, candidates: list) -> Optional[str]:
+    """Return the first key from *candidates* that exists in *params*."""
+    for k in candidates:
+        if k in params:
+            return k
+    return None
+
+
 def parse_red_noise_params(params: dict) -> Optional[RedNoiseProcess]:
     """Extract a RedNoiseProcess from a par file dict, if present.
 
-    Looks for ``TNRedAmp`` / ``TNRedGam`` / ``TNRedC`` (TempoNest)
-    or ``RN_log10_A`` / ``RN_gamma`` conventions.
-    Handles both mixed-case and uppercase keys (par reader uppercases).
+    Accepts JUG-native (``REDAMP``/``REDGAM``/``REDC``),
+    TempoNest (``TNRedAmp``/``TNRedGam``/``TNRedC``),
+    enterprise (``RN_log10_A``/``RN_gamma``), and
+    Tempo2-native (``RNAMP``/``RNIDX``/``RNC``) conventions.
 
     Returns None if no red noise parameters are found.
     """
-    # TempoNest convention (mixed case)
-    if "TNRedAmp" in params and "TNRedGam" in params:
+    keys = RedNoiseProcess._par_keys
+    amp_key = _find_key(params, keys["log10_A"])
+    gam_key = _find_key(params, keys["gamma"])
+
+    if amp_key and gam_key:
+        nharm_key = _find_key(params, keys["n_harmonics"])
         return RedNoiseProcess(
-            log10_A=float(params["TNRedAmp"]),
-            gamma=float(params["TNRedGam"]),
-            n_harmonics=int(params.get("TNRedC", 30)),
+            log10_A=float(params[amp_key]),
+            gamma=float(params[gam_key]),
+            n_harmonics=int(params[nharm_key]) if nharm_key else 30,
         )
-    # TempoNest convention (uppercase -- par reader uppercases keys)
-    if "TNREDAMP" in params and "TNREDGAM" in params:
-        return RedNoiseProcess(
-            log10_A=float(params["TNREDAMP"]),
-            gamma=float(params["TNREDGAM"]),
-            n_harmonics=int(params.get("TNREDC", 30)),
-        )
-    # Alternative convention
-    if "RN_log10_A" in params and "RN_gamma" in params:
-        return RedNoiseProcess(
-            log10_A=float(params["RN_log10_A"]),
-            gamma=float(params["RN_gamma"]),
-            n_harmonics=int(params.get("RN_ncoeff", 30)),
-        )
-    # Tempo2-native RNAMP/RNIDX convention (from original Tempo)
-    # NOTE: Conversion is NOT trivial -- RNAMP has units yr^(3/2) mus
-    # See Tempo2 readParfile.C line 1826 for reference
+
+    # Tempo2-native RNAMP/RNIDX convention (requires unit conversion)
     if "RNAMP" in params and "RNIDX" in params:
         rnamp_str = str(params["RNAMP"]).replace("D", "e").replace("d", "e")
         rnamp = float(rnamp_str)
-        # Tempo2 convention: convert from Tempo amplitude to TempoNest log10_A
-        # log10(2pisqrt3 / (sec_per_yr * 1e6) * RNAMP)
         _SEC_PER_YR = _SECS_PER_YEAR
         log10_A = math.log10(2.0 * math.pi * math.sqrt(3.0) / (_SEC_PER_YR * 1e6) * rnamp)
         gamma = -float(params["RNIDX"])  # Sign flip
-        # RNC is the RNAMP/RNIDX analogue of TNRedC (number of Fourier harmonics)
-        # Tempo2 hardcodes 100, but we default to 30 for consistency
         n_harmonics = int(params.get("RNC", params.get("TNREDC", params.get("TNRedC", 30))))
         return RedNoiseProcess(log10_A=log10_A, gamma=gamma, n_harmonics=n_harmonics)
+
     return None
 
 
 def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
     """Extract a DMNoiseProcess from a par file dict, if present.
 
-    Looks for ``TNDMAmp`` / ``TNDMGam`` / ``TNDMC`` (TempoNest)
-    or ``DM_log10_A`` / ``DM_gamma`` conventions.
-    Handles both mixed-case and uppercase keys (par reader uppercases).
+    Accepts JUG-native (``DMAMP``/``DMGAM``/``DMC``),
+    TempoNest (``TNDMAmp``/``TNDMGam``/``TNDMC``), and
+    enterprise (``DM_log10_A``/``DM_gamma``) conventions.
 
-    ``TNDMAmp`` is in the Tempo2/TempoNest convention where the DM noise
-    basis uses ``1/(DMKappa × freq_Hz²)`` (DMKappa = 2.41×10⁻¹⁶).
-    JUG uses the enterprise convention with ``(1400/freq_MHz)²`` basis.
-    The conversion ``log10_A = TNDMAmp − TNDM_OFFSET`` accounts for:
-      1. The 12π² PSD normalisation difference.
-      2. The basis scaling difference: Tempo2's ``1/(DMKappa × ν²)``
-         vs enterprise's ``(1400/ν_MHz)²``.
-    The offset ≈ 1.638 is derived as ``log10(1400² × DMKappa_scaled / √(12π²))``.
+    **Convention handling:**
 
-    ``DM_log10_A`` is assumed to already be in the enterprise convention.
+    - ``TNDMAMP`` / ``TNDMAmp`` use the Tempo2/TempoNest DM noise basis
+      ``1/(DMKappa × freq_Hz²)`` with ``A²/(12π²)`` PSD normalisation.
+      These are converted to enterprise convention by subtracting
+      ``TNDM_OFFSET ≈ 1.638``.
+    - ``DMAMP`` and ``DM_log10_A`` are assumed to already be in the
+      enterprise convention (no offset applied).
     """
-    # TempoNest convention (mixed case)
-    if "TNDMAmp" in params and "TNDMGam" in params:
+    keys = DMNoiseProcess._par_keys
+    amp_key = _find_key(params, keys["log10_A"])
+    gam_key = _find_key(params, keys["gamma"])
+
+    if amp_key and gam_key:
+        log10_A = float(params[amp_key])
+        # TempoNest keys require offset subtraction
+        if amp_key.upper().startswith('TN'):
+            log10_A -= TNDM_OFFSET
+        nharm_key = _find_key(params, keys["n_harmonics"])
         return DMNoiseProcess(
-            log10_A=float(params["TNDMAmp"]) - TNDM_OFFSET,
-            gamma=float(params["TNDMGam"]),
-            n_harmonics=int(params.get("TNDMC", 30)),
+            log10_A=log10_A,
+            gamma=float(params[gam_key]),
+            n_harmonics=int(params[nharm_key]) if nharm_key else 30,
         )
-    # TempoNest convention (uppercase)
-    if "TNDMAMP" in params and "TNDMGAM" in params:
-        return DMNoiseProcess(
-            log10_A=float(params["TNDMAMP"]) - TNDM_OFFSET,
-            gamma=float(params["TNDMGAM"]),
-            n_harmonics=int(params.get("TNDMC", 30)),
-        )
-    # Alternative convention (enterprise — no conversion needed)
-    if "DM_log10_A" in params and "DM_gamma" in params:
-        return DMNoiseProcess(
-            log10_A=float(params["DM_log10_A"]),
-            gamma=float(params["DM_gamma"]),
-            n_harmonics=int(params.get("DM_ncoeff", 30)),
-        )
+
     return None
+
 
 def parse_chromatic_noise_params(params: dict) -> Optional[ChromaticNoiseProcess]:
     """Extract a ChromaticNoiseProcess from a par file dict, if present.
 
-    Looks for ``TNChromAmp`` / ``TNChromGam`` / ``TNChromC`` (TempoNest)
-    or ``CHROM_log10_A`` / ``CHROM_gamma`` conventions.
-    Handles both mixed-case and uppercase keys (par reader uppercases).
+    Accepts JUG-native (``CHROMAMP``/``CHROMGAM``/``CHROMIDX``/``CHROMC``),
+    TempoNest (``TNChromAmp``/``TNChromGam``/``TNChromIdx``/``TNChromC``),
+    and enterprise (``CHROM_log10_A``/``CHROM_gamma``) conventions.
     """
-    # TempoNest convention (mixed case)
-    if "TNChromAmp" in params and "TNChromGam" in params:
-        if not "TNChromIdx" in params:
-            chrom_idx = 4.0  # Default chromatic index (e.g. 4 for scattering-like chromaticity)
-        else:
-            chrom_idx = float(params["TNChromIdx"])
+    keys = ChromaticNoiseProcess._par_keys
+    amp_key = _find_key(params, keys["log10_A"])
+    gam_key = _find_key(params, keys["gamma"])
+
+    if amp_key and gam_key:
+        idx_key = _find_key(params, keys["chrom_idx"])
+        chrom_idx = float(params[idx_key]) if idx_key else 4.0
+        nharm_key = _find_key(params, keys["n_harmonics"])
         return ChromaticNoiseProcess(
-            log10_A=float(params["TNChromAmp"]),
-            gamma=float(params["TNChromGam"]),
+            log10_A=float(params[amp_key]),
+            gamma=float(params[gam_key]),
             chrom_idx=chrom_idx,
-            n_harmonics=int(params.get("TNChromC", 30)),
+            n_harmonics=int(params[nharm_key]) if nharm_key else 30,
         )
-    # TempoNest convention (uppercase)
-    if "TNCHROMAMP" in params and "TNCHROMGAM" in params:
-        if not "TNCHROMIDX" in params:
-            chrom_idx = 4.0  # Default chromatic index (e.g. 4 for scattering-like chromaticity)
-        else:
-            chrom_idx = float(params["TNCHROMIDX"])
-        return ChromaticNoiseProcess(
-            log10_A=float(params["TNCHROMAMP"]),
-            gamma=float(params["TNCHROMGAM"]),
-            chrom_idx=chrom_idx,
-            n_harmonics=int(params.get("TNCHROMC", 30)),
-        )
-    # Alternative convention
-    if "CHROM_log10_A" in params and "CHROM_gamma" in params:
-        if not "CHROM_idx" in params:
-            chrom_idx = 4.0  # Default chromatic index (e.g. 4 for scattering-like chromaticity)
-        else:
-            chrom_idx = float(params["CHROM_idx"])
-        return ChromaticNoiseProcess(
-            log10_A=float(params["CHROM_log10_A"]),
-            gamma=float(params["CHROM_gamma"]),
-            n_harmonics=int(params.get("CHROM_ncoeff", 30)),
-        )
+
     return None
 
 
 def parse_band_noise_params(params: dict) -> list:
     """Extract BandNoiseProcess instances from par file noise lines.
 
-    Parses ``TNBandNoise freq_lo freq_hi log10_A gamma n_harmonics`` lines.
+    Parses ``BANDNOISE freq_lo freq_hi log10_A gamma n_harmonics`` lines
+    (also accepts the ``TNBandNoise`` alias).
 
     Returns
     -------
     list of BandNoiseProcess
-        One per TNBandNoise line. Empty list if none found.
+        One per BandNoise line. Empty list if none found.
     """
     processes = []
     for line in params.get('_noise_lines', []):
         parts = line.split()
-        if parts[0].upper() == 'TNBANDNOISE':
-            # TNBandNoise freq_lo freq_hi log10_A gamma n_harmonics
+        if parts[0].upper() in ('BANDNOISE', 'TNBANDNOISE'):
             freq_lo = float(parts[1])
             freq_hi = float(parts[2])
             log10_A = float(parts[3])
@@ -757,21 +726,22 @@ def parse_band_noise_params(params: dict) -> list:
 def parse_group_noise_params(params: dict) -> list:
     """Extract GroupNoiseProcess instances from par file noise lines.
 
-    Parses ``TNGroupNoise -group <name> log10_A gamma n_harmonics [Tspan_days]``
-    lines. When ``TNGroupSetSpan 1`` is set, the last value is the per-group
-    time span in days.
+    Parses ``GROUPNOISE -group <name> log10_A gamma n_harmonics [Tspan_days]``
+    lines (also accepts the ``TNGroupNoise`` alias).  When
+    ``GROUPSETSPAN 1`` (or ``TNGroupSetSpan 1``) is set, the last value
+    is the per-group time span in days.
 
     Returns
     -------
     list of GroupNoiseProcess
-        One per TNGroupNoise line. Empty list if none found.
+        One per GroupNoise line. Empty list if none found.
     """
-    group_set_span = bool(params.get('TNGROUPSETSPAN', 0))
+    group_set_span = bool(
+        params.get('GROUPSETSPAN', params.get('TNGROUPSETSPAN', 0)))
     processes = []
     for line in params.get('_noise_lines', []):
         parts = line.split()
-        if parts[0].upper() == 'TNGROUPNOISE':
-            # TNGroupNoise -group <name> log10_A gamma n_harmonics [Tspan_days]
+        if parts[0].upper() in ('GROUPNOISE', 'TNGROUPNOISE'):
             if parts[1] == '-group':
                 group_name = parts[2]
                 log10_A = float(parts[3])
@@ -779,7 +749,6 @@ def parse_group_noise_params(params: dict) -> list:
                 n_harmonics = int(parts[5]) if len(parts) > 5 else 30
                 Tspan = float(parts[6]) if (group_set_span and len(parts) > 6) else None
             else:
-                # No -group flag: TNGroupNoise <name> log10_A gamma n_harmonics
                 group_name = parts[1]
                 log10_A = float(parts[2])
                 gamma = float(parts[3])

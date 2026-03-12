@@ -18,6 +18,8 @@ import jax.numpy as jnp
 import numpy as np
 from typing import Dict, List, Optional, Any
 
+from jug.io.par_reader import _parse_float
+
 
 def compute_jump_derivatives(
     params: Dict,
@@ -173,7 +175,7 @@ def parse_jump_from_par_line(line: str) -> Dict[str, Any]:
     if parts[0].startswith('-') and len(parts) >= 3:
         flag_name = parts[0][1:]  # Remove leading '-'
         flag_value = parts[1]
-        value = float(parts[2])
+        value = _parse_float(parts[2])
         return {
             'type': 'flag',
             'flag_name': flag_name,
@@ -183,9 +185,9 @@ def parse_jump_from_par_line(line: str) -> Dict[str, Any]:
     
     # Check for MJD-based JUMP: JUMP MJD start end value
     if parts[0].upper() == 'MJD' and len(parts) >= 4:
-        mjd_start = float(parts[1])
-        mjd_end = float(parts[2])
-        value = float(parts[3])
+        mjd_start = _parse_float(parts[1])
+        mjd_end = _parse_float(parts[2])
+        value = _parse_float(parts[3])
         return {
             'type': 'mjd',
             'mjd_start': mjd_start,
@@ -195,7 +197,7 @@ def parse_jump_from_par_line(line: str) -> Dict[str, Any]:
     
     # Fallback
     try:
-        value = float(parts[-1])
+        value = _parse_float(parts[-1])
         return {'type': 'unknown', 'value': value}
     except ValueError:
         return {'type': 'unknown', 'value': 0.0}

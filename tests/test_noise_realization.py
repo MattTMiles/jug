@@ -184,14 +184,14 @@ class TestParKeyMapping:
 
     def test_red_noise_keys(self):
         from jug.engine.noise_mode import get_par_key_for_field
-        assert get_par_key_for_field('RedNoise', 'log10_A') == 'TNREDAMP'
-        assert get_par_key_for_field('RedNoise', 'gamma') == 'TNREDGAM'
-        assert get_par_key_for_field('RedNoise', 'n_harmonics') == 'TNREDC'
+        assert get_par_key_for_field('RedNoise', 'log10_A') == 'REDAMP'
+        assert get_par_key_for_field('RedNoise', 'gamma') == 'REDGAM'
+        assert get_par_key_for_field('RedNoise', 'n_harmonics') == 'REDC'
 
     def test_chromatic_noise_keys(self):
         from jug.engine.noise_mode import get_par_key_for_field
-        assert get_par_key_for_field('ChromaticNoise', 'log10_A') == 'TNCHROMAMP'
-        assert get_par_key_for_field('ChromaticNoise', 'chrom_idx') == 'TNCHROMIDX'
+        assert get_par_key_for_field('ChromaticNoise', 'log10_A') == 'CHROMAMP'
+        assert get_par_key_for_field('ChromaticNoise', 'chrom_idx') == 'CHROMIDX'
 
     def test_unknown_returns_none(self):
         from jug.engine.noise_mode import get_par_key_for_field
@@ -220,9 +220,9 @@ class TestParKeyMapping:
         from jug.engine.noise_mode import write_noise_params
         params = {}
         write_noise_params('RedNoise', {'log10_A': '-13.5', 'gamma': '4.33', 'n_harmonics': '30'}, params)
-        assert params['TNREDAMP'] == -13.5
-        assert params['TNREDGAM'] == 4.33
-        assert params['TNREDC'] == 30.0
+        assert params['REDAMP'] == -13.5
+        assert params['REDGAM'] == 4.33
+        assert params['REDC'] == 30.0
 
     def test_write_noise_params_ignores_unknown(self):
         """write_noise_params silently skips fields with no par key."""

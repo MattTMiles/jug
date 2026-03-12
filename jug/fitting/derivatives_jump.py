@@ -29,9 +29,12 @@ def compute_jump_derivatives(
 ) -> Dict[str, jnp.ndarray]:
     """Compute design matrix columns for JUMP parameters using JAX.
     
-    The design matrix column M = +1 for TOAs that the JUMP applies to,
-    and 0 for all others. This follows from JUG's convention where JUMP
-    is subtracted from dt_sec: d(r)/d(JUMP) = -1, so M = -d(r)/d(JUMP) = +1.
+    The design matrix column M = -1 for TOAs that the JUMP applies to,
+    and 0 for all others. JUMPs add phase (phase += F0*JUMP), so the
+    Jacobian d(residual)/d(JUMP) = +1. Since the design matrix convention
+    for all parameters is M = -d(residual)/d(param), the jump column
+    must be -1 on masked TOAs. This matches Tempo2's t2FitFunc_jump
+    which returns -jumpScale.
     
     Parameters
     ----------
@@ -51,7 +54,7 @@ def compute_jump_derivatives(
     -------
     derivatives : dict
         Dictionary mapping JUMP parameter name to design matrix column
-        Each value is jnp.ndarray of shape (n_toas,) with values 0.0 or 1.0
+        Each value is jnp.ndarray of shape (n_toas,) with values 0.0 or -1.0
     """
     from jug.model.parameter_spec import is_jump_param
     
@@ -69,14 +72,14 @@ def compute_jump_derivatives(
         for param in jump_fit_params:
             if param in jump_masks:
                 mask = jump_masks[param]
-                derivatives[param] = jnp.where(mask, 1.0, 0.0)
+                derivatives[param] = jnp.where(mask, -1.0, 0.0)
             else:
-                derivatives[param] = jnp.ones(n_toas, dtype=jnp.float64)
+                derivatives[param] = -jnp.ones(n_toas, dtype=jnp.float64)
         return derivatives
     
     # Fallback: assume each JUMP applies to all TOAs
     for param in jump_fit_params:
-        derivatives[param] = jnp.ones(n_toas, dtype=jnp.float64)
+        derivatives[param] = -jnp.ones(n_toas, dtype=jnp.float64)
     
     return derivatives
 

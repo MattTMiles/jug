@@ -26,7 +26,8 @@ Internal Structure
    nonlinear model, repeat until convergence.
 
 3. **Helpers** -- ``_update_param``, ``_reconvert_ecliptic_to_equatorial``,
-   ``compute_dm_delay_fast``, ``_solve_augmented_cholesky``, ``_build_jump_masks``,
+   ``compute_dm_delay_fast``, ``_solve_gls_augmented_svd``,
+   ``_drop_degenerate_jumps``, ``_build_jump_masks``,
    ``_compute_full_model_residuals``.
 
 Usage Example
@@ -47,7 +48,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import time
 import math
 from dataclasses import dataclass
@@ -428,114 +429,24 @@ def _has_gpu():
     return _has_gpu._result
 
 
-def _solve_augmented_cholesky(M2, r1, prior_inv, col_norms, n_timing_cols, has_offset):
-    """Solve the augmented (GLS) WLS system via normal equations + Cholesky.
+def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
+                             phiinv_noise, has_offset, n_timing_params,
+                             precomputed=None, compute_noise_cov=False):
+    """Solve GLS timing+noise fit using the augmented system with SVD.
 
-    Equivalent to the SVD-on-augmented-system approach but ~70x faster for
-    large design matrices.  Auto-dispatches: uses JAX on GPU for the
-    normal-equation matmul and Cholesky (1.7x faster than CPU scipy for
-    59k-TOA problems); uses scipy LAPACK on CPU where it is faster.
-    Falls back to scipy SVD if Cholesky fails.
+    Builds the N^{-1}-whitened augmented system and solves via SVD:
 
-    Parameters
-    ----------
-    M2 : (n_toa, n_cols) -- column-normalised, weight-scaled design matrix
-    r1 : (n_toa,)        -- weight-scaled residuals
-    prior_inv : (n_cols,) -- diagonal prior inverse (0 for unregularised cols)
-    col_norms : (n_cols,) -- column norms used for preconditioning
-    n_timing_cols : int   -- number of timing model columns (incl. offset)
-    has_offset : bool     -- whether column 0 is an offset column
+      [M/σ, F/σ]   [δp]   [r/σ]
+      [   B    ] × [a ] = [ 0 ]
 
-    Returns
-    -------
-    delta_params, cov, delta_params_all, cov_all, noise_coeffs
-    """
-    n_cols = M2.shape[1]
+    where B has √(φ^{-1}) on the diagonal for noise prior constraints.
 
-    if _has_gpu():
-        # GPU path: JAX matmul + Cholesky on device
-        import jax.scipy.linalg as _jax_linalg
-
-        M2_j = jnp.asarray(M2)
-        r1_j = jnp.asarray(r1)
-
-        MtM_j = M2_j.T @ M2_j
-        Mtr_j = M2_j.T @ r1_j
-        MtM_j = MtM_j.at[jnp.diag_indices(n_cols)].add(jnp.asarray(prior_inv))
-
-        L_j = _jax_linalg.cho_factor(MtM_j, lower=True)
-        delta_normalized_j = _jax_linalg.cho_solve(L_j, Mtr_j)
-        cov_normalized_j = _jax_linalg.cho_solve(L_j, jnp.eye(n_cols))
-
-        # JAX returns NaN (not an exception) when Cholesky fails
-        cholesky_ok = not jnp.any(jnp.isnan(delta_normalized_j))
-
-        if cholesky_ok:
-            delta_normalized = np.asarray(delta_normalized_j)
-            cov_normalized = np.asarray(cov_normalized_j)
-            MtM = np.asarray(MtM_j)
-        else:
-            MtM = np.asarray(MtM_j)
-            cholesky_ok = False  # fall through to SVD below
-    else:
-        # CPU path: scipy LAPACK (faster than JAX XLA on CPU)
-        MtM = np.array(M2.T @ M2)
-        Mtr = np.array(M2.T @ r1)
-        MtM[np.diag_indices(n_cols)] += prior_inv
-
-        try:
-            L = _scipy_linalg.cho_factor(MtM, lower=True, check_finite=False)
-            delta_normalized = _scipy_linalg.cho_solve(L, Mtr, check_finite=False)
-            cov_normalized = _scipy_linalg.cho_solve(L, np.eye(n_cols), check_finite=False)
-            cholesky_ok = True
-        except _scipy_linalg.LinAlgError:
-            cholesky_ok = False
-
-    if not cholesky_ok:
-        # Cholesky failed -- fall back to SVD on CPU (rare path)
-        if not isinstance(M2, np.ndarray):
-            M2 = np.asarray(M2)
-        if not isinstance(r1, np.ndarray):
-            r1 = np.asarray(r1)
-        has_prior = np.any(prior_inv > 0)
-        if has_prior:
-            sqrt_prior_inv = np.sqrt(prior_inv)
-            M_aug = np.vstack([M2, np.diag(sqrt_prior_inv)])
-            r_aug = np.concatenate([r1, np.zeros(n_cols)])
-        else:
-            M_aug = M2
-            r_aug = r1
-        U, Sdiag, VT = _scipy_linalg.svd(M_aug, full_matrices=False)
-        threshold = 1e-14 * max(M_aug.shape)
-        Sdiag_inv = np.where(Sdiag > threshold * Sdiag[0], 1.0 / Sdiag, 0.0)
-        delta_normalized = VT.T @ (Sdiag_inv * (U.T @ r_aug))
-        cov_normalized = (VT.T * Sdiag_inv**2) @ VT
-
-    if np.any(np.isnan(cov_normalized)):
-        cov_normalized = np.asarray(jnp.linalg.pinv(jnp.array(MtM)))
-
-    delta_params_all = delta_normalized / col_norms
-    cov_all = (cov_normalized / col_norms).T / col_norms
-    t0 = 1 if has_offset else 0
-    delta_params = delta_params_all[t0:n_timing_cols]
-    cov = cov_all[t0:n_timing_cols, t0:n_timing_cols]
-    noise_coeffs = delta_params_all[n_timing_cols:]
-    return delta_params, cov, delta_params_all, cov_all, noise_coeffs
-
-
-def _solve_gls_woodbury(M_timing, F_noise, residuals, sigma, phiinv_noise,
-                         has_offset, n_timing_params,
-                         precomputed=None, compute_noise_cov=False):
-    """Solve GLS timing fit using the Woodbury identity (Tempo2-equivalent).
-
-    Mathematically equivalent to Tempo2's cholesky plugin:
-      C = N + F φ F^T
-      M^T C^{-1} M δp = M^T C^{-1} y
-    but avoids forming the full n_toa × n_toa covariance matrix by using
-      C^{-1} = N^{-1} - N^{-1} F (φ^{-1} + F^T N^{-1} F)^{-1} F^T N^{-1}
-
-    After solving for timing parameters, noise coefficients are extracted
-    via the Wiener filter: a = Σ^{-1} F^T N^{-1} (y - M δp).
+    This is mathematically equivalent to Woodbury-marginalized GLS, but
+    the augmented SVD naturally regularises the ill-conditioned
+    timing-noise trade-off directions that plague the 44×44 Woodbury
+    Cholesky.  The SVD distributes degeneracy into noise coefficient
+    dimensions, producing timing corrections that are stable under
+    nonlinear re-evaluation.
 
     Parameters
     ----------
@@ -547,11 +458,10 @@ def _solve_gls_woodbury(M_timing, F_noise, residuals, sigma, phiinv_noise,
     has_offset : bool
     n_timing_params : int
     precomputed : dict or None
-        Cached products from _precompute_woodbury_products(). When provided,
-        skips recomputing FtNiF, L_sigma, Ni, and GPU-resident arrays.
+        If provided, must contain 'Ni' and 'L_sigma' for Wiener-filter
+        noise recomputation.
     compute_noise_cov : bool
-        If True, compute noise posterior covariance diagonal (expensive).
-        Only needed on the final iteration for error bars.
+        If True, compute approximate noise posterior covariance diagonal.
 
     Returns
     -------
@@ -559,119 +469,73 @@ def _solve_gls_woodbury(M_timing, F_noise, residuals, sigma, phiinv_noise,
     """
     n_toa, n_tcols = M_timing.shape
     n_noise = F_noise.shape[1]
+    n_total = n_tcols + n_noise
 
+    # N^{-1} whitening
     if precomputed is not None:
         Ni = precomputed['Ni']
-        FtNiF = precomputed['FtNiF']
-        L_sigma = precomputed['L_sigma']
-        F_j = precomputed.get('F_j')
-        Ni_j = precomputed.get('Ni_j')
-        use_gpu = F_j is not None
     else:
         Ni = 1.0 / (sigma ** 2)
-        use_gpu = _has_gpu()
-        F_j = None
-        Ni_j = None
+    sig_inv = np.sqrt(Ni)  # 1/sigma
 
-    # Compute iteration-dependent products (M and y change each iteration)
-    if use_gpu:
-        if F_j is None:
-            F_j = jnp.asarray(F_noise)
-            Ni_j = jnp.asarray(Ni)
-        M_j = jnp.asarray(M_timing)
-        y_j = jnp.asarray(residuals)
-        NiM_j = M_j * Ni_j[:, None]
-        Niy_j = y_j * Ni_j
-        if precomputed is None:
-            NiF_j = F_j * Ni_j[:, None]
-            FtNiF = np.asarray(F_j.T @ NiF_j)
-        FtNiM = np.asarray(F_j.T @ NiM_j)
-        MtNiM = np.asarray(M_j.T @ NiM_j)
-        FtNiy = np.asarray(F_j.T @ Niy_j)
-        MtNiy = np.asarray(M_j.T @ Niy_j)
-    else:
-        NiM = M_timing * Ni[:, None]
-        Niy = residuals * Ni
-        if precomputed is None:
-            NiF = F_noise * Ni[:, None]
-            FtNiF = F_noise.T @ NiF
-        FtNiM = F_noise.T @ NiM
-        MtNiM = M_timing.T @ NiM
-        FtNiy = F_noise.T @ Niy
-        MtNiy = M_timing.T @ Niy
+    # Build full design matrix and apply column normalization (PINT-style).
+    # Timing columns span ~20 orders of magnitude in norm, which destroys
+    # SVD precision without normalization. Normalizing reduces cond(A)
+    # from ~1e18 to ~1e6.
+    M_aug = np.hstack([M_timing, F_noise])
+    col_norm = np.sqrt(np.sum(M_aug**2, axis=0))
+    col_norm[col_norm == 0] = 1.0
+    M_aug_n = M_aug / col_norm  # normalized columns
 
-    # Σ = φ^{-1} + F^T N^{-1} F (factorized once, reused from precomputed)
-    if precomputed is None:
-        Sigma = FtNiF.copy()
-        Sigma[np.diag_indices(n_noise)] += phiinv_noise
-        try:
-            L_sigma = _scipy_linalg.cho_factor(Sigma, lower=True, check_finite=False)
-        except _scipy_linalg.LinAlgError:
-            Sigma[np.diag_indices(n_noise)] += 1e-10 * np.max(np.diag(Sigma))
-            L_sigma = _scipy_linalg.cho_factor(Sigma, lower=True, check_finite=False)
+    # N^{-1}-whiten the normalized design matrix
+    M_w = M_aug_n * sig_inv[:, None]  # (n_toa, n_total)
+    r_w = residuals * sig_inv         # (n_toa,)
 
-    # Woodbury terms
-    B = _scipy_linalg.cho_solve(L_sigma, FtNiM, check_finite=False)
-    c = _scipy_linalg.cho_solve(L_sigma, FtNiy, check_finite=False)
+    # Prior constraint rows B: (n_noise, n_total)
+    # B[i, n_tcols+i] = sqrt(phiinv[i] / col_norm[n_tcols+i]^2)
+    # because normalization absorbs col_norm into the parameter scale.
+    phiinv_n = phiinv_noise / (col_norm[n_tcols:] ** 2)
+    B_rows = np.zeros((n_noise, n_total))
+    B_rows[np.arange(n_noise), n_tcols + np.arange(n_noise)] = np.sqrt(phiinv_n)
 
-    # GLS timing normal equations
-    MtCiM = MtNiM - FtNiM.T @ B
-    MtCiy = MtNiy - FtNiM.T @ c
+    # Stack: A = [M_w; B], b = [r_w; 0]
+    A = np.vstack([M_w, B_rows])
+    b = np.concatenate([r_w, np.zeros(n_noise)])
 
-    # Symmetric normalization for conditioning
-    d = np.sqrt(np.maximum(np.diag(MtCiM), 0.0))
-    d = np.where(d == 0, 1.0, d)
-    MtCiM_n = MtCiM / d[:, None] / d[None, :]
-    MtCiy_n = MtCiy / d
+    # SVD solve in normalized space
+    U, S, Vt = _scipy_linalg.svd(A, full_matrices=False)
+    threshold = 1e-20 * S[0]
+    S_inv = np.where(S > threshold, 1.0 / S, 0.0)
+    y_norm = Vt.T @ (S_inv * (U.T @ b))
 
-    # Solve normalized timing system
-    try:
-        L_t = _scipy_linalg.cho_factor(MtCiM_n, lower=True, check_finite=False)
-        dp_n = _scipy_linalg.cho_solve(L_t, MtCiy_n, check_finite=False)
-        cov_n = _scipy_linalg.cho_solve(L_t, np.eye(n_tcols), check_finite=False)
-    except _scipy_linalg.LinAlgError:
-        U, S, VT = _scipy_linalg.svd(MtCiM_n, full_matrices=False)
-        thresh = 1e-14 * S[0] * n_tcols
-        S_inv = np.where(S > thresh, 1.0 / S, 0.0)
-        dp_n = VT.T @ (S_inv * (U.T @ MtCiy_n))
-        cov_n = (VT.T * S_inv) @ VT
+    # Un-normalize to get physical parameter corrections
+    delta_all = y_norm / col_norm
 
-    # Unnormalize
-    delta_timing = dp_n / d
-    cov_timing = cov_n / d[:, None] / d[None, :]
+    delta_timing = delta_all[:n_tcols]
+    noise_coeffs = delta_all[n_tcols:]
 
-    # Noise coefficients via Wiener filter
-    r_post = residuals - M_timing @ delta_timing
-    if use_gpu:
-        FtNi_rpost = np.asarray(F_j.T @ jnp.asarray(r_post * Ni))
-    else:
-        FtNi_rpost = F_noise.T @ (r_post * Ni)
-    noise_coeffs = _scipy_linalg.cho_solve(L_sigma, FtNi_rpost, check_finite=False)
+    # Covariance from SVD: un-normalize by outer product of 1/col_norm
+    cov_norm = (Vt.T * S_inv**2) @ Vt
+    inv_cn = 1.0 / col_norm
+    cov_full = cov_norm * np.outer(inv_cn, inv_cn)
+
+    # Extract timing covariance
+    cov_timing = cov_full[:n_tcols, :n_tcols]
 
     # Build output
     t0 = 1 if has_offset else 0
     delta_params = delta_timing[t0:]
     cov = cov_timing[t0:, t0:]
-    delta_params_all = np.concatenate([delta_timing, noise_coeffs])
 
-    n_all = n_tcols + n_noise
-    cov_all = np.zeros((n_all, n_all))
+    cov_all = np.zeros((n_total, n_total))
     cov_all[:n_tcols, :n_tcols] = cov_timing
-
     if compute_noise_cov:
-        try:
-            L_S = _scipy_linalg.cho_factor(MtCiM, lower=True, check_finite=False)
-            B_hat = _scipy_linalg.cho_solve(L_S, B.T, check_finite=False)
-            noise_cov_correction_diag = np.sum(B * B_hat.T, axis=1)
-            SigmaInv_diag = _scipy_linalg.cho_solve(
-                L_sigma, np.eye(n_noise), check_finite=False
-            ).diagonal()
-            noise_cov_diag = SigmaInv_diag + noise_cov_correction_diag
-            np.fill_diagonal(cov_all[n_tcols:, n_tcols:], noise_cov_diag)
-        except _scipy_linalg.LinAlgError:
-            pass
+        np.fill_diagonal(
+            cov_all[n_tcols:, n_tcols:],
+            np.diag(cov_full[n_tcols:, n_tcols:])
+        )
 
-    return delta_params, cov, delta_params_all, cov_all, noise_coeffs
+    return delta_params, cov, delta_all, cov_all, noise_coeffs
 
 
 def _compute_FtNiF_sparse(F_noise, Ni, blocks):
@@ -919,6 +783,95 @@ def _build_jump_masks(
             masks[jp] = np.ones(n_toas, dtype=bool)
 
     return masks
+
+
+def _drop_degenerate_jumps(
+    jump_params_list: List[str],
+    jump_masks: Dict[str, np.ndarray],
+    weights: np.ndarray,
+    verbose: bool = False,
+) -> Tuple[List[str], List[str]]:
+    """Detect and remove linearly dependent jump columns.
+
+    When jump masks collectively cover all TOAs or have other linear
+    dependencies (e.g. overlapping mask unions), the design matrix becomes
+    rank-deficient.  This mirrors Tempo2's behaviour of designating a
+    reference jump group.  We use QR decomposition with column pivoting on
+    the weighted mask matrix — augmented with a leading constant column —
+    to identify the minimum set of jump columns to drop.
+
+    The constant column represents the implicit phase offset absorbed by
+    the WLS mean subtraction (or the explicit offset column in GLS).  If
+    every TOA is covered by at least one jump, the jump columns span the
+    constant vector, creating a degeneracy that must be broken by
+    designating one jump group as the reference (i.e. dropping it).
+
+    Parameters
+    ----------
+    jump_params_list : list of str
+        JUMP parameter names (non-empty masks only).
+    jump_masks : dict
+        Mapping from JUMP name to boolean mask array.
+    weights : ndarray
+        Per-TOA weights (1/sigma^2).
+    verbose : bool
+
+    Returns
+    -------
+    keep : list of str
+        JUMP parameters to retain (linearly independent).
+    drop : list of str
+        JUMP parameters removed as degenerate.
+    """
+    if len(jump_params_list) <= 1:
+        return jump_params_list, []
+
+    n_toa = len(weights)
+    n_jumps = len(jump_params_list)
+    sqrt_w = np.sqrt(weights)
+
+    # Build weighted matrix with a leading constant column (offset).
+    # This detects both inter-jump dependencies AND the case where
+    # jump masks collectively span the constant vector.
+    M_aug = np.zeros((n_toa, 1 + n_jumps))
+    M_aug[:, 0] = sqrt_w  # constant offset column
+    for j, jp in enumerate(jump_params_list):
+        mask = jump_masks.get(jp)
+        if mask is not None:
+            M_aug[:, j + 1] = mask.astype(np.float64) * sqrt_w
+
+    # QR with column pivoting to detect rank deficiency
+    _Q, R, piv = _scipy_linalg.qr(M_aug, pivoting=True)
+
+    diag_R = np.abs(np.diag(R))
+    max_diag = diag_R[0] if len(diag_R) > 0 else 1.0
+    tol = max_diag * max(n_toa, 1 + n_jumps) * np.finfo(float).eps
+    rank = int(np.sum(diag_R > tol))
+
+    if rank == 1 + n_jumps:
+        return jump_params_list, []
+
+    # Columns beyond rank are degenerate; map back to jump names
+    # (column 0 = offset, columns 1..n_jumps = jump params)
+    drop_jump_indices = []
+    for col in piv[rank:]:
+        if col == 0:
+            continue  # offset column — never drop
+        drop_jump_indices.append(col - 1)
+
+    if not drop_jump_indices:
+        return jump_params_list, []
+
+    drop_set = set(drop_jump_indices)
+    keep = [jump_params_list[i] for i in range(n_jumps) if i not in drop_set]
+    drop = [jump_params_list[i] for i in sorted(drop_jump_indices)]
+
+    if verbose:
+        n_total = 1 + n_jumps
+        print(f"  Dropped {len(drop)} degenerate JUMPs "
+              f"(rank {rank}/{n_total}, incl. offset): {drop}")
+
+    return keep, drop
 
 
 def _build_setup_common(
@@ -1284,6 +1237,20 @@ def _build_setup_common(
             jump_params_list = [p for p in jump_params_list if p not in remove_set]
             if verbose:
                 print(f"  Skipped {len(empty_jumps)} JUMPs with no matching TOAs: {empty_jumps}")
+
+    # Drop linearly dependent JUMPs (rank-deficient mask matrix)
+    if jump_masks and len(jump_params_list) > 1:
+        keep_jumps, drop_jumps = _drop_degenerate_jumps(
+            jump_params_list, jump_masks, weights, verbose=verbose
+        )
+        if drop_jumps:
+            remove_set = set(drop_jumps)
+            keep_indices = [i for i, p in enumerate(fit_params) if p not in remove_set]
+            fit_params = [fit_params[i] for i in keep_indices]
+            param_values_start = [param_values_start[i] for i in keep_indices]
+            for jp in drop_jumps:
+                jump_masks.pop(jp, None)
+            jump_params_list = keep_jumps
 
     # --- FDJUMP masks ------------------------------------------------------
     fdjump_params_list = [p for p in fit_params if p.startswith('FDJUMP')]
@@ -1910,8 +1877,18 @@ def _run_general_fit_iterations(
         print(f"\n{'Iter':<6} {'RMS (mus)':<12} {'DeltaParam':<15} {'lambda_':<8} {'Status':<20}")
         print("-" * 75)
     
+    # Two-phase fitting for GLS (Tempo2-style):
+    # Phase 1: WLS iterations to converge timing parameters (raw RMS damping)
+    # Phase 2: Single GLS iteration with noise basis for noise-adjusted params
+    # This prevents the noise model from destabilizing nonlinear iteration.
+    _gls_phase = False  # Start in WLS phase when noise basis exists
+    
     # ITERATION LOOP (Tempo2-style: full step + re-baseline)
     for iteration in range(max_iter):
+        # Two-phase GLS: use WLS (no noise basis) until timing params converge,
+        # then switch to GLS for a single noise-aware refinement step.
+        n_augmented_iter = n_augmented if _gls_phase else 0
+
         # Update params dict with current values
         for i, param in enumerate(fit_params):
             _update_param(params, param, param_values_curr[i])
@@ -2056,14 +2033,17 @@ def _run_general_fit_iterations(
                 )
             sw_derivs = compute_sw_derivatives(setup.sw_geometry_pc, freq_mhz, sw_params_list)
 
-        # JUMP parameters: derivative is the mask (1 where JUMP applies, 0 elsewhere)
-        # Convention: JUG subtracts JUMP from dt_sec, so M_JUMP = -d(r)/d(JUMP) = +1
+        # JUMP parameters: derivative is the NEGATIVE mask.
+        # JUMPs add phase: phase += F0 * JUMP_val, so d(residual)/d(JUMP) = +1.
+        # All other params use M = -d(residual)/d(param) = d(delay)/d(param),
+        # so the jump column must also be negated: M_jump = -1 on masked TOAs.
+        # This matches Tempo2's t2FitFunc_jump which returns -jumpScale.
         jump_derivs = {}
         if jump_params_list and jump_masks:
             for jp in jump_params_list:
                 mask = jump_masks.get(jp)
                 if mask is not None:
-                    jump_derivs[jp] = mask.astype(np.float64)
+                    jump_derivs[jp] = -mask.astype(np.float64)
 
         # FDJUMP parameters: frequency-dependent jumps
         fdjump_derivs = {}
@@ -2098,8 +2078,8 @@ def _run_general_fit_iterations(
         
         # Column counts already precomputed outside loop
         n_timing_params = len(M_columns)
-        has_offset = n_augmented > 0
-        total_cols = (1 if has_offset else 0) + n_timing_params + n_augmented
+        has_offset = n_augmented_iter > 0
+        total_cols = (1 if has_offset else 0) + n_timing_params + n_augmented_iter
 
         # Build design matrix: timing columns + precomputed noise basis
         n_timing_cols = (1 if has_offset else 0) + n_timing_params
@@ -2111,7 +2091,7 @@ def _run_general_fit_iterations(
         for i, mc in enumerate(M_columns):
             M[:, col + i] = np.asarray(mc, dtype=np.float64)
         col += n_timing_params
-        if n_augmented > 0:
+        if n_augmented_iter > 0:
             M[:, col:] = _gls_F_noise
 
         # Mean subtraction for WLS (non-augmented) path
@@ -2125,7 +2105,7 @@ def _run_general_fit_iterations(
         # When augmented (GLS), skip pre-whitening -- the ECORR basis columns
         # in the augmented system already account for ECORR correlations.
         ecorr_w = getattr(setup, 'ecorr_whitener', None)
-        if ecorr_w is not None and n_augmented == 0:
+        if ecorr_w is not None and n_augmented_iter == 0:
             ecorr_w.prepare(errors_sec)
             r_solve = ecorr_w.whiten_residuals(residuals)
             M_solve = ecorr_w.whiten_matrix(M)
@@ -2138,16 +2118,19 @@ def _run_general_fit_iterations(
         _iter_noise_coeffs = None  # noise Fourier/DMX coefficients this iteration
         _wls_delta_all = None  # full delta including offset for WLS linearized RMS
 
-        if n_augmented > 0:
-            # GLS path: Woodbury solver with precomputed products
+        if n_augmented_iter > 0:
+            # GLS path: augmented SVD solver (Tempo2-style)
+            # Solves for timing + noise simultaneously; the SVD naturally
+            # regularises degenerate timing-noise directions.
             M_t = M_solve[:, :n_timing_cols]
             F_n = M_solve[:, n_timing_cols:]
-            is_final = (iteration == max_iter - 1)
+            is_final = _gls_phase or (iteration == max_iter - 1)
             delta_params, cov, delta_params_all, cov_all, _iter_noise_coeffs = \
-                _solve_gls_woodbury(M_t, F_n, r_solve, sigma_solve,
-                                    _gls_phiinv_raw, has_offset, n_timing_params,
-                                    precomputed=_woodbury_precomputed,
-                                    compute_noise_cov=is_final)
+                _solve_gls_augmented_svd(M_t, F_n, r_solve, sigma_solve,
+                                         _gls_phiinv_raw, has_offset,
+                                         n_timing_params,
+                                         precomputed=_woodbury_precomputed,
+                                         compute_noise_cov=is_final)
         elif solver_mode == "fast":
             # WLS FAST solver: QR-based lstsq with proper conditioning
             r1 = r_solve / sigma_solve
@@ -2208,49 +2191,69 @@ def _run_general_fit_iterations(
             converged = True
             break
 
-        if n_augmented > 0:
-            # GLS path: damping with noise-subtracted RMS comparison
+        if n_augmented_iter > 0:
+            # GLS phase: apply timing corrections from augmented SVD.
+            # The augmented SVD jointly fits timing params + noise coefficients,
+            # giving the MAP estimate of both. We use these SVD noise coefficients
+            # directly (Tempo2-style) — never recompute via Wiener filter on
+            # nonlinear residuals, which would absorb nonlinear mismatch as noise.
             lambda_ = 1.0
-            for damping_iter in range(8):
-                trial_param_values = [
-                    param_values_curr[i] + lambda_ * delta_params[i]
-                    for i in range(len(fit_params))
-                ]
-                for i, p in enumerate(fit_params):
-                    _update_param(params, p, trial_param_values[i])
-                nl_resid_sec, trial_nl_chi2, trial_nl_rms, _ = _compute_full_model_residuals(params, setup)
+            step_accepted = True
 
-                # Compute noise-subtracted RMS for this trial
-                # Re-solve noise coefficients via Wiener filter for trial residuals
-                trial_noise_signal = np.zeros_like(nl_resid_sec)
-                if _iter_noise_coeffs is not None:
-                    trial_noise_signal = _gls_F_noise @ (lambda_ * _iter_noise_coeffs)
-                trial_clean = nl_resid_sec - _accumulated_noise_sec - trial_noise_signal
-                trial_ns_rms = np.sqrt(np.mean(trial_clean**2)) * 1e6
+            # Compute noise-subtracted RMS at current (WLS) point for baseline
+            _wls_ns_rms = None
+            if _woodbury_precomputed is not None:
+                _L_sigma = _woodbury_precomputed['L_sigma']
+                _Ni_pre = _woodbury_precomputed['Ni']
+            else:
+                _Ni_pre = 1.0 / (sigma_solve ** 2)
+                _Sigma_tmp = F_n.T @ (F_n * _Ni_pre[:, None])
+                _Sigma_tmp[np.diag_indices(F_n.shape[1])] += _gls_phiinv_raw
+                _L_sigma = _scipy_linalg.cho_factor(_Sigma_tmp, lower=True, check_finite=False)
+            _a_wls = _scipy_linalg.cho_solve(
+                _L_sigma, F_n.T @ (r_solve * _Ni_pre), check_finite=False)
+            _wls_ns_rms = np.sqrt(np.mean((r_solve - F_n @ _a_wls) ** 2)) * 1e6
 
-                # Compare noise-subtracted RMS (initialise reference on first iteration)
-                if _best_ns_rms is None or (iteration == 1 and damping_iter == 0):
-                    _best_ns_rms = trial_ns_rms + 1.0  # ensure first step accepted
+            # Apply full timing corrections
+            trial_param_values = [
+                param_values_curr[i] + delta_params[i]
+                for i in range(len(fit_params))
+            ]
+            for i, p in enumerate(fit_params):
+                _update_param(params, p, trial_param_values[i])
+            nl_r_gls, trial_nl_chi2, trial_nl_rms, _ = _compute_full_model_residuals(params, setup)
 
-                if trial_ns_rms < _best_ns_rms * (1.0 + 1e-6):
-                    step_accepted = True
-                    _best_ns_rms = min(_best_ns_rms, trial_ns_rms)
-                    param_values_curr = trial_param_values
-                    best_param_values = trial_param_values.copy()
-                    best_nonlinear_rms = trial_nl_rms
-                    current_rms_us = trial_nl_rms
-                    current_chi2 = trial_nl_chi2
-                    best_chi2 = trial_nl_chi2
+            # Use SVD jointly-fit noise coefficients directly (Tempo2-style).
+            # These are the MAP estimate from the joint timing+noise solve,
+            # equivalent to Wiener filter on LINEARIZED residuals (r - M*dp).
+            # Do NOT recompute from nonlinear residuals — the ~4 µs NL residuals
+            # contain timing-model nonlinear structure that would be absorbed as noise.
+            _gls_noise = _iter_noise_coeffs
+            _gls_ns_rms = np.sqrt(np.mean((nl_r_gls - F_n @ _gls_noise) ** 2)) * 1e6
 
-                    _saved_residuals_sec = residuals.copy()
-                    _saved_M = M.copy()
-                    _saved_delta_all = (lambda_ * delta_params_all).copy()
-                    _saved_cov_all = cov_all
-                    if _iter_noise_coeffs is not None:
-                        best_noise_coeffs = _iter_noise_coeffs.copy()
-                    _saved_lambda = lambda_
-                    break
-                lambda_ *= 0.5
+            if verbose:
+                print(f"         GLS: NS-RMS {_wls_ns_rms:.4f} -> {_gls_ns_rms:.4f} us"
+                      f" (NL-RMS {trial_nl_rms:.4f} us)")
+
+            # Accept GLS corrections: update params and save state
+            param_values_curr = trial_param_values
+            best_param_values = trial_param_values.copy()
+            current_rms_us = trial_nl_rms
+            current_chi2 = trial_nl_chi2
+            best_nonlinear_rms = trial_nl_rms
+            best_chi2 = trial_nl_chi2
+
+            _saved_residuals_sec = residuals.copy()
+            _saved_M = M.copy()
+            # Build full delta_all matching M's column layout (timing + noise)
+            _saved_delta_all = np.zeros(M.shape[1])
+            _saved_delta_all[:n_timing_cols] = delta_params_all[:n_timing_cols]
+            if _iter_noise_coeffs is not None:
+                _saved_delta_all[n_timing_cols:] = _gls_noise
+            _saved_cov_all = cov_all
+            _saved_lambda = lambda_
+            if _iter_noise_coeffs is not None:
+                best_noise_coeffs = _gls_noise.copy()  # SVD jointly-fit coefficients
         else:
             # WLS path: damping loop — try full step, halve if nonlinear model worsens.
             lambda_ = 1.0
@@ -2351,7 +2354,7 @@ def _run_general_fit_iterations(
             # Tempo2 applies TNsubtractPoly once after convergence, not every
             # iteration.  We track noise each iteration but only decompose
             # the polynomial at the end (see post-convergence block below).
-            if n_augmented > 0 and _iter_noise_coeffs is not None:
+            if n_augmented_iter > 0 and _iter_noise_coeffs is not None:
                 # Split noise coefficients into red and DM components
                 damped_coeffs = lambda_ * _iter_noise_coeffs
                 coeff_offset = 0
@@ -2394,15 +2397,31 @@ def _run_general_fit_iterations(
         
         converged = iteration >= min_iterations and (param_converged or rms_converged)
 
+        # Two-phase: when WLS converges and noise basis exists, switch to GLS
+        # for one final noise-aware refinement iteration.
+        _wls_to_gls_switch = False
+        if converged and n_augmented > 0 and not _gls_phase:
+            _gls_phase = True
+            _wls_to_gls_switch = True
+            converged = False  # Continue for GLS iteration
+        elif _gls_phase and n_augmented_iter > 0:
+            # GLS step was just executed — always converge after it
+            converged = True
+
         if verbose:
             status = ""
-            if converged:
+            if _wls_to_gls_switch:
+                status = "→ WLS done, GLS next"
+            elif converged and _gls_phase:
+                status = "[x] GLS converged"
+            elif converged:
                 if param_converged:
                     status = "[x] Params converged"
                 elif rms_converged:
                     status = "[x] RMS stable"
             max_delta = np.max(np.abs(delta_params))
-            print(f"{iteration+1:<6} {current_rms_us:>11.6f}  {max_delta:>13.6e}  1.0      {status:<20}")
+            phase_label = "GLS" if n_augmented_iter > 0 else ""
+            print(f"{iteration+1:<6} {current_rms_us:>11.6f}  {max_delta:>13.6e}  {_saved_lambda:<8.4f} {status:<20} {phase_label}")
 
         if converged:
             break
@@ -2581,18 +2600,31 @@ def _run_general_fit_iterations(
 
         if noise_bases:
             F_all = np.hstack(noise_bases)
-            # Solve: c = (Phi^{-1} + F^T N^{-1} F)^{-1} F^T N^{-1} r
             Ninv = 1.0 / errors_sec**2
             FtNi = F_all.T * Ninv[np.newaxis, :]
             FtNiF = FtNi @ F_all
             FtNiF[np.diag_indices_from(FtNiF)] += _gls_phiinv_raw
-            try:
-                L = _scipy_linalg.cho_factor(FtNiF)
-                optimal_noise_coeffs = _scipy_linalg.cho_solve(L, FtNi @ nl_resid_sec)
-                C_post = _scipy_linalg.cho_solve(L, np.eye(FtNiF.shape[0]))
-            except Exception:
-                optimal_noise_coeffs = best_noise_coeffs if best_noise_coeffs is not None else np.zeros(n_augmented)
-                C_post = None
+
+            if best_noise_coeffs is not None:
+                # GLS path: use SVD jointly-fit noise coefficients directly.
+                # These are the MAP estimate from the joint timing+noise solve.
+                # Recomputing via Wiener on nonlinear residuals would absorb
+                # nonlinear timing-model mismatch as spurious oscillatory noise.
+                optimal_noise_coeffs = best_noise_coeffs
+                try:
+                    L = _scipy_linalg.cho_factor(FtNiF)
+                    C_post = _scipy_linalg.cho_solve(L, np.eye(FtNiF.shape[0]))
+                except Exception:
+                    C_post = None
+            else:
+                # WLS path: Wiener filter on residuals (standard approach)
+                try:
+                    L = _scipy_linalg.cho_factor(FtNiF)
+                    optimal_noise_coeffs = _scipy_linalg.cho_solve(L, FtNi @ nl_resid_sec)
+                    C_post = _scipy_linalg.cho_solve(L, np.eye(FtNiF.shape[0]))
+                except Exception:
+                    optimal_noise_coeffs = np.zeros(n_augmented)
+                    C_post = None
 
             # Build noise realizations from re-solved coefficients
             offset = 0
@@ -2633,32 +2665,35 @@ def _run_general_fit_iterations(
     final_wrms_us = np.sqrt(np.sum((residuals_final_sec * 1e6)**2 * weights) / sum_weights)
 
     # Always compute full nonlinear RMS for accurate reporting.
-    # The linearized residuals are kept for display but final_rms should
-    # reflect the actual timing model accuracy.
     nl_residuals_sec, nl_chi2, nl_rms_us, nl_wrms_us = _compute_full_model_residuals(params, setup)
-    final_rms_us = nl_rms_us
 
-    # For GLS fits, compute chi2 from noise-subtracted nonlinear residuals.
-    # The raw nonlinear chi2 ignores the correlated noise model, giving
-    # artificially high chi2/dof. Tempo2 reports chi2 after subtracting
-    # the noise realization (red noise + DM noise Fourier components).
+    # For GLS fits, the linearized postfit residuals (r_wls - M_timing @ dp)
+    # are consistent with the SVD noise coefficients by construction:
+    #   SVD: r_wls ≈ M_timing @ dp + F @ a
+    #   => postfit = r_wls - M_timing @ dp ≈ F @ a = noise
+    #   => postfit - noise ≈ measurement noise (small)
+    # Using nonlinear residuals instead would break this consistency because
+    # the NL residuals differ from the linearized ones by ~3-4 µs of
+    # nonlinear timing model response. Keep the linearized postfit and
+    # compute chi2 from noise-subtracted linearized residuals.
+    # Report the noise-subtracted RMS as final_rms (matches what user sees
+    # after subtracting noise in the GUI).
     if n_augmented > 0 and noise_realizations:
-        nl_residuals_us = nl_residuals_sec * 1e6
-        noise_total_us = np.zeros(len(nl_residuals_us))
+        noise_total_us = np.zeros(len(residuals_final_us))
         for key, vals in noise_realizations.items():
             if not key.endswith('_err') and len(vals) == len(noise_total_us):
                 noise_total_us += vals
-        whitened_us = nl_residuals_us - noise_total_us
+        whitened_us = residuals_final_us - noise_total_us
         whitened_sec = whitened_us * 1e-6
         if ecorr_w is not None:
             ecorr_w.prepare(errors_sec)
             final_chi2 = ecorr_w.chi2(whitened_sec)
         else:
             final_chi2 = np.sum((whitened_sec / errors_sec) ** 2)
-        # Return raw (non-noise-subtracted) nonlinear residuals.
-        # Users can subtract noise_realizations themselves if desired.
-        residuals_final_us = nl_residuals_us
+        # Report noise-subtracted RMS as the "final_rms" for GLS fits
+        final_rms_us = np.sqrt(np.sum(whitened_sec**2 * weights) / sum_weights) * 1e6
     else:
+        final_rms_us = nl_rms_us
         final_chi2 = nl_chi2
 
     return {

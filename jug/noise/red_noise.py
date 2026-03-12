@@ -55,8 +55,10 @@ from jug.utils.constants import SECS_PER_DAY, SECS_PER_YEAR as _SECS_PER_YEAR
 _F_YR = 1.0 / _SECS_PER_YEAR      # 1/yr in Hz
 
 # Tempo2 TNDMAmp → enterprise convention offset.
-# Accounts for 12π² PSD difference and basis difference (K_DM·ν² vs (1400/ν)²).
-_DM_CONST = 2.41e-4  # Tempo2 DM constant (1/K_DM_SEC)
+# Tempo2 DM noise uses basis 1/(DMKappa × freq_Hz²) where DMKappa = 2.41e-16.
+# Enterprise/JUG uses (1400/freq_MHz)² basis and A²/(12π²) PSD normalisation.
+# The conversion factor: 1400² × DMKappa × 1e12 / √(12π²) = 43.4 → offset ≈ 1.638.
+_DM_CONST = 2.41e-4  # DMKappa × 1e12 (Tempo2 basis normalisation in MHz units)
 TNDM_OFFSET = math.log10(1400.0**2 * _DM_CONST / math.sqrt(12.0 * math.pi**2))
 # TNDM_OFFSET ≈ 1.6375
 
@@ -294,7 +296,8 @@ class DMNoiseProcess:
 
     Internally uses the enterprise convention (same as red/chromatic
     noise).  When read from a par file with ``TNDMAmp``, the amplitude
-    is converted from the Tempo2/TempoNest DM convention.
+    is converted from the Tempo2/TempoNest DM convention using
+    ``TNDM_OFFSET`` (see :func:`parse_dm_noise_params`).
 
     Attributes
     ----------
@@ -624,7 +627,6 @@ def parse_red_noise_params(params: dict) -> Optional[RedNoiseProcess]:
     # NOTE: Conversion is NOT trivial -- RNAMP has units yr^(3/2) mus
     # See Tempo2 readParfile.C line 1826 for reference
     if "RNAMP" in params and "RNIDX" in params:
-        import math
         rnamp_str = str(params["RNAMP"]).replace("D", "e").replace("d", "e")
         rnamp = float(rnamp_str)
         # Tempo2 convention: convert from Tempo amplitude to TempoNest log10_A
@@ -646,17 +648,14 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
     or ``DM_log10_A`` / ``DM_gamma`` conventions.
     Handles both mixed-case and uppercase keys (par reader uppercases).
 
-    TNDMAmp uses the Tempo2/TempoNest convention where:
-
-    * The PSD omits the ``1/(12π²)`` factor present in red/chromatic noise.
-    * The DM basis function is ``1/(DM_CONST × ν²)`` rather than
-      ``(1400/ν)²``.
-
-    Internally, DMNoiseProcess uses the enterprise convention (same as
-    red/chromatic noise): ``P(f) = A²/(12π²) f_yr^{γ−3} f^{−γ}`` with
-    a ``(1400/ν)²`` basis.  The conversion absorbs both differences::
-
-        log10_A_ent = TNDMAmp − log10(1400² × DM_CONST / √(12π²))
+    ``TNDMAmp`` is in the Tempo2/TempoNest convention where the DM noise
+    basis uses ``1/(DMKappa × freq_Hz²)`` (DMKappa = 2.41×10⁻¹⁶).
+    JUG uses the enterprise convention with ``(1400/freq_MHz)²`` basis.
+    The conversion ``log10_A = TNDMAmp − TNDM_OFFSET`` accounts for:
+      1. The 12π² PSD normalisation difference.
+      2. The basis scaling difference: Tempo2's ``1/(DMKappa × ν²)``
+         vs enterprise's ``(1400/ν_MHz)²``.
+    The offset ≈ 1.638 is derived as ``log10(1400² × DMKappa_scaled / √(12π²))``.
 
     ``DM_log10_A`` is assumed to already be in the enterprise convention.
     """

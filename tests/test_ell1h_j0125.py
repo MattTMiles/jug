@@ -362,10 +362,19 @@ class TestZeroIterationParity:
 
         params = session.params
         errors_us = result_raw['errors_us']
-        weights = 1.0 / (errors_us * 1e-6) ** 2
+        # Use the same weight units as compute_residuals_simple internally (1/us^2)
+        # to ensure float64 precision of the weighted-mean subtraction matches.
+        # Using 1/s^2 (i.e. 1/(us*1e-6)^2) differs by 1e12x and introduces
+        # ~0.004 ns precision loss in the weighted mean cancellation.
+        weights = 1.0 / errors_us ** 2
+
+        # Must pass the same tzr_phase that path A uses; without it the pulse-number
+        # wrapping (np.round before subtraction) can differ by 1 for TOAs near ±0.5
+        # phase, producing a systematic ~1/F0 ≈ 3.7 ms offset on those TOAs.
+        tzr_phase = result_raw.get('tzr_phase')
 
         resid_us_b, _, _ = compute_phase_residuals(
-            dt_sec_ld, params, weights, subtract_mean=True
+            dt_sec_ld, params, weights, subtract_mean=True, tzr_phase=tzr_phase
         )
 
         return result_eval['residuals_us'], resid_us_b

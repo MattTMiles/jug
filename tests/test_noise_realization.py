@@ -232,3 +232,84 @@ class TestParKeyMapping:
         assert params == {}
         write_noise_params('RedNoise', {'nonexistent': '42'}, params)
         assert params == {}
+
+
+# ---------------------------------------------------------------------------
+# TNECORR parsing convention tests
+# ---------------------------------------------------------------------------
+
+class TestTNECORRParsing:
+    """Verify that TNECORR is parsed correctly for both known conventions.
+
+    Two conventions exist in real par files:
+      - TempoNest (e.g. MPTA/DR3):  value is log10(seconds), typically negative.
+        Example: TNECORR -f KAT_MKBF -6.3264  → ecorr = 10^(-6.3264) s = 0.472 µs
+      - Tempo2 (e.g. PPTA DR2):     value is directly in microseconds, always positive.
+        Example: TNECORR -group CASPSR_40CM 0.1274  → ecorr = 0.1274 µs
+
+    JUG distinguishes the two by sign: negative → log10(s), positive → direct µs.
+    """
+
+    def _parse(self, line):
+        """Parse a single TNECORR par-file line via JUG's white noise parser."""
+        from jug.noise.white import parse_noise_lines
+        entries = parse_noise_lines(line.splitlines())
+        ecorr_entries = [e for e in entries if e.kind == 'ECORR']
+        return ecorr_entries
+
+    def test_temponest_negative_log10s(self):
+        """Negative TNECORR value (TempoNest log10(s)) is converted to µs correctly."""
+        entries = self._parse("TNECORR -f KAT_MKBF -6.3264270978060475")
+        assert len(entries) == 1
+        e = entries[0]
+        assert e.flag_name == "f"
+        assert e.flag_value == "KAT_MKBF"
+        expected_us = 10 ** (-6.3264270978060475) * 1e6  # ≈ 0.4716 µs
+        assert abs(e.value - expected_us) < 1e-9, (
+            f"Expected {expected_us:.6f} µs, got {e.value:.6f} µs"
+        )
+
+    def test_tempo2_positive_direct_us(self):
+        """Positive TNECORR value (Tempo2 direct µs) is passed through unchanged."""
+        entries = self._parse("TNECORR -group CASPSR_40CM 0.127374157869")
+        assert len(entries) == 1
+        e = entries[0]
+        assert e.flag_name == "group"
+        assert e.flag_value == "CASPSR_40CM"
+        assert abs(e.value - 0.127374157869) < 1e-12, (
+            f"Expected 0.127374 µs, got {e.value:.9f} µs"
+        )
+
+    def test_tempo2_small_positive_direct_us(self):
+        """Small positive TNECORR (Tempo2 direct µs) is not misidentified as log10."""
+        entries = self._parse("TNECORR -group PDFB1_1433 0.0137717366787")
+        assert len(entries) == 1
+        assert abs(entries[0].value - 0.0137717366787) < 1e-12
+
+    def test_temponest_ecorr_physical_magnitude(self):
+        """TempoNest TNECORR=-6.33 gives a physically plausible ECORR in µs."""
+        entries = self._parse("TNECORR -f KAT_MKBF -6.33")
+        assert len(entries) == 1
+        ecorr_us = entries[0].value
+        # Should be ~0.47 µs — reasonable for a millisecond pulsar
+        assert 0.01 < ecorr_us < 10.0, (
+            f"ECORR = {ecorr_us:.4f} µs is outside the plausible 0.01–10 µs range"
+        )
+
+    def test_multiple_tnecorr_lines(self):
+        """Multiple TNECORR lines in a par file are all parsed."""
+        par_text = "\n".join([
+            "TNECORR -f KAT_MKBF -6.3264270978060475",
+            "TNECORR -group CASPSR_40CM 0.127374157869",
+            "TNECORR -group CPSR2_20CM 0.207124324536",
+        ])
+        from jug.noise.white import parse_noise_lines
+        entries = [e for e in parse_noise_lines(par_text.splitlines()) if e.kind == 'ECORR']
+        assert len(entries) == 3
+        # First is TempoNest log10(s)
+        assert entries[0].flag_value == "KAT_MKBF"
+        assert abs(entries[0].value - 10**(-6.3264270978060475) * 1e6) < 1e-9
+        # Second and third are Tempo2 direct µs
+        assert abs(entries[1].value - 0.127374157869) < 1e-12
+        assert abs(entries[2].value - 0.207124324536) < 1e-12
+

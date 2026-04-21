@@ -270,14 +270,22 @@ def parse_mjd_string(mjd_str: str) -> tuple[int, float]:
 
 def compute_tdb_standalone_vectorized(
     mjd_ints, mjd_fracs,
-    mk_clock, gps_clock, bipm_clock,
+    obs_chain, bipm_clock,
     location: EarthLocation,
-    time_offsets: np.ndarray | None = None
+    time_offsets: np.ndarray | None = None,
+    # Legacy keyword arguments kept for backward compatibility; ignored.
+    gps_clock=None, mk_clock=None, skip_gps_correction=None,
 ) -> np.ndarray:
-    """Compute TDB from UTC MJDs using standalone clock chain (VECTORIZED).
+    """Compute TDB from UTC MJDs using a pre-merged observatory clock chain.
 
     This is ~10x faster than per-TOA version by vectorizing clock
     corrections and creating Time objects in batches.
+
+    The clock chain has already been resolved by :class:`ClockGraph` in
+    ``simple_calculator.py``: *obs_chain* is the merged ``UTC(obs) → UTC``
+    correction (sum of all hops along the Dijkstra path).  This mirrors
+    Tempo2's design exactly — the graph finds the shortest path and the
+    corrections are summed before this function is called.
 
     Parameters
     ----------
@@ -285,12 +293,15 @@ def compute_tdb_standalone_vectorized(
         Integer parts of UTC MJDs
     mjd_fracs : array-like
         Fractional parts of UTC MJDs
-    mk_clock : dict
-        MeerKAT (or observatory) clock correction data {'mjd': array, 'offset': array}
-    gps_clock : dict
-        GPS clock correction data {'mjd': array, 'offset': array}
+    obs_chain : dict
+        Merged observatory-to-UTC clock chain ``{'mjd': array, 'offset': array}``.
+        This is the sum of all clock corrections from ``UTC(obs)`` to ``UTC``
+        as determined by the graph-based chain finder.
     bipm_clock : dict
-        BIPM clock correction data (TAI->TT) {'mjd': array, 'offset': array}
+        BIPM clock data (``TAI → TT``): ``{'mjd': array, 'offset': array}``.
+        The 32.184 s TAI–TT offset is subtracted from the interpolated value
+        (convention: file stores offsets relative to TAI including the 32.184 s
+        constant, so we remove it since astropy handles TAI→TT internally).
     location : EarthLocation
         Observatory location for TDB conversion
     time_offsets : np.ndarray or None, optional
@@ -304,10 +315,13 @@ def compute_tdb_standalone_vectorized(
 
     Notes
     -----
-    Clock correction chain:
-        Observatory -> UTC -> GPS/TAI -> TT -> TDB
+    Clock correction chain::
 
-    The BIPM correction includes the TAI->TT offset (32.184 seconds).
+        UTC(obs) --[obs_chain]--> UTC --[ERFA/astropy]--> TT(BIPM) ---> TDB
+
+    The BIPM correction (``bipm_clock``) accounts for the difference between
+    TT(TAI) (i.e. TAI + 32.184 s) and TT(BIPMyear).  Astropy converts
+    UTC → TAI → TT(TAI) internally; we add the BIPM correction on top.
 
     Examples
     --------
@@ -316,23 +330,20 @@ def compute_tdb_standalone_vectorized(
     >>> tdb_mjds = compute_tdb_standalone_vectorized(
     ...     mjd_ints=[58000, 58001],
     ...     mjd_fracs=[0.5, 0.5],
-    ...     mk_clock=mk_data,
-    ...     gps_clock=gps_data,
+    ...     obs_chain=chain_data,
     ...     bipm_clock=bipm_data,
     ...     location=location
     ... )
     """
     from jug.io.clock import interpolate_clock_vectorized
 
-    n_toas = len(mjd_ints)
     mjd_vals = np.array(mjd_ints, dtype=np.float64) + np.array(mjd_fracs, dtype=np.float64)
 
-    # Vectorized clock corrections (10x faster using searchsorted)
-    mk_corrs = interpolate_clock_vectorized(mk_clock, mjd_vals)
-    gps_corrs = interpolate_clock_vectorized(gps_clock, mjd_vals)
+    # obs_chain already encodes the full UTC(obs) → UTC path (Dijkstra-merged)
+    obs_corrs  = interpolate_clock_vectorized(obs_chain, mjd_vals)
     bipm_corrs = np.interp(mjd_vals, bipm_clock['mjd'], bipm_clock['offset']) - 32.184
 
-    total_corrs = mk_corrs + gps_corrs + bipm_corrs
+    total_corrs = obs_corrs + bipm_corrs
 
     # Add per-TOA time offsets (e.g. TIM -to flags, TEMPO TIME statements)
     if time_offsets is not None:

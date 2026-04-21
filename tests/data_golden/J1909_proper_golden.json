@@ -1,0 +1,34 @@
+{
+  "_comment": "Golden reference for J1909_proper (100 TOAs from MPTA DR3). JUG self-ref + PINT raw-error parity.",
+  "_generated": "python tests/generate_golden.py --proper",
+  "_parity": "JUG vs PINT raw-error WRMS: 0.027%. Max per-TOA diff: 28 ns. Confirmed 2026-04-20.",
+  "n_toas": 100,
+  "weighted_rms_us": 0.5631612269189411,
+  "weighted_rms_scaled_us": 0.5600410438327489,
+  "unweighted_rms_us": 0.6794328371395533,
+  "first_5_residuals_ns": [
+    -854.336,
+    -675.458,
+    -1594.485,
+    -783.287,
+    -37.797
+  ],
+  "pint_reference": {
+    "_comment": "PINT raw-error WRMS (1/err^2 weights, no EFAC/EQUAD). Use for parity tests.",
+    "raw_wrms_us": 0.563316205303037,
+    "pint_version": null,
+    "ephem": "DE440"
+  },
+  "tolerances": {
+    "_comment": "Allowed tolerances for validation",
+    "rms_rel_tol": 1e-06,
+    "residual_abs_tol_ns": 0.1,
+    "pint_parity_rel_tol": 0.001,
+    "tempo2_parity_rel_tol": 0.001
+  },
+  "tempo2_reference": {
+    "_comment": "Tempo2 raw-error WRMS: pre-fit residuals from tempo2 -nofit, weights from raw .tim errors.",
+    "raw_wrms_us": 0.563224624723551,
+    "tempo2_version": "2025.01.2"
+  }
+}

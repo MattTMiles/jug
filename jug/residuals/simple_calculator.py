@@ -8,6 +8,7 @@ session, API, and fitter modules.
 
 import math
 from pathlib import Path
+from typing import Optional
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -22,7 +23,7 @@ ensure_jax_x64()
 
 from jug.io.par_reader import parse_par_file, get_longdouble, parse_ra, parse_dec, validate_par_timescale
 from jug.io.tim_reader import parse_tim_file_mjds, compute_tdb_standalone_vectorized
-from jug.io.clock import parse_clock_file
+from jug.io.clock import parse_clock_file, ClockGraph
 from jug.delays.barycentric import (
     compute_ssb_obs_pos_vel,
     compute_pulsar_direction,
@@ -52,26 +53,204 @@ _SSD_EPHEMERIDES = {
 # Current recommended default
 _DEFAULT_EPHEMERIS = 'de440'
 
-# Observatory-to-clock-file mapping
-_OBS_CLOCK_FILES = {
-    'meerkat': 'mk2utc.clk',
-    'ao': 'ao2gps.clk', 'arecibo': 'ao2gps.clk', '3': 'ao2gps.clk',
-    'gbt': 'gbt2gps.clk', '1': 'gbt2gps.clk', 'gb': 'gbt2gps.clk',
-    'parkes': 'pks2gps.clk', 'pks': 'pks2gps.clk', 'pk': 'pks2gps.clk', '7': 'pks2gps.clk',
-    'jb': 'jb2gps.clk', 'jodrell': 'jb2gps.clk', '8': 'jb2gps.clk',
-    'ef': 'eff2gps.clk', 'eff': 'eff2gps.clk', 'effelsberg': 'eff2gps.clk', 'g': 'eff2gps.clk',
-    'effix': 'effix2gps.clk',
-    'leap': ['leap2effix.clk', 'effix2gps.clk'],
-    'nc': 'ncy2gps.clk', 'ncy': 'ncy2gps.clk', 'nancay': 'ncy2gps.clk', 'f': 'ncy2gps.clk',
-    'ncyobs': ['ncyobs2obspm.clk', 'obspm2gps.clk'],
-    'wsrt': 'wsrt2gps.clk', 'we': 'wsrt2gps.clk', 'i': 'wsrt2gps.clk',
-    'vla': 'vla2gps.clk', 'vl': 'vla2gps.clk',
-    'jbroach': ['jbroach2jb.clk', 'jb2gps.clk'],
-    'jbdfb': ['jbdfb2jb.clk', 'jb2gps.clk'],
-    'jbmk2roach': 'jb2gps.clk',
-    'gmrt': 'gmrt2gps.clk',
+# Observatory name → TEMPO2-style clock-from scale, used to seed the graph
+# search.  The graph will find the shortest path from this scale to UTC by
+# reading the # FROM TO headers of all .clk files in the clock directory.
+# This mirrors Tempo2's approach: it reads the observatory's clock_name field
+# (same as these keys) and then runs Dijkstra over all available .clk files.
+_OBS_CLOCK_SCALE = {
+    # name / alias → UTC(name) as it appears in .clk headers (case-insensitive)
+    'meerkat':   'UTC(meerkat)', 'mk': 'UTC(meerkat)',
+    'ao':        'UTC(AO)', 'arecibo': 'UTC(AO)', '3': 'UTC(AO)',
+    'gbt':       'UTC(GBT)', '1': 'UTC(GBT)', 'gb': 'UTC(GBT)',
+    'parkes':    'UTC(PKS)', 'pks': 'UTC(PKS)', 'pk': 'UTC(PKS)', '7': 'UTC(PKS)',
+    'jb':        'UTC(JB)', 'jodrell': 'UTC(JB)', '8': 'UTC(JB)',
+    'ef':        'UTC(EFF)', 'eff': 'UTC(EFF)', 'effelsberg': 'UTC(EFF)', 'g': 'UTC(EFF)',
+    'effix':     'UTC(EFFIX)',
+    'leap':      'UTC(LEAP)',
+    'nc':        'UTC(NCY)', 'ncy': 'UTC(NCY)', 'nancay': 'UTC(NCY)', 'f': 'UTC(NCY)',
+    'ncyobs':    'UTC(NCYOBS)',
+    'wsrt':      'UTC(wsrt)', 'we': 'UTC(wsrt)', 'i': 'UTC(wsrt)',
+    'vla':       'UTC(VLA)', 'vl': 'UTC(VLA)',
+    'jbroach':   'UTC(JBROACH)',
+    'jbdfb':     'UTC(JBDFB)',
+    'jbmk2roach': 'UTC(JB)',
+    'gmrt':      'UTC(GMRT)',
 }
 
+# Module-level ClockGraph cache (keyed on clock_dir str) to avoid re-scanning
+# on every call — the graph is built once per unique clock directory.
+_clock_graph_cache: dict[str, 'ClockGraph'] = {}
+
+
+def _get_clock_graph(clock_dir) -> 'ClockGraph':
+    key = str(Path(clock_dir).resolve())
+    if key not in _clock_graph_cache:
+        _clock_graph_cache[key] = ClockGraph(key)
+    return _clock_graph_cache[key]
+
+
+def _load_obs_chain(clock_dir, obs_code: str, verbose: bool = False) -> dict:
+    """Load the merged UTC(obs) → UTC clock chain for *obs_code*.
+
+    Uses the graph-based Dijkstra path finder (matching Tempo2's algorithm):
+    reads all .clk headers in *clock_dir*, builds a directed graph, and finds
+    the shortest path from UTC(obs) to UTC.  Returns a merged clock dict
+    (sum of corrections along the path).
+
+    Falls back to a zero correction if no path is found or the observatory
+    is unknown.
+    """
+    graph = _get_clock_graph(clock_dir)
+    obs_scale = _OBS_CLOCK_SCALE.get(obs_code.lower())
+    if obs_scale is None:
+        if verbose:
+            print(f"   [!] No clock scale known for '{obs_code}'; using zero correction")
+        return {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0]),
+                'chain': []}
+
+    chain = graph.correction_chain(obs_scale)
+    if chain is None:
+        if verbose:
+            print(f"   [!] No clock path found for {obs_scale} → UTC; "
+                  f"using zero correction")
+        return {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0]),
+                'chain': []}
+
+    if verbose:
+        files = chain.get('chain', [])
+        print(f"   Clock chain for {obs_code}: {' → '.join(files) if files else '(direct)'}")
+    return chain
+
+
+def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
+                            mjd_utc, verbose):
+    """Load observatory and BIPM clock corrections using a graph-based chain.
+
+    The UTC(obs) → UTC correction is computed by Dijkstra shortest-path over
+    all .clk files in *clock_dir*, exactly matching Tempo2's algorithm.  The
+    result is a single merged clock dict per observatory.  There is no separate
+    GPS correction step — the graph naturally handles whether the path goes
+    through UTC(GPS) or directly to UTC.
+
+    Returns
+    -------
+    dict with keys: obs_clock, obs_clocks, bipm_clock, bipm_version,
+        clock_ok, clock_issues.
+    """
+    clock_dir = Path(clock_dir)
+
+    # Check for CLK_CORR_CHAIN override (explicit user-supplied file list)
+    clk_corr_chain = params.get('CLK_CORR_CHAIN')
+    if clk_corr_chain:
+        # User provides an explicit ordered list of files; merge them all
+        if isinstance(clk_corr_chain, str):
+            chain_files = clk_corr_chain.split()
+        else:
+            chain_files = list(clk_corr_chain)
+
+        if verbose:
+            print(f"   CLK_CORR_CHAIN override: {' → '.join(chain_files)}")
+
+        from jug.io.clock import interpolate_clock_vectorized
+
+        # Separate obs files from BIPM (tai2tt) files; ignore utc2tai (leap
+        # seconds are handled by astropy/ERFA already).
+        obs_files = [f for f in chain_files
+                     if 'tai2tt' not in f.lower() and 'bipm' not in f.lower()
+                     and 'utc2tai' not in f.lower()]
+        bipm_files = [f for f in chain_files
+                      if ('tai2tt' in f.lower() or 'bipm' in f.lower())
+                      and 'utc2tai' not in f.lower()]
+
+        if obs_files:
+            clks = [parse_clock_file(clock_dir / f) for f in obs_files]
+            if len(clks) == 1:
+                obs_clock = clks[0]
+            else:
+                mjd_grid = np.sort(np.unique(np.concatenate([c['mjd'] for c in clks])))
+                combined = np.zeros_like(mjd_grid)
+                for c in clks:
+                    combined += interpolate_clock_vectorized(c, mjd_grid)
+                obs_clock = {'mjd': mjd_grid, 'offset': combined,
+                             'chain': obs_files}
+        else:
+            obs_clock = _load_obs_chain(clock_dir, observatory.lower(), verbose=verbose)
+
+        bipm_clock, bipm_version = _load_bipm_clock(clock_dir, params, verbose)
+
+        obs_clocks = {obs: obs_clock for obs in all_obs_codes}
+
+        # Validate coverage
+        from jug.io.clock import check_clock_files, check_iers_coverage
+        _zero = {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0])}
+        clock_ok, clock_issues = check_clock_files(
+            np.min(mjd_utc), np.max(mjd_utc),
+            obs_clock, _zero, bipm_clock,
+            verbose=verbose, clock_dir=str(clock_dir)
+        )
+        return {
+            'obs_clock': obs_clock, 'obs_clocks': obs_clocks,
+            'bipm_clock': bipm_clock, 'bipm_version': bipm_version,
+            'clock_ok': clock_ok, 'clock_issues': clock_issues,
+        }
+
+    # ---- Default path: graph-based chain discovery ----
+    obs_clock = _load_obs_chain(clock_dir, observatory.lower(), verbose=verbose)
+
+    obs_clocks = {observatory.lower(): obs_clock}
+    if len(all_obs_codes) > 1:
+        for obs_code in all_obs_codes:
+            if obs_code == observatory.lower():
+                continue
+            obs_clocks[obs_code] = _load_obs_chain(clock_dir, obs_code, verbose=verbose)
+
+    bipm_clock, bipm_version = _load_bipm_clock(clock_dir, params, verbose)
+
+    # Validate coverage
+    from jug.io.clock import check_clock_files, check_iers_coverage
+    mjd_start = np.min(mjd_utc)
+    mjd_end   = np.max(mjd_utc)
+    if verbose:
+        print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
+    _zero = {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0])}
+    clock_ok, clock_issues = check_clock_files(
+        mjd_start, mjd_end, obs_clock, _zero, bipm_clock,
+        verbose=verbose, clock_dir=str(clock_dir)
+    )
+    check_iers_coverage(mjd_start, mjd_end, verbose=verbose)
+
+    return {
+        'obs_clock': obs_clock, 'obs_clocks': obs_clocks,
+        'bipm_clock': bipm_clock, 'bipm_version': bipm_version,
+        'clock_ok': clock_ok, 'clock_issues': clock_issues,
+    }
+
+
+def _load_bipm_clock(clock_dir, params, verbose=False):
+    """Load the appropriate TAI→TT BIPM clock file.
+
+    Reads the CLK parameter from *params* (e.g. ``TT(BIPM2024)``), extracts
+    the year, and loads ``tai2tt_bipmYYYY.clk``.  Falls back to bipm2024.
+    """
+    import re
+    clock_dir = Path(clock_dir)
+    clk_param = str(params.get('CLK', '')).strip()
+    bipm_version = 'bipm2024'
+    if clk_param:
+        m = re.search(r'BIPM(\d{4})', clk_param, re.IGNORECASE)
+        if m:
+            bipm_version = f'bipm{m.group(1)}'
+    bipm_file = f"tai2tt_{bipm_version}.clk"
+    if not (clock_dir / bipm_file).exists():
+        if verbose:
+            print(f"   BIPM clock file {bipm_file} not found, falling back to bipm2024")
+        bipm_file = "tai2tt_bipm2024.clk"
+        bipm_version = 'bipm2024'
+    bipm_clock = parse_clock_file(clock_dir / bipm_file)
+    if verbose:
+        print(f"   Loaded {bipm_version.upper()} clock file")
+    return bipm_clock, bipm_version
 
 # Parameters recognized by JUG (from PARAMETER_REGISTRY + metadata/directives)
 _KNOWN_PAR_KEYWORDS = None  # Lazily initialized
@@ -341,210 +520,6 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
 
     residuals_us = residuals_sec * 1e6
     return residuals_us, residuals_sec, pulse_number
-
-
-def _load_obs_clock(clock_dir, obs_code, verbose=False):
-    """Load observatory clock, combining multi-hop chains if needed.
-
-    When _OBS_CLOCK_FILES maps an observatory to a list of files,
-    all corrections are summed on a merged MJD grid that captures
-    step functions and fine structure from every file in the chain.
-    """
-    entry = _OBS_CLOCK_FILES.get(obs_code)
-    if entry is None:
-        if verbose:
-            print(f"   No clock file for '{obs_code}' (assuming zero correction)")
-        return {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
-
-    files = [entry] if isinstance(entry, str) else list(entry)
-
-    # Load first file
-    first_file = files[0]
-    if not (clock_dir / first_file).exists():
-        if verbose:
-            print(f"   Clock file {first_file} not found for '{obs_code}' (assuming zero)")
-        return {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0])}
-
-    if len(files) == 1:
-        clk = parse_clock_file(clock_dir / first_file)
-        if verbose:
-            print(f"   Loaded clock for {obs_code}: {first_file}")
-        return clk
-
-    # Multi-hop: load all files, merge MJD grids, sum corrections
-    from jug.io.clock import interpolate_clock_vectorized
-    clks = []
-    for f in files:
-        if (clock_dir / f).exists():
-            clks.append(parse_clock_file(clock_dir / f))
-        else:
-            if verbose:
-                print(f"   [!] Clock file {f} not found in chain for '{obs_code}'")
-            clks.append({'mjd': np.array([0.0, 100000.0]),
-                         'offset': np.array([0.0, 0.0])})
-
-    # Merge all MJD grids (preserving duplicate MJDs for step functions)
-    mjd_grid = np.sort(np.unique(np.concatenate([c['mjd'] for c in clks])))
-    combined_offset = np.zeros_like(mjd_grid)
-    for clk in clks:
-        combined_offset += interpolate_clock_vectorized(clk, mjd_grid)
-
-    if verbose:
-        print(f"   Loaded clock chain for {obs_code}: {' → '.join(files)}")
-    return {'mjd': mjd_grid, 'offset': combined_offset,
-            'path': ' + '.join(files)}
-
-
-def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
-                            mjd_utc, verbose):
-    """Load observatory, GPS, and BIPM clock files; validate coverage.
-
-    Returns
-    -------
-    dict with keys: obs_clock, obs_clocks, gps_clock, bipm_clock,
-        bipm_version, clock_ok, clock_issues.
-    """
-    clock_dir = Path(clock_dir)
-
-    # Check for CLK_CORR_CHAIN override
-    clk_corr_chain = params.get('CLK_CORR_CHAIN')
-    if clk_corr_chain:
-        # Parse clock chain file list
-        if isinstance(clk_corr_chain, str):
-            chain_files = clk_corr_chain.split()
-        else:
-            chain_files = list(clk_corr_chain)
-
-        if verbose:
-            print(f"   CLK_CORR_CHAIN: {' → '.join(chain_files)}")
-
-        # Map chain files to the three-stage structure JUG expects:
-        #   obs_clock: observatory → GPS/UTC correction
-        #   gps_clock: GPS → UTC correction
-        #   bipm_clock: TAI → TT correction (includes 32.184 s offset)
-        # The chain may include utc2tai.clk — combine it with the TAI→TT file.
-        obs_files = []
-        gps_file = None
-        bipm_files = []
-        for f in chain_files:
-            fl = f.lower()
-            if 'gps2utc' in fl or 'gpst2utc' in fl:
-                gps_file = f
-            elif 'utc2tai' in fl or 'tai2tt' in fl or 'bipm' in fl:
-                bipm_files.append(f)
-            else:
-                obs_files.append(f)
-
-        # Load obs clock (may be custom file like pks2gps.dr2e.clk)
-        if obs_files:
-            if len(obs_files) == 1:
-                obs_clock = parse_clock_file(clock_dir / obs_files[0])
-            else:
-                from jug.io.clock import interpolate_clock_vectorized
-                clks = [parse_clock_file(clock_dir / f) for f in obs_files]
-                mjd_grid = np.sort(np.unique(np.concatenate([c['mjd'] for c in clks])))
-                combined = np.zeros_like(mjd_grid)
-                for c in clks:
-                    combined += interpolate_clock_vectorized(c, mjd_grid)
-                obs_clock = {'mjd': mjd_grid, 'offset': combined}
-        else:
-            obs_clock = _load_obs_clock(clock_dir, observatory.lower(), verbose=verbose)
-
-        # GPS clock
-        if gps_file:
-            gps_clock = parse_clock_file(clock_dir / gps_file)
-        else:
-            gps_clock = parse_clock_file(clock_dir / "gps2utc.clk")
-
-        # BIPM clock: combine utc2tai + tai2tt files
-        # JUG's compute_tdb_standalone_vectorized subtracts 32.184 from BIPM
-        # so utc2tai (leap seconds) + tai2tt (32.184 + BIPM corrections) works
-        # because the code does: bipm_interp - 32.184
-        # With utc2tai+tai2tt: total = leap_seconds + 32.184 + bipm_corr - 32.184
-        #                            = leap_seconds + bipm_corr
-        # But the default (tai2tt only): total = 32.184 + bipm_corr - 32.184 = bipm_corr
-        # So adding utc2tai gives us extra leap seconds — which astropy already handles!
-        # Therefore we should NOT include utc2tai.clk in the BIPM chain.
-        bipm_only = [f for f in bipm_files if 'utc2tai' not in f.lower()]
-        if bipm_only:
-            bipm_clock = parse_clock_file(clock_dir / bipm_only[0])
-            bipm_version = bipm_only[0].replace('.clk', '').replace('tai2tt_', '')
-        else:
-            bipm_clock = parse_clock_file(clock_dir / "tai2tt_bipm2024.clk")
-            bipm_version = 'bipm2024'
-
-        obs_clocks = {observatory.lower(): obs_clock}
-        if len(all_obs_codes) > 1:
-            for obs_code in all_obs_codes:
-                if obs_code != observatory.lower():
-                    obs_clocks[obs_code] = obs_clock
-
-        if verbose:
-            print(f"   Using clock chain: obs={obs_files}, gps={gps_file}, bipm={bipm_only}")
-
-        # Validate coverage
-        from jug.io.clock import check_clock_files, check_iers_coverage
-        mjd_start = np.min(mjd_utc)
-        mjd_end = np.max(mjd_utc)
-        clock_ok, clock_issues = check_clock_files(
-            mjd_start, mjd_end, obs_clock, gps_clock, bipm_clock,
-            verbose=verbose, clock_dir=str(clock_dir)
-        )
-
-        return {
-            'obs_clock': obs_clock, 'obs_clocks': obs_clocks,
-            'gps_clock': gps_clock, 'bipm_clock': bipm_clock,
-            'bipm_version': bipm_version,
-            'clock_ok': clock_ok, 'clock_issues': clock_issues,
-        }
-
-    # Default clock loading path
-    # Primary observatory clock (may be multi-hop chain)
-    obs_clock = _load_obs_clock(clock_dir, observatory.lower(), verbose=verbose)
-
-    # Pre-load clocks for all observatories (multi-obs support)
-    obs_clocks = {observatory.lower(): obs_clock}
-    if len(all_obs_codes) > 1:
-        for obs_code in all_obs_codes:
-            if obs_code == observatory.lower():
-                continue
-            obs_clocks[obs_code] = _load_obs_clock(clock_dir, obs_code, verbose=verbose)
-
-    gps_clock = parse_clock_file(clock_dir / "gps2utc.clk")
-
-    # BIPM version from CLK parameter
-    import re
-    clk_param = str(params.get('CLK', '')).strip()
-    bipm_version = 'bipm2024'
-    if clk_param:
-        m = re.search(r'BIPM(\d{4})', clk_param, re.IGNORECASE)
-        if m:
-            bipm_version = f'bipm{m.group(1)}'
-    bipm_file = f"tai2tt_{bipm_version}.clk"
-    if not (clock_dir / bipm_file).exists():
-        if verbose: print(f"   BIPM clock file {bipm_file} not found, falling back to bipm2024")
-        bipm_file = "tai2tt_bipm2024.clk"
-        bipm_version = 'bipm2024'
-    bipm_clock = parse_clock_file(clock_dir / bipm_file)
-    if verbose: print(f"   Loaded GPS and {bipm_version.upper()} clock files")
-
-    # Validate coverage
-    from jug.io.clock import check_clock_files, check_iers_coverage
-    mjd_start = np.min(mjd_utc)
-    mjd_end = np.max(mjd_utc)
-    if verbose: print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
-    clock_ok, clock_issues = check_clock_files(
-        mjd_start, mjd_end, obs_clock, gps_clock, bipm_clock,
-        verbose=verbose, clock_dir=str(clock_dir)
-    )
-    check_iers_coverage(mjd_start, mjd_end, verbose=verbose)
-
-    return {
-        'obs_clock': obs_clock, 'obs_clocks': obs_clocks,
-        'gps_clock': gps_clock, 'bipm_clock': bipm_clock,
-        'bipm_version': bipm_version,
-        'clock_ok': clock_ok, 'clock_issues': clock_issues,
-    }
 
 
 def _extract_binary_params(params, verbose):
@@ -825,7 +800,7 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
 
 
 def _compute_tzr_phase(params, bp, dm_jax, ddk,
-                       obs_clock, gps_clock, bipm_clock,
+                       obs_clock, bipm_clock,
                        observatory, location, obs_itrf_km, obs_clocks,
                        ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day,
                        posepoch, parallax_mas, ephem,
@@ -880,9 +855,15 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         if verbose:
             label = "AUTO -> UTC" if tzrmjd_scale_upper == "AUTO" else "UTC (explicit override)"
             print(f"   TZRMJD scale: {label} (site arrival time, converting to TDB via {tzr_site} clock)")
+        # Warn if explicitly forcing UTC but par file declares UNITS=TDB
+        par_timescale = params.get('_par_timescale', 'TDB').upper()
+        if tzrmjd_scale_upper == "UTC" and par_timescale == "TDB":
+            print(f"   [!] WARNING: tzrmjd_scale='UTC' contradicts par file UNITS=TDB. "
+                  f"This will apply a ~69 s clock correction to TZRMJD. "
+                  f"Use only for legacy par files with UTC TZRMJD values.")
         TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
             [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
-            tzr_clock, gps_clock, bipm_clock, tzr_location
+            tzr_clock, bipm_clock, tzr_location,
         )[0]
         TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
         delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * SECS_PER_DAY
@@ -1062,6 +1043,7 @@ def compute_residuals_simple(
     subtract_tzr: bool = True,
     verbose: bool = True,
     tzrmjd_scale: str = "AUTO",
+    geometry_cache: Optional[dict] = None,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -1099,6 +1081,14 @@ def compute_residuals_simple(
         - "UTC": Force legacy UTC->TDB conversion via clock chain. WARNING: This
           contradicts UNITS=TDB and will produce ~69s offset. Use only for legacy
           par files that genuinely have UTC TZRMJD values.
+    geometry_cache : dict or None, optional
+        Mutable dict for caching parameter-independent geometry (TDB times,
+        SSB-observatory position, sun/planet positions).  On the first call
+        the dict is empty and will be populated.  On subsequent calls the
+        expensive clock/TDB/ephemeris steps are skipped and the cached
+        arrays are reused directly.  The caller is responsible for keeping
+        the cache consistent with the TOA set (i.e. clear it if TOAs change).
+        Pass ``None`` (default) to disable caching entirely.
 
     Returns
     -------
@@ -1170,12 +1160,28 @@ def compute_residuals_simple(
     # Load clock files
     if verbose: print(f"\n2. Loading clock corrections...")
     mjd_utc = np.array([toa.mjd_int + toa.mjd_frac for toa in toas])
-    clk = _load_clock_corrections(observatory, all_obs_codes, clock_dir, params, mjd_utc, verbose)
-    obs_clock = clk['obs_clock']
-    obs_clocks = clk['obs_clocks']
-    gps_clock = clk['gps_clock']
-    bipm_clock = clk['bipm_clock']
-    clock_issues = clk['clock_issues']
+
+    _geo_hit = geometry_cache is not None and 'tdb_mjd' in geometry_cache
+    obs_planet_pos_ls_cached = None  # populated below on cache-hit or planet-Shapiro path
+
+    if _geo_hit:
+        # Reuse previously computed geometry — skip clock loading and TDB.
+        if verbose: print(f"   [geometry cache hit] Reusing TDB and ephemeris arrays.")
+        tdb_mjd = geometry_cache['tdb_mjd']
+        ssb_obs_pos_km = geometry_cache['ssb_obs_pos_km']
+        ssb_obs_vel_km_s = geometry_cache['ssb_obs_vel_km_s']
+        obs_sun_pos_km = geometry_cache['obs_sun_pos_km']
+        obs_planet_pos_ls_cached = geometry_cache.get('obs_planet_pos_ls')
+        clock_issues = geometry_cache.get('clock_issues', [])
+        obs_clock = geometry_cache.get('obs_clock')
+        obs_clocks = geometry_cache.get('obs_clocks', {})
+        bipm_clock = geometry_cache.get('bipm_clock')
+    else:
+        clk = _load_clock_corrections(observatory, all_obs_codes, clock_dir, params, mjd_utc, verbose)
+        obs_clock = clk['obs_clock']
+        obs_clocks = clk['obs_clocks']
+        bipm_clock = clk['bipm_clock']
+        clock_issues = clk['clock_issues']
 
     location = EarthLocation.from_geocentric(
         obs_itrf_km[0] * u.km,
@@ -1194,31 +1200,32 @@ def compute_residuals_simple(
     if n_to > 0 and verbose:
         print(f"   Applying -to time offsets to {n_to} TOAs")
 
-    if not is_multi_obs:
-        tdb_mjd = compute_tdb_standalone_vectorized(
-            mjd_ints, mjd_fracs,
-            obs_clock, gps_clock, bipm_clock,
-            location, time_offsets=time_offsets
-        )
-    else:
-        # Multi-observatory: compute TDB per observatory, then reassemble
-        tdb_mjd = np.zeros(len(toas), dtype=np.longdouble)
-        for obs_code in all_obs_codes:
-            idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
-            obs_loc_km = OBSERVATORIES.get(obs_code)
-            if obs_loc_km is None:
-                if verbose: print(f"   [!]  Unknown observatory '{obs_code}', using primary")
-                obs_loc_km = obs_itrf_km
-            obs_loc = EarthLocation.from_geocentric(
-                obs_loc_km[0] * u.km, obs_loc_km[1] * u.km, obs_loc_km[2] * u.km
+    if not _geo_hit:
+        if not is_multi_obs:
+            tdb_mjd = compute_tdb_standalone_vectorized(
+                mjd_ints, mjd_fracs,
+                obs_clock, bipm_clock,
+                location, time_offsets=time_offsets,
             )
-            clk = obs_clocks.get(obs_code, obs_clock)
-            tdb_mjd[idxs] = compute_tdb_standalone_vectorized(
-                [mjd_ints[i] for i in idxs], [mjd_fracs[i] for i in idxs],
-                clk, gps_clock, bipm_clock, obs_loc,
-                time_offsets=time_offsets[idxs]
-            )
-        if verbose: print(f"   Computed TDB per observatory: {all_obs_codes}")
+        else:
+            # Multi-observatory: compute TDB per observatory, then reassemble
+            tdb_mjd = np.zeros(len(toas), dtype=np.longdouble)
+            for obs_code in all_obs_codes:
+                idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
+                obs_loc_km = OBSERVATORIES.get(obs_code)
+                if obs_loc_km is None:
+                    if verbose: print(f"   [!]  Unknown observatory '{obs_code}', using primary")
+                    obs_loc_km = obs_itrf_km
+                obs_loc = EarthLocation.from_geocentric(
+                    obs_loc_km[0] * u.km, obs_loc_km[1] * u.km, obs_loc_km[2] * u.km
+                )
+                clk = obs_clocks.get(obs_code, obs_clock)
+                tdb_mjd[idxs] = compute_tdb_standalone_vectorized(
+                    [mjd_ints[i] for i in idxs], [mjd_fracs[i] for i in idxs],
+                    clk, bipm_clock, obs_loc,
+                    time_offsets=time_offsets[idxs],
+                )
+            if verbose: print(f"   Computed TDB per observatory: {all_obs_codes}")
     if verbose: print(f"   Computed TDB for {len(tdb_mjd)} TOAs")
 
     # Astrometry
@@ -1231,41 +1238,66 @@ def compute_residuals_simple(
     posepoch = params.get('POSEPOCH', params['PEPOCH'])
     parallax_mas = params.get('PX', 0.0)
 
-    if not is_multi_obs:
-        ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(tdb_mjd, obs_itrf_km, ephemeris=ephem)
-    else:
-        # Multi-observatory: compute SSB-obs position per observatory
-        ssb_obs_pos_km = np.zeros((len(toas), 3))
-        ssb_obs_vel_km_s = np.zeros((len(toas), 3))
-        for obs_code in all_obs_codes:
-            idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
-            obs_loc_km = OBSERVATORIES.get(obs_code, obs_itrf_km)
-            pos, vel = compute_ssb_obs_pos_vel(tdb_mjd[idxs], obs_loc_km, ephemeris=ephem)
-            ssb_obs_pos_km[idxs] = pos
-            ssb_obs_vel_km_s[idxs] = vel
+    if not _geo_hit:
+        if not is_multi_obs:
+            ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(tdb_mjd, obs_itrf_km, ephemeris=ephem)
+        else:
+            # Multi-observatory: compute SSB-obs position per observatory
+            ssb_obs_pos_km = np.zeros((len(toas), 3))
+            ssb_obs_vel_km_s = np.zeros((len(toas), 3))
+            for obs_code in all_obs_codes:
+                idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
+                obs_loc_km = OBSERVATORIES.get(obs_code, obs_itrf_km)
+                pos, vel = compute_ssb_obs_pos_vel(tdb_mjd[idxs], obs_loc_km, ephemeris=ephem)
+                ssb_obs_pos_km[idxs] = pos
+                ssb_obs_vel_km_s[idxs] = vel
+
+    # L_hat depends on RA/DEC/PM — always recompute (cheap, needed for Roemer/freq)
     L_hat = compute_pulsar_direction(ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day, posepoch, tdb_mjd)
 
     # Roemer and Shapiro delays
     roemer_sec = compute_roemer_delay(ssb_obs_pos_km, L_hat, parallax_mas)
 
-    times = Time(tdb_mjd, format='mjd', scale='tdb')
-    with solar_system_ephemeris.set(ephem):
-        sun_pos = get_body_barycentric_posvel('sun', times)[0].xyz.to(u.km).value.T
-    obs_sun_pos_km = sun_pos - ssb_obs_pos_km
+    if not _geo_hit:
+        times = Time(tdb_mjd, format='mjd', scale='tdb')
+        with solar_system_ephemeris.set(ephem):
+            sun_pos = get_body_barycentric_posvel('sun', times)[0].xyz.to(u.km).value.T
+        obs_sun_pos_km = sun_pos - ssb_obs_pos_km
+
     sun_shapiro_sec = compute_shapiro_delay(obs_sun_pos_km, L_hat, T_SUN_SEC)
 
     # Planet Shapiro (if enabled)
     planet_shapiro_enabled = str(params.get('PLANET_SHAPIRO', 'N')).upper() in ('Y', 'YES', 'TRUE', '1')
     planet_shapiro_sec = np.zeros(len(tdb_mjd))
     if planet_shapiro_enabled:
-        if verbose: print(f"   Computing planetary Shapiro delays...")
-        with solar_system_ephemeris.set(ephem):
-            for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
-                planet_pos = get_body_barycentric_posvel(planet, times)[0].xyz.to(u.km).value.T
-                obs_planet_km = planet_pos - ssb_obs_pos_km
-                planet_shapiro_sec += compute_shapiro_delay(obs_planet_km, L_hat, T_PLANET[planet])
+        need_planet_compute = not _geo_hit or obs_planet_pos_ls_cached is None
+        if need_planet_compute:
+            if verbose: print(f"   Computing planetary Shapiro delays...")
+            times = Time(tdb_mjd, format='mjd', scale='tdb')
+            with solar_system_ephemeris.set(ephem):
+                obs_planet_pos_ls_cached = {}
+                for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
+                    planet_pos = get_body_barycentric_posvel(planet, times)[0].xyz.to(u.km).value.T
+                    obs_planet_pos_ls_cached[planet] = planet_pos - ssb_obs_pos_km
+        for planet, obs_planet_km in obs_planet_pos_ls_cached.items():
+            planet_shapiro_sec += compute_shapiro_delay(obs_planet_km, L_hat, T_PLANET[planet])
 
     roemer_shapiro = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
+
+    # Populate geometry cache on first call (cache miss).
+    # Only parameter-independent arrays go here: TDB times, SSB-observatory
+    # position/velocity, and sun/planet positions.  These never change between
+    # fits as long as the TOA set and ephemeris are unchanged.
+    if geometry_cache is not None and not _geo_hit:
+        geometry_cache['tdb_mjd'] = tdb_mjd
+        geometry_cache['ssb_obs_pos_km'] = ssb_obs_pos_km
+        geometry_cache['ssb_obs_vel_km_s'] = ssb_obs_vel_km_s
+        geometry_cache['obs_sun_pos_km'] = obs_sun_pos_km
+        geometry_cache['obs_planet_pos_ls'] = obs_planet_pos_ls_cached if planet_shapiro_enabled else None
+        geometry_cache['clock_issues'] = clock_issues
+        geometry_cache['obs_clock'] = obs_clock
+        geometry_cache['obs_clocks'] = obs_clocks
+        geometry_cache['bipm_clock'] = bipm_clock
 
     # Barycentric frequency (used for DM/SW/FD delays by both Tempo2 and PINT)
     freq_mhz = np.array([toa.freq_mhz for toa in toas])
@@ -1575,7 +1607,7 @@ def compute_residuals_simple(
         if verbose: print(f"\n   Computing TZR phase at TZRMJD...")
         tzr_phase = _compute_tzr_phase(
             params, bp, dm_jax, ddk,
-            obs_clock, gps_clock, bipm_clock,
+            obs_clock, bipm_clock,
             observatory, location, obs_itrf_km, obs_clocks,
             ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day,
             posepoch, parallax_mas, ephem,
@@ -1648,12 +1680,20 @@ def compute_residuals_simple(
     # Planet positions relative to observer in light-seconds (for planet Shapiro recomputation)
     obs_planet_pos_ls = None
     if planet_shapiro_enabled:
-        obs_planet_pos_ls = {}
-        with solar_system_ephemeris.set(ephem):
-            for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
-                planet_pos = get_body_barycentric_posvel(planet, times)[0].xyz.to(u.km).value.T
-                obs_planet_km = planet_pos - ssb_obs_pos_km
-                obs_planet_pos_ls[planet] = obs_planet_km / SPEED_OF_LIGHT_KM_S
+        # obs_planet_pos_ls_cached is populated in the Shapiro block above (cache miss)
+        # or loaded from geometry_cache (cache hit). Recompute if still None (e.g. cache
+        # was built with PLANET_SHAPIRO=N but this call has it enabled).
+        if obs_planet_pos_ls_cached is None:
+            _times_pl = Time(tdb_mjd, format='mjd', scale='tdb')
+            obs_planet_pos_ls_cached = {}
+            with solar_system_ephemeris.set(ephem):
+                for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
+                    planet_pos = get_body_barycentric_posvel(planet, _times_pl)[0].xyz.to(u.km).value.T
+                    obs_planet_pos_ls_cached[planet] = planet_pos - ssb_obs_pos_km
+        obs_planet_pos_ls = {
+            planet: pos_km / SPEED_OF_LIGHT_KM_S
+            for planet, pos_km in obs_planet_pos_ls_cached.items()
+        }
     
     # Compute pre-binary delay: roemer_shapiro + DM + SW + tropo (NOT FD)
     # This is the PINT-compatible time for binary model evaluation
@@ -1699,7 +1739,7 @@ def compute_residuals_simple(
         # Add computed delays for JAX fitting
         'total_delay_sec': np.array(total_delay_sec, dtype=np.float64),
         'freq_bary_mhz': np.array(freq_bary_mhz, dtype=np.float64),
-        'tzr_phase': float(tzr_phase),
+        'tzr_phase': np.longdouble(tzr_phase),
         # JUMP phase offsets (longdouble, for fitter to use)
         'jump_phase': np.array(jump_phase, dtype=np.longdouble),
         # Emission time offset from PEPOCH (longdouble for phase precision)

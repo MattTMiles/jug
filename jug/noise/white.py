@@ -179,16 +179,24 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
             entries.append(WhiteNoiseEntry('DMEFAC', flag_name, flag_value, value))
 
         elif keyword == 'TNECORR':
-            # TNECORR value is ECORR amplitude in microseconds (same as ECORR).
-            # Tempo2 uses it directly: constraint = 1e6/ecorrval.
+            # TNECORR appears in two conventions:
+            #   - Tempo2:      value is ECORR amplitude in microseconds (positive)
+            #   - TempoNest:   value is log10(seconds) (typically negative)
+            # Distinguish by sign: negative → log10(s), positive → direct µs.
             if len(parts) < 4:
                 continue
             flag_name = parts[1].lstrip('-')
             flag_value = parts[2]
             try:
-                ecorr_us = float(parts[3])
+                raw_val = float(parts[3])
             except ValueError:
                 continue
+            if raw_val < 0:
+                # TempoNest log10(seconds) convention
+                ecorr_us = 10 ** raw_val * 1e6
+            else:
+                # Tempo2 direct microseconds convention
+                ecorr_us = raw_val
             entries.append(WhiteNoiseEntry('ECORR', flag_name, flag_value, ecorr_us))
 
         # -----------------------------------------------------------------

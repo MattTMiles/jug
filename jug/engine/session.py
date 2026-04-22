@@ -118,6 +118,10 @@ class TimingSession:
         self._cached_result_by_mode: Dict[bool, Dict[str, Any]] = {}  # {subtract_tzr: result}
         self._cached_delays: Optional[Dict[str, Any]] = None  # For fast postfit
         self._cached_toa_data: Optional[Dict[str, Any]] = None  # For ultra-fast postfit
+        # Geometry cache: parameter-independent arrays (TDB, SSB pos, sun pos).
+        # Populated on first compute_residuals call; never cleared after fits.
+        # Only cleared if the TOA set changes (not yet supported, but noted here).
+        self._geometry_cache: Dict[str, Any] = {}
         # Clock / EOP issues collected during first residual computation (for GUI)
         self.clock_issues: list = []
         
@@ -137,6 +141,11 @@ class TimingSession:
         Used when self.params differs from the original par file.
         """
         import tempfile
+
+        # Shallow copy so no mutation escapes to caller.
+        # _high_precision is a nested dict but we only ever write new keys into
+        # it (never mutate existing values), so shallow copy is safe here.
+        params = dict(params)
 
         def format_param_value(param_name: str, value: Any) -> str:
             """Format parameter value for par file.
@@ -195,7 +204,6 @@ class TimingSession:
         # (compute_residuals_simple will apply IAU->DT92 again when reading)
         binary = params.get('BINARY', '').upper()
         if binary == 'T2' and ('KIN' in params or 'KOM' in params):
-            params = dict(params)  # avoid mutating caller's dict
             if 'KIN' in params:
                 params['KIN'] = 180.0 - float(params['KIN'])
             if 'KOM' in params:
@@ -304,7 +312,8 @@ class TimingSession:
                 tim_file=self.tim_file,
                 clock_dir=self.clock_dir,
                 subtract_tzr=subtract_tzr,
-                verbose=False
+                verbose=False,
+                geometry_cache=self._geometry_cache,
             )
         finally:
             tmp_par_path.unlink()
@@ -359,168 +368,17 @@ class TimingSession:
                 print(f"  Using cached residuals (subtract_tzr={subtract_tzr})")
             return self._cached_result_by_mode[subtract_tzr]
         
-        # If params provided, recompute residuals with updated parameters
+        # If params provided, merge overrides onto self.params and delegate to
+        # _compute_residuals_with_params, which is the single canonical
+        # implementation for building a temp par file with updated values.
+        # It handles _high_precision strings, TCB conversion, ecliptic
+        # round-trip, and KIN/KOM convention correctly.
         if params is not None:
-            # Create temporary par file with updated parameters
-            import tempfile
-            from pathlib import Path
-            
             if self.verbose:
-                print("  Using temp par file (no cached data yet)")
-            
-            # Read original par file
-            with open(self.par_file, 'r') as f:
-                par_lines = f.readlines()
-            
-            # For ecliptic pulsars, convert fitted RAJ/DECJ back to LAMBDA/BETA
-            if params.get('_ecliptic_coords'):
-                from jug.io.par_reader import (
-                    parse_ra, parse_dec, convert_equatorial_to_ecliptic
-                )
-                ra_val = params.get('RAJ')
-                dec_val = params.get('DECJ')
-                if ra_val is not None and dec_val is not None:
-                    ra_rad = parse_ra(ra_val) if isinstance(ra_val, str) else float(ra_val)
-                    dec_rad = parse_dec(dec_val) if isinstance(dec_val, str) else float(dec_val)
-                    ecl_frame = params.get('_ecliptic_frame', 'IERS2010')
-                    ecl = convert_equatorial_to_ecliptic(
-                        ra_rad, dec_rad,
-                        pmra=params.get('PMRA', 0.0),
-                        pmdec=params.get('PMDEC', 0.0),
-                        ecl_frame=ecl_frame,
-                    )
-                    params['LAMBDA'] = ecl['LAMBDA']
-                    params['BETA'] = ecl['BETA']
-                    if 'PMLAMBDA' in params:
-                        params['PMLAMBDA'] = ecl['PMLAMBDA']
-                    if 'PMBETA' in params:
-                        params['PMBETA'] = ecl['PMBETA']
-
-            # Convert KIN/KOM from DT92 back to IAU convention for par file
-            # (compute_residuals_simple will apply IAU->DT92 again when reading)
-            binary = params.get('BINARY', '').upper()
-            if binary == 'T2' and ('KIN' in params or 'KOM' in params):
-                params = dict(params)  # avoid mutating caller's dict
-                if 'KIN' in params:
-                    params['KIN'] = 180.0 - float(params['KIN'])
-                if 'KOM' in params:
-                    params['KOM'] = 90.0 - float(params['KOM'])
-
-            # Update parameters
-            updated_lines = []
-            updated_params = set()
-            jump_index = 0  # Track JUMP line index for JUMP1, JUMP2, ... mapping
-
-            # Build case-insensitive lookup: map uppercase key → actual key in params
-            params_upper = {k.upper(): k for k in params if not k.startswith('_')}
-            
-            for line in par_lines:
-                line_stripped = line.strip()
-                if not line_stripped or line_stripped.startswith('#'):
-                    updated_lines.append(line)
-                    continue
-                
-                parts = line_stripped.split()
-                if parts:
-                    param_name = parts[0]
-
-                    # JUMP lines need special handling: par file has "JUMP"
-                    # but fitted values are stored as JUMP1, JUMP2, ...
-                    if param_name == 'JUMP':
-                        jump_index += 1
-                        jump_key = f'JUMP{jump_index}'
-                        if jump_key in params:
-                            new_val = params[jump_key]
-                            if parts[1].upper() == 'MJD' and len(parts) >= 5:
-                                parts[4] = f'{new_val:.15e}'
-                            elif len(parts) >= 4:
-                                parts[3] = f'{new_val:.15e}'
-                            updated_lines.append(' '.join(parts) + '\n')
-                            updated_params.add(jump_key)
-                        else:
-                            updated_lines.append(line)
-                        continue
-
-                    actual_key = params_upper.get(param_name.upper())
-                    if actual_key is not None:
-                        # Update this parameter
-                        new_value = params[actual_key]
-                        # Format appropriately based on parameter type
-                        if isinstance(new_value, str):
-                            # Already a string (sexagesimal or other)
-                            new_line = f"{actual_key:<12} {new_value}"
-                        elif actual_key == 'RAJ':
-                            # RAJ in radians - convert to sexagesimal
-                            from jug.model.codecs import RAJCodec
-                            new_line = f"{actual_key:<12} {RAJCodec().encode(new_value)}"
-                        elif actual_key == 'DECJ':
-                            # DECJ in radians - convert to sexagesimal
-                            from jug.model.codecs import DECJCodec
-                            new_line = f"{actual_key:<12} {DECJCodec().encode(new_value)}"
-                        elif actual_key == 'F0':
-                            new_line = f"{actual_key:<12} {new_value:.15f}"
-                        elif actual_key.startswith('F') and actual_key[1:].isdigit():
-                            new_line = f"{actual_key:<12} {new_value:.15e}"
-                        elif actual_key.startswith('DM'):
-                            new_line = f"{actual_key:<12} {new_value:.15f}"
-                        else:
-                            new_line = f"{actual_key:<12} {new_value:.15e}"
-                        
-                        # Preserve flags if present
-                        if len(parts) > 2:
-                            flags = ' '.join(parts[2:])
-                            new_line += f" {flags}"
-                        elif len(parts) > 1 and parts[1] != str(new_value):
-                            # Has a flag
-                            new_line += f" {parts[1]}"
-                        
-                        updated_lines.append(new_line + '\n')
-                        updated_params.add(actual_key)
-                    else:
-                        updated_lines.append(line)
-                else:
-                    updated_lines.append(line)
-            
-            # Add any new parameters not in original file
-            for param_name, value in params.items():
-                if param_name not in updated_params:
-                    if isinstance(value, str):
-                        new_line = f"{param_name:<12} {value} 1\n"
-                    elif param_name == 'RAJ':
-                        from jug.model.codecs import RAJCodec
-                        new_line = f"{param_name:<12} {RAJCodec().encode(value)} 1\n"
-                    elif param_name == 'DECJ':
-                        from jug.model.codecs import DECJCodec
-                        new_line = f"{param_name:<12} {DECJCodec().encode(value)} 1\n"
-                    elif param_name == 'F0':
-                        new_line = f"{param_name:<12} {value:.15f} 1\n"
-                    elif param_name.startswith('F') and param_name[1:].isdigit():
-                        new_line = f"{param_name:<12} {value:.15e} 1\n"
-                    elif param_name.startswith('DM'):
-                        new_line = f"{param_name:<12} {value:.15f} 1\n"
-                    else:
-                        new_line = f"{param_name:<12} {value:.15e} 1\n"
-                    updated_lines.append(new_line)
-            
-            # Write to temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.par', delete=False) as tmp:
-                tmp.writelines(updated_lines)
-                tmp_par_path = Path(tmp.name)
-            
-            try:
-                # Compute with updated par file
-                result = compute_residuals_simple(
-                    par_file=tmp_par_path,
-                    tim_file=self.tim_file,
-                    clock_dir=self.clock_dir,
-                    subtract_tzr=subtract_tzr,
-                    verbose=False
-                )
-            finally:
-                # Clean up temp file
-                tmp_par_path.unlink()
-            
-            return result
+                print("  Using temp par file (params override)")
+            merged = dict(self.params)
+            merged.update(params)
+            return self._compute_residuals_with_params(merged, subtract_tzr)
         
         # No params override - use current self.params (not original par file!)
         # This is CRITICAL: after fitting, self.params has fitted values.
@@ -542,7 +400,8 @@ class TimingSession:
                 tim_file=self.tim_file,
                 clock_dir=self.clock_dir,
                 subtract_tzr=subtract_tzr,
-                verbose=False
+                verbose=False,
+                geometry_cache=self._geometry_cache,
             )
         
         # Cache the result (only for original params), keyed by subtract_tzr

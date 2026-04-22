@@ -969,7 +969,7 @@ def _build_setup_common(
         print(f"[SETUP] Building RED NOISE basis: {red_noise_basis.shape[1]} columns")
         if verbose:
             print(f"  Red noise: log10_A={red_noise_proc.log10_A:.3f}, "
-                  f"gamma={red_noise_proc.log10_A:.3f}, "
+                  f"gamma={red_noise_proc.gamma:.3f}, "
                   f"{red_noise_proc.n_harmonics} harmonics -> {red_noise_basis.shape[1]} columns")
 
     if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
@@ -1416,6 +1416,10 @@ def _build_general_fit_setup_from_files(
     """
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
+    # DMX_* are handled automatically via dmx_design_matrix; strip before validation
+    import re as _re
+    _dmx_pat = _re.compile(r'^DMX[_\d]')
+    fit_params = [p for p in fit_params if not _dmx_pat.match(p)]
     for p in fit_params:
         validate_fit_param(p)
 
@@ -1880,8 +1884,17 @@ def _run_general_fit_iterations(
     # Two-phase fitting for GLS (Tempo2-style):
     # Phase 1: WLS iterations to converge timing parameters (raw RMS damping)
     # Phase 2: Single GLS iteration with noise basis for noise-adjusted params
-    # This prevents the noise model from destabilizing nonlinear iteration.
-    _gls_phase = False  # Start in WLS phase when noise basis exists
+    # Start in GLS phase whenever a noise basis is available (PINT-equivalent):
+    # WLS pre-phase with EFAC-scaled errors but no correlated noise model is
+    # physically inconsistent — it mis-weights data relative to the full GLS
+    # noise model, driving binary params to wrong values (e.g. KOM ~+4° vs -2.5°
+    # for J1713).  Direct GLS from initial params (like PINT GLSFitter) avoids
+    # this: the joint timing+noise solve self-consistently weights all data.
+    _dmx_only = (n_augmented > 0 and
+                 n_red_noise_cols == 0 and n_dm_noise_cols == 0 and
+                 n_chromatic_noise_cols == 0 and n_ecorr_cols == 0 and
+                 n_band_noise_total == 0 and n_group_noise_total == 0)
+    _gls_phase = n_augmented > 0  # Always start GLS when noise basis exists
     
     # ITERATION LOOP (Tempo2-style: full step + re-baseline)
     for iteration in range(max_iter):
@@ -1974,8 +1987,13 @@ def _run_general_fit_iterations(
         )
 
         # TNsubtractPoly: subtract accumulated noise from previous iterations
-        # so GLS only estimates the delta-noise this iteration
-        if n_augmented > 0 and np.any(_accumulated_noise_sec != 0):
+        # so GLS only estimates the delta-noise this iteration.
+        # Skip for full-noise multi-iter GLS: use full residuals (PINT-style)
+        # so the joint augmented solve estimates absolute noise each iteration.
+        # Accumulated noise was at old timing params → subtracting it from new
+        # residuals is physically wrong and causes divergence.
+        _full_noise_gls = _gls_phase and not _dmx_only
+        if n_augmented > 0 and np.any(_accumulated_noise_sec != 0) and not _full_noise_gls:
             residuals = residuals - _accumulated_noise_sec
 
         # Build design matrix - BATCHED derivative computation
@@ -2104,8 +2122,12 @@ def _run_general_fit_iterations(
         # residuals and M so the standard WLS solver recovers the GLS solution.
         # When augmented (GLS), skip pre-whitening -- the ECORR basis columns
         # in the augmented system already account for ECORR correlations.
+        # When GLS will handle ECORR (n_ecorr_cols > 0), skip whitener in WLS
+        # phase too: whitener + mean-subtraction uses wrong weights after whitening,
+        # causing ~7° KOM error. WLS with raw errors (like PINT WLSFitter) gives
+        # correct binary params as starting point for GLS.
         ecorr_w = getattr(setup, 'ecorr_whitener', None)
-        if ecorr_w is not None and n_augmented_iter == 0:
+        if ecorr_w is not None and n_augmented_iter == 0 and n_ecorr_cols == 0:
             ecorr_w.prepare(errors_sec)
             r_solve = ecorr_w.whiten_residuals(residuals)
             M_solve = ecorr_w.whiten_matrix(M)
@@ -2255,6 +2277,15 @@ def _run_general_fit_iterations(
             if _iter_noise_coeffs is not None:
                 best_noise_coeffs = _gls_noise.copy()  # SVD jointly-fit coefficients
         else:
+            # Per-parameter max step limits to prevent basin-hopping in highly
+            # nonlinear angular params (e.g. KIN near 42° in DDK model).
+            _MAX_STEP = {'KIN': 5.0, 'KOM': 10.0}  # degrees
+            for _i, _p in enumerate(fit_params):
+                if _p in _MAX_STEP:
+                    _lim = _MAX_STEP[_p]
+                    if abs(delta_params[_i]) > _lim:
+                        delta_params[_i] = np.sign(delta_params[_i]) * _lim
+
             # WLS path: damping loop — try full step, halve if nonlinear model worsens.
             lambda_ = 1.0
             for damping_iter in range(8):
@@ -2354,8 +2385,15 @@ def _run_general_fit_iterations(
             # Tempo2 applies TNsubtractPoly once after convergence, not every
             # iteration.  We track noise each iteration but only decompose
             # the polynomial at the end (see post-convergence block below).
-            if n_augmented_iter > 0 and _iter_noise_coeffs is not None:
-                # Split noise coefficients into red and DM components
+            if n_augmented_iter > 0 and _iter_noise_coeffs is not None and not _dmx_only and not _gls_phase:
+                # Split noise coefficients into red and DM components.
+                # DMX-only GLS skips accumulation: DMX is solved fresh each
+                # iteration (equivalent to PINT WLS with DMX as timing params).
+                # Full-noise GLS also skips accumulation: joint solve gives
+                # absolute noise coefficients each iteration (PINT-style).
+                # Accumulating delta-noise between GLS iterations diverges
+                # because accumulated noise at old params is subtracted from
+                # residuals at new params → physically wrong.
                 damped_coeffs = lambda_ * _iter_noise_coeffs
                 coeff_offset = 0
                 if n_red_noise_cols > 0:
@@ -2404,9 +2442,25 @@ def _run_general_fit_iterations(
             _gls_phase = True
             _wls_to_gls_switch = True
             converged = False  # Continue for GLS iteration
-        elif _gls_phase and n_augmented_iter > 0:
-            # GLS step was just executed — always converge after it
-            converged = True
+        elif _gls_phase and n_augmented_iter > 0 and not _dmx_only:
+            # GLS phase with real noise (ECORR/RN): iterate like PINT GLSFitter
+            # does — re-evaluate model each step until timing params converge.
+            # Single-step forced convergence was wrong: one linearized GLS step
+            # can make large binary param jumps (e.g. KOM ~4°) before the noise
+            # model has converged, landing at a wrong local minimum.
+            # Use loose relative tol since GLS noise fitting is inherently
+            # less precise than WLS timing (1e-6 relative is ~ns level).
+            gls_rel_tol = 1e-6
+            param_norm_safe = max(np.linalg.norm(param_values_curr), 1.0)
+            if iteration >= min_iterations and delta_norm <= gls_rel_tol * param_norm_safe:
+                converged = True
+        elif _gls_phase and _dmx_only and iteration >= min_iterations:
+            # DMX-only GLS: DMX is solved afresh each iter (no accumulation),
+            # so convergence = timing-param convergence at ~1e-6 relative tol.
+            rel_tol = 1e-6
+            param_norm_safe = max(np.linalg.norm(param_values_curr), 1.0)
+            if delta_norm <= rel_tol * param_norm_safe:
+                converged = True
 
         if verbose:
             status = ""
@@ -2682,7 +2736,8 @@ def _run_general_fit_iterations(
         noise_total_us = np.zeros(len(residuals_final_us))
         for key, vals in noise_realizations.items():
             if not key.endswith('_err') and len(vals) == len(noise_total_us):
-                noise_total_us += vals
+                if key not in ('DMX', 'DMJUMP'):  # already applied in residuals_final_sec
+                    noise_total_us += vals
         whitened_us = residuals_final_us - noise_total_us
         whitened_sec = whitened_us * 1e-6
         if ecorr_w is not None:
@@ -2738,6 +2793,9 @@ def _build_general_fit_setup_from_cache(
     """
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
+    import re as _re
+    _dmx_pat = _re.compile(r'^DMX[_\d]')
+    fit_params = [p for p in fit_params if not _dmx_pat.match(p)]
     for p in fit_params:
         validate_fit_param(p)
 
@@ -2898,7 +2956,7 @@ def _fit_parameters_general(
         if binary_params:
             param_summary.append(f"{len(binary_params)} binary")
         print(f"\nFitting {' + '.join(param_summary)} parameters")
-        for param, val in zip(fit_params, setup.param_values_start):
+        for param, val in zip(setup.fit_param_list, setup.param_values_start):
             print(_format_param_value_for_print(param, val))
         print(f"  TOAs: {len(setup.toas_mjd)}")
         print(f"  Cached dt_sec in {cache_time:.3f}s")
@@ -2924,10 +2982,11 @@ def _fit_parameters_general(
         print(f"Iterations: {result['iterations']}")
         print(f"Final RMS: {result['final_rms']:.6f} mus")
         print(f"\nFitted parameters:")
-        for param in fit_params:
-            val = result['final_params'][param]
-            err = result['uncertainties'][param]
-            print(_format_param_value_for_print(param, val, err))
+        for param in setup.fit_param_list:
+            val = result['final_params'].get(param)
+            err = result['uncertainties'].get(param, 0)
+            if val is not None:
+                print(_format_param_value_for_print(param, val, err))
         print(f"\nTotal time: {total_time:.3f}s")
         print(f"Cache time: {cache_time:.3f}s")
         print(f"{'='*80}")

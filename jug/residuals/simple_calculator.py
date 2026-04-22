@@ -856,8 +856,8 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
             label = "AUTO -> UTC" if tzrmjd_scale_upper == "AUTO" else "UTC (explicit override)"
             print(f"   TZRMJD scale: {label} (site arrival time, converting to TDB via {tzr_site} clock)")
         # Warn if explicitly forcing UTC but par file declares UNITS=TDB
-        par_timescale = params.get('_par_timescale', 'TDB').upper()
-        if tzrmjd_scale_upper == "UTC" and par_timescale == "TDB":
+        _par_ts = params.get('_par_timescale', 'TDB').upper()
+        if tzrmjd_scale_upper == "UTC" and _par_ts == "TDB":
             print(f"   [!] WARNING: tzrmjd_scale='UTC' contradicts par file UNITS=TDB. "
                   f"This will apply a ~69 s clock correction to TZRMJD. "
                   f"Use only for legacy par files with UTC TZRMJD values.")

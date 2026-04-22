@@ -1416,6 +1416,10 @@ def _build_general_fit_setup_from_files(
     """
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
+    # DMX_* are handled automatically via dmx_design_matrix; strip before validation
+    import re as _re
+    _dmx_pat = _re.compile(r'^DMX[_\d]')
+    fit_params = [p for p in fit_params if not _dmx_pat.match(p)]
     for p in fit_params:
         validate_fit_param(p)
 
@@ -1881,7 +1885,13 @@ def _run_general_fit_iterations(
     # Phase 1: WLS iterations to converge timing parameters (raw RMS damping)
     # Phase 2: Single GLS iteration with noise basis for noise-adjusted params
     # This prevents the noise model from destabilizing nonlinear iteration.
-    _gls_phase = False  # Start in WLS phase when noise basis exists
+    # Exception: DMX-only case (no real noise model) starts in GLS from iter 1,
+    # equivalent to PINT WLSFitter which includes DMX in every iteration.
+    _dmx_only = (n_augmented > 0 and
+                 n_red_noise_cols == 0 and n_dm_noise_cols == 0 and
+                 n_chromatic_noise_cols == 0 and n_ecorr_cols == 0 and
+                 n_band_noise_total == 0 and n_group_noise_total == 0)
+    _gls_phase = _dmx_only  # DMX-only: GLS from iter 1 (PINT-equivalent)
     
     # ITERATION LOOP (Tempo2-style: full step + re-baseline)
     for iteration in range(max_iter):
@@ -2255,6 +2265,15 @@ def _run_general_fit_iterations(
             if _iter_noise_coeffs is not None:
                 best_noise_coeffs = _gls_noise.copy()  # SVD jointly-fit coefficients
         else:
+            # Per-parameter max step limits to prevent basin-hopping in highly
+            # nonlinear angular params (e.g. KIN near 42° in DDK model).
+            _MAX_STEP = {'KIN': 5.0, 'KOM': 10.0}  # degrees
+            for _i, _p in enumerate(fit_params):
+                if _p in _MAX_STEP:
+                    _lim = _MAX_STEP[_p]
+                    if abs(delta_params[_i]) > _lim:
+                        delta_params[_i] = np.sign(delta_params[_i]) * _lim
+
             # WLS path: damping loop — try full step, halve if nonlinear model worsens.
             lambda_ = 1.0
             for damping_iter in range(8):
@@ -2354,8 +2373,12 @@ def _run_general_fit_iterations(
             # Tempo2 applies TNsubtractPoly once after convergence, not every
             # iteration.  We track noise each iteration but only decompose
             # the polynomial at the end (see post-convergence block below).
-            if n_augmented_iter > 0 and _iter_noise_coeffs is not None:
-                # Split noise coefficients into red and DM components
+            if n_augmented_iter > 0 and _iter_noise_coeffs is not None and not _dmx_only:
+                # Split noise coefficients into red and DM components.
+                # DMX-only GLS skips accumulation: DMX is solved fresh each
+                # iteration (equivalent to PINT WLS with DMX as timing params).
+                # Accumulating DMX noise between iterations causes oscillation
+                # because phiinv=1e-40 makes DMX essentially unconstrained.
                 damped_coeffs = lambda_ * _iter_noise_coeffs
                 coeff_offset = 0
                 if n_red_noise_cols > 0:
@@ -2404,9 +2427,16 @@ def _run_general_fit_iterations(
             _gls_phase = True
             _wls_to_gls_switch = True
             converged = False  # Continue for GLS iteration
-        elif _gls_phase and n_augmented_iter > 0:
-            # GLS step was just executed — always converge after it
+        elif _gls_phase and n_augmented_iter > 0 and not _dmx_only:
+            # GLS step was just executed — always converge after it (real noise case)
             converged = True
+        elif _gls_phase and _dmx_only and iteration >= min_iterations:
+            # DMX-only GLS: DMX is solved afresh each iter (no accumulation),
+            # so convergence = timing-param convergence at ~1e-6 relative tol.
+            rel_tol = 1e-6
+            param_norm_safe = max(np.linalg.norm(param_values_curr), 1.0)
+            if delta_norm <= rel_tol * param_norm_safe:
+                converged = True
 
         if verbose:
             status = ""
@@ -2682,7 +2712,8 @@ def _run_general_fit_iterations(
         noise_total_us = np.zeros(len(residuals_final_us))
         for key, vals in noise_realizations.items():
             if not key.endswith('_err') and len(vals) == len(noise_total_us):
-                noise_total_us += vals
+                if key not in ('DMX', 'DMJUMP'):  # already applied in residuals_final_sec
+                    noise_total_us += vals
         whitened_us = residuals_final_us - noise_total_us
         whitened_sec = whitened_us * 1e-6
         if ecorr_w is not None:
@@ -2738,6 +2769,9 @@ def _build_general_fit_setup_from_cache(
     """
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
+    import re as _re
+    _dmx_pat = _re.compile(r'^DMX[_\d]')
+    fit_params = [p for p in fit_params if not _dmx_pat.match(p)]
     for p in fit_params:
         validate_fit_param(p)
 

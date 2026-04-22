@@ -21,15 +21,20 @@ import numpy as np
 # Graph-based clock chain (Tempo2-style Dijkstra path finding)
 # ---------------------------------------------------------------------------
 
-def _read_clock_header(path) -> tuple[str, str] | None:
-    """Read the FROM/TO timescale pair from the first comment line of a clock file.
+def _read_clock_header(path) -> tuple[str, str, int] | None:
+    """Read the FROM/TO timescale pair (and optional weight) from the first
+    comment line of a clock file.
 
     Tempo2 clock files begin with a line like::
 
         # UTC(AO) UTC(GPS)
+        # UTC(PKS) UTC(AUS) 100   ← high weight = avoid this path
 
-    Returns ``(from_scale, to_scale)`` both upper-cased, or ``None`` if the
-    header cannot be parsed.
+    The optional third field is the Tempo2 hop weight (default 1 if absent).
+    Higher weight means Dijkstra prefers other paths.
+
+    Returns ``(from_scale, to_scale, weight)`` both timescales upper-cased,
+    or ``None`` if the header cannot be parsed.
     """
     try:
         with open(path) as f:
@@ -38,7 +43,13 @@ def _read_clock_header(path) -> tuple[str, str] | None:
                 if line.startswith('#'):
                     parts = line.lstrip('#').split()
                     if len(parts) >= 2:
-                        return parts[0].upper(), parts[1].upper()
+                        weight = 1
+                        if len(parts) >= 3:
+                            try:
+                                weight = int(parts[2])
+                            except ValueError:
+                                pass
+                        return parts[0].upper(), parts[1].upper(), weight
                     return None
     except OSError:
         pass
@@ -76,10 +87,10 @@ class ClockGraph:
             header = _read_clock_header(clk_file)
             if header is None:
                 continue
-            from_scale, to_scale = header
+            from_scale, to_scale, weight = header
             # Skip files whose FROM == TO (no-op) and TAI/TT/UT1 terminals
             # that aren't on the path to UTC.
-            self._edges.append((from_scale, to_scale, clk_file))
+            self._edges.append((from_scale, to_scale, clk_file, weight))
 
     def correction_chain(self, obs_scale: str) -> dict | None:
         """Return the merged clock correction from ``obs_scale`` to ``self.target``.
@@ -109,15 +120,15 @@ class ClockGraph:
             return {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0]),
                     'chain': []}
 
-        # Build adjacency: node → list of (neighbour, edge_index)
-        adj: dict[str, list[tuple[str, int]]] = {}
-        for i, (frm, to, _) in enumerate(self._edges):
-            adj.setdefault(frm, []).append((to, i))
+        # Build adjacency: node → list of (neighbour, edge_index, weight)
+        adj: dict[str, list[tuple[str, int, int]]] = {}
+        for i, (frm, to, _, weight) in enumerate(self._edges):
+            adj.setdefault(frm, []).append((to, i, weight))
             # Edges are directed; Tempo2 also supports reverse traversal when
             # the path can be inverted (additive inverse), but we only support
             # the forward direction here for simplicity and correctness.
 
-        # Dijkstra (unit-weight: minimise number of hops)
+        # Dijkstra (weighted: respect Tempo2 hop-weights from clock file headers)
         dist: dict[str, int] = {src: 0}
         prev: dict[str, tuple[str, int] | None] = {src: None}
         heap = [(0, src)]
@@ -127,8 +138,8 @@ class ClockGraph:
                 continue
             if u == dst:
                 break
-            for v, edge_idx in adj.get(u, []):
-                nd = d + 1
+            for v, edge_idx, weight in adj.get(u, []):
+                nd = d + weight
                 if nd < dist.get(v, 10**9):
                     dist[v] = nd
                     prev[v] = (u, edge_idx)

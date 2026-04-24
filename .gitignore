@@ -71,6 +71,7 @@ jug_updates.patch
 # Pulsar data files (sensitive/large timing data)
 data/pulsars/*
 !data/pulsars/J1909-3744_demo.par
+!data/pulsars/J1909-3744_noise_demo.par
 !data/pulsars/NG_15yr_partim
 data/pulsars/NG_15yr_partim/*
 !data/pulsars/NG_15yr_partim/J1909-3744_PINT_20220303.nb.par

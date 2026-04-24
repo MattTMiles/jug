@@ -14,5 +14,15 @@ Example:
     result = compute_residuals_simple(par_file, tim_file)
 """
 
+import os
+# JAX backend selection: default to CPU to avoid RuntimeError tracebacks on
+# machines where the CUDA plugin is installed but no GPU is present.
+# GPU users should set JAX_PLATFORMS=cuda12 (or rocm, tpu, etc.) in their
+# environment BEFORE importing jug.
+os.environ.setdefault('JAX_PLATFORMS', 'cpu')
+# Suppress noisy PjRt/XLA C++ version-compatibility warnings that appear on
+# every JIT compilation when JAX CPU backend is used.
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+
 # Version
 __version__ = "0.1.0"

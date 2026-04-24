@@ -1,4 +1,4 @@
-# UTC(VLA) UTC(NIST) 
+# UTC(VLA) UTC(NIST) 1000
 # From old tempo time_vla.dat:
 # awk '$1<50000 {printf("%11.5f %10.5e\n",$1,($3-$2)/1.e6)}' time_vla.dat 
 #  > $TEMPO2/clock/vla2nist.clk

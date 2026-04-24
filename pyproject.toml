@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
-    {name = "Matt Miles", email = "your.email@example.com"}
+    {name = "Matt Miles", email = "matt.t.miles22@gmail.com"}
 ]
 keywords = ["pulsar", "timing", "astronomy", "jax", "optimization"]
 classifiers = [
@@ -24,27 +24,22 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy>=2.4",
+    "numpy>=2.3",
     "scipy>=1.17",
     "astropy>=7.2",
     "jax>=0.9.0",
     "jaxlib>=0.9.0",
     "numpyro>=0.19.0",
     "optax>=0.2.6",
-    # Qt GUI dependencies
-    "PySide6>=6.10",
-    "pyqtgraph>=0.14.0",
     "matplotlib>=3.10",
-    # Server dependencies
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
-    "python-multipart>=0.0.6",
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.0",
-    "pytest-cov>=7.0",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
     "ruff>=0.1.0",
     "mypy>=1.5.0",
 ]
@@ -53,9 +48,8 @@ docs = [
     "sphinx-rtd-theme>=1.3.0",
     "sphinx-autodoc-typehints>=1.24.0",
 ]
-noise = []
 all = [
-    "jug-timing[dev,docs,noise]",
+    "jug-timing[dev,docs]",
 ]
 
 [project.scripts]
@@ -68,7 +62,7 @@ jug-benchmark = "jug.scripts.benchmark_stages:main"
 Homepage = "https://github.com/MattTMiles/jug"
 Documentation = "https://github.com/MattTMiles/jug#readme"
 Repository = "https://github.com/MattTMiles/jug"
-Issues = "https://github.com/yourusername/jug/issues"
+Issues = "https://github.com/MattTMiles/jug/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

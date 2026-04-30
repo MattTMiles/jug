@@ -349,6 +349,11 @@ def _convert_ecliptic_to_equatorial(params: Dict[str, Any]) -> None:
     # Store equatorial position as sexagesimal strings (expected by downstream)
     params['RAJ'] = format_ra(ra_rad)
     params['DECJ'] = format_dec(dec_rad)
+    # Keep exact radians for internal calculations.  Formatting ELONG/ELAT to
+    # RAJ/DECJ strings and parsing them back loses enough precision to create
+    # sub-ns annual Roemer terms for long, high-S/N data sets.
+    params['_raj_rad'] = float(ra_rad)
+    params['_decj_rad'] = float(dec_rad)
 
     # --- Proper motion conversion: ecliptic -> equatorial ---
     pm_lon = params.get(pm_lon_key, 0.0)  # mas/yr, includes cos(lat)

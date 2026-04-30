@@ -560,13 +560,13 @@ def compute_astrometric_delay(
 
     # Extract pulsar position (in radians)
     # Use jnp.float64 instead of float() so JAX can trace through this function
-    raj_value = params['RAJ']
+    raj_value = params.get('_raj_rad', params['RAJ'])
     if isinstance(raj_value, str):
         psr_ra = jnp.float64(parse_ra(raj_value))
     else:
         psr_ra = jnp.float64(raj_value)
 
-    decj_value = params['DECJ']
+    decj_value = params.get('_decj_rad', params['DECJ'])
     if isinstance(decj_value, str):
         psr_dec = jnp.float64(parse_dec(decj_value))
     else:
@@ -703,13 +703,13 @@ def compute_astrometry_derivatives(
     
     # Extract pulsar position (in radians)
     # RAJ/DECJ might be strings in HH:MM:SS format, need to parse
-    raj_value = params['RAJ']
+    raj_value = params.get('_raj_rad', params['RAJ'])
     if isinstance(raj_value, str):
         psr_ra = parse_ra(raj_value)
     else:
         psr_ra = float(raj_value)
     
-    decj_value = params['DECJ']
+    decj_value = params.get('_decj_rad', params['DECJ'])
     if isinstance(decj_value, str):
         psr_dec = parse_dec(decj_value)
     else:

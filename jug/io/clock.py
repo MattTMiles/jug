@@ -77,6 +77,7 @@ class ClockGraph:
     def __init__(self, clock_dir, target: str = "UTC"):
         self.clock_dir = Path(clock_dir)
         self.target = target.upper()
+        self._target_set = {self.target}
         # edges: list of (from_scale, to_scale, path)
         self._edges: list[tuple[str, str, Path]] = []
         self._build()
@@ -115,7 +116,7 @@ class ClockGraph:
         src = obs_scale.upper()
         dst = self.target
 
-        if src == dst:
+        if src in self._target_set:
             # Already at target — zero correction
             return {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0]),
                     'chain': []}
@@ -136,7 +137,8 @@ class ClockGraph:
             d, u = heapq.heappop(heap)
             if d > dist.get(u, 10**9):
                 continue
-            if u == dst:
+            if u in self._target_set:
+                dst = u  # record which alias was actually reached
                 break
             for v, edge_idx, weight in adj.get(u, []):
                 nd = d + weight
@@ -145,8 +147,18 @@ class ClockGraph:
                     prev[v] = (u, edge_idx)
                     heapq.heappush(heap, (nd, v))
 
+        # If the loop broke early, dst was updated to the reached alias.
+        # If the heap exhausted without breaking, fall back to whichever alias
+        # was reached with the shortest distance.
         if dst not in dist:
-            return None  # no path found
+            reached = min(
+                (n for n in self._target_set if n in dist),
+                key=lambda n: dist[n],
+                default=None,
+            )
+            if reached is None:
+                return None  # no path found
+            dst = reached
 
         # Reconstruct path
         edge_indices: list[int] = []

@@ -105,7 +105,7 @@ def compute_ssb_obs_pos_vel(
     if use_cache:
         from jug.utils.geom_cache import get_geometry_cache
         cache = get_geometry_cache()
-        cached = cache.load(tdb_mjd, obs_itrf_km, ephemeris=ephemeris)
+        cached = cache.load(tdb_mjd, obs_itrf_km, ephemeris=ephemeris + "_v2")
         if cached is not None:
             if _PROFILE_ENABLED:
                 _call_stats['compute_ssb_obs_pos_vel']['count'] += 1
@@ -139,31 +139,23 @@ def compute_ssb_obs_pos_vel(
         obs_itrf_km[2] * u.km
     )
 
-    # Get observatory position in GCRS (geocentric celestial reference system)
-    obs_gcrs = obs_itrf.get_gcrs(obstime=times)
+    # Get observatory position and velocity in GCRS using astropy's analytical method.
+    # This matches PINT's gcrs_posvel_from_itrf / get_gcrs_posvel approach and avoids
+    # the ~10 mm/s systematic error that the 1-second finite-difference introduced.
+    gcrs_pv = obs_itrf.get_gcrs_posvel(obstime=times)
     geo_obs_pos = np.column_stack([
-        obs_gcrs.cartesian.x.to(u.km).value,
-        obs_gcrs.cartesian.y.to(u.km).value,
-        obs_gcrs.cartesian.z.to(u.km).value
+        gcrs_pv[0].x.to(u.km).value,
+        gcrs_pv[0].y.to(u.km).value,
+        gcrs_pv[0].z.to(u.km).value
+    ])
+    geo_obs_vel = np.column_stack([
+        gcrs_pv[1].x.to(u.km/u.s).value,
+        gcrs_pv[1].y.to(u.km/u.s).value,
+        gcrs_pv[1].z.to(u.km/u.s).value
     ])
 
     if timings is not None:
-        timings['gcrs_transform'] = time.perf_counter() - t0
-        t0 = time.perf_counter()
-
-    # Compute observatory velocity via numerical derivative
-    dt_sec = 1.0  # 1 second timestep
-    times_plus = Time(tdb_mjd + dt_sec/SECS_PER_DAY, format='mjd', scale='tdb')
-    obs_gcrs_plus = obs_itrf.get_gcrs(obstime=times_plus)
-    geo_obs_pos_plus = np.column_stack([
-        obs_gcrs_plus.cartesian.x.to(u.km).value,
-        obs_gcrs_plus.cartesian.y.to(u.km).value,
-        obs_gcrs_plus.cartesian.z.to(u.km).value
-    ])
-    geo_obs_vel = (geo_obs_pos_plus - geo_obs_pos) / dt_sec  # km/s
-
-    if timings is not None:
-        timings['gcrs_transform_plus'] = time.perf_counter() - t0
+        timings['gcrs_posvel'] = time.perf_counter() - t0
         t0 = time.perf_counter()
 
     # Observatory position and velocity at SSB
@@ -171,7 +163,6 @@ def compute_ssb_obs_pos_vel(
     ssb_obs_vel = ssb_geo_vel + geo_obs_vel
 
     if timings is not None:
-        timings['velocity_derivation'] = time.perf_counter() - t0
         timings['cache_hit'] = False
     
     # Ensure float64 output
@@ -180,7 +171,7 @@ def compute_ssb_obs_pos_vel(
     
     # Save to disk cache
     if use_cache:
-        cache.save(tdb_mjd, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris=ephemeris)
+        cache.save(tdb_mjd, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris=ephemeris + "_v2")
     
     # Update profiling stats
     if _PROFILE_ENABLED:
@@ -197,13 +188,9 @@ def compute_ssb_obs_pos_vel_gcrs_posvel(
     ephemeris: str = "de440"
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute SSB position/velocity using EarthLocation.get_gcrs_posvel().
-    
-    This is an EXPERIMENTAL alternative to compute_ssb_obs_pos_vel that uses
-    Astropy's built-in get_gcrs_posvel() method instead of numerical
-    differentiation for velocity.
-    
-    WARNING: This function may NOT produce bit-for-bit identical results
-    to the baseline compute_ssb_obs_pos_vel. Use only if equivalence tests pass.
+
+    DEPRECATED: compute_ssb_obs_pos_vel now uses get_gcrs_posvel() directly.
+    This function is identical in behavior and kept only for reference.
     
     Parameters
     ----------
@@ -535,15 +522,30 @@ def compute_einstein_rate(tdb_mjd: np.ndarray, units: str = 'TDB') -> np.ndarray
     from astropy.time import Time
 
     dt_days = 0.001  # ~86 seconds, small enough for accurate derivative
-    tdb_arr = np.asarray(tdb_mjd, dtype=np.float64)
-    t1 = Time(tdb_arr, format='mjd', scale='tdb')
-    t2 = Time(tdb_arr + dt_days, format='mjd', scale='tdb')
 
-    # Use jd1/jd2 for full precision in the TT conversion
-    # TT difference = (tt2.jd1 - tt1.jd1) + (tt2.jd2 - tt1.jd2)
+    # Use longdouble then jd1/jd2 split to avoid "large_mjd + small_dt" float64
+    # precision loss. For MJD~57000, float64 ULP~1.3e-11 days gives rate noise
+    # ~9e-9, which is ~27x larger than the Einstein rate signal (~3e-10).
+    # With jd1/jd2 split, jd2~0.5 has ULP~1e-16 days → noise~1e-13 (negligible).
+    tdb_ld = np.asarray(tdb_mjd, dtype=np.longdouble)
+    mjd_int = np.floor(tdb_ld)
+    mjd_frac = tdb_ld - mjd_int
+    jd1 = (mjd_int + 2400000.0).astype(np.float64)
+    jd2 = (mjd_frac + 0.5).astype(np.float64)  # JD frac in [0.5, 1.5)
+
+    t1 = Time(jd1, jd2, format='jd', scale='tdb')
+    t2 = Time(jd1, jd2 + dt_days, format='jd', scale='tdb')
+
     tt1 = t1.tt
     tt2 = t2.tt
     tt_diff = (tt2.jd1 - tt1.jd1) + (tt2.jd2 - tt1.jd2)
     rate = dt_days / tt_diff
+
+    # Tempo2 applies DILATEFREQ in the model timescale.  For TCB par files,
+    # dTCB/dTT has the same periodic Einstein term as dTDB/dTT plus the
+    # constant Irwin-Fukushima scale factor.
+    if str(units).upper() == 'TCB':
+        from jug.utils.timescales import IFTE_K
+        rate = rate * np.float64(IFTE_K)
 
     return rate

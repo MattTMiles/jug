@@ -1727,7 +1727,18 @@ def _run_general_fit_iterations(
     xtol = 1e-12
     min_iterations = 5
     
-    # Compute initial full-model chi2 for comparison
+    # Save the exact prefit residual vector from the cached emission times
+    # before any fitter update touches params.  In particular, _update_param()
+    # rewrites _high_precision entries through float64, which is appropriate
+    # for fitted trial values but must not contaminate the reported prefit
+    # residuals.
+    _, residuals_prefit_sec_start, _ = compute_phase_residuals(
+        dt_sec_cached, params, weights, subtract_mean=True,
+        tzr_phase=setup.tzr_phase,
+        jump_phase=jump_phase_arr,
+    )
+
+    # Compute initial full-model chi2 for comparison.
     for i, param in enumerate(fit_params):
         _update_param(params, param, param_values_curr[i])
     _, current_chi2, current_rms_us, _ = _compute_full_model_residuals(params, setup)
@@ -2588,12 +2599,16 @@ def _run_general_fit_iterations(
         residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = _compute_full_model_residuals(params, setup)
         residuals_final_us = residuals_final_sec * 1e6
     
-    # Compute prefit residuals
+    # Compute prefit residuals.  Do not recompute them from ``setup`` here:
+    # accepted fitter steps re-baseline setup.dt_sec_* and setup.initial_*_delay
+    # to the current parameters.  Reusing that mutated setup with start params
+    # produces a hybrid residual vector.
     for i, param in enumerate(fit_params):
         _update_param(params, param, param_values_start[i])
-    
-    residuals_prefit_sec, _, prefit_rms_us, _ = _compute_full_model_residuals(params, setup)
+
+    residuals_prefit_sec = np.asarray(residuals_prefit_sec_start, dtype=np.float64)
     residuals_prefit_us = residuals_prefit_sec * 1e6
+    prefit_rms_us = np.sqrt(np.sum(residuals_prefit_sec**2 * weights) / np.sum(weights)) * 1e6
     
     # Restore final parameter values
     for i, param in enumerate(fit_params):
@@ -2992,6 +3007,3 @@ def _fit_parameters_general(
         print(f"{'='*80}")
     
     return result
-
-
-

@@ -75,6 +75,8 @@ _OBS_CLOCK_SCALE = {
     'jbroach':   'UTC(JBROACH)',
     'jbdfb':     'UTC(JBDFB)',
     'jbmk2roach': 'UTC(JB)',
+    'jb42':      'UTC(JBROACH)',
+    'jb_42ft':   'UTC(JBROACH)',
     'gmrt':      'UTC(GMRT)',
 }
 
@@ -230,12 +232,23 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
 def _load_bipm_clock(clock_dir, params, verbose=False):
     """Load the appropriate TAI→TT BIPM clock file.
 
-    Reads the CLK parameter from *params* (e.g. ``TT(BIPM2024)``), extracts
-    the year, and loads ``tai2tt_bipmYYYY.clk``.  Falls back to bipm2024.
+    Reads the CLK/CLOCK parameter from *params* (e.g. ``TT(BIPM2024)``), extracts
+    the year, and loads ``tai2tt_bipmYYYY.clk``.  For ``TT(TAI)``, return a
+    zero BIPM correction because Astropy already converts UTC to TT(TAI).
+    Falls back to bipm2024 only when no explicit BIPM version is found.
     """
     import re
     clock_dir = Path(clock_dir)
-    clk_param = str(params.get('CLK', '')).strip()
+    clk_param = str(params.get('CLK', params.get('CLOCK', ''))).strip()
+
+    if re.search(r'TT\s*\(\s*TAI\s*\)', clk_param, re.IGNORECASE):
+        if verbose:
+            print("   CLK=TT(TAI): using zero BIPM correction")
+        return {
+            'mjd': np.array([40000.0, 100000.0], dtype=np.float64),
+            'offset': np.array([32.184, 32.184], dtype=np.float64),
+        }, 'tai'
+
     bipm_version = 'bipm2024'
     if clk_param:
         m = re.search(r'BIPM(\d{4})', clk_param, re.IGNORECASE)
@@ -265,7 +278,7 @@ def _get_known_par_keywords():
     # Metadata/directives that are valid but not timing parameters
     known |= {
         'PSRJ', 'PSRB', 'PSR', 'PSRNAME',
-        'EPHEM', 'EPHVER', 'CLK', 'UNITS', 'TIMEEPH', 'T2CMETHOD',
+        'EPHEM', 'EPHVER', 'CLK', 'CLOCK', 'UNITS', 'TIMEEPH', 'T2CMETHOD',
         'MODE', 'NITS', 'NTOA', 'TRES', 'CHI2R',
         'START', 'FINISH', 'TRACK',
         'TZRMJD', 'TZRFRQ', 'TZRSITE',
@@ -922,7 +935,8 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     if dilate_freq:
         from jug.delays.barycentric import compute_einstein_rate
         tzr_einstein_rate = compute_einstein_rate(
-            np.array([float(TZRMJD_TDB)]), units=params.get('_par_timescale', 'TDB')
+            np.array([float(TZRMJD_TDB)]),
+            units=params.get('_timescale_in', params.get('_par_timescale', 'TDB'))
         )
     tzr_freq_bary = compute_barycentric_freq(np.array([tzr_freq]), tzr_ssb_obs_vel, tzr_L_hat,
                                               einstein_rate=tzr_einstein_rate)[0]
@@ -1310,7 +1324,7 @@ def compute_residuals_simple(
     einstein_rate = None
     if dilate_freq:
         from jug.delays.barycentric import compute_einstein_rate
-        units = params.get('_par_timescale', 'TDB')
+        units = params.get('_timescale_in', params.get('_par_timescale', 'TDB'))
         einstein_rate = compute_einstein_rate(tdb_mjd, units=units)
         if verbose:
             rate_dev = einstein_rate - 1.0
@@ -1400,9 +1414,15 @@ def compute_residuals_simple(
             
             mjd_obs = mjd_utc_arr[idxs]
             obs_times = Time(mjd_obs, format='mjd', scale='utc')
-            topocentric_frame = AltAz(obstime=obs_times, location=obs_loc)
-            source_altaz = source_coord.transform_to(topocentric_frame)
-            elevation_deg = source_altaz.alt.deg
+            # Geometric elevation without annual aberration, matching Tempo2's
+            # asin(dot(zenith_gcrs, source_equatorial)) calculation.
+            # AltAz uses GCRS (includes ~20 arcsec aberration) which diverges badly
+            # near the horizon in the NMF height correction term.
+            last = obs_times.sidereal_time('apparent', longitude=obs_loc.lon)
+            ha_rad = (last - source_coord.ra).rad
+            sin_el = (np.sin(obs_loc.lat.rad) * np.sin(source_coord.dec.rad) +
+                      np.cos(obs_loc.lat.rad) * np.cos(source_coord.dec.rad) * np.cos(ha_rad))
+            elevation_deg = np.degrees(np.arcsin(np.clip(sin_el, -1.0, 1.0)))
             
             tropo_obs = np.asarray(compute_tropospheric_delay(
                 elevation_deg=elevation_deg,

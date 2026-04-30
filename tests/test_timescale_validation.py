@@ -34,6 +34,17 @@ TDB_PAR_FILE = str(par_path)
 TIM_FILE = str(tim_path)
 
 
+def test_einstein_rate_tcb_includes_ifte_scale():
+    """DILATEFREQ in a TCB model must include the constant TCB/TDB rate."""
+    from jug.delays.barycentric import compute_einstein_rate
+    from jug.utils.timescales import IFTE_K
+
+    tdb_rate = compute_einstein_rate([58000.0], units="TDB")[0]
+    tcb_rate = compute_einstein_rate([58000.0], units="TCB")[0]
+
+    assert tcb_rate / tdb_rate == pytest.approx(float(IFTE_K), rel=0.0, abs=1e-15)
+
+
 def test_timescale_validation():
     """Test par file timescale validation and TCB->TDB conversion."""
     import io

@@ -7,7 +7,7 @@ dependencies:
   - python>=3.12
 
   # Core scientific stack
-  - numpy>=2.3
+  - numpy>=2.4
   - scipy>=1.17
   - astropy>=7.2
 

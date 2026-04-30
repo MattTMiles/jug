@@ -278,7 +278,7 @@ def _get_known_par_keywords():
     # Metadata/directives that are valid but not timing parameters
     known |= {
         'PSRJ', 'PSRB', 'PSR', 'PSRNAME',
-        'EPHEM', 'EPHVER', 'CLK', 'CLOCK', 'UNITS', 'TIMEEPH', 'T2CMETHOD',
+        'EPHEM', 'EPHVER', 'CLK', 'CLOCK', 'ECL', 'UNITS', 'TIMEEPH', 'T2CMETHOD',
         'MODE', 'NITS', 'NTOA', 'TRES', 'CHI2R',
         'START', 'FINISH', 'TRACK',
         'TZRMJD', 'TZRFRQ', 'TZRSITE',
@@ -1245,8 +1245,8 @@ def compute_residuals_simple(
     # Astrometry
     if verbose: print(f"\n4. Computing astrometric delays...")
     ephem = _resolve_ephemeris(str(params.get('EPHEM', 'de440')).lower())
-    ra_rad = parse_ra(params['RAJ'])
-    dec_rad = parse_dec(params['DECJ'])
+    ra_rad = float(params.get('_raj_rad', parse_ra(params['RAJ'])))
+    dec_rad = float(params.get('_decj_rad', parse_dec(params['DECJ'])))
     pmra_rad_day = params.get('PMRA', 0.0) * (np.pi / 180 / 3600000) / 365.25
     pmdec_rad_day = params.get('PMDEC', 0.0) * (np.pi / 180 / 3600000) / 365.25
     posepoch = params.get('POSEPOCH', params['PEPOCH'])

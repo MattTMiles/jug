@@ -161,6 +161,8 @@ def _reconvert_ecliptic_to_equatorial(params: Dict) -> None:
 
     params['RAJ'] = format_ra(ra_rad)
     params['DECJ'] = format_dec(dec_rad)
+    params['_raj_rad'] = float(ra_rad)
+    params['_decj_rad'] = float(dec_rad)
 
     # Reconvert proper motions if present
     pm_lon = params.get('_ecliptic_pm_lon', 0.0)

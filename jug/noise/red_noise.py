@@ -102,6 +102,7 @@ def build_fourier_design_matrix(
     toas_mjd: np.ndarray,
     n_harmonics: int = 30,
     Tspan_days: Optional[float] = None,
+    reference_mjd: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build a Fourier design matrix for red/DM noise.
 
@@ -114,6 +115,10 @@ def build_fourier_design_matrix(
     Tspan_days : float, optional
         Time span in days.  If None, uses max(toas_mjd) - min(toas_mjd).
         The fundamental frequency is 1/Tspan.
+    reference_mjd : float, optional
+        Reference epoch subtracted before evaluating Fourier phases. If None,
+        use the first TOA, preserving the historical JUG convention. PINT uses
+        absolute TDB seconds, which is equivalent to reference_mjd=0.
 
     Returns
     -------
@@ -135,8 +140,8 @@ def build_fourier_design_matrix(
     # Fourier frequencies: k/Tspan for k = 1, ..., n_harmonics
     freqs_hz = np.arange(1, n_harmonics + 1, dtype=np.float64) / Tspan_sec
 
-    # Reference time at start of span
-    t0_mjd = toas_mjd.min()
+    # Reference time for Fourier phases.
+    t0_mjd = toas_mjd.min() if reference_mjd is None else float(reference_mjd)
     t_sec = (toas_mjd - t0_mjd) * SECS_PER_DAY
 
     F = np.asarray(_fourier_design_jax(jnp.array(t_sec), jnp.array(freqs_hz)))
@@ -255,6 +260,7 @@ class RedNoiseProcess:
         self,
         toas_mjd: np.ndarray,
         Tspan_days: Optional[float] = None,
+        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build Fourier basis F and diagonal prior phi.
 
@@ -273,7 +279,7 @@ class RedNoiseProcess:
             Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, Tspan_days
+            toas_mjd, self.n_harmonics, Tspan_days, reference_mjd=reference_mjd
         )
         # Frequency resolution (all harmonics equally spaced)
         df = freqs[0]  # = 1/T_span (fundamental frequency = frequency spacing)
@@ -334,6 +340,7 @@ class DMNoiseProcess:
         toas_mjd: np.ndarray,
         freq_mhz: np.ndarray,
         Tspan_days: Optional[float] = None,
+        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build chromatic Fourier basis F_dm and diagonal prior phi.
 
@@ -360,7 +367,7 @@ class DMNoiseProcess:
             Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, Tspan_days
+            toas_mjd, self.n_harmonics, Tspan_days, reference_mjd=reference_mjd
         )
         # Chromatic weighting: (1400 / nu)^2
         # Using 1400 MHz as normalisation keeps numerical values ~= O(1)
@@ -425,6 +432,7 @@ class ChromaticNoiseProcess:
         toas_mjd: np.ndarray,
         freq_mhz: np.ndarray,
         Tspan_days: Optional[float] = None,
+        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build chromatic Fourier basis F_dm and diagonal prior phi.
 
@@ -451,7 +459,7 @@ class ChromaticNoiseProcess:
             Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, Tspan_days
+            toas_mjd, self.n_harmonics, Tspan_days, reference_mjd=reference_mjd
         )
         # Chromatic weighting: (1400 / nu)^\beta
         # Using 1400 MHz as normalisation keeps numerical values ~= O(1)
@@ -504,6 +512,7 @@ class BandNoiseProcess:
         toas_mjd: np.ndarray,
         freq_mhz: np.ndarray,
         Tspan_days: Optional[float] = None,
+        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build masked Fourier basis and prior for this band.
 
@@ -511,7 +520,7 @@ class BandNoiseProcess:
         """
         mask = (freq_mhz >= self.freq_lo) & (freq_mhz < self.freq_hi)
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, Tspan_days
+            toas_mjd, self.n_harmonics, Tspan_days, reference_mjd=reference_mjd
         )
         # Zero out rows for TOAs outside the band
         F = F * mask[:, None].astype(F.dtype)
@@ -559,6 +568,7 @@ class GroupNoiseProcess:
         toas_mjd: np.ndarray,
         group_flags: np.ndarray,
         Tspan_days: Optional[float] = None,
+        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build masked Fourier basis and prior for this group.
 
@@ -576,7 +586,7 @@ class GroupNoiseProcess:
         if use_Tspan is None and np.any(mask):
             use_Tspan = float(toas_mjd[mask].max() - toas_mjd[mask].min())
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, use_Tspan
+            toas_mjd, self.n_harmonics, use_Tspan, reference_mjd=reference_mjd
         )
         # Zero out rows for non-matching TOAs
         F = F * mask[:, None].astype(F.dtype)

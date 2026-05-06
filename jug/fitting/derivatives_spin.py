@@ -196,10 +196,11 @@ def compute_spin_derivatives(
             # Apply PINT's convention (timing_model.py line 2365):
             # q = -self.d_phase_d_param(toas, delay, param)
             # Then divide by F0 to convert phase -> time units (line 2368)
-            f0 = params.get('F0', 1.0)
+            # params['F0'] may be np.longdouble for scalar storage precision.
+            # JAX kernels only support float64, so cast at the JAX boundary.
+            f0 = float(params.get('F0', 1.0))
             derivatives[param] = -deriv_phase / f0  # seconds/Hz (NEGATIVE)
     
     return derivatives
-
 
 

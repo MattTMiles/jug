@@ -79,6 +79,16 @@ from jug.model.parameter_spec import (
 from jug.utils.constants import HIGH_PRECISION_PARAMS
 
 
+def _format_longdouble(value: np.longdouble) -> str:
+    """Format a longdouble scalar without routing through float64."""
+    return np.format_float_scientific(
+        np.longdouble(value),
+        precision=24,
+        unique=False,
+        trim='0',
+    )
+
+
 def _update_param(params: Dict, param: str, value: float) -> None:
     """Update a parameter value, keeping _high_precision cache consistent.
 
@@ -124,14 +134,18 @@ def _update_param(params: Dict, param: str, value: float) -> None:
         _reconvert_ecliptic_to_equatorial(params)
         return
 
-    params[param_upper] = value
+    hp_value = None
+    if param_upper in HIGH_PRECISION_PARAMS:
+        hp_value = np.longdouble(value)
+        params[param_upper] = hp_value
+    else:
+        params[param_upper] = value
     # Keep _high_precision in sync so get_longdouble() returns the fitted
     # value during iterations (otherwise compute_phase_residuals uses stale
     # F0/F1 from the original par file, breaking the nonlinear model).
-    # Session.py reconstructs full longdouble HP after the fit completes.
-    hp = params.get('_high_precision')
-    if hp is not None and param_upper in hp:
-        hp[param_upper] = repr(float(value))
+    hp = params.setdefault('_high_precision', {})
+    if param_upper in HIGH_PRECISION_PARAMS:
+        hp[param_upper] = _format_longdouble(hp_value)
 
 
 def _reconvert_ecliptic_to_equatorial(params: Dict) -> None:
@@ -967,7 +981,11 @@ def _build_setup_common(
             print("[SETUP] Converting RNAMP/RNIDX to TNRedAmp/TNRedGam format")
 
     if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
-        red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
+        # PINT evaluates Fourier red-noise phases using absolute barycentric
+        # TDB seconds (tdbld * day). Match that convention for GLS parity.
+        red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(
+            tdb_mjd, reference_mjd=0.0
+        )
         print(f"[SETUP] Building RED NOISE basis: {red_noise_basis.shape[1]} columns")
         if verbose:
             print(f"  Red noise: log10_A={red_noise_proc.log10_A:.3f}, "
@@ -976,7 +994,7 @@ def _build_setup_common(
 
     if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
         dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
-            toas_mjd, freq_mhz_bary
+            tdb_mjd, freq_mhz_bary, reference_mjd=0.0
         )
         print(f"[SETUP] Building DM NOISE basis: {dm_noise_basis.shape[1]} columns")
         if verbose:
@@ -986,7 +1004,7 @@ def _build_setup_common(
 
     if chromatic_noise_proc is not None and noise_config.is_enabled("ChromaticNoise"):        
         chromatic_noise_basis, chromatic_noise_prior = chromatic_noise_proc.build_basis_and_prior(
-            toas_mjd, freq_mhz_bary
+            tdb_mjd, freq_mhz_bary, reference_mjd=0.0
         )
         print(f"[SETUP] Building CHROMATIC NOISE basis: {chromatic_noise_basis.shape[1]} columns")
         if verbose:
@@ -1010,7 +1028,9 @@ def _build_setup_common(
             band_noise_priors = []
             band_noise_labels = []
             for bp in band_procs:
-                F, phi = bp.build_basis_and_prior(toas_mjd, freq_mhz_bary)
+                F, phi = bp.build_basis_and_prior(
+                    tdb_mjd, freq_mhz_bary, reference_mjd=0.0
+                )
                 band_noise_bases.append(F)
                 band_noise_priors.append(phi)
                 label = f"BandNoise_{int(bp.freq_lo)}_{int(bp.freq_hi)}"
@@ -1028,7 +1048,9 @@ def _build_setup_common(
             group_noise_priors = []
             group_noise_labels = []
             for gp in group_procs:
-                F, phi = gp.build_basis_and_prior(toas_mjd, group_flags=group_flags)
+                F, phi = gp.build_basis_and_prior(
+                    tdb_mjd, group_flags=group_flags, reference_mjd=0.0
+                )
                 group_noise_bases.append(F)
                 group_noise_priors.append(phi)
                 label = f"GroupNoise_{gp.group_name}"
@@ -1041,7 +1063,7 @@ def _build_setup_common(
     dmx_labels = None
     from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
     dmx_ranges = parse_dmx_ranges(params)
-    if dmx_ranges:
+    if dmx_ranges and noise_config.is_enabled("DMX"):
         dmx_design_matrix, dmx_labels = build_dmx_design_matrix(
             toas_mjd, freq_mhz_bary, dmx_ranges
         )
@@ -1208,6 +1230,9 @@ def _build_setup_common(
         elif param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
             kin_deg = float(params.get('KIN', 0.0))
             value = float(jnp.sin(jnp.deg2rad(kin_deg)))
+        elif param.upper() in HIGH_PRECISION_PARAMS:
+            from jug.io.par_reader import get_longdouble
+            value = get_longdouble(params, param)
         elif isinstance(value, str):
             value = float(value)
         param_values_start.append(value)
@@ -1726,7 +1751,7 @@ def _run_general_fit_iterations(
     from jug.io.par_reader import get_longdouble
 
     # Convergence criteria
-    xtol = 1e-12
+    xtol = convergence_threshold
     min_iterations = 5
     
     # Save the exact prefit residual vector from the cached emission times
@@ -2015,12 +2040,15 @@ def _run_general_fit_iterations(
         # Batch spin parameters (spec-driven routing via component)
         spin_derivs = {}
         if spin_params_list:
-            spin_derivs = compute_spin_derivatives(params, toas_mjd, spin_params_list)
+            # PINT spin derivatives are evaluated at barycentric TDB TOAs.
+            spin_derivs = compute_spin_derivatives(params, tdb_mjd, spin_params_list)
 
         # Batch DM parameters (spec-driven routing via component)
         dm_derivs = {}
         if dm_params_list:
-            dm_derivs = compute_dm_derivatives(params, toas_mjd, freq_mhz, dm_params_list)
+            # DM polynomial terms are evaluated at barycentric TDB TOAs in the
+            # forward model; use the same time argument for derivative parity.
+            dm_derivs = compute_dm_derivatives(params, tdb_mjd, freq_mhz, dm_params_list)
 
         # Batch binary parameters (routed via binary_registry)
         # Use PINT-compatible pre-binary time (roemer_shapiro + DM + SW + tropo)
@@ -2031,7 +2059,9 @@ def _run_general_fit_iterations(
                     "Binary fitting requires prebinary_delay_sec in setup. "
                     "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
                 )
-            toas_prebinary_mjd = toas_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
+            # PINT evaluates binary derivatives at the pre-binary barycentric
+            # arrival time, not raw topocentric/SAT MJD.
+            toas_prebinary_mjd = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
             # Pass obs_pos_ls for DDK Kopeikin parallax corrections
             binary_derivs = compute_binary_derivatives(
                 params, toas_prebinary_mjd, binary_params_list, 
@@ -2117,7 +2147,10 @@ def _run_general_fit_iterations(
         M = np.empty((len(toas_mjd), total_cols), dtype=np.float64)
         col = 0
         if has_offset:
-            M[:, 0] = 1.0
+            # Match PINT's implicit Offset column. The design matrix is in
+            # seconds, while Offset is a phase offset in cycles, so
+            # d(residual_time)/dOffset = 1/F0.
+            M[:, 0] = 1.0 / float(params.get('F0', 1.0))
             col = 1
         for i, mc in enumerate(M_columns):
             M[:, col + i] = np.asarray(mc, dtype=np.float64)
@@ -2269,6 +2302,14 @@ def _run_general_fit_iterations(
             if verbose:
                 print(f"         GLS: NS-RMS {_wls_ns_rms:.4f} -> {_gls_ns_rms:.4f} us"
                       f" (NL-RMS {trial_nl_rms:.4f} us)")
+
+            if _gls_ns_rms > _wls_ns_rms * (1.0 + 1e-6):
+                for i, p in enumerate(fit_params):
+                    _update_param(params, p, param_values_curr[i])
+                converged = True
+                if verbose:
+                    print("         (GLS step rejected: noise-subtracted RMS worsened, converged)")
+                break
 
             # Accept GLS corrections: update params and save state
             param_values_curr = trial_param_values
@@ -2436,7 +2477,7 @@ def _run_general_fit_iterations(
         rms_history.append(current_rms_us)
 
         # Check convergence based on parameter changes becoming small
-        param_norm = np.linalg.norm(param_values_curr)
+        param_norm = np.linalg.norm(np.asarray(param_values_curr, dtype=np.float64))
         delta_norm = np.linalg.norm(delta_params)
         param_converged = delta_norm <= xtol * (param_norm + xtol)
         
@@ -2461,18 +2502,16 @@ def _run_general_fit_iterations(
             # Single-step forced convergence was wrong: one linearized GLS step
             # can make large binary param jumps (e.g. KOM ~4°) before the noise
             # model has converged, landing at a wrong local minimum.
-            # Use loose relative tol since GLS noise fitting is inherently
-            # less precise than WLS timing (1e-6 relative is ~ns level).
-            gls_rel_tol = 1e-6
-            param_norm_safe = max(np.linalg.norm(param_values_curr), 1.0)
-            if iteration >= min_iterations and delta_norm <= gls_rel_tol * param_norm_safe:
+            # Do not let RMS-flat convergence stop GLS early: parameter/noise
+            # cross-talk can leave a small but deterministic F0 step.
+            converged = False
+            if iteration >= min_iterations and delta_norm <= convergence_threshold:
                 converged = True
         elif _gls_phase and _dmx_only and iteration >= min_iterations:
             # DMX-only GLS: DMX is solved afresh each iter (no accumulation),
-            # so convergence = timing-param convergence at ~1e-6 relative tol.
-            rel_tol = 1e-6
-            param_norm_safe = max(np.linalg.norm(param_values_curr), 1.0)
-            if delta_norm <= rel_tol * param_norm_safe:
+            # so convergence = timing-param convergence.
+            converged = False
+            if delta_norm <= convergence_threshold:
                 converged = True
 
         if verbose:
@@ -2514,7 +2553,7 @@ def _run_general_fit_iterations(
         _tn_spin_fit = [p for p in ['F0', 'F1'] if p in fit_params]
         if n_red_noise_cols > 0 and _tn_spin_fit:
             _tn_spin_derivs = compute_spin_derivatives(
-                params, toas_mjd, _tn_spin_fit)
+                params, tdb_mjd, _tn_spin_fit)
             _tn_cols = [_tn_spin_derivs[p] for p in _tn_spin_fit]
             _tn_cols.append(np.ones(len(toas_mjd)))  # constant offset
             M_poly = np.column_stack(_tn_cols)
@@ -2540,7 +2579,7 @@ def _run_general_fit_iterations(
         _tn_dm_fit = [p for p in ['DM', 'DM1', 'DM2'] if p in fit_params]
         if n_dm_noise_cols > 0 and _tn_dm_fit:
             _tn_dm_derivs = compute_dm_derivatives(
-                params, toas_mjd, freq_mhz, _tn_dm_fit)
+                params, tdb_mjd, freq_mhz, _tn_dm_fit)
             _tn_dm_cols = [_tn_dm_derivs[p] for p in _tn_dm_fit]
             M_dm_poly = np.column_stack(_tn_dm_cols)
             w = 1.0 / errors_sec
@@ -2625,6 +2664,8 @@ def _run_general_fit_iterations(
     # nonlinear residuals using the Woodbury identity (noise-only Wiener filter).
     # This is appropriate post-convergence because the timing model is fixed.
     noise_realizations = {}
+    noise_coefficients = {}
+    gls_debug = {}
     if n_augmented > 0:
         # Re-solve noise at the final nonlinear residuals
         nl_resid_sec, _, _, _ = _compute_full_model_residuals(params, setup)
@@ -2697,12 +2738,24 @@ def _run_general_fit_iterations(
                     optimal_noise_coeffs = np.zeros(n_augmented)
                     C_post = None
 
+            if _saved_residuals_sec is not None and _saved_M is not None:
+                gls_debug = {
+                    'saved_residuals_sec': np.asarray(_saved_residuals_sec).copy(),
+                    'saved_design_matrix': np.asarray(_saved_M).copy(),
+                    'saved_delta_all': np.asarray(_saved_delta_all).copy(),
+                    'n_timing_cols': n_timing_cols,
+                    'noise_labels': list(noise_labels),
+                    'noise_phiinv': np.asarray(_gls_phiinv_raw).copy(),
+                    'errors_sec': np.asarray(errors_sec).copy(),
+                }
+
             # Build noise realizations from re-solved coefficients
             offset = 0
             for label, nc in noise_labels:
                 coeffs = optimal_noise_coeffs[offset:offset + nc]
                 idx = [i for i, (l, _) in enumerate(noise_labels) if l == label][0]
                 F = noise_bases[idx]
+                noise_coefficients[label] = coeffs.copy()
                 noise_realizations[label] = (F @ coeffs) * 1e6
                 if C_post is not None:
                     C_block = C_post[offset:offset + nc, offset:offset + nc]
@@ -2782,6 +2835,8 @@ def _run_general_fit_iterations(
         'covariance': cov,
         'final_chi2': final_chi2,
         'noise_realizations': noise_realizations,
+        'noise_coefficients': noise_coefficients,
+        'gls_debug': gls_debug,
         'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
     }
 

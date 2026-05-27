@@ -11,6 +11,7 @@ from typing import List, Dict
 import numpy as np
 import erfa
 from astropy.time import Time, TimeDelta
+from astropy.time.formats import TimeFormat
 from astropy.coordinates import EarthLocation
 
 from jug.utils.constants import SECS_PER_DAY
@@ -234,6 +235,124 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
     return toas
 
 
+
+def _two_sum(a, b):
+    """Error-free transform of a + b for float64 arrays/scalars."""
+    x = a + b
+    eb = x - a
+    ea = x - eb
+    return x, (a - ea) + (b - eb)
+
+
+def _split(a):
+    c = 134217729.0 * a  # 2**27 + 1, for IEEE double splitting
+    abig = c - a
+    ahi = c - abig
+    alo = a - ahi
+    return ahi, alo
+
+
+def _two_product(a, b):
+    """Error-free transform of a * b for float64 arrays/scalars."""
+    x = a * b
+    ahi, alo = _split(a)
+    bhi, blo = _split(b)
+    y = alo * blo - (((x - ahi * bhi) - alo * bhi) - ahi * blo)
+    return x, y
+
+
+def _day_frac(val1, val2, factor=None, divisor=None):
+    """Return val1 + val2 as two float64 parts without losing low bits."""
+    sum12, err12 = _two_sum(val1, val2)
+
+    if factor is not None:
+        sum12, carry = _two_product(sum12, factor)
+        carry += err12 * factor
+        sum12, err12 = _two_sum(sum12, carry)
+
+    if divisor is not None:
+        q1 = sum12 / divisor
+        p1, p2 = _two_product(q1, divisor)
+        d1, d2 = _two_sum(sum12, -p1)
+        d2 += err12
+        d2 -= p2
+        q2 = (d1 + d2) / divisor
+        sum12, err12 = _two_sum(q1, q2)
+
+    day = np.round(sum12)
+    extra, frac = _two_sum(sum12, -day)
+    frac += extra + err12
+
+    excess = np.round(frac)
+    day += excess
+    extra, frac = _two_sum(sum12, -day)
+    frac += extra + err12
+    return day, frac
+
+
+def _mjd_strings_to_split(mjd_strings):
+    """Parse TIM MJD strings to compensated day/fraction float64 parts."""
+    mjd_strings = list(mjd_strings)
+    imjd = np.empty(len(mjd_strings), dtype=np.float64)
+    fmjd = np.empty(len(mjd_strings), dtype=np.float64)
+    for i, mjd_str in enumerate(mjd_strings):
+        ss = str(mjd_str).lower().strip()
+        if 'e' in ss or 'd' in ss:
+            ss = ss.replace('d', 'e')
+            mjd_ld = np.longdouble(ss)
+            whole = np.floor(mjd_ld)
+            imjd[i] = float(whole)
+            fmjd[i] = float(mjd_ld - whole)
+            continue
+        parts = ss.split('.')
+        if len(parts) == 1:
+            parts.append('0')
+        int_part, frac_part = parts
+        imjd[i] = float(int(int_part))
+        fmjd[i] = float('0.' + frac_part)
+        if ss.startswith('-'):
+            fmjd[i] = -fmjd[i]
+    return _day_frac(imjd, fmjd)
+
+
+
+class _JUGPulsarMJD(TimeFormat):
+    """Astropy Time format for pulsar UTC MJDs with 86400-second days."""
+
+    name = "jug_pulsar_mjd"
+
+    def set_jds(self, val1, val2):
+        if self.scale == "utc":
+            self.jd1, self.jd2 = _mjds_to_jds_pulsar(val1, val2)
+        else:
+            self.jd1, self.jd2 = _day_frac(val1 + erfa.DJM0, val2)
+
+    @property
+    def value(self):
+        return _time_to_mjd_long(self)
+
+
+def _mjds_to_jds_pulsar(mjd1, mjd2):
+    """Convert pulsar UTC MJD split to JD split using 86400-second days."""
+    v1, v2 = _day_frac(mjd1, mjd2)
+    y, mo, d, f = erfa.jd2cal(erfa.DJM0 + v1, v2)
+
+    f *= 24.0
+    h = np.floor(f).astype(int)
+    f -= h
+    f *= 60.0
+    m = np.floor(f).astype(int)
+    f -= m
+    s = f * 60.0
+    return erfa.dtf2d("UTC", y, mo, d, h, m, s)
+
+
+def _time_to_mjd_long(time_obj):
+    """Extract Time MJD using compensated JD split, without PINT helpers."""
+    mjd1, mjd2 = _day_frac(time_obj.jd1 - erfa.DJM0, time_obj.jd2)
+    return np.asarray(mjd1, dtype=np.longdouble) + np.asarray(mjd2, dtype=np.longdouble)
+
+
 def parse_mjd_string(mjd_str: str) -> tuple[int, float]:
     """Parse high-precision MJD string into (int, frac) components.
 
@@ -273,6 +392,7 @@ def compute_tdb_standalone_vectorized(
     obs_chain, bipm_clock,
     location: EarthLocation,
     time_offsets: np.ndarray | None = None,
+    mjd_strings: list[str] | np.ndarray | None = None,
     # Legacy keyword arguments kept for backward compatibility; ignored.
     gps_clock=None, mk_clock=None, skip_gps_correction=None,
 ) -> np.ndarray:
@@ -307,6 +427,10 @@ def compute_tdb_standalone_vectorized(
     time_offsets : np.ndarray or None, optional
         Per-TOA time offsets in seconds (e.g. from TIM ``-to`` flags).
         Added to the clock corrections before TDB conversion.
+    mjd_strings : list[str] or np.ndarray or None, optional
+        Original TIM MJD strings. When available, these are used for UTC Time
+        construction to avoid losing one longdouble MJD ULP through float64
+        fractional-day reconstruction.
 
     Returns
     -------
@@ -358,38 +482,25 @@ def compute_tdb_standalone_vectorized(
     # to get proper JD values that handle leap seconds correctly (same as
     # PINT's pulsar_mjd format).
 
-    int_arr = np.array(mjd_ints, dtype=np.float64)
-    frac_arr = np.array(mjd_fracs, dtype=np.float64)
+    if mjd_strings is not None:
+        int_arr, frac_arr = _mjd_strings_to_split(mjd_strings)
+    else:
+        int_arr = np.array(mjd_ints, dtype=np.float64)
+        frac_arr = np.array(mjd_fracs, dtype=np.float64)
 
-    # Add clock corrections to the fractional day
-    frac_arr = frac_arr + total_corrs / SECS_PER_DAY
-
-    # Convert MJD integer+frac to calendar date via ERFA
-    y, mo, d, fd = erfa.jd2cal(erfa.DJM0 + int_arr, frac_arr)
-
-    # Convert fractional day to H:M:S using 86400 s/day (pulsar convention)
-    fd_sec = fd * SECS_PER_DAY
-    h = np.floor(fd_sec / 3600.0).astype(int)
-    fd_sec -= h * 3600.0
-    m = np.floor(fd_sec / 60.0).astype(int)
-    s = fd_sec - m * 60.0
-
-    # Use erfa.dtf2d to create JD values that properly handle leap seconds
-    jd1, jd2 = erfa.dtf2d("UTC", y, mo, d, h, m, s)
-
-    time_utc = Time(val=jd1, val2=jd2, format='jd', scale='utc',
-                    location=location, precision=9)
+    # Build the raw pulsar UTC time first, then add clock corrections as a
+    # TimeDelta. Folding sub-second clock terms into an MJD fraction can lose
+    # one longdouble MJD ULP near modern epochs. Using a TimeFormat keeps
+    # astropy's internal split consistent through UTC->TDB conversion.
+    time_utc = Time(val=int_arr, val2=frac_arr, format='jug_pulsar_mjd',
+                    scale='utc', location=location, precision=9)
+    time_utc = time_utc + TimeDelta(total_corrs, format='sec')
 
     # Convert to TDB (vectorized)
     # Return TDB with full precision using double-double representation
     tdb_time = time_utc.tdb
 
-    # Extract as longdouble: (jd1 - MJD_offset) + jd2
-    MJD_OFFSET = 2400000.5
-    tdb_mjd = np.array(tdb_time.jd1 - MJD_OFFSET, dtype=np.longdouble) + \
-              np.array(tdb_time.jd2, dtype=np.longdouble)
-
-    return tdb_mjd
+    return _time_to_mjd_long(tdb_time)
 
 
 def write_tim_file(toas: List[SimpleTOA], path: Path | str) -> None:

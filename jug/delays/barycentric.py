@@ -97,15 +97,19 @@ def compute_ssb_obs_pos_vel(
         call_site = ' -> '.join(f"{s.filename.split('/')[-1]}:{s.lineno}" for s in stack[:-1])
         _call_stats['compute_ssb_obs_pos_vel']['call_sites'].append(call_site)
     
-    # Ensure arrays are proper dtype
-    tdb_mjd = np.asarray(tdb_mjd, dtype=np.float64)
+    # Keep TDB as longdouble until Astropy Time construction. Casting modern
+    # MJDs to float64 here shifts Earth/observatory positions by millimeters,
+    # leaving ~10 ps annual structure in Roemer-delay parity checks.
+    tdb_mjd_ld = np.asarray(tdb_mjd, dtype=np.longdouble)
+    tdb_mjd_cache = np.asarray(tdb_mjd_ld, dtype=np.float64)
     obs_itrf_km = np.asarray(obs_itrf_km, dtype=np.float64)
     
     # Try disk cache first
+    cache_ephem = ephemeris + "_v3"
     if use_cache:
         from jug.utils.geom_cache import get_geometry_cache
         cache = get_geometry_cache()
-        cached = cache.load(tdb_mjd, obs_itrf_km, ephemeris=ephemeris + "_v2")
+        cached = cache.load(tdb_mjd_cache, obs_itrf_km, ephemeris=cache_ephem)
         if cached is not None:
             if _PROFILE_ENABLED:
                 _call_stats['compute_ssb_obs_pos_vel']['count'] += 1
@@ -116,7 +120,13 @@ def compute_ssb_obs_pos_vel(
     
     t0 = time.perf_counter() if timings is not None else None
     
-    times = Time(tdb_mjd, format='mjd', scale='tdb')
+    tdb_mjd_int = np.floor(tdb_mjd_ld)
+    times = Time(
+        np.asarray(tdb_mjd_int, dtype=np.float64),
+        np.asarray(tdb_mjd_ld - tdb_mjd_int, dtype=np.float64),
+        format='mjd',
+        scale='tdb',
+    )
     
     if timings is not None:
         timings['time_obj_creation'] = time.perf_counter() - t0
@@ -171,7 +181,7 @@ def compute_ssb_obs_pos_vel(
     
     # Save to disk cache
     if use_cache:
-        cache.save(tdb_mjd, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris=ephemeris + "_v2")
+        cache.save(tdb_mjd_cache, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris=cache_ephem)
     
     # Update profiling stats
     if _PROFILE_ENABLED:
@@ -210,7 +220,15 @@ def compute_ssb_obs_pos_vel_gcrs_posvel(
     """
     t0 = time.perf_counter() if timings is not None else None
     
-    times = Time(tdb_mjd, format='mjd', scale='tdb')
+    tdb_mjd_ld = np.asarray(tdb_mjd, dtype=np.longdouble)
+    obs_itrf_km = np.asarray(obs_itrf_km, dtype=np.float64)
+    tdb_mjd_int = np.floor(tdb_mjd_ld)
+    times = Time(
+        np.asarray(tdb_mjd_int, dtype=np.float64),
+        np.asarray(tdb_mjd_ld - tdb_mjd_int, dtype=np.float64),
+        format='mjd',
+        scale='tdb',
+    )
     
     if timings is not None:
         timings['time_obj_creation'] = time.perf_counter() - t0

@@ -176,9 +176,17 @@ class TimingSession:
             else:
                 return f"{param_name:<12} {value}"
 
-        # For ecliptic par files, convert fitted RAJ/DECJ back to LAMBDA/BETA
-        # so the temp par file has consistent ecliptic coordinates
-        if params.get('_ecliptic_coords'):
+        # Keep temporary par files in the original coordinate family.  For an
+        # ELONG/ELAT file, do not add derived RAJ/DECJ or LAMBDA/BETA lines:
+        # parse_par_file() prefers RAJ and then LAMBDA, and the formatted
+        # round-trip loses enough precision to create ~100 ps Roemer changes.
+        ecliptic_temp = bool(params.get('_ecliptic_coords'))
+        temp_uses_lambda = (
+            ecliptic_temp
+            and 'LAMBDA' in self._initial_params
+            and 'ELONG' not in self._initial_params
+        )
+        if ecliptic_temp and temp_uses_lambda:
             from jug.io.par_reader import parse_ra, parse_dec, convert_equatorial_to_ecliptic
             ra_val = params.get('RAJ')
             dec_val = params.get('DECJ')
@@ -294,8 +302,19 @@ class TimingSession:
             else:
                 updated_lines.append(line)
 
-        # Add any new parameters not in original file (skip internal keys)
+        # Add any new parameters not in original file (skip internal keys).
+        # For ecliptic temp files, avoid adding derived coordinates from the
+        # other coordinate family; parse_par_file() would prefer them over the
+        # native high-precision ecliptic lines.
+        skip_ecliptic_derived = {'RAJ', 'DECJ', 'PMRA', 'PMDEC'}
+        if ecliptic_temp and not temp_uses_lambda:
+            skip_ecliptic_derived |= {'LAMBDA', 'BETA', 'PMLAMBDA', 'PMBETA'}
+        elif ecliptic_temp and temp_uses_lambda:
+            skip_ecliptic_derived |= {'ELONG', 'ELAT', 'PMELONG', 'PMELAT'}
+
         for param_name, value in params.items():
+            if ecliptic_temp and param_name.upper() in skip_ecliptic_derived:
+                continue
             if param_name not in updated_params and not param_name.startswith('_'):
                 if isinstance(value, (int, float, str)):
                     new_line = format_param_value(param_name, value) + '\n'
@@ -609,12 +628,41 @@ class TimingSession:
         if result.get('success', True) and 'final_params' in result:
             from jug.io.par_reader import format_ra, format_dec
             updated_params = result['final_params'].copy()
+            updated_params.update(result.get('final_dmx_params', {}))
             # Convert RAJ/DECJ from radians back to string format for consistency
             if 'RAJ' in updated_params:
                 updated_params['RAJ'] = format_ra(updated_params['RAJ'])
             if 'DECJ' in updated_params:
                 updated_params['DECJ'] = format_dec(updated_params['DECJ'])
-            # For ecliptic pulsars, also update LAMBDA/BETA from fitted RAJ/DECJ
+
+            # Ecliptic fits update public ELONG/ELAT/PMELONG/PMELAT values.
+            # Keep the internal converted RAJ/DECJ/PMRA/PMDEC and _ecliptic_*
+            # keys in sync too; compute_residuals() uses those internal keys.
+            if self.params.get('_ecliptic_coords'):
+                ecl_updates = {
+                    'ELONG': '_ecliptic_lon_deg',
+                    'ELAT': '_ecliptic_lat_deg',
+                    'PMELONG': '_ecliptic_pm_lon',
+                    'PMELAT': '_ecliptic_pm_lat',
+                }
+                if any(k in updated_params for k in ecl_updates):
+                    from jug.fitting.optimized_fitter import _reconvert_ecliptic_to_equatorial
+                    ecl_params = dict(self.params)
+                    ecl_params.update(updated_params)
+                    for public_key, internal_key in ecl_updates.items():
+                        if public_key in updated_params:
+                            ecl_params[internal_key] = float(updated_params[public_key])
+                    _reconvert_ecliptic_to_equatorial(ecl_params)
+                    for key in (
+                        '_ecliptic_lon_deg', '_ecliptic_lat_deg',
+                        '_ecliptic_pm_lon', '_ecliptic_pm_lat',
+                        'RAJ', 'DECJ', '_raj_rad', '_decj_rad',
+                        'PMRA', 'PMDEC',
+                    ):
+                        if key in ecl_params:
+                            updated_params[key] = ecl_params[key]
+
+            # For ecliptic pulsars, also update LAMBDA/BETA from fitted RAJ/DECJ.
             if self.params.get('_ecliptic_coords') and 'RAJ' in updated_params:
                 from jug.io.par_reader import (
                     parse_ra, parse_dec, convert_equatorial_to_ecliptic
@@ -652,6 +700,18 @@ class TimingSession:
                     init_val = self._initial_params.get(p)
                     orig_hp_str = self._original_high_precision.get(p)
                     if init_val is not None and orig_hp_str is not None and float(init_val) != float(new_val):
+                        # If a high-precision parameter moved by only one float64 ULP,
+                        # the float64 result cannot represent the fitted sub-ULP value.
+                        # Keep the original high-precision value rather than snapping to
+                        # an arbitrary neighboring float, which can produce ns-level phase
+                        # errors for spin parameters over long data spans.
+                        if abs(float(new_val) - float(init_val)) <= abs(np.spacing(float(init_val))):
+                            self.params[p] = init_val
+                            updated_params[p] = init_val
+                            if p in result.get('final_params', {}):
+                                result['final_params'][p] = init_val
+                            hp[p] = orig_hp_str
+                            continue
                         orig_ld = np.longdouble(orig_hp_str)
                         delta = np.longdouble(float(new_val) - float(init_val))
                         new_ld = orig_ld + delta

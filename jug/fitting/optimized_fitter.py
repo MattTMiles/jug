@@ -2031,7 +2031,7 @@ def _run_general_fit_iterations(
                     "Binary fitting requires prebinary_delay_sec in setup. "
                     "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
                 )
-            toas_prebinary_mjd = toas_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
+            toas_prebinary_mjd = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
             # Pass obs_pos_ls for DDK Kopeikin parallax corrections
             binary_derivs = compute_binary_derivatives(
                 params, toas_prebinary_mjd, binary_params_list, 
@@ -2625,6 +2625,8 @@ def _run_general_fit_iterations(
     # nonlinear residuals using the Woodbury identity (noise-only Wiener filter).
     # This is appropriate post-convergence because the timing model is fixed.
     noise_realizations = {}
+    final_dmx_params = {}
+    final_dmx_uncertainties = {}
     if n_augmented > 0:
         # Re-solve noise at the final nonlinear residuals
         nl_resid_sec, _, _, _ = _compute_full_model_residuals(params, setup)
@@ -2710,6 +2712,18 @@ def _run_general_fit_iterations(
 
                 # DMX/DMJUMP: subtract from residuals (timing model, not noise)
                 if label == 'DMX':
+                    if setup.dmx_labels is not None:
+                        dmx_sigmas = None
+                        if C_post is not None:
+                            dmx_sigmas = np.sqrt(np.maximum(np.diag(C_block), 0.0))
+                        for i_dmx, (dmx_name, dmx_delta) in enumerate(zip(setup.dmx_labels, coeffs)):
+                            final_dmx_params[dmx_name] = (
+                                float(params.get(dmx_name, 0.0)) + float(dmx_delta)
+                            )
+                            if dmx_sigmas is not None:
+                                dmx_sigma = float(dmx_sigmas[i_dmx])
+                                final_dmx_uncertainties[dmx_name] = dmx_sigma
+                                uncertainties[dmx_name] = dmx_sigma
                     if _saved_residuals_sec is None:
                         residuals_final_sec = residuals_final_sec - F @ coeffs
                         residuals_final_us = residuals_final_sec * 1e6
@@ -2782,6 +2796,8 @@ def _run_general_fit_iterations(
         'covariance': cov,
         'final_chi2': final_chi2,
         'noise_realizations': noise_realizations,
+        'final_dmx_params': final_dmx_params,
+        'final_dmx_uncertainties': final_dmx_uncertainties,
         'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
     }
 

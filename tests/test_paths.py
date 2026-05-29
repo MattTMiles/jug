@@ -169,6 +169,21 @@ def get_golden_reference(name: str = "J1909_mini") -> Optional[dict]:
         return json.load(f)
 
 
+def get_tempo2_fixture_paths(fixture_id: str) -> Tuple[Path, Path]:
+    """Get curated Tempo2-style fixture PAR/TIM paths by fixture id."""
+    import json
+
+    tempo2_dir = Path(__file__).parent / "data_tempo2"
+    manifest_file = tempo2_dir / "manifest.json"
+    with open(manifest_file) as f:
+        manifest = json.load(f)
+    for row in manifest:
+        if row["id"] == fixture_id:
+            return tempo2_dir / row["par"], tempo2_dir / row["tim"]
+    known = ", ".join(row["id"] for row in manifest)
+    raise KeyError(f"Unknown Tempo2 fixture {fixture_id!r}. Known fixtures: {known}")
+
+
 def files_exist(par: Optional[Path], tim: Optional[Path]) -> bool:
     """Check if both PAR and TIM files exist."""
     if par is None or tim is None:

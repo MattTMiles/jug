@@ -50,10 +50,7 @@ Run:
 
 import logging
 import os
-import re
-import shutil
-import subprocess
-import tempfile
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -63,7 +60,7 @@ pint = pytest.importorskip("pint.models", reason="PINT not installed (pip instal
 
 _FORCE_PINT = os.environ.get("JUG_TEST_PINT", "").lower() in ("1", "true", "yes")
 _FORCE_TEMPO2 = os.environ.get("JUG_TEST_TEMPO2", "").lower() in ("1", "true", "yes")
-_TEMPO2_AVAILABLE = shutil.which("tempo2") is not None
+_TEMPO2_AVAILABLE = importlib.util.find_spec("libstempo") is not None
 
 pytestmark = pytest.mark.skipif(
     not _FORCE_PINT,
@@ -163,31 +160,15 @@ def _pint_gls_fit(par_path):
 
 
 def _tempo2_fit(par_path):
-    """Run Tempo2 fit; return post-fit raw WRMS in µs.
+    """Run Tempo2 fit through the libstempo sandbox; return post-fit WRMS in µs."""
+    from jug.testing.tempo2_reference import tempo2_reference
 
-    Calls tempo2 as a subprocess in a temporary directory (to avoid polluting
-    the source tree with Tempo2 output files).  Parses the RMS from stdout.
-    """
-    fit_flags = []
-    for p in FIT_PARAMS:
-        fit_flags += ["-fit", p]
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        result = subprocess.run(
-            ["tempo2", "-f", str(par_path), str(TIM)] + fit_flags,
-            capture_output=True,
-            text=True,
-            cwd=tmpdir,
-            timeout=120,
-        )
-    output = result.stdout + result.stderr
-    # Tempo2 prints: "RMS pre-fit residual = X (us), RMS post-fit residual = Y (us)"
-    m = re.search(r"RMS post-fit residual\s*=\s*([\d.]+)\s*\(us\)", output)
-    if m is None:
-        raise RuntimeError(
-            f"Could not parse Tempo2 post-fit RMS from output:\n{output}"
-        )
-    return float(m.group(1))
+    return tempo2_reference(
+        par_path,
+        TIM,
+        dofit=True,
+        fit_params=FIT_PARAMS,
+    ).wrms_us
 
 
 
@@ -397,7 +378,7 @@ class TestNoiseAwareGLS:
 
 _skip_tempo2 = pytest.mark.skipif(
     not (_FORCE_TEMPO2 and _TEMPO2_AVAILABLE),
-    reason="Tempo2 parity tests skipped by default. Set JUG_TEST_TEMPO2=1 and ensure tempo2 is on PATH.",
+    reason="Tempo2 parity tests skipped by default. Set JUG_TEST_TEMPO2=1 and install libstempo.",
 )
 
 

@@ -159,62 +159,24 @@ def test_pint_max_per_toa_diff(jug_result, pint_result):
 
 # ── Tempo2 parity ─────────────────────────────────────────────────────────────
 
-import re
-import shutil
-import subprocess
+import importlib.util
 
 
 def _tempo2_available():
-    return shutil.which("tempo2") is not None
+    return importlib.util.find_spec("libstempo") is not None
 
 
 def _raw_wrms_tempo2(par_path, tim_path):
-    """Compute Tempo2 raw-error WRMS.
+    """Compute Tempo2 raw-error WRMS via the libstempo sandbox."""
+    from jug.testing.tempo2_reference import tempo2_reference
 
-    Uses ``tempo2 -nofit`` pre-fit residuals (seconds) combined with
-    raw TOA errors parsed from the .tim file (column 4, microseconds).
-    This avoids any EFAC/EQUAD/ECORR noise-model scaling.
-
-    Returns (wrms_us, n_toas, residuals_us).
-    """
-    result = subprocess.run(
-        ["tempo2", "-f", str(par_path), str(tim_path),
-         "-nofit", "-output", "general2", "-s", "{pre}\n"],
-        capture_output=True, text=True, timeout=60,
-    )
-    lines = [
-        l.strip() for l in result.stdout.splitlines()
-        if re.match(r"^-?[0-9]", l.strip())
-    ]
-    res_us = np.array([float(l) for l in lines]) * 1e6  # s -> µs
-
-    # Parse raw errors from .tim (column 4, µs)
-    raw_errs_us = []
-    with open(str(tim_path)) as f:
-        for line in f:
-            if line.startswith("FORMAT") or line.startswith("C ") or line.startswith("#"):
-                continue
-            parts = line.split()
-            if len(parts) >= 4:
-                try:
-                    raw_errs_us.append(float(parts[3]))
-                except ValueError:
-                    pass
-    raw_errs_us = np.array(raw_errs_us)
-
-    if len(res_us) != len(raw_errs_us):
-        raise RuntimeError(
-            f"Tempo2 residual count ({len(res_us)}) != .tim TOA count ({len(raw_errs_us)})"
-        )
-
-    weights = 1.0 / raw_errs_us**2
-    wrms = float(np.sqrt(np.sum(weights * res_us**2) / np.sum(weights)))
-    return wrms, len(res_us), list(res_us)
+    ref = tempo2_reference(par_path, tim_path)
+    return ref.wrms_us, ref.ntoa, list(ref.residuals_us)
 
 
 _tempo2_skip = pytest.mark.skipif(
     not _tempo2_available(),
-    reason="tempo2 binary not found on PATH",
+    reason="libstempo not installed",
 )
 
 

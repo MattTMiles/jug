@@ -1,0 +1,109 @@
+[
+  {
+    "id": "epta_j0030_isolated",
+    "par": "epta_j0030_isolated/epta_j0030_isolated.par",
+    "tim": "epta_j0030_isolated/epta_j0030_isolated.tim",
+    "source_par": "/workspaces/metapulsar/data-check/EPTA_DR2/J0030+0451/J0030+0451.par",
+    "source_tim": "/workspaces/metapulsar/data-check/EPTA_DR2/J0030+0451/tims/EFF.EBPP.1410.tim",
+    "provenance": "EPTA_DR2",
+    "binary": "isolated",
+    "toa_count": 10,
+    "metadata": {
+      "PSRJ": "J0030+0451",
+      "CLK": "TT(BIPM2021)",
+      "UNITS": "TCB",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE440",
+      "NTOA": "4071"
+    },
+    "notes": "Original small per-backend TIM copy"
+  },
+  {
+    "id": "epta_j1909_t2",
+    "par": "epta_j1909_t2/epta_j1909_t2.par",
+    "tim": "epta_j1909_t2/epta_j1909_t2.tim",
+    "source_par": "/workspaces/metapulsar/data-check/EPTA_DR2/J1909-3744/J1909-3744.par",
+    "source_tim": "/workspaces/metapulsar/data-check/EPTA_DR2/J1909-3744/tims/NRT.BON.1600.tim",
+    "provenance": "EPTA_DR2",
+    "binary": "T2",
+    "toa_count": 49,
+    "metadata": {
+      "PSRJ": "J1909-3744",
+      "BINARY": "T2",
+      "CLK": "TT(BIPM2021)",
+      "UNITS": "TCB",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE440",
+      "NTOA": "2524"
+    },
+    "notes": "Original small per-backend TIM copy"
+  },
+  {
+    "id": "epta_j1918_ddh",
+    "par": "epta_j1918_ddh/epta_j1918_ddh.par",
+    "tim": "epta_j1918_ddh/epta_j1918_ddh.tim",
+    "source_par": "/workspaces/metapulsar/data-check/EPTA_DR2/J1918-0642/J1918-0642.par",
+    "source_tim": "/workspaces/metapulsar/data-check/EPTA_DR2/J1918-0642/tims/JBO.DFB.1400.tim",
+    "provenance": "EPTA_DR2",
+    "binary": "DDH",
+    "toa_count": 12,
+    "metadata": {
+      "PSRJ": "J1918-0642",
+      "BINARY": "DDH",
+      "CLK": "TT(BIPM2021)",
+      "UNITS": "TCB",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE440",
+      "NTOA": "1361"
+    },
+    "notes": "Original small per-backend TIM copy"
+  },
+  {
+    "id": "ppta_j1741_ell1",
+    "par": "ppta_j1741_ell1/ppta_j1741_ell1.par",
+    "tim": "ppta_j1741_ell1/ppta_j1741_ell1.tim",
+    "source_par": "/workspaces/metapulsar/data-check/PPTA_DR3/uwl/J1741+1351.par",
+    "source_tim": "/workspaces/metapulsar/data-check/PPTA_DR3/uwl/J1741+1351.tim",
+    "provenance": "PPTA_DR3_UWL",
+    "binary": "ELL1",
+    "toa_count": 111,
+    "metadata": {
+      "PSRJ": "J1741+1351",
+      "BINARY": "ELL1",
+      "CLK": "TT(BIPM2020)",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE436",
+      "NTOA": "111"
+    },
+    "notes": "Original small per-backend TIM copy"
+  },
+  {
+    "id": "ppta_j1902_ell1h",
+    "par": "ppta_j1902_ell1h/ppta_j1902_ell1h.par",
+    "tim": "ppta_j1902_ell1h/ppta_j1902_ell1h.tim",
+    "source_par": "/workspaces/metapulsar/data-check/PPTA_DR3/J1902-5105.par",
+    "source_tim": "/workspaces/metapulsar/data-check/PPTA_DR3/J1902-5105.tim",
+    "provenance": "PPTA_DR3",
+    "binary": "ELL1H",
+    "toa_count": 120,
+    "metadata": {
+      "PSRJ": "J1902-5105",
+      "BINARY": "ELL1H",
+      "CLK": "TT(BIPM2020)",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE436",
+      "NTOA": "501"
+    },
+    "notes": "Deterministic reduced TIM copy"
+  }
+]

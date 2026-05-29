@@ -66,7 +66,8 @@ class TimingSession:
         par_file: Path | str,
         tim_file: Path | str,
         clock_dir: Optional[str] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        compatibility: str = "pint",
     ):
         """
         Initialize a timing session.
@@ -86,6 +87,7 @@ class TimingSession:
         self.tim_file = Path(tim_file)
         self.clock_dir = clock_dir
         self.verbose = verbose
+        self.compatibility = compatibility
         
         # Parse files once and cache
         if self.verbose:
@@ -93,19 +95,21 @@ class TimingSession:
         
         self.params = parse_par_file(self.par_file)
         
-        # Convert TCB->TDB at ingest time so all downstream code sees TDB params
-        from jug.io.par_reader import validate_par_timescale
-        validate_par_timescale(self.params, context="TimingSession", verbose=verbose)
+        # Validate/normalize ingest according to selected compatibility backend.
+        from jug.io.par_reader import validate_par_timescale_for_compat
+        validate_par_timescale_for_compat(
+            self.params,
+            compatibility=self.compatibility,
+            context="TimingSession",
+            verbose=verbose,
+        )
         
         # Tempo2's T2 model uses IAU convention for KIN/KOM.
         # JUG's DDK code (from PINT) uses DT92 convention.
         # Convert: KIN_DT92 = 180 - KIN_IAU, KOM_DT92 = 90 - KOM_IAU
-        binary = self.params.get('BINARY', '').upper()
-        if binary == 'T2' and ('KIN' in self.params or 'KOM' in self.params):
-            if 'KIN' in self.params:
-                self.params['KIN'] = 180.0 - float(self.params['KIN'])
-            if 'KOM' in self.params:
-                self.params['KOM'] = 90.0 - float(self.params['KOM'])
+        if str(self.compatibility).lower() != "tempo2":
+            from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+            convert_t2_kin_kom_to_ddk_convention(self.params)
         
         self.toas_data = parse_tim_file_mjds(self.tim_file)
         self._initial_params = dict(self.params)  # Copy for comparison
@@ -203,11 +207,17 @@ class TimingSession:
         # Convert KIN/KOM from DT92 back to IAU convention for par file
         # (compute_residuals_simple will apply IAU->DT92 again when reading)
         binary = params.get('BINARY', '').upper()
-        if binary == 'T2' and ('KIN' in params or 'KOM' in params):
+        if (
+            str(self.compatibility).lower() != "tempo2"
+            and binary == 'T2'
+            and params.get('_t2_kin_kom_converted')
+            and ('KIN' in params or 'KOM' in params)
+        ):
             if 'KIN' in params:
                 params['KIN'] = 180.0 - float(params['KIN'])
             if 'KOM' in params:
                 params['KOM'] = 90.0 - float(params['KOM'])
+            params.pop('_t2_kin_kom_converted', None)
 
         with open(self.par_file, 'r') as f:
             original_lines = f.readlines()
@@ -314,6 +324,7 @@ class TimingSession:
                 subtract_tzr=subtract_tzr,
                 verbose=False,
                 geometry_cache=self._geometry_cache,
+                compatibility=self.compatibility,
             )
         finally:
             tmp_par_path.unlink()
@@ -402,6 +413,7 @@ class TimingSession:
                 subtract_tzr=subtract_tzr,
                 verbose=False,
                 geometry_cache=self._geometry_cache,
+                compatibility=self.compatibility,
             )
         
         # Cache the result (only for original params), keyed by subtract_tzr
@@ -601,7 +613,8 @@ class TimingSession:
                 convergence_threshold=convergence_threshold,
                 clock_dir=self.clock_dir,
                 device=device,
-                verbose=verbose
+                verbose=verbose,
+                compatibility=self.compatibility,
             )
         
         # Update session params with fitted values (CRITICAL for iterative fitting!)

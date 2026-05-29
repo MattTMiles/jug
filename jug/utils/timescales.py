@@ -23,9 +23,11 @@ __all__ = [
     'IFTE_MJD0',
     'IFTE_KM1', 
     'IFTE_K',
+    'IFTE_TEPH0_SEC',
     'parse_timescale',
     'convert_tcb_epoch_to_tdb',
     'convert_tdb_epoch_to_tcb',
+    'convert_tdb_epoch_to_tempo2_tcb',
     'scale_parameter_tcb_to_tdb',
     'scale_parameter_tdb_to_tcb',
     'convert_par_params_to_tdb',
@@ -35,6 +37,7 @@ __all__ = [
 # Constants from Irwin & Fukushima 1999
 # These are the same as used in PINT and Tempo2 (as of Feb 2023)
 IFTE_MJD0 = np.longdouble("43144.0003725")  # Reference epoch MJD
+IFTE_TEPH0_SEC = np.longdouble("-65.564518e-6")  # Tempo2 IF99 Teph offset
 IFTE_KM1 = np.longdouble("1.55051979176e-8")  # L_B: rate difference
 IFTE_K = np.longdouble(1.0) + IFTE_KM1  # Scale factor ~= 1.0000000155051979176
 
@@ -152,6 +155,16 @@ def convert_tdb_epoch_to_tcb(mjd_tdb: np.longdouble) -> np.longdouble:
         MJD in TCB
     """
     return (mjd_tdb - IFTE_MJD0) * IFTE_K + IFTE_MJD0
+
+
+def convert_tdb_epoch_to_tempo2_tcb(mjd_tdb: np.longdouble) -> np.longdouble:
+    """Convert a TDB TOA-like epoch to Tempo2 IF99 TCB model time.
+
+    Tempo2's TT->Teph path includes the IF99 ``T_eph0`` constant for TOA
+    model times, while parameter epoch unit transforms use only the linear
+    ``IFTE_K`` scaling. Keep this helper separate from parameter conversion.
+    """
+    return convert_tdb_epoch_to_tcb(mjd_tdb) - IFTE_TEPH0_SEC / np.longdouble(86400.0)
 
 
 def scale_parameter_tcb_to_tdb(value: float, effective_dimensionality: int) -> float:

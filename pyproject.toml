@@ -76,7 +76,7 @@ include = ["jug*"]
 exclude = ["tests*", "playground*"]
 
 [tool.pytest.ini_options]
-testpaths = ["jug/tests"]
+testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
@@ -84,6 +84,7 @@ addopts = "-v --cov=jug --cov-report=term-missing"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "tempo2: marks tests requiring libstempo/Tempo2 sandbox support",
 ]
 
 [tool.ruff]

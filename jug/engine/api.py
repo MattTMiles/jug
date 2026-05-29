@@ -29,7 +29,8 @@ def open_session(
     par_file: Path | str,
     tim_file: Path | str,
     clock_dir: Optional[str] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    compatibility: str = "pint",
 ) -> TimingSession:
     """
     Open a timing session for repeated operations.
@@ -69,7 +70,8 @@ def open_session(
         par_file=par_file,
         tim_file=tim_file,
         clock_dir=clock_dir,
-        verbose=verbose
+        verbose=verbose,
+        compatibility=compatibility,
     )
 
 
@@ -78,7 +80,8 @@ def compute_residuals(
     tim_file: Path | str,
     clock_dir: Optional[str] = None,
     subtract_tzr: bool = True,
-    verbose: bool = False
+    verbose: bool = False,
+    compatibility: str = "pint",
 ) -> Dict[str, Any]:
     """
     Compute timing residuals (legacy one-shot API).
@@ -124,7 +127,8 @@ def compute_residuals(
         tim_file=tim_file,
         clock_dir=clock_dir,
         subtract_tzr=subtract_tzr,
-        verbose=verbose
+        verbose=verbose,
+        compatibility=compatibility,
     )
 
 
@@ -136,7 +140,8 @@ def fit_parameters(
     convergence_threshold: float = 1e-14,
     clock_dir: Optional[str] = None,
     device: Optional[str] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    compatibility: str = "pint",
 ) -> Dict[str, Any]:
     """
     Fit timing model parameters (legacy one-shot API).
@@ -194,5 +199,6 @@ def fit_parameters(
         convergence_threshold=convergence_threshold,
         clock_dir=clock_dir,
         device=device,
-        verbose=verbose
+        verbose=verbose,
+        compatibility=compatibility,
     )

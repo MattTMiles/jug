@@ -329,6 +329,45 @@ def compute_pulsar_direction(
     ])
 
 
+def rotate_equatorial_to_ecliptic(vectors: np.ndarray, obliquity_rad: float) -> np.ndarray:
+    """Rotate Cartesian vectors from equatorial to ecliptic coordinates."""
+    vectors = np.asarray(vectors)
+    cos_obl = np.cos(obliquity_rad)
+    sin_obl = np.sin(obliquity_rad)
+    return np.column_stack([
+        vectors[:, 0],
+        vectors[:, 1] * cos_obl + vectors[:, 2] * sin_obl,
+        -vectors[:, 1] * sin_obl + vectors[:, 2] * cos_obl,
+    ])
+
+
+def compute_ecliptic_pulsar_direction(
+    lon_deg: float,
+    lat_deg: float,
+    pm_lon_mas_yr: float,
+    pm_lat_mas_yr: float,
+    posepoch: float,
+    t_mjd: np.ndarray,
+) -> np.ndarray:
+    """Compute native ecliptic pulsar direction with Tempo2-style PM fields."""
+    dt_years = (np.asarray(t_mjd) - posepoch) / 365.25
+    lon0 = np.deg2rad(lon_deg)
+    lat0 = np.deg2rad(lat_deg)
+    mas_to_rad = np.pi / (180.0 * 3600.0 * 1000.0)
+
+    # PMELONG/PMLAMBDA include cos(latitude), matching PMRA convention.
+    cos_lat0 = np.cos(lat0)
+    lon = lon0 + pm_lon_mas_yr * mas_to_rad * dt_years / cos_lat0
+    lat = lat0 + pm_lat_mas_yr * mas_to_rad * dt_years
+
+    cos_lat = np.cos(lat)
+    return np.column_stack([
+        cos_lat * np.cos(lon),
+        cos_lat * np.sin(lon),
+        np.sin(lat),
+    ])
+
+
 def compute_roemer_delay(
     ssb_obs_pos_km: np.ndarray,
     L_hat: np.ndarray,

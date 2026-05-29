@@ -28,10 +28,7 @@ Enable:
 """
 import logging
 import os
-import re
-import shutil
-import subprocess
-import tempfile
+import importlib.util
 import warnings
 from pathlib import Path
 
@@ -49,7 +46,7 @@ except ImportError:
 
 _FORCE_PINT   = os.environ.get("JUG_TEST_PINT",   "").lower() in ("1", "true", "yes")
 _FORCE_TEMPO2 = os.environ.get("JUG_TEST_TEMPO2", "").lower() in ("1", "true", "yes")
-_TEMPO2_ON_PATH = shutil.which("tempo2") is not None
+_TEMPO2_ON_PATH = importlib.util.find_spec("libstempo") is not None
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -223,89 +220,14 @@ def _pint_fit(par_path, gls=True, tim_path=None, fit_params=None):
 
 
 def _tempo2_fit(par_path, tim_path=None):
-    """Run Tempo2 fit. Returns (wrms_us, params, uncertainties).
-
-    WRMS is computed from Tempo2 post-fit residuals using the same formula
-    as JUG: sqrt(sum(w * r^2) / sum(w)) with w = 1 / err_us^2, where
-    err_us are the raw TOA errors as used by each code (EFAC/EQUAD-scaled
-    for noise-aware fits, raw otherwise).
-
-    This ensures WRMS is comparable to JUG's final_rms.  We use Tempo2's
-    general2 plugin to extract per-TOA post-fit residuals and errors.
-    """
-    import shutil as _shutil
+    """Run Tempo2 fit through the libstempo sandbox."""
+    from jug.testing.tempo2_reference import tempo2_reference
 
     tim = tim_path or TIM
-    fit_flags = []
-    for p in FIT_PARAMS:
-        fit_flags += ["-fit", p]
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Copy par and tim into tmpdir so Tempo2 can find them
-        par_tmp = Path(tmpdir) / Path(par_path).name
-        tim_tmp = Path(tmpdir) / tim.name
-        _shutil.copy(par_path, par_tmp)
-        _shutil.copy(tim, tim_tmp)
-
-        # Run with general2 plugin to capture per-TOA residuals and errors.
-        # Format string: post-fit residual (s) and TOA error (us).
-        gen2 = subprocess.run(
-            ["tempo2", "-output", "general2",
-             "-f", str(par_tmp), str(tim_tmp)] + fit_flags +
-            ["-s", "{post} {err}\n"],
-            capture_output=True, text=True, cwd=tmpdir, timeout=300,
-        )
-        # Also run without general2 to get the parameter table
-        par_run = subprocess.run(
-            ["tempo2", "-f", str(par_tmp), str(tim_tmp)] + fit_flags,
-            capture_output=True, text=True, cwd=tmpdir, timeout=300,
-        )
-
-    # ---- Parse residuals from general2 output ----
-    rows = []
-    for line in gen2.stdout.split("\n"):
-        parts = line.strip().split()
-        if len(parts) == 2:
-            try:
-                rows.append((float(parts[0]), float(parts[1])))
-            except ValueError:
-                pass
-    if not rows:
-        raise RuntimeError(
-            f"Cannot parse Tempo2 general2 residuals:\n{gen2.stdout[:2000]}"
-        )
-    rows_arr   = np.array(rows)
-    post_us    = rows_arr[:, 0] * 1e6   # convert seconds → microseconds
-    err_us     = rows_arr[:, 1]
-    weights    = 1.0 / err_us**2
-    wrms       = float(np.sqrt(np.sum(weights * post_us**2) / np.sum(weights)))
-
-    # ---- Parse parameter table from normal Tempo2 run ----
-    output = par_run.stdout + par_run.stderr
-    params  = {}
-    uncerts = {}
-    # Parse the parameter table line by line.
-    # Fitted lines end with "Y"; tokens are:
-    #   NAME [units] prefit postfit uncertainty difference Y
-    # where [units] may be absent or truncated (e.g. "DM1 (cm^-3 pc y ...").
-    # Strategy: any line ending in "Y" where the first token is a known
-    # parameter name; the last 4 tokens before Y are prefit/postfit/unc/diff.
-    for line in output.split("\n"):
-        tokens = line.split()
-        if len(tokens) < 6 or tokens[-1] != "Y":
-            continue
-        name = tokens[0]
-        if name not in FIT_PARAMS:
-            continue
-        try:
-            postfit = float(tokens[-4])
-            unc     = float(tokens[-3])
-        except ValueError:
-            continue
-        params[name]  = postfit
-        uncerts[name] = unc
-
-    return wrms, params, uncerts
+    ref = tempo2_reference(par_path, tim, dofit=True, fit_params=FIT_PARAMS)
+    params = {p: ref.params[p]["value"] for p in FIT_PARAMS if p in ref.params}
+    uncerts = {p: ref.params[p].get("error", 0.0) for p in FIT_PARAMS if p in ref.params}
+    return ref.wrms_us, params, uncerts
 
 
 # ---------------------------------------------------------------------------

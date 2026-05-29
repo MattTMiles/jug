@@ -51,10 +51,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import time
 import math
+import tempfile
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.io.par_reader import parse_par_file, validate_par_timescale, _parse_float
+from jug.io.par_reader import parse_par_file, validate_par_timescale_for_compat, _parse_float
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
@@ -77,6 +78,16 @@ from jug.model.parameter_spec import (
     validate_fit_param,
 )
 from jug.utils.constants import HIGH_PRECISION_PARAMS
+
+
+@dataclass
+class DesignMatrixResult:
+    """Unweighted timing design matrix and associated column labels."""
+
+    matrix: np.ndarray
+    labels: List[str]
+    residuals_us: np.ndarray
+    errors_us: np.ndarray
 
 
 def _format_longdouble(value: np.longdouble) -> str:
@@ -685,6 +696,7 @@ def fit_parameters_optimized(
     clock_dir: str | None = None,
     verbose: bool = True,
     device: Optional[str] = None,
+    compatibility: str = "pint",
 ) -> Dict:
     """
     Fit timing model parameters to TOA data.
@@ -744,7 +756,78 @@ def fit_parameters_optimized(
 
     return _fit_parameters_general(
         par_file, tim_file, fit_params, max_iter, convergence_threshold,
-        clock_dir, verbose, device
+        clock_dir, verbose, device, compatibility
+    )
+
+
+def _write_param_variant(par_file: Path | str, param: str, value: float) -> str:
+    """Write a temporary par file with one scalar parameter replaced."""
+    lines = Path(par_file).read_text().splitlines()
+    out_lines = []
+    replaced = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped.split()[0].upper() == param.upper():
+            parts = line.split()
+            parts[1] = f"{value:.17g}"
+            out_lines.append(" ".join(parts))
+            replaced = True
+        else:
+            out_lines.append(line)
+    if not replaced:
+        raise ValueError(f"Parameter '{param}' not found in {par_file}")
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".par", delete=False)
+    with tmp:
+        tmp.write("\n".join(out_lines))
+        tmp.write("\n")
+    return tmp.name
+
+
+def compute_designmatrix(
+    par_file: Path | str,
+    tim_file: Path | str,
+    fit_params: List[str],
+    *,
+    compatibility: str = "pint",
+    verbose: bool = False,
+) -> DesignMatrixResult:
+    """Return an unweighted finite-difference timing design matrix."""
+    base = compute_residuals_simple(
+        par_file,
+        tim_file,
+        verbose=verbose,
+        compatibility=compatibility,
+    )
+    params = parse_par_file(par_file)
+    cols = []
+    f0 = np.longdouble(params["F0"]) if "F0" in params else None
+    for param in fit_params:
+        if param not in params:
+            raise ValueError(f"Parameter '{param}' not found in {par_file}")
+        param_upper = param.upper()
+        if compatibility.lower() in ("tempo2", "tempo2-compatible", "tempo2_compatible") and param_upper.startswith("F") and param_upper[1:].isdigit():
+            order = int(param_upper[1:])
+            dt = np.asarray(base["dt_sec_ld"], dtype=np.longdouble)
+            col = -(dt ** (order + 1)) / (np.longdouble(math.factorial(order + 1)) * f0)
+            cols.append(np.asarray(col, dtype=np.float64))
+            continue
+        value = float(params[param])
+        step = max(abs(value) * 1e-8, 1e-12)
+        plus_file = _write_param_variant(par_file, param, value + step)
+        minus_file = _write_param_variant(par_file, param, value - step)
+        try:
+            plus = compute_residuals_simple(plus_file, tim_file, verbose=False, compatibility=compatibility)
+            minus = compute_residuals_simple(minus_file, tim_file, verbose=False, compatibility=compatibility)
+            cols.append(((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step))
+        finally:
+            Path(plus_file).unlink(missing_ok=True)
+            Path(minus_file).unlink(missing_ok=True)
+    matrix = np.column_stack(cols) if cols else np.empty((base["n_toas"], 0))
+    return DesignMatrixResult(
+        matrix=matrix,
+        labels=list(fit_params),
+        residuals_us=np.asarray(base["residuals_us"]),
+        errors_us=np.asarray(base["errors_us"]),
     )
 
 
@@ -1434,7 +1517,8 @@ def _build_general_fit_setup_from_files(
     fit_params: List[str],
     clock_dir: str,
     verbose: bool,
-    noise_config: Optional[object] = None
+    noise_config: Optional[object] = None,
+    compatibility: str = "pint",
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
@@ -1452,7 +1536,11 @@ def _build_general_fit_setup_from_files(
 
     # Parse files
     params = parse_par_file(par_file)
-    validate_par_timescale(params, context="create_general_fit_setup")
+    validate_par_timescale_for_compat(
+        params,
+        compatibility=compatibility,
+        context="create_general_fit_setup",
+    )
     toas_data = parse_tim_file_mjds(tim_file)
 
     # Convert RAJ/DECJ from strings to radians
@@ -1464,12 +1552,8 @@ def _build_general_fit_setup_from_files(
 
     # Tempo2's T2 model uses IAU convention for KIN/KOM.
     # JUG's DDK code (from PINT) uses DT92 convention.
-    binary = params.get('BINARY', '').upper()
-    if binary == 'T2' and ('KIN' in params or 'KOM' in params):
-        if 'KIN' in params:
-            params['KIN'] = 180.0 - float(params['KIN'])
-        if 'KOM' in params:
-            params['KOM'] = 90.0 - float(params['KOM'])
+    from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+    convert_t2_kin_kom_to_ddk_convention(params)
 
     # Extract TOA arrays
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
@@ -1487,6 +1571,7 @@ def _build_general_fit_setup_from_files(
     result = compute_residuals_simple(
         par_file, tim_file, clock_dir=clock_dir,
         subtract_tzr=False, verbose=False,
+        compatibility=compatibility,
     )
 
     return _build_setup_common(
@@ -2998,7 +3083,8 @@ def _fit_parameters_general(
     convergence_threshold: float,
     clock_dir: str,
     verbose: bool,
-    device: Optional[str]
+    device: Optional[str],
+    compatibility: str = "pint",
 ) -> Dict:
     """General parameter fitter -- handles any parameter combination.
 
@@ -3012,7 +3098,8 @@ def _fit_parameters_general(
     # STEP 1: Build setup from files (expensive)
     cache_start = time.time()
     setup = _build_general_fit_setup_from_files(
-        par_file, tim_file, fit_params, clock_dir, verbose
+        par_file, tim_file, fit_params, clock_dir, verbose,
+        compatibility=compatibility,
     )
     cache_time = time.time() - cache_start
     

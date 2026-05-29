@@ -107,6 +107,24 @@ See [`notebooks/jug_example_j1909.ipynb`](notebooks/jug_example_j1909.ipynb) for
 - PySide6 + pyqtgraph (GUI)
 - matplotlib (plotting)
 
+### Optional Tempo2 / libstempo testing
+
+Tempo2-compatible tests use a subprocess sandbox around `libstempo` so crashes
+in Tempo2 do not kill the pytest process. To run these tests, install Tempo2
+and libstempo in the active environment and make sure Tempo2 runtime data are
+available:
+
+```bash
+conda install -c conda-forge tempo2 libstempo
+export TEMPO2=/path/to/T2runtime
+JUG_TEST_TEMPO2=1 pytest tests/test_tempo2_*.py -q -o addopts=''
+```
+
+The curated fixtures live in `tests/data_tempo2/` and are small Tempo2-style
+PPTA/EPTA par/tim slices (TCB/IF99/DILATEFREQ/T2CMETHOD where available).
+The fixture manifest records the original source path, binary model, and TOA
+count.
+
 ## Hardware requirements
 - JUG needs longdouble precision for some of its calculations. For that reason, it must be run on hardware that allows for this. This means that Apple Silicon chips can not run this software without hitting numerical precision errors.
 

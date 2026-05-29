@@ -6,6 +6,7 @@ Run from repo root:
     python tests/run_all.py           # Run all tests
     python tests/run_all.py --quick   # Run quick tests only (skip slow, no external data)
     python tests/run_all.py --full    # Run all tests including optional PINT validation
+    python tests/run_all.py --tempo2  # Run libstempo/Tempo2 sandbox tests
     python tests/run_all.py --no-gui  # Skip GUI tests (for headless CI)
     python tests/run_all.py -v        # Verbose output
 
@@ -47,7 +48,7 @@ class TestSpec:
     """Specification for a single test."""
     name: str
     script: str
-    category: str = "standard"  # critical, standard, slow, cli, api, gui, correctness
+    category: str = "standard"  # critical, standard, slow, cli, api, gui, correctness, tempo2
     description: str = ""
     timeout: int = 120  # seconds
     requires_data: bool = False  # True if needs external data files
@@ -157,6 +158,34 @@ TESTS = [
         description="J2241-5236 FB parameter fitting",
         timeout=180,
         requires_data=True,
+    ),
+    TestSpec(
+        name="tempo2_sandbox_smoke",
+        script="pytest:test_tempo2_sandbox_smoke.py",
+        category="tempo2",
+        description="libstempo sandbox smoke test",
+        timeout=180,
+    ),
+    TestSpec(
+        name="tempo2_residual_parity",
+        script="pytest:test_tempo2_residual_parity.py",
+        category="tempo2",
+        description="Tempo2 residual parity scaffolding",
+        timeout=240,
+    ),
+    TestSpec(
+        name="tempo2_designmatrix_parity",
+        script="pytest:test_tempo2_designmatrix_parity.py",
+        category="tempo2",
+        description="Tempo2 design-matrix oracle scaffolding",
+        timeout=240,
+    ),
+    TestSpec(
+        name="tempo2_fit_parity",
+        script="pytest:test_tempo2_fit_parity.py",
+        category="tempo2",
+        description="Tempo2 fit oracle scaffolding",
+        timeout=240,
     ),
 ]
 
@@ -275,7 +304,11 @@ def run_script_test(
 ) -> TestResult:
     """Run a test script as a subprocess."""
     tests_dir = Path(__file__).parent
-    script_path = tests_dir / script
+    if script.startswith("pytest:"):
+        script_name = script.split(":", 1)[1]
+        script_path = tests_dir / script_name
+    else:
+        script_path = tests_dir / script
     
     if not script_path.exists():
         return TestResult(script, "ERROR", 0.0, f"Script not found: {script_path}")
@@ -284,8 +317,12 @@ def run_script_test(
     try:
         # Run from repo root so imports work
         repo_root = tests_dir.parent
+        if script.startswith("pytest:"):
+            cmd = [sys.executable, "-m", "pytest", str(script_path), "-q", "-o", "addopts="]
+        else:
+            cmd = [sys.executable, str(script_path)]
         result = subprocess.run(
-            [sys.executable, str(script_path)],
+            cmd,
             cwd=repo_root,
             capture_output=True,
             text=True,
@@ -378,6 +415,11 @@ def main():
         help="Include PINT cross-validation in correctness tests"
     )
     parser.add_argument(
+        "--tempo2",
+        action="store_true",
+        help="Include libstempo/Tempo2 sandbox tests"
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Show detailed output for failures"
@@ -389,7 +431,7 @@ def main():
     )
     parser.add_argument(
         "--category", "-c",
-        choices=["critical", "standard", "slow", "cli", "api", "gui", "correctness"],
+        choices=["critical", "standard", "slow", "cli", "api", "gui", "correctness", "tempo2"],
         help="Run only tests in this category"
     )
     parser.add_argument(
@@ -434,6 +476,8 @@ def main():
     # Quick mode: skip slow and data-requiring tests
     if args.quick:
         tests_to_run = [t for t in tests_to_run if t.category != "slow" and not t.requires_data]
+    if not args.tempo2 and not args.category == "tempo2":
+        tests_to_run = [t for t in tests_to_run if t.category != "tempo2"]
     
     # Skip GUI tests if requested
     if args.no_gui:
@@ -446,6 +490,8 @@ def main():
     # Set PINT flag for correctness tests
     if args.pint:
         os.environ['JUG_TEST_PINT'] = '1'
+    if args.tempo2:
+        os.environ['JUG_TEST_TEMPO2'] = '1'
     
     # Run tests
     print("=" * 60)
@@ -458,6 +504,8 @@ def main():
         mode_info.append("no-gui")
     if args.pint:
         mode_info.append("+pint")
+    if args.tempo2:
+        mode_info.append("+tempo2")
     mode_str = f" ({', '.join(mode_info)})" if mode_info else ""
     print(f"\nRunning {len(tests_to_run)} tests{mode_str}...")
     

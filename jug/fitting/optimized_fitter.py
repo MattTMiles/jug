@@ -760,6 +760,25 @@ def fit_parameters_optimized(
     )
 
 
+def _format_designmatrix_param_value(param: str, value: float) -> str:
+    """Format a finite-difference parameter value for a temporary par file.
+
+    The design-matrix helper works in libstempo's unweighted timing-column
+    units: seconds per parameter unit.  For sky position parameters those
+    units are radians, while par files store RAJ/DECJ as sexagesimal strings.
+    """
+    param_upper = param.upper()
+    if param_upper == "RAJ":
+        from jug.io.par_reader import format_ra
+
+        return format_ra(value)
+    if param_upper == "DECJ":
+        from jug.io.par_reader import format_dec
+
+        return format_dec(value)
+    return f"{value:.17g}"
+
+
 def _write_param_variant(par_file: Path | str, param: str, value: float) -> str:
     """Write a temporary par file with one scalar parameter replaced."""
     lines = Path(par_file).read_text().splitlines()
@@ -769,7 +788,7 @@ def _write_param_variant(par_file: Path | str, param: str, value: float) -> str:
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and stripped.split()[0].upper() == param.upper():
             parts = line.split()
-            parts[1] = f"{value:.17g}"
+            parts[1] = _format_designmatrix_param_value(param, value)
             out_lines.append(" ".join(parts))
             replaced = True
         else:
@@ -783,6 +802,37 @@ def _write_param_variant(par_file: Path | str, param: str, value: float) -> str:
     return tmp.name
 
 
+def _designmatrix_param_value(params: Dict, param: str) -> float:
+    """Return parameter value in libstempo design-matrix units."""
+    param_upper = param.upper()
+    value = params[param_upper]
+    if param_upper == "RAJ" and isinstance(value, str):
+        from jug.io.par_reader import parse_ra
+
+        return float(parse_ra(value))
+    if param_upper == "DECJ" and isinstance(value, str):
+        from jug.io.par_reader import parse_dec
+
+        return float(parse_dec(value))
+    return float(value)
+
+
+def _designmatrix_fd_step(param: str, value: float) -> float:
+    """Choose a central-difference step in the parameter's native units."""
+    param_upper = param.upper()
+    if param_upper in {"RAJ", "DECJ"}:
+        return 1.0e-10  # radians: large enough for ns-scale response, tiny on sky
+    if param_upper in {"EPS1", "EPS2"}:
+        return max(abs(value) * 1.0e-6, 1.0e-12)
+    if param_upper in {"PB", "TASC"}:
+        return max(abs(value) * 1.0e-9, 1.0e-10)  # days
+    if param_upper == "A1":
+        return max(abs(value) * 1.0e-8, 1.0e-10)  # light-seconds
+    if param_upper == "DM":
+        return max(abs(value) * 1.0e-8, 1.0e-8)
+    return max(abs(value) * 1.0e-8, 1.0e-12)
+
+
 def compute_designmatrix(
     par_file: Path | str,
     tim_file: Path | str,
@@ -791,7 +841,12 @@ def compute_designmatrix(
     compatibility: str = "pint",
     verbose: bool = False,
 ) -> DesignMatrixResult:
-    """Return an unweighted finite-difference timing design matrix."""
+    """Return an unweighted timing design matrix.
+
+    Columns are in libstempo-compatible units: seconds per fitted parameter
+    unit.  Spin columns use the analytic Tempo2 convention, while the remaining
+    timing columns are central finite differences around the par-file value.
+    """
     base = compute_residuals_simple(
         par_file,
         tim_file,
@@ -811,14 +866,18 @@ def compute_designmatrix(
             col = -(dt ** (order + 1)) / (np.longdouble(math.factorial(order + 1)) * f0)
             cols.append(np.asarray(col, dtype=np.float64))
             continue
-        value = float(params[param])
-        step = max(abs(value) * 1e-8, 1e-12)
+        value = _designmatrix_param_value(params, param)
+        step = _designmatrix_fd_step(param, value)
         plus_file = _write_param_variant(par_file, param, value + step)
         minus_file = _write_param_variant(par_file, param, value - step)
         try:
             plus = compute_residuals_simple(plus_file, tim_file, verbose=False, compatibility=compatibility)
             minus = compute_residuals_simple(minus_file, tim_file, verbose=False, compatibility=compatibility)
-            cols.append(((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step))
+            # Tempo2's designmatrix columns use the timing-model convention
+            # (-d residual / d parameter).  The residual evaluator returns
+            # mean-subtracted residuals in tempo2 mode, so these columns are
+            # equivalent to libstempo columns up to the explicit offset column.
+            cols.append(-((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step))
         finally:
             Path(plus_file).unlink(missing_ok=True)
             Path(minus_file).unlink(missing_ok=True)

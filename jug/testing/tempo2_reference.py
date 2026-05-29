@@ -21,6 +21,7 @@ class Tempo2Reference:
     ntoa: int
     params: dict[str, Any]
     designmatrix: np.ndarray | None = None
+    designmatrix_labels: list[str] | None = None
 
 
 def _weighted_rms(values_us: np.ndarray, errors_us: np.ndarray) -> float:
@@ -67,6 +68,7 @@ def tempo2_reference(
         dofit=False,
         policy=policy or Policy(call_timeout_s=120.0),
     )
+    fit_param_names: list[str] | None = None
     if fit_params is not None:
         names_obj = getattr(psr, "pars", [])
         for name in list(names_obj() if callable(names_obj) else names_obj or []):
@@ -76,14 +78,21 @@ def tempo2_reference(
                 pass
         for name in fit_params:
             psr[name].fit = True
+        names_obj = getattr(psr, "pars", [])
+        fit_param_names = [str(name) for name in list(names_obj() if callable(names_obj) else names_obj or [])]
     if dofit:
         psr.fit()
 
     residuals_us = np.asarray(psr.residuals(), dtype=np.float64) * 1.0e6
     errors_us = np.asarray(psr.toaerrs, dtype=np.float64)
     designmatrix = None
+    designmatrix_labels = None
     if include_designmatrix:
         designmatrix = np.asarray(psr.designmatrix(), dtype=np.float64)
+        if fit_param_names is None:
+            names_obj = getattr(psr, "pars", [])
+            fit_param_names = [str(name) for name in list(names_obj() if callable(names_obj) else names_obj or [])]
+        designmatrix_labels = ["Offset"] + fit_param_names
 
     return Tempo2Reference(
         residuals_us=residuals_us,
@@ -92,4 +101,5 @@ def tempo2_reference(
         ntoa=int(residuals_us.size),
         params=_param_snapshot(psr),
         designmatrix=designmatrix,
+        designmatrix_labels=designmatrix_labels,
     )

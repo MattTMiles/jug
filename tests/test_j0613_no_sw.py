@@ -1,20 +1,29 @@
 
 import sys
-sys.path.insert(0, '/home/mattm/soft/JUG')
+
+try:
+    from tests.test_paths import get_j0613_paths, skip_if_missing
+except ImportError:
+    from test_paths import get_j0613_paths, skip_if_missing
+
 import numpy as np
 import pint.models
 import pint.fitter
 import pint.logging
 from pint.models import get_model_and_toas
 from jug.residuals.simple_calculator import compute_residuals_simple
-from pathlib import Path
 
 # Suppress PINT logs
 pint.logging.setup(level="WARNING")
 
-data_dir = Path('/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb')
-par_file = data_dir / 'J0613-0200_tdb.par'
-tim_file = data_dir / 'J0613-0200.tim'
+par_path, tim_path = get_j0613_paths()
+if not skip_if_missing(par_path, tim_path, "j0613_no_sw"):
+    print("\nSKIPPED: J0613-0200 test data not available")
+    sys.exit(0)
+
+par_file = par_path
+tim_file = tim_path
+data_dir = par_file.parent
 
 # Create temp par file without NE_SW
 no_sw_par = data_dir / 'J0613-0200_tdb_no_sw.par'

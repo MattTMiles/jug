@@ -60,12 +60,14 @@ TIM           = GOLDEN_DIR / "J1909_proper.tim"
 PAR_J0437 = GOLDEN_DIR / "J0437_tdb.par"
 PAR_J0437_NOISEFREE = GOLDEN_DIR / "J0437_tdb_noisefree.par"
 _J0437_TIM_CANDIDATES = [
+    Path(__file__).parent / "data_mpta" / "j0437" / "J0437-4715.tim",
     Path("/home/mattm/soft/JUG/data/pulsars/PPTA_data/ppta_dr4-data_dev-data-partim-MTM/data/partim/MTM/J0437-4715.tim"),
 ]
 TIM_J0437 = next((p for p in _J0437_TIM_CANDIDATES if p.exists()), None)
 
 # Local clock directory shipped with PPTA DR4 dataset
 _J0437_CLK_CANDIDATES = [
+    Path(__file__).parent.parent / "data" / "clock",
     Path("/home/mattm/soft/JUG/data/pulsars/PPTA_data/ppta_dr4-data_dev-data-partim-MTM/data/partim/clock"),
 ]
 CLK_J0437 = next((p for p in _J0437_CLK_CANDIDATES if p.exists()), None)

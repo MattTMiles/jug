@@ -1,14 +1,24 @@
 
 import sys
-sys.path.insert(0, '/home/mattm/soft/JUG')
-import numpy as np
 from pathlib import Path
+
+try:
+    from tests.test_paths import get_j1022_paths, skip_if_missing
+except ImportError:
+    from test_paths import get_j1022_paths, skip_if_missing
+
+import numpy as np
 from jug.io.par_reader import parse_par_file
 from jug.fitting.optimized_fitter import fit_parameters_optimized
 
-data_dir = Path('/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb')
-par_file = data_dir / 'J1022+1001_tdb.par'
-tim_file = data_dir / 'J1022+1001.tim'
+par_path, tim_path = get_j1022_paths()
+if not skip_if_missing(par_path, tim_path, "j1022"):
+    print("\nSKIPPED: J1022+1001 test data not available")
+    sys.exit(0)
+
+par_file = par_path
+tim_file = tim_path
+data_dir = par_file.parent
 
 # Perturb
 original_params = parse_par_file(par_file)

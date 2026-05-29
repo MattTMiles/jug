@@ -10,10 +10,15 @@ for tests. It supports:
    - JUG_TEST_J2241_PAR, JUG_TEST_J2241_TIM: J2241-5236 dataset
    - JUG_TEST_J1909_PAR, JUG_TEST_J1909_TIM: J1909-3744 dataset
    - JUG_TEST_J1022_PAR, JUG_TEST_J1022_TIM: J1022+1001 dataset
+   - JUG_TEST_J0613_PAR, JUG_TEST_J0613_TIM: J0613-0200 dataset
+   - JUG_TEST_J0125_PAR, JUG_TEST_J0125_TIM: J0125-2327 dataset
+   - JUG_TEST_J0125_POSTFIT_PAR: J0125-2327 post-fit par (optional)
 
-2. Defaults to Matt's local paths if env vars not set (for backwards compat).
+2. Bundled fixtures in tests/data_mpta/ (MPTA DR2 subsets).
 
-3. SKIP support: Returns None if files don't exist, allowing tests to skip
+3. Legacy Matt local paths as a last-resort fallback.
+
+4. SKIP support: Returns None if files don't exist, allowing tests to skip
    gracefully rather than fail.
 
 Usage in tests:
@@ -23,32 +28,60 @@ Usage in tests:
     skip_if_missing(PAR, TIM)  # Prints SKIP message and returns False if missing
 """
 
+import json
 import os
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 # =============================================================================
-# Default paths (Matt's local setup - used when env vars not set)
+# Fixture directories
 # =============================================================================
 
-_DEFAULT_MPTA_DIR = Path("/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb")
+_TESTS_DIR = Path(__file__).parent
+_MPTA_DIR = _TESTS_DIR / "data_mpta"
+_LEGACY_MPTA_DIR = Path(
+    "/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb"
+)
+_LEGACY_MPTA_ADS_DIR = Path(
+    "/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb_ads"
+)
 
-_DEFAULT_PATHS = {
-    'J1713': {
-        'par': _DEFAULT_MPTA_DIR / "J1713+0747_tdb.par",
-        'tim': _DEFAULT_MPTA_DIR / "J1713+0747.tim",
+# Pulsar key -> bundled MPTA fixture id
+_MPTA_FIXTURE_IDS = {
+    "J1713": "j1713_binary",
+    "J2241": "j2241_fb",
+    "J1909": "j1909_t2",
+    "J1022": "j1022_ell1h",
+    "J0613": "j0613_ell1h",
+    "J0125": "j0125_ell1h",
+}
+
+# Legacy filename defaults (Matt's fifth_pass/32ch_tdb layout)
+_LEGACY_PATHS = {
+    "J1713": {
+        "par": _LEGACY_MPTA_DIR / "J1713+0747_tdb.par",
+        "tim": _LEGACY_MPTA_DIR / "J1713+0747.tim",
     },
-    'J2241': {
-        'par': _DEFAULT_MPTA_DIR / "J2241-5236_tdb.par",
-        'tim': _DEFAULT_MPTA_DIR / "J2241-5236.tim",
+    "J2241": {
+        "par": _LEGACY_MPTA_DIR / "J2241-5236_tdb.par",
+        "tim": _LEGACY_MPTA_DIR / "J2241-5236.tim",
     },
-    'J1909': {
-        'par': Path("data/pulsars/J1909-3744_tdb.par"),  # Relative to repo root
-        'tim': Path("data/pulsars/J1909-3744.tim"),
+    "J1909": {
+        "par": _LEGACY_MPTA_DIR / "J1909-3744_tdb.par",
+        "tim": _LEGACY_MPTA_DIR / "J1909-3744.tim",
     },
-    'J1022': {
-        'par': _DEFAULT_MPTA_DIR / "J1022+1001_tdb.par",
-        'tim': _DEFAULT_MPTA_DIR / "J1022+1001.tim",
+    "J1022": {
+        "par": _LEGACY_MPTA_DIR / "J1022+1001_tdb.par",
+        "tim": _LEGACY_MPTA_DIR / "J1022+1001.tim",
+    },
+    "J0613": {
+        "par": _LEGACY_MPTA_DIR / "J0613-0200_tdb.par",
+        "tim": _LEGACY_MPTA_DIR / "J0613-0200.tim",
+    },
+    "J0125": {
+        "par": _LEGACY_MPTA_ADS_DIR / "J0125-2327_tdb.par",
+        "tim": _LEGACY_MPTA_ADS_DIR / "J0125-2327.tim",
+        "postfit_par": _LEGACY_MPTA_ADS_DIR / "J0125-2327_test.par",
     },
 }
 
@@ -56,6 +89,31 @@ _DEFAULT_PATHS = {
 # =============================================================================
 # Path resolution functions
 # =============================================================================
+
+def _load_mpta_manifest() -> list:
+    manifest_file = _MPTA_DIR / "manifest.json"
+    if not manifest_file.exists():
+        return []
+    with open(manifest_file) as f:
+        return json.load(f)
+
+
+def get_mpta_fixture_paths(fixture_id: str) -> Tuple[Path, Path]:
+    """Get bundled MPTA fixture PAR/TIM paths by fixture id."""
+    for row in _load_mpta_manifest():
+        if row["id"] == fixture_id:
+            return _MPTA_DIR / row["par"], _MPTA_DIR / row["tim"]
+    known = ", ".join(row["id"] for row in _load_mpta_manifest())
+    raise KeyError(f"Unknown MPTA fixture {fixture_id!r}. Known fixtures: {known}")
+
+
+def get_mpta_postfit_par(fixture_id: str) -> Optional[Path]:
+    """Return optional post-fit par path for an MPTA fixture, if declared."""
+    for row in _load_mpta_manifest():
+        if row["id"] == fixture_id and "postfit_par" in row:
+            return _MPTA_DIR / row["postfit_par"]
+    return None
+
 
 def _get_env_path(env_var: str, default: Optional[Path] = None) -> Optional[Path]:
     """Get a path from an environment variable, with optional default."""
@@ -65,104 +123,123 @@ def _get_env_path(env_var: str, default: Optional[Path] = None) -> Optional[Path
     return default
 
 
+def _first_existing(*candidates: Optional[Path]) -> Optional[Path]:
+    for path in candidates:
+        if path is not None and path.exists():
+            return path
+    return candidates[0] if candidates else None
+
+
 def _resolve_pulsar_paths(
     pulsar_key: str,
     par_env: str,
-    tim_env: str
+    tim_env: str,
 ) -> Tuple[Optional[Path], Optional[Path]]:
-    """Resolve PAR/TIM paths for a pulsar from env vars or defaults.
-    
-    Returns (None, None) if files don't exist.
-    """
-    # Check for specific env vars first
+    """Resolve PAR/TIM paths for a pulsar from env vars or defaults."""
     par = _get_env_path(par_env)
     tim = _get_env_path(tim_env)
-    
-    # Check for base directory env var
-    base_dir = _get_env_path('JUG_TEST_DATA_DIR')
+
+    base_dir = _get_env_path("JUG_TEST_DATA_DIR")
     if base_dir and not par:
-        # Try common naming conventions
-        par = base_dir / f"{pulsar_key}_tdb.par"
-        if not par.exists():
-            par = base_dir / f"{pulsar_key}.par"
+        legacy = _LEGACY_PATHS.get(pulsar_key, {})
+        par_name = legacy.get("par", Path(f"{pulsar_key}.par")).name
+        par = base_dir / par_name
     if base_dir and not tim:
-        tim = base_dir / f"{pulsar_key}.tim"
-    
-    # Fall back to defaults
-    if not par and pulsar_key in _DEFAULT_PATHS:
-        par = _DEFAULT_PATHS[pulsar_key]['par']
-    if not tim and pulsar_key in _DEFAULT_PATHS:
-        tim = _DEFAULT_PATHS[pulsar_key]['tim']
-    
+        legacy = _LEGACY_PATHS.get(pulsar_key, {})
+        tim_name = legacy.get("tim", Path(f"{pulsar_key}.tim")).name
+        tim = base_dir / tim_name
+
+    fixture_id = _MPTA_FIXTURE_IDS.get(pulsar_key)
+    bundled_par = bundled_tim = None
+    if fixture_id:
+        try:
+            bundled_par, bundled_tim = get_mpta_fixture_paths(fixture_id)
+        except (KeyError, FileNotFoundError):
+            bundled_par = bundled_tim = None
+
+    legacy = _LEGACY_PATHS.get(pulsar_key, {})
+    par = _first_existing(par, bundled_par, legacy.get("par"))
+    tim = _first_existing(tim, bundled_tim, legacy.get("tim"))
+
     return par, tim
 
 
 def get_j1713_paths() -> Tuple[Optional[Path], Optional[Path]]:
-    """Get J1713+0747 PAR/TIM paths.
-    
-    Returns:
-        Tuple of (par_path, tim_path). May be None if not configured.
-    """
+    """Get J1713+0747 PAR/TIM paths."""
     return _resolve_pulsar_paths(
-        'J1713',
-        'JUG_TEST_J1713_PAR',
-        'JUG_TEST_J1713_TIM'
+        "J1713",
+        "JUG_TEST_J1713_PAR",
+        "JUG_TEST_J1713_TIM",
     )
 
 
 def get_j2241_paths() -> Tuple[Optional[Path], Optional[Path]]:
     """Get J2241-5236 PAR/TIM paths."""
     return _resolve_pulsar_paths(
-        'J2241',
-        'JUG_TEST_J2241_PAR',
-        'JUG_TEST_J2241_TIM'
+        "J2241",
+        "JUG_TEST_J2241_PAR",
+        "JUG_TEST_J2241_TIM",
     )
 
 
 def get_j1909_paths() -> Tuple[Optional[Path], Optional[Path]]:
     """Get J1909-3744 PAR/TIM paths."""
     return _resolve_pulsar_paths(
-        'J1909',
-        'JUG_TEST_J1909_PAR',
-        'JUG_TEST_J1909_TIM'
+        "J1909",
+        "JUG_TEST_J1909_PAR",
+        "JUG_TEST_J1909_TIM",
     )
 
 
 def get_j1022_paths() -> Tuple[Optional[Path], Optional[Path]]:
     """Get J1022+1001 PAR/TIM paths."""
     return _resolve_pulsar_paths(
-        'J1022',
-        'JUG_TEST_J1022_PAR',
-        'JUG_TEST_J1022_TIM'
+        "J1022",
+        "JUG_TEST_J1022_PAR",
+        "JUG_TEST_J1022_TIM",
     )
 
 
+def get_j0613_paths() -> Tuple[Optional[Path], Optional[Path]]:
+    """Get J0613-0200 PAR/TIM paths."""
+    return _resolve_pulsar_paths(
+        "J0613",
+        "JUG_TEST_J0613_PAR",
+        "JUG_TEST_J0613_TIM",
+    )
+
+
+def get_j0125_paths() -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
+    """Get J0125-2327 pre-fit PAR, TIM, and optional post-fit PAR paths."""
+    par, tim = _resolve_pulsar_paths(
+        "J0125",
+        "JUG_TEST_J0125_PAR",
+        "JUG_TEST_J0125_TIM",
+    )
+    postfit_par = _get_env_path("JUG_TEST_J0125_POSTFIT_PAR")
+    if postfit_par is None:
+        postfit_par = get_mpta_postfit_par("j0125_ell1h")
+    if postfit_par is None or not postfit_par.exists():
+        legacy = _LEGACY_PATHS.get("J0125", {})
+        legacy_postfit = legacy.get("postfit_par")
+        if legacy_postfit is not None and legacy_postfit.exists():
+            postfit_par = legacy_postfit
+        else:
+            postfit_par = None
+    return par, tim, postfit_par
+
+
 def get_mini_paths() -> Tuple[Path, Path]:
-    """Get bundled J1909_mini PAR/TIM paths.
-    
-    These are always available (bundled in tests/data_golden/) and require
-    no external data files. Used for CI quick tests.
-    
-    Returns:
-        Tuple of (par_path, tim_path). These always exist.
-    """
-    golden_dir = Path(__file__).parent / "data_golden"
+    """Get bundled J1909_mini PAR/TIM paths."""
+    golden_dir = _TESTS_DIR / "data_golden"
     par = golden_dir / "J1909_mini.par"
     tim = golden_dir / "J1909_mini.tim"
     return par, tim
 
 
 def get_golden_reference(name: str = "J1909_mini") -> Optional[dict]:
-    """Load golden reference values from JSON.
-    
-    Args:
-        name: Dataset name (default: J1909_mini)
-        
-    Returns:
-        Dictionary with golden values, or None if not found.
-    """
-    import json
-    golden_file = Path(__file__).parent / "data_golden" / f"{name}_golden.json"
+    """Load golden reference values from JSON."""
+    golden_file = _TESTS_DIR / "data_golden" / f"{name}_golden.json"
     if not golden_file.exists():
         return None
     with open(golden_file) as f:
@@ -171,9 +248,7 @@ def get_golden_reference(name: str = "J1909_mini") -> Optional[dict]:
 
 def get_tempo2_fixture_paths(fixture_id: str) -> Tuple[Path, Path]:
     """Get curated Tempo2-style fixture PAR/TIM paths by fixture id."""
-    import json
-
-    tempo2_dir = Path(__file__).parent / "data_tempo2"
+    tempo2_dir = _TESTS_DIR / "data_tempo2"
     manifest_file = tempo2_dir / "manifest.json"
     with open(manifest_file) as f:
         manifest = json.load(f)
@@ -192,14 +267,9 @@ def files_exist(par: Optional[Path], tim: Optional[Path]) -> bool:
 
 
 def skip_if_missing(par: Optional[Path], tim: Optional[Path], test_name: str = "") -> bool:
-    """Check if files exist, print SKIP message if not.
-    
-    Returns:
-        True if files exist and test should run.
-        False if files are missing and test should skip.
-    """
+    """Check if files exist, print SKIP message if not."""
     prefix = f"[{test_name}] " if test_name else ""
-    
+
     if par is None:
         print(f"{prefix}SKIP: PAR path not configured (set JUG_TEST_*_PAR env var)")
         return False
@@ -216,12 +286,9 @@ def skip_if_missing(par: Optional[Path], tim: Optional[Path], test_name: str = "
 
 
 def require_files(par: Optional[Path], tim: Optional[Path], test_name: str = ""):
-    """Like skip_if_missing but raises RuntimeError instead of returning False.
-    
-    Use this for "must run" tests that should fail rather than skip.
-    """
+    """Like skip_if_missing but raises RuntimeError instead of returning False."""
     prefix = f"[{test_name}] " if test_name else ""
-    
+
     if par is None:
         raise RuntimeError(f"{prefix}PAR path not configured (set JUG_TEST_*_PAR env var)")
     if tim is None:
@@ -232,41 +299,40 @@ def require_files(par: Optional[Path], tim: Optional[Path], test_name: str = "")
         raise RuntimeError(f"{prefix}TIM file not found: {tim}")
 
 
-# =============================================================================
-# Convenience function for getting all available test datasets
-# =============================================================================
-
 def get_available_datasets() -> dict:
-    """Return dict of all configured test datasets that actually exist.
-    
-    Returns:
-        Dict mapping pulsar name to {'par': Path, 'tim': Path}
-    """
+    """Return dict of all configured test datasets that actually exist."""
     datasets = {}
-    
+
     for name, getter in [
-        ('J1713', get_j1713_paths),
-        ('J2241', get_j2241_paths),
-        ('J1909', get_j1909_paths),
-        ('J1022', get_j1022_paths),
+        ("J1713", get_j1713_paths),
+        ("J2241", get_j2241_paths),
+        ("J1909", get_j1909_paths),
+        ("J1022", get_j1022_paths),
+        ("J0613", get_j0613_paths),
     ]:
         par, tim = getter()
         if files_exist(par, tim):
-            datasets[name] = {'par': par, 'tim': tim}
-    
+            datasets[name] = {"par": par, "tim": tim}
+
+    par, tim, postfit = get_j0125_paths()
+    if files_exist(par, tim):
+        datasets["J0125"] = {"par": par, "tim": tim}
+        if postfit is not None and postfit.exists():
+            datasets["J0125"]["postfit_par"] = postfit
+
     return datasets
 
 
 if __name__ == "__main__":
-    # Quick diagnostic when run directly
     print("JUG Test Data Path Configuration")
     print("=" * 60)
-    
+
     for name, getter in [
-        ('J1713+0747', get_j1713_paths),
-        ('J2241-5236', get_j2241_paths),
-        ('J1909-3744', get_j1909_paths),
-        ('J1022+1001', get_j1022_paths),
+        ("J1713+0747", get_j1713_paths),
+        ("J2241-5236", get_j2241_paths),
+        ("J1909-3744", get_j1909_paths),
+        ("J1022+1001", get_j1022_paths),
+        ("J0613-0200", get_j0613_paths),
     ]:
         par, tim = getter()
         exists = files_exist(par, tim)
@@ -274,7 +340,18 @@ if __name__ == "__main__":
         print(f"\n{name}: {status}")
         print(f"  PAR: {par}")
         print(f"  TIM: {tim}")
-    
+
+    par, tim, postfit = get_j0125_paths()
+    exists = files_exist(par, tim)
+    status = "✓ AVAILABLE" if exists else "✗ NOT FOUND"
+    print(f"\nJ0125-2327: {status}")
+    print(f"  PAR: {par}")
+    print(f"  TIM: {tim}")
+    if postfit is not None and postfit.exists():
+        print(f"  POSTFIT PAR: {postfit}")
+    else:
+        print("  POSTFIT PAR: (not bundled — Tempo2-baseline tests will skip)")
+
     print("\n" + "=" * 60)
     print("To configure paths, set environment variables:")
     print("  JUG_TEST_DATA_DIR=/path/to/data  (base directory)")

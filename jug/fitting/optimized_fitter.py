@@ -62,7 +62,12 @@ from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.fitting.wls_fitter import wls_solve_svd
 from jug.fitting.binary_registry import compute_binary_delay, compute_binary_derivatives
-from jug.utils.units import validate_column_units
+from jug.utils.units import (
+    fd_step_in_fit_units,
+    fit_to_native_value,
+    native_to_fit_value,
+    validate_column_units,
+)
 import scipy.linalg as _scipy_linalg
 
 # Import ParameterSpec system for spec-driven routing
@@ -767,9 +772,7 @@ def fit_parameters_optimized(
 def _format_designmatrix_param_value(param: str, value: float) -> str:
     """Format a finite-difference parameter value for a temporary par file.
 
-    The design-matrix helper works in libstempo's unweighted timing-column
-    units: seconds per parameter unit.  For sky position parameters those
-    units are radians, while par files store RAJ/DECJ as sexagesimal strings.
+    ``value`` is in native storage units (radians for RAJ/DECJ sexagesimal).
     """
     param_upper = param.upper()
     if param_upper == "RAJ":
@@ -807,7 +810,7 @@ def _write_param_variant(par_file: Path | str, param: str, value: float) -> str:
 
 
 def _designmatrix_param_value(params: Dict, param: str) -> float:
-    """Return parameter value in libstempo design-matrix units."""
+    """Return parameter value in native storage units."""
     param_upper = param.upper()
     value = params[param_upper]
     if param_upper == "RAJ" and isinstance(value, str):
@@ -821,38 +824,6 @@ def _designmatrix_param_value(params: Dict, param: str) -> float:
     return float(value)
 
 
-def _designmatrix_fd_step(param: str, value: float) -> float:
-    """Choose a central-difference step in the parameter's native units."""
-    param_upper = param.upper()
-    if param_upper in {"RAJ", "DECJ"}:
-        return 1.0e-10  # radians: large enough for ns-scale response, tiny on sky
-    if param_upper in {"EPS1", "EPS2"}:
-        return max(abs(value) * 1.0e-6, 1.0e-12)
-    if param_upper in {"PB", "TASC"}:
-        return max(abs(value) * 1.0e-9, 1.0e-10)  # days
-    if param_upper == "A1":
-        return max(abs(value) * 1.0e-8, 1.0e-10)  # light-seconds
-    if param_upper == "DM":
-        return max(abs(value) * 1.0e-8, 1.0e-8)
-    return max(abs(value) * 1.0e-8, 1.0e-12)
-
-
-def _designmatrix_scale_to_fit_unit(param: str) -> float:
-    """Convert native finite-difference columns to fit-unit columns.
-
-    Finite differences are taken in JUG's internal/native parameter units.
-    The design-matrix API exposes PINT/Vela-compatible fit-unit strings.
-    """
-    param_upper = param.upper()
-    # JUG stores RAJ/DECJ in radians during fitting, while the API exposes
-    # PINT/Vela units hourangle/deg for these parameters.
-    if param_upper == "RAJ":
-        return np.pi / 12.0  # rad per hourangle
-    if param_upper == "DECJ":
-        return np.pi / 180.0  # rad per degree
-    return 1.0
-
-
 def compute_designmatrix(
     par_file: Path | str,
     tim_file: Path | str,
@@ -863,10 +834,10 @@ def compute_designmatrix(
 ) -> DesignMatrixResult:
     """Return an unweighted timing design matrix.
 
-    Columns are returned in seconds per PINT/Vela-compatible fit unit.
-    Spin columns use the analytic Tempo2 convention, while the remaining
-    timing columns are central finite differences around the par-file value and
-    then rescaled to the exported fit-unit convention when required.
+    Columns are returned in seconds per PINT/Vela-compatible fit unit
+    (see ``jug.utils.units.fit_unit``).  Finite-difference columns perturb
+    parameters in those fit units.  Spin columns use the analytic Tempo2
+    convention in tempo2 compatibility mode.
     """
     base = compute_residuals_simple(
         par_file,
@@ -885,12 +856,15 @@ def compute_designmatrix(
             order = int(param_upper[1:])
             dt = np.asarray(base["dt_sec_ld"], dtype=np.longdouble)
             col = -(dt ** (order + 1)) / (np.longdouble(math.factorial(order + 1)) * f0)
-            cols.append(np.asarray(col, dtype=np.float64) * _designmatrix_scale_to_fit_unit(param))
+            cols.append(np.asarray(col, dtype=np.float64))
             continue
-        value = _designmatrix_param_value(params, param)
-        step = _designmatrix_fd_step(param, value)
-        plus_file = _write_param_variant(par_file, param, value + step)
-        minus_file = _write_param_variant(par_file, param, value - step)
+        value_native = _designmatrix_param_value(params, param)
+        value_fit = native_to_fit_value(param, value_native)
+        step_fit = fd_step_in_fit_units(param, value_fit)
+        plus_native = fit_to_native_value(param, value_fit + step_fit)
+        minus_native = fit_to_native_value(param, value_fit - step_fit)
+        plus_file = _write_param_variant(par_file, param, plus_native)
+        minus_file = _write_param_variant(par_file, param, minus_native)
         try:
             plus = compute_residuals_simple(plus_file, tim_file, verbose=False, compatibility=compatibility)
             minus = compute_residuals_simple(minus_file, tim_file, verbose=False, compatibility=compatibility)
@@ -898,8 +872,8 @@ def compute_designmatrix(
             # (-d residual / d parameter).  The residual evaluator returns
             # mean-subtracted residuals in tempo2 mode, so these columns are
             # equivalent to libstempo columns up to the explicit offset column.
-            col = -((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step)
-            cols.append(col * _designmatrix_scale_to_fit_unit(param))
+            col = -((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step_fit)
+            cols.append(np.asarray(col, dtype=np.float64))
         finally:
             Path(plus_file).unlink(missing_ok=True)
             Path(minus_file).unlink(missing_ok=True)

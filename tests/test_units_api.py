@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import numpy as np
 from astropy import units as u
 
 from jug.model.parameter_spec import get_fit_unit
 from jug.utils.units import column_unit, fit_unit, validate_column_units
+from jug.utils.units import fit_to_native_value, native_to_fit_value
 
 
 def test_fit_unit_registry_examples():
@@ -37,4 +39,13 @@ def test_column_unit_parseable_core_examples():
 def test_column_unit_astrometry_strings():
     assert column_unit("RAJ") == "s / hourangle"
     assert column_unit("DECJ") == "s / deg"
+
+
+def test_native_fit_value_round_trip():
+    raj_rad = 1.234567
+    dec_rad = -0.5
+    raj_fit = native_to_fit_value("RAJ", raj_rad)
+    dec_fit = native_to_fit_value("DECJ", dec_rad)
+    np.testing.assert_allclose(fit_to_native_value("RAJ", raj_fit), raj_rad, rtol=0.0, atol=1.0e-15)
+    np.testing.assert_allclose(fit_to_native_value("DECJ", dec_fit), dec_rad, rtol=0.0, atol=1.0e-15)
 

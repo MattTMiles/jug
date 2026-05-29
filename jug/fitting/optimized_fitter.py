@@ -52,6 +52,7 @@ from typing import Dict, List, Optional, Any, Tuple
 import time
 import math
 import tempfile
+import warnings
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
@@ -61,6 +62,7 @@ from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.fitting.wls_fitter import wls_solve_svd
 from jug.fitting.binary_registry import compute_binary_delay, compute_binary_derivatives
+from jug.utils.units import validate_column_units
 import scipy.linalg as _scipy_linalg
 
 # Import ParameterSpec system for spec-driven routing
@@ -86,6 +88,8 @@ class DesignMatrixResult:
 
     matrix: np.ndarray
     labels: List[str]
+    column_units: List[str]
+    unit_convention: str
     residuals_us: np.ndarray
     errors_us: np.ndarray
 
@@ -833,6 +837,22 @@ def _designmatrix_fd_step(param: str, value: float) -> float:
     return max(abs(value) * 1.0e-8, 1.0e-12)
 
 
+def _designmatrix_scale_to_fit_unit(param: str) -> float:
+    """Convert native finite-difference columns to fit-unit columns.
+
+    Finite differences are taken in JUG's internal/native parameter units.
+    The design-matrix API exposes PINT/Vela-compatible fit-unit strings.
+    """
+    param_upper = param.upper()
+    # JUG stores RAJ/DECJ in radians during fitting, while the API exposes
+    # PINT/Vela units hourangle/deg for these parameters.
+    if param_upper == "RAJ":
+        return np.pi / 12.0  # rad per hourangle
+    if param_upper == "DECJ":
+        return np.pi / 180.0  # rad per degree
+    return 1.0
+
+
 def compute_designmatrix(
     par_file: Path | str,
     tim_file: Path | str,
@@ -843,9 +863,10 @@ def compute_designmatrix(
 ) -> DesignMatrixResult:
     """Return an unweighted timing design matrix.
 
-    Columns are in libstempo-compatible units: seconds per fitted parameter
-    unit.  Spin columns use the analytic Tempo2 convention, while the remaining
-    timing columns are central finite differences around the par-file value.
+    Columns are returned in seconds per PINT/Vela-compatible fit unit.
+    Spin columns use the analytic Tempo2 convention, while the remaining
+    timing columns are central finite differences around the par-file value and
+    then rescaled to the exported fit-unit convention when required.
     """
     base = compute_residuals_simple(
         par_file,
@@ -864,7 +885,7 @@ def compute_designmatrix(
             order = int(param_upper[1:])
             dt = np.asarray(base["dt_sec_ld"], dtype=np.longdouble)
             col = -(dt ** (order + 1)) / (np.longdouble(math.factorial(order + 1)) * f0)
-            cols.append(np.asarray(col, dtype=np.float64))
+            cols.append(np.asarray(col, dtype=np.float64) * _designmatrix_scale_to_fit_unit(param))
             continue
         value = _designmatrix_param_value(params, param)
         step = _designmatrix_fd_step(param, value)
@@ -877,14 +898,19 @@ def compute_designmatrix(
             # (-d residual / d parameter).  The residual evaluator returns
             # mean-subtracted residuals in tempo2 mode, so these columns are
             # equivalent to libstempo columns up to the explicit offset column.
-            cols.append(-((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step))
+            col = -((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step)
+            cols.append(col * _designmatrix_scale_to_fit_unit(param))
         finally:
             Path(plus_file).unlink(missing_ok=True)
             Path(minus_file).unlink(missing_ok=True)
     matrix = np.column_stack(cols) if cols else np.empty((base["n_toas"], 0))
+    labels = list(fit_params)
+    column_units = validate_column_units(labels)
     return DesignMatrixResult(
         matrix=matrix,
-        labels=list(fit_params),
+        labels=labels,
+        column_units=column_units,
+        unit_convention="pint-vela",
         residuals_us=np.asarray(base["residuals_us"]),
         errors_us=np.asarray(base["errors_us"]),
     )
@@ -1030,6 +1056,56 @@ def _drop_degenerate_jumps(
               f"(rank {rank}/{n_total}, incl. offset): {drop}")
 
     return keep, drop
+
+
+def _compute_condition_diagnostics(
+    matrix: np.ndarray,
+    labels: List[str],
+    *,
+    threshold: float = 1e12,
+) -> Dict[str, Any]:
+    """Summarize conditioning/correlation for a timing design matrix.
+
+    This is diagnostics-only: it never removes or freezes parameters.
+    """
+    if matrix.ndim != 2:
+        raise ValueError("Condition diagnostics require a 2D matrix")
+
+    n_cols = matrix.shape[1]
+    if n_cols == 0:
+        return {
+            "n_params": 0,
+            "labels": list(labels),
+            "condition_number": 0.0,
+            "max_abs_correlation": 0.0,
+            "threshold": float(threshold),
+            "ill_conditioned": False,
+        }
+
+    gram = matrix.T @ matrix
+    try:
+        condition_number = float(np.linalg.cond(gram))
+    except Exception:
+        condition_number = float("inf")
+
+    col_norms = np.linalg.norm(matrix, axis=0)
+    valid = col_norms > 0.0
+    if np.count_nonzero(valid) >= 2:
+        normalized = matrix[:, valid] / col_norms[valid]
+        corr = np.abs(normalized.T @ normalized)
+        np.fill_diagonal(corr, 0.0)
+        max_abs_correlation = float(np.max(corr))
+    else:
+        max_abs_correlation = 0.0
+
+    return {
+        "n_params": n_cols,
+        "labels": list(labels),
+        "condition_number": condition_number,
+        "max_abs_correlation": max_abs_correlation,
+        "threshold": float(threshold),
+        "ill_conditioned": bool(condition_number > float(threshold)),
+    }
 
 
 def _build_setup_common(
@@ -1922,6 +1998,8 @@ def _run_general_fit_iterations(
     _saved_M = None
     _saved_delta_all = None
     _saved_lambda = 1.0
+    condition_diagnostics_history: List[Dict[str, Any]] = []
+    condition_threshold = 1e12
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
@@ -2327,6 +2405,24 @@ def _run_general_fit_iterations(
             M_solve = M
             sigma_solve = errors_sec
 
+        t0 = 1 if has_offset else 0
+        timing_matrix = np.asarray(M_solve[:, t0:t0 + n_timing_params], dtype=np.float64)
+        condition_diag = _compute_condition_diagnostics(
+            timing_matrix,
+            fit_params,
+            threshold=condition_threshold,
+        )
+        condition_diag["iteration"] = iteration + 1
+        condition_diagnostics_history.append(condition_diag)
+        if condition_diag["ill_conditioned"]:
+            warnings.warn(
+                "Ill-conditioned multi-parameter fit detected "
+                f"(cond={condition_diag['condition_number']:.3e}, "
+                f"max|corr|={condition_diag['max_abs_correlation']:.4f}). "
+                "Keeping all requested fit parameters (no silent fixing).",
+                RuntimeWarning,
+            )
+
         _iter_noise_coeffs = None  # noise Fourier/DMX coefficients this iteration
         _wls_delta_all = None  # full delta including offset for WLS linearized RMS
 
@@ -2360,7 +2456,6 @@ def _run_general_fit_iterations(
                 cov_normalized = np.asarray(jnp.linalg.pinv(M2tM2_j))
             cov_all = (cov_normalized / col_norms).T / col_norms
             # Strip offset column from delta_params and cov
-            t0 = 1 if has_offset else 0
             delta_params = delta_all[t0:]
             cov = cov_all[t0:, t0:]
             _wls_delta_all = delta_all
@@ -2376,7 +2471,6 @@ def _run_general_fit_iterations(
             delta_all = np.array(delta_all)
             cov_all = np.array(cov_all)
             # Strip offset column
-            t0 = 1 if has_offset else 0
             delta_params = delta_all[t0:]
             cov = cov_all[t0:, t0:]
             _wls_delta_all = delta_all
@@ -2982,6 +3076,12 @@ def _run_general_fit_iterations(
         'noise_coefficients': noise_coefficients,
         'gls_debug': gls_debug,
         'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
+        'fit_diagnostics': {
+            'condition_threshold': condition_threshold,
+            'ill_conditioned': any(d.get('ill_conditioned', False) for d in condition_diagnostics_history),
+            'condition_history': condition_diagnostics_history,
+            'requested_fit_params': list(fit_params),
+        },
     }
 
 

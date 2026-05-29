@@ -125,6 +125,17 @@ PPTA/EPTA par/tim slices (TCB/IF99/DILATEFREQ/T2CMETHOD where available).
 The fixture manifest records the original source path, binary model, and TOA
 count.
 
+### Design-matrix unit convention
+
+`compute_designmatrix()` exports columns as `d(residual)/d(param)` in seconds
+per parameter unit using a PINT/Vela-compatible unit vocabulary
+(`str(PINT param.units)` style). The returned `DesignMatrixResult.column_units`
+are parseable Astropy unit strings.
+
+When comparing against raw Tempo2/libstempo design matrices, apply the explicit
+unit translation first (for example RAJ/DECJ are exported as hourangle/deg
+convention at the API boundary).
+
 ## Hardware requirements
 - JUG needs longdouble precision for some of its calculations. For that reason, it must be run on hardware that allows for this. This means that Apple Silicon chips can not run this software without hitting numerical precision errors.
 

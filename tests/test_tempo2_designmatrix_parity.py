@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from astropy import units as u
 
 pytest.importorskip("libstempo")
 
 from jug.testing.tempo2_reference import tempo2_reference
 from jug.fitting.optimized_fitter import compute_designmatrix
+from jug.utils.units import validate_column_units
 
 from tempo2_fixtures import get_tempo2_fixture
 
@@ -73,6 +75,16 @@ def _assert_column_matches(param: str, jug_col: np.ndarray, ref_col: np.ndarray)
     assert abs(stats["scale"] - 1.0) < 0.02, message
 
 
+def _tempo2_to_pint_vela_scale(param: str) -> float:
+    """Scale libstempo units to JUG's exported PINT/Vela fit-unit convention."""
+    param_upper = param.upper()
+    if param_upper == "RAJ":
+        return np.pi / 12.0  # s/rad -> s/hourangle
+    if param_upper == "DECJ":
+        return np.pi / 180.0  # s/rad -> s/deg
+    return 1.0
+
+
 @pytest.mark.tempo2
 def test_tempo2_sandbox_designmatrix_smoke():
     fixture = get_tempo2_fixture("epta_j1909_t2")
@@ -111,6 +123,9 @@ def test_tempo2_designmatrix_column_parity_f0():
     assert ref.designmatrix_labels is not None
     assert jug.matrix.shape[0] == ref.ntoa
     assert "F0" in jug.labels
+    assert jug.unit_convention == "pint-vela"
+    assert jug.column_units == validate_column_units(jug.labels)
+    assert str(u.Unit(jug.column_units[0])) == str(u.Unit("s / Hz"))
     assert ref.designmatrix_labels == ["Offset", "F0"]
     np.testing.assert_allclose(jug.matrix[:, 0], ref.designmatrix[:, 1], rtol=0.0, atol=0.02)
 
@@ -143,9 +158,12 @@ def test_tempo2_designmatrix_columns_match_libstempo(fixture_id):
     assert ref.designmatrix_labels is not None
     assert jug.matrix.shape[0] == ref.ntoa
     assert jug.labels == fit_params
+    assert jug.unit_convention == "pint-vela"
+    assert jug.column_units == validate_column_units(jug.labels)
+    assert len(jug.column_units) == len(jug.labels)
 
     ref_label_to_idx = {label: idx for idx, label in enumerate(ref.designmatrix_labels)}
     for jug_idx, param in enumerate(jug.labels):
         assert param in ref_label_to_idx
-        ref_col = ref.designmatrix[:, ref_label_to_idx[param]]
+        ref_col = ref.designmatrix[:, ref_label_to_idx[param]] * _tempo2_to_pint_vela_scale(param)
         _assert_column_matches(param, jug.matrix[:, jug_idx], ref_col)

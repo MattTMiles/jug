@@ -19,7 +19,9 @@ TARGET_COLUMNS = ("F0", "F1", "DM", "RAJ", "DECJ", "PB", "A1", "EPS1", "EPS2")
 FIXTURE_COLUMNS = {
     "epta_j0030_isolated": ("F0", "F1", "DM"),
     "epta_j1909_t2": TARGET_COLUMNS,
-    "ppta_j1902_ell1h": TARGET_COLUMNS,
+    "ppta_j1902_ell1h": TARGET_COLUMNS + ("FD1",),
+    "ng5_j1600_tdb_equatorial": ("F0",),
+    "ng5_j1600_tdb_ecliptic_cross_engine": ("F0",),
 }
 
 
@@ -131,7 +133,16 @@ def test_tempo2_designmatrix_column_parity_f0():
 
 
 @pytest.mark.tempo2
-@pytest.mark.parametrize("fixture_id", ["epta_j0030_isolated", "epta_j1909_t2", "ppta_j1902_ell1h"])
+@pytest.mark.parametrize(
+    "fixture_id",
+    [
+        "epta_j0030_isolated",
+        "epta_j1909_t2",
+        "ppta_j1902_ell1h",
+        "ng5_j1600_tdb_equatorial",
+        "ng5_j1600_tdb_ecliptic_cross_engine",
+    ],
+)
 def test_tempo2_designmatrix_columns_match_libstempo(fixture_id):
     """Compare real JUG timing columns against libstempo by label.
 

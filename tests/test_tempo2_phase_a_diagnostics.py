@@ -15,11 +15,11 @@ from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.testing.phase_a_comparison import compare_fixture_phase_a, rank_phase_b_ports
 from jug.testing.tempo2_diagnostics import tempo2_term_diagnostics
 
-from tempo2_fixtures import get_tempo2_fixture, list_tempo2_tdb_diagnostic_fixtures
+from tempo2_fixtures import get_tempo2_fixture, list_tempo2_parity_fixtures
 
 
 TDB_DIAGNOSTIC_FIXTURES = [
-    fx["id"] for fx in list_tempo2_tdb_diagnostic_fixtures()
+    fx["id"] for fx in list_tempo2_parity_fixtures(cases=("B", "C"), require_green=False)
 ]
 
 

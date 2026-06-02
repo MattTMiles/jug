@@ -14,9 +14,11 @@ from jug.utils.timescales import IFTE_K
 from jug.testing.tempo2_reference import tempo2_reference
 from jug.testing.fingerprint import extract_fingerprint, validate_tempo2_compatible
 
-from tempo2_fixtures import get_tempo2_fixture, list_tempo2_tdb_diagnostic_fixtures
+from tempo2_fixtures import get_tempo2_fixture, list_tempo2_parity_fixtures
 
-NG5_TDB_FIXTURES = [fx["id"] for fx in list_tempo2_tdb_diagnostic_fixtures()]
+NG5_TDB_FIXTURES = [
+    fx["id"] for fx in list_tempo2_parity_fixtures(cases=("B", "C"), require_green=True)
+]
 
 FINAL_RMS_DELTA_NS = 5.0
 FINAL_MAX_DELTA_NS = 25.0
@@ -107,6 +109,22 @@ def test_tempo2_mode_ng5_tdb_residual_parity(fixture_id):
     )
     ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
     _assert_residual_parity(jug, ref, fixture["id"])
+
+
+@pytest.mark.tempo2
+@pytest.mark.parametrize("fixture_id", NG5_TDB_FIXTURES)
+def test_ng5_tdb_pint_mode_remains_separate_from_tempo2_acceptance(fixture_id):
+    """Guardrail: Case B/C acceptance is defined on tempo2 mode, not pint mode."""
+    fixture = get_tempo2_fixture(fixture_id)
+    jug = compute_residuals_simple(
+        fixture["par_path"],
+        fixture["tim_path"],
+        verbose=False,
+        compatibility="pint",
+    )
+    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
+    stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
+    assert stats["rms"] > FINAL_RMS_DELTA_NS
 
 
 @pytest.mark.tempo2

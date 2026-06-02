@@ -577,6 +577,9 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
     dict with keys: model_id, has_binary, binary_model, plus all scalar
     float values (*_val) and JAX arrays (*_jax) needed by the delay kernel.
     """
+    mode = str(compatibility).lower()
+    is_tempo2_mode = mode in ("tempo2", "tempo2-compatible", "tempo2_compatible")
+
     has_binary = 'PB' in params or 'FB0' in params
     binary_model = params.get('BINARY', 'NONE').upper() if has_binary else 'NONE'
 
@@ -595,8 +598,12 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
                 model_id = 1  # ELL1
             elif has_kin_kom:
                 model_id = 5  # DDK
-                from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
-                convert_t2_kin_kom_to_ddk_convention(params)
+                # Tempo2 mode preserves native IAU KIN/KOM semantics; the PINT
+                # path converts to the DT92-style convention expected by the
+                # existing DDK kernel implementation.
+                if not is_tempo2_mode:
+                    from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+                    convert_t2_kin_kom_to_ddk_convention(params)
             else:
                 model_id = 2  # DD
         elif binary_model in ('BT', 'BTX'):
@@ -852,7 +859,8 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
                        tzrmjd_scale, verbose,
                        model_timescale='TDB',
                        delay_provider: DelayProvider | None = None,
-                       engine_profile: EngineConventionProfile | None = None):
+                       engine_profile: EngineConventionProfile | None = None,
+                       compatibility_mode: str = "pint"):
     """Compute phase at the TZR reference point.
 
     Returns
@@ -862,7 +870,11 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     """
     SPEED_OF_LIGHT_KM_S = C_KM_S
     if engine_profile is None:
-        engine_profile = EngineConventionProfile.from_params(params, "pint")
+        # Keep TZR fallback aligned with the active compatibility mode rather
+        # than silently defaulting to pint semantics.
+        engine_profile = EngineConventionProfile.from_params(
+            params, compatibility_mode
+        )
 
     # Resolve TZRSITE
     tzr_site_raw = params.get('TZRSITE', observatory)
@@ -1370,7 +1382,11 @@ def compute_residuals_simple(
     }
 
     # Binary parameters - detect model and extract all values
-    bp = _extract_binary_params(params, verbose, compatibility=compatibility)
+    bp = _extract_binary_params(
+        params,
+        verbose,
+        compatibility=compatibility_mode,
+    )
     model_id = bp['model_id']
     has_binary = bp['has_binary']
 
@@ -1380,13 +1396,9 @@ def compute_residuals_simple(
                                 ra_rad, dec_rad, parallax_mas, verbose)
 
     # === Tropospheric Delay (compute BEFORE kernel for PINT-compatible pre-binary time) ===
-    # Check CORRECT_TROPOSPHERE flag (usually 'Y' or 'T')
-    # Default is False unless specified
-    correct_troposphere = False
-    if 'CORRECT_TROPOSPHERE' in params:
-        flag = str(params['CORRECT_TROPOSPHERE']).upper().strip()
-        if flag in ['Y', 'T', '1', 'TRUE']:
-            correct_troposphere = True
+    # The resolved engine profile is the single source of truth so implicit
+    # tempo2 defaults and explicit par overrides follow the same code path.
+    correct_troposphere = bool(engine_profile.correct_troposphere)
     
     tropo_delay_sec = np.zeros(len(toas), dtype=np.float64)
     if correct_troposphere:
@@ -1635,6 +1647,7 @@ def compute_residuals_simple(
             model_timescale=model_timescale,
             delay_provider=delay_provider,
             engine_profile=engine_profile,
+            compatibility_mode=compatibility_mode,
         )
 
     # Phase computation + wrapping + conversion via shared canonical function.

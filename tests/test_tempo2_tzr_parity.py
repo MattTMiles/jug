@@ -10,9 +10,11 @@ pytest.importorskip("libstempo")
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.testing.tempo2_reference import tempo2_reference
 
-from tempo2_fixtures import get_tempo2_fixture, list_tempo2_tdb_diagnostic_fixtures
+from tempo2_fixtures import get_tempo2_fixture, list_tempo2_parity_fixtures
 
-NG5_TDB_FIXTURES = [fx["id"] for fx in list_tempo2_tdb_diagnostic_fixtures()]
+NG5_TDB_FIXTURES = [
+    fx["id"] for fx in list_tempo2_parity_fixtures(cases=("B", "C"), require_green=True)
+]
 
 
 def _delta_stats_ns(jug_residuals_us, tempo2_residuals_us) -> dict[str, float]:

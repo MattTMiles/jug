@@ -77,11 +77,11 @@ but **not** for assessing tempo2 compatibility (see §3 and §8).
 
 | Area | Finding |
 |------|---------|
-| **Bottom line** | `compatibility="tempo2"` does **not** reproduce tempo2 residuals on TDB models today. It tracks Astropy ephemeris + JUG combined delay kernel (PINT family). TCB parity machinery (IF99 epoch map, IFTE, unweighted phase mean) explains green case A tests only. |
-| **Real gap vs libstempo (NG5 TDB)** | ~6 ns raw WRMS, annual-shaped — same cluster as PINT, not acceptable for JUG(tempo2) acceptance. |
-| **Misleading metric** | Weighted-mean-centered JUG(tempo2)−JUG(pint) ≈ 0.002 ns hides ~61 ns phase-convention offset and identical delay physics. |
-| **Root cause** | Missing tempo2-native ephemeris/Roemer/Shapiro on TDB; TZR not mode-specific; `_extract_binary_params` ignores `compatibility`. |
-| **Tests** | `tests/test_tempo2_residual_parity.py`: 8 passed, 1 xfailed (pint-default TCB baseline). No case B/C fixtures in `tests/data_tempo2/manifest.json` yet. |
+| **Bottom line** | `compatibility="tempo2"` now has a native TDB geometry path (jplephem + tempo2 helpers), mode-specific TZR handling, and separate runtime conventions via `EngineConventionProfile`. |
+| **Raw parity status** | Case A (TCB) and cases B/C (NG5 TDB) are green under raw residual gates against libstempo; B/C run at ~1.3 ns WRMS. |
+| **Metric policy** | Tempo2 acceptance stays on raw pre-fit residuals. Weighted-mean-centered deltas are diagnostics for pint-family-vs-pint-family only. |
+| **Architecture status** | Provider/TZR dispatch split is in place and mode-specific. Remaining shared components (for example observatory position plumbing and parts of the delay kernel) are tracked for follow-up hardening. |
+| **Tests** | Case B/C fixtures are in `tests/data_tempo2/manifest.json` and are exercised in residual/TZR/Phase-A test modules with `@pytest.mark.tempo2`. |
 
 ---
 
@@ -226,9 +226,8 @@ deltas between modes). Tempo2 mode reaches sub-ns parity vs libstempo.
 | `tests/data_golden/J1909_proper.par` (100 TOAs, `UNITS TDB`) | 74.3 ns | 76.4 ns | 17.5 ns | corr(δ_t2−ls, δ_pint−ls) ≈ **1.0** — same delay-shaped gap vs libstempo; not NG5-like. |
 | NG11 J1600 ecliptic TDB (500 TOAs, ad hoc) | ~6.6 ms | ~6.6 ms | 494 µs / **0.003 ns centered** | Invalid libstempo oracle setup; illustrates metric trap only. |
 
-**Case B/C NG5 files** were **not present** in the MetaPulsar workspace during the
-2026-06-01 verification pass; §4.1 numbers remain from the original notebook run.
-Commit case B/C par/tim before Phase A automation.
+Case B/C NG5 fixture files are now present in `tests/data_tempo2/manifest.json`
+and exercised in the parity suite.
 
 ### 4.4 Delay-level diagnostic (pint vs tempo2 modes)
 
@@ -245,12 +244,12 @@ TCB machinery separates modes correctly.
 
 ## 5. Why existing tempo2 tests pass but NG5 TDB fails
 
-JUG tempo2 parity tests today:
+JUG tempo2 parity tests:
 
 - `tests/test_tempo2_residual_parity.py` — raw pre-fit residuals vs libstempo (< 5 ns RMS gate)
 - `tests/test_tempo2_designmatrix_parity.py` — TCB fixtures only
 - `tests/test_tempo2_fit_parity.py`
-- Fixtures: `tests/data_tempo2/` (case A only; `tests/data_tempo2/manifest.json`)
+- Fixtures: `tests/data_tempo2/` (cases A/B/C; `tests/data_tempo2/manifest.json`)
 
 Case A example (`epta_j0030_isolated`):
 
@@ -263,14 +262,14 @@ EPHEM DE440
 RAJ / DECJ  (equatorial)
 ```
 
-**`compatibility="tempo2"` works on case A** because TCB-specific paths activate:
+`compatibility="tempo2"` remains green on case A because TCB-specific paths activate:
 
 - `convert_tdb_epoch_to_tempo2_tcb` on `model_mjd` when `UNITS=TCB`
 - IFTE scaling (`IFTE_K`) on SSB/sun/planet vectors
 - Unweighted phase mean in `compute_phase_residuals`
 
-On TDB cases B/C, those paths are inactive; tempo2 mode still shares Astropy
-geometry and the PINT-family delay kernel → ~6 ns vs libstempo.
+On TDB cases B/C, tempo2 mode now uses a native geometry path (Phase B) plus
+mode-specific TZR handling (Phase C), keeping raw parity with libstempo green.
 
 ### Known secondary gaps (case A and beyond)
 
@@ -296,7 +295,7 @@ Primary file: `jug/residuals/simple_calculator.py` (`compute_residuals_simple`).
 | Native ecliptic Roemer | `_ecliptic_coords` | Equatorial `L_hat` from converted RAJ/DECJ | `compute_ecliptic_pulsar_direction` + rotate SSB vectors (**runs on TDB too**) |
 | IFTE position scaling | `UNITS=TCB` | — | Multiply SSB/sun/planet vectors by `IFTE_K` |
 | Phase mean subtraction | always | Weighted (`mean_mode="weighted"`) | Unweighted (`mean_mode="unweighted"`) |
-| Binary dispatch | always | `_extract_binary_params(..., compatibility=...)` | **Same code path** — `compatibility` parameter is **unused** inside `_extract_binary_params` |
+| Binary dispatch | always | `_extract_binary_params(..., compatibility=...)` | Mode-specific handling is wired through `compatibility` (for example T2 KIN/KOM conversion only on pint-family path). |
 
 ### TDB: effective difference between modes
 
@@ -310,13 +309,11 @@ Primary file: `jug/residuals/simple_calculator.py` (`compute_residuals_simple`).
 
 ### TZR / absolute phase (`_compute_tzr_phase`)
 
-- `tzr_use_native_ecliptic = bool(params.get('_ecliptic_coords', False))` — **not**
-  gated on `compatibility_mode`; pint and tempo2 share the same TZR geometry path.
-- IFTE on TZR vectors: only when `UNITS=TCB`.
-- Sun/planet at TZR: **Astropy** `get_body_barycentric_posvel`, not tempo2-native tables.
-
-Case C (DD + DMX + `TZRMJD`, `TZRSITE=gbt`) — quantify TZR contribution in Phase A
-after Roemer/ephemeris alignment (§8 priority 3).
+- TZR geometry is compatibility-gated:
+  - `compute_tzr_astrometry_tempo2` in tempo2 mode,
+  - `compute_tzr_astrometry_pint` in pint mode.
+- `resolve_tzrmjd_epochs` follows tempo2 AUTO+TDB semantics in tempo2 mode.
+- IFTE TZR handling remains active only for `UNITS=TCB`.
 
 ### Shared PINT-family core (both modes on TDB)
 
@@ -490,18 +487,18 @@ expected when ephemeris backends diverge; Roemer remains shared on equatorial B/
 
 ### Phase D — Tests and regression fixtures
 
-- [ ] Add case B and/or C to `tests/data_tempo2/manifest.json`
-- [ ] `test_tempo2_mode_ng5_j1600_tdb_residual_parity` (xfail → pass), raw δ only
-- [ ] README: libstempo + `TEMPO2` test requirements
-- [ ] Demo notebook/helpers: raw δ for tempo2 panels; weighted center only for pint-family
+- [x] Add case B and/or C to `tests/data_tempo2/manifest.json`
+- [x] `test_tempo2_mode_ng5_tdb_residual_parity` passes on raw δ only
+- [x] README: libstempo + `TEMPO2` test requirements and compatibility-mode guidance
+- [x] Demo notebook/helpers: raw δ for tempo2 panels; weighted center only for pint-family
 
 ### Phase E — Fitter / design matrix follow-through
 
 After raw residuals match:
 
-- [ ] `tests/test_tempo2_designmatrix_parity.py` on new fixtures
-- [ ] `tests/test_tempo2_fit_parity.py`
-- [ ] FD column scaling in tempo2 mode (`optimized_fitter.py`)
+- [x] `tests/test_tempo2_designmatrix_parity.py` on new fixtures
+- [x] `tests/test_tempo2_fit_parity.py`
+- [x] FD column scaling in tempo2 mode (`optimized_fitter.py`)
 
 ---
 
@@ -564,8 +561,8 @@ A: Case A activates IFTE, TCB epoch mapping, and unweighted phase mean. That
 bundle is necessary but not sufficient for TDB.
 
 **Q: Does native ecliptic Roemer on TDB matter?**  
-A: It runs in tempo2 mode, but on shared Astropy geometry it does not separate
-JUG(tempo2) from JUG(pint) on delays — only phase mean does.
+A: Yes. Tempo2 mode now evaluates TDB geometry through the native tempo2 helper
+path; parity still uses raw residual checks against libstempo.
 
 **Q: Can we call libstempo or tempo2 inside `compatibility="tempo2"`?**  
 A: **No** at runtime. Tests may use libstempo as oracle only.
@@ -588,3 +585,6 @@ Centering removes the ~61 ns phase-offset signal and hides the libstempo gap.
 | 2026-06-01 | Decisions locked: native-only, raw δ, unweighted phase; Phase plan |
 | 2026-06-01 | **Phase A landed:** provider skeleton, diagnostic conventions, Case B/C fixtures, term diagnostics, oracle runner, comparison tests |
 | 2026-06-01 | **Phase B landed:** `EngineConventionProfile`, split pint/tempo2 providers, jplephem TDB geometry, B/C parity green |
+| 2026-06-01 | **Phase C landed:** mode-specific TZR dispatch and TZRMJD scale resolution |
+| 2026-06-02 | **Phase D landed:** fixture/test/doc/demo consolidation and runtime path-separation cleanup |
+| 2026-06-02 | **Phase E landed:** design-matrix/fit parity extended to Case B/C and fitter FD column conventions made explicitly selectable |

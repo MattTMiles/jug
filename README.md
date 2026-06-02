@@ -120,10 +120,31 @@ export TEMPO2=/path/to/T2runtime
 JUG_TEST_TEMPO2=1 pytest tests/test_tempo2_*.py -q -o addopts=''
 ```
 
-The curated fixtures live in `tests/data_tempo2/` and are small Tempo2-style
-PPTA/EPTA par/tim slices (TCB/IF99/DILATEFREQ/T2CMETHOD where available).
-The fixture manifest records the original source path, binary model, and TOA
-count.
+The curated fixtures live in `tests/data_tempo2/`. The manifest includes:
+
+- Case A (TCB regression fixtures),
+- Case B (NG5 equatorial TDB),
+- Case C (NG5 ecliptic cross-engine TDB).
+
+`tests/tempo2_fixtures.py` exposes helpers to select parity fixtures by case
+for CI and local debugging.
+
+### Compatibility modes and residual conventions
+
+JUG exposes two compatibility families:
+
+- `compatibility="pint"`: PINT-family runtime conventions and weighted residual
+  mean subtraction.
+- `compatibility="tempo2"`: tempo2-family runtime conventions and unweighted
+  residual mean subtraction.
+
+When evaluating Tempo2 parity, use **raw pre-fit residuals** only (no post-hoc
+mean centering). This is the acceptance metric used by
+`tests/test_tempo2_residual_parity.py`.
+
+For notebook diagnostics, weighted-mean-centered deltas are useful only for
+PINT-family-vs-PINT-family comparisons; tempo2-labeled comparisons should stay
+raw.
 
 ### Design-matrix unit convention
 

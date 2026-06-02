@@ -48,7 +48,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Literal
 import time
 import math
 import tempfile
@@ -87,6 +87,13 @@ from jug.model.parameter_spec import (
 )
 from jug.utils.constants import HIGH_PRECISION_PARAMS
 
+FDColumnMode = Literal["tempo2_delay", "delay_only", "pint_phase_scaled"]
+
+# ``tempo2_delay`` and ``delay_only`` are aliases: both return raw log(f)^n delay
+# derivatives (tempo2-style FD in delay space).  Defaults differ by compatibility
+# only so callers can document intent; only ``pint_phase_scaled`` changes physics.
+_DELAY_DERIVATIVE_MODES = frozenset({"tempo2_delay", "delay_only"})
+
 
 @dataclass
 class DesignMatrixResult:
@@ -98,6 +105,93 @@ class DesignMatrixResult:
     unit_convention: str
     residuals_us: np.ndarray
     errors_us: np.ndarray
+
+
+def _normalize_fd_column_mode(
+    fd_column_mode: str | None,
+    *,
+    compatibility: str,
+) -> FDColumnMode:
+    """Resolve FD design-matrix convention for fitter and export APIs.
+
+    Modes
+    -----
+    tempo2_delay / delay_only
+        Identical: ``d(delay)/d(FDn) = log(f/1 GHz)^n`` (tempo2 delay convention).
+        Default for ``compatibility="tempo2"`` is ``tempo2_delay``; for pint
+        mode it is ``delay_only`` (conservative; does not enable PINT chain rule).
+    pint_phase_scaled
+        Above multiplied by ``f(t)/F0`` (PINT phase chain rule on FD columns).
+    """
+    if fd_column_mode is None:
+        mode = str(compatibility).lower()
+        if mode in ("tempo2", "tempo2-compatible", "tempo2_compatible"):
+            return "tempo2_delay"
+        return "delay_only"
+
+    norm = str(fd_column_mode).strip().lower().replace("-", "_")
+    aliases = {
+        "tempo2": "tempo2_delay",
+        "tempo2_delay": "tempo2_delay",
+        "delay_only": "delay_only",
+        "legacy_delay": "delay_only",
+        "pint_phase_scaled": "pint_phase_scaled",
+        "pint_phase": "pint_phase_scaled",
+        "phase_scaled": "pint_phase_scaled",
+    }
+    if norm not in aliases:
+        raise ValueError(
+            f"Unknown fd_column_mode={fd_column_mode!r}. "
+            "Expected one of: 'tempo2_delay', 'delay_only', 'pint_phase_scaled'."
+        )
+    return aliases[norm]  # type: ignore[return-value]
+
+
+def _is_delay_derivative_fd_mode(fd_column_mode: FDColumnMode) -> bool:
+    return fd_column_mode in _DELAY_DERIVATIVE_MODES
+
+
+def _instantaneous_spin_frequency_hz(params: Dict[str, Any], tdb_mjd: np.ndarray) -> np.ndarray:
+    """Evaluate f(t) = F0 + F1*dt + F2*dt^2/2 + ... in Hz."""
+    pepoch = float(params.get("PEPOCH", tdb_mjd[0]))
+    dt_sec = (np.asarray(tdb_mjd, dtype=np.float64) - pepoch) * SECS_PER_DAY
+    freq = np.zeros_like(dt_sec, dtype=np.float64)
+    for order in range(21):
+        key = f"F{order}"
+        if key not in params:
+            if order == 0:
+                freq.fill(1.0)
+            break
+        coeff = float(params[key])
+        if order == 0:
+            freq += coeff
+        else:
+            freq += coeff * (dt_sec ** order) / float(math.factorial(order))
+    return freq
+
+
+def _compute_fd_derivatives_for_mode(
+    *,
+    params: Dict[str, Any],
+    freq_mhz: np.ndarray,
+    fit_params: List[str],
+    tdb_mjd: np.ndarray,
+    fd_column_mode: FDColumnMode,
+) -> Dict[str, np.ndarray]:
+    """Compute FD derivative columns with explicit convention dispatch."""
+    from jug.fitting.derivatives_fd import compute_fd_derivatives
+
+    base = {
+        k: np.asarray(v, dtype=np.float64)
+        for k, v in compute_fd_derivatives(params, freq_mhz, fit_params).items()
+    }
+    if _is_delay_derivative_fd_mode(fd_column_mode):
+        return base
+
+    spin_freq = _instantaneous_spin_frequency_hz(params, tdb_mjd)
+    f0 = float(params.get("F0", 1.0))
+    scale = spin_freq / f0
+    return {k: col * scale for k, col in base.items()}
 
 
 def _format_longdouble(value: np.longdouble) -> str:
@@ -268,6 +362,8 @@ class GeneralFitSetup:
     """
     params: Dict[str, float]
     fit_param_list: List[str]
+    compatibility: str
+    fd_column_mode: FDColumnMode
     param_values_start: List[float]
     toas_mjd: np.ndarray
     freq_mhz: np.ndarray
@@ -708,6 +804,7 @@ def fit_parameters_optimized(
     device: Optional[str] = None,
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
+    fd_column_mode: str | None = None,
 ) -> Dict:
     """
     Fit timing model parameters to TOA data.
@@ -739,6 +836,11 @@ def fit_parameters_optimized(
     device : str, optional
         Device preference: 'cpu', 'gpu', or 'auto'.
         If None, uses global preference (default: 'cpu').
+    fd_column_mode : str, optional
+        FD derivative convention in fitter design-matrix columns:
+        ``tempo2_delay``/``delay_only`` for delay derivatives or
+        ``pint_phase_scaled`` for PINT-style phase-chain scaling.
+        If omitted, defaults by compatibility mode.
 
     Returns
     -------
@@ -767,7 +869,7 @@ def fit_parameters_optimized(
 
     return _fit_parameters_general(
         par_file, tim_file, fit_params, max_iter, convergence_threshold,
-        clock_dir, verbose, device, compatibility, engine_conventions
+        clock_dir, verbose, device, compatibility, engine_conventions, fd_column_mode
     )
 
 
@@ -832,15 +934,19 @@ def compute_designmatrix(
     fit_params: List[str],
     *,
     compatibility: str = "pint",
+    fd_column_mode: str | None = None,
     verbose: bool = False,
 ) -> DesignMatrixResult:
     """Return an unweighted timing design matrix.
 
     Columns are returned in seconds per PINT/Vela-compatible fit unit
-    (see ``jug.utils.units.fit_unit``).  Finite-difference columns perturb
-    parameters in those fit units.  Spin columns use the analytic Tempo2
-    convention in tempo2 compatibility mode.
+    (see ``jug.utils.units.fit_unit``).  Spin (F*) and FD columns use the
+    same analytic conventions as the WLS fitter (including ``fd_column_mode``).
+    Remaining parameters use symmetric finite differences on residuals.
     """
+    resolved_fd = _normalize_fd_column_mode(
+        fd_column_mode, compatibility=compatibility
+    )
     base = compute_residuals_simple(
         par_file,
         tim_file,
@@ -848,18 +954,47 @@ def compute_designmatrix(
         compatibility=compatibility,
     )
     params = parse_par_file(par_file)
+    tdb_mjd = np.asarray(base["tdb_mjd"], dtype=np.float64)
+    freq_bary_mhz = np.asarray(base["freq_bary_mhz"], dtype=np.float64)
+    dt_sec_ld = base.get("dt_sec_ld")
+    dt_for_spin = (
+        np.asarray(dt_sec_ld, dtype=np.float64)
+        if dt_sec_ld is not None
+        else None
+    )
+    mode = str(compatibility).lower()
+    tempo2_mode = mode in ("tempo2", "tempo2-compatible", "tempo2_compatible")
+
+    from jug.fitting.derivatives_spin import compute_spin_derivatives
+
     cols = []
-    f0 = np.longdouble(params["F0"]) if "F0" in params else None
     for param in fit_params:
         if param not in params:
             raise ValueError(f"Parameter '{param}' not found in {par_file}")
         param_upper = param.upper()
-        if compatibility.lower() in ("tempo2", "tempo2-compatible", "tempo2_compatible") and param_upper.startswith("F") and param_upper[1:].isdigit():
-            order = int(param_upper[1:])
-            dt = np.asarray(base["dt_sec_ld"], dtype=np.longdouble)
-            col = -(dt ** (order + 1)) / (np.longdouble(math.factorial(order + 1)) * f0)
-            cols.append(np.asarray(col, dtype=np.float64))
+
+        if tempo2_mode and param_upper.startswith("F") and param_upper[1:].isdigit():
+            spin_col = compute_spin_derivatives(
+                params,
+                tdb_mjd,
+                [param],
+                compatibility="tempo2",
+                dt_sec=dt_for_spin,
+            )[param]
+            cols.append(np.asarray(spin_col, dtype=np.float64))
             continue
+
+        if param_upper.startswith("FD") and param_upper[2:].isdigit():
+            fd_derivs = _compute_fd_derivatives_for_mode(
+                params=params,
+                freq_mhz=freq_bary_mhz,
+                fit_params=[param],
+                tdb_mjd=tdb_mjd,
+                fd_column_mode=resolved_fd,
+            )
+            cols.append(np.asarray(fd_derivs[param], dtype=np.float64))
+            continue
+
         value_native = _designmatrix_param_value(params, param)
         value_fit = native_to_fit_value(param, value_native)
         step_fit = fd_step_in_fit_units(param, value_fit)
@@ -870,10 +1005,6 @@ def compute_designmatrix(
         try:
             plus = compute_residuals_simple(plus_file, tim_file, verbose=False, compatibility=compatibility)
             minus = compute_residuals_simple(minus_file, tim_file, verbose=False, compatibility=compatibility)
-            # Tempo2's designmatrix columns use the timing-model convention
-            # (-d residual / d parameter).  The residual evaluator returns
-            # mean-subtracted residuals in tempo2 mode, so these columns are
-            # equivalent to libstempo columns up to the explicit offset column.
             col = -((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step_fit)
             cols.append(np.asarray(col, dtype=np.float64))
         finally:
@@ -1096,6 +1227,8 @@ def _build_setup_common(
     freq_mhz_bary: np.ndarray,
     extras: Dict[str, Any],
     noise_config: object,
+    compatibility: str = "pint",
+    fd_column_mode: str | None = None,
     verbose: bool = False,
     subtract_noise_sec: Optional[np.ndarray] = None,
 ) -> GeneralFitSetup:
@@ -1563,9 +1696,14 @@ def _build_setup_common(
                   f"RMS correction = {np.std(subtract_noise_sec)*1e6:.3f} mus")
 
     # --- Assemble GeneralFitSetup ------------------------------------------
+    resolved_fd_column_mode = _normalize_fd_column_mode(
+        fd_column_mode, compatibility=compatibility
+    )
     return GeneralFitSetup(
         params=dict(params),
         fit_param_list=fit_params,
+        compatibility=str(compatibility).lower(),
+        fd_column_mode=resolved_fd_column_mode,
         param_values_start=param_values_start,
         toas_mjd=np.array(toas_mjd),
         freq_mhz=np.array(freq_mhz_bary),
@@ -1631,6 +1769,7 @@ def _build_general_fit_setup_from_files(
     noise_config: Optional[object] = None,
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
+    fd_column_mode: str | None = None,
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
@@ -1707,6 +1846,8 @@ def _build_general_fit_setup_from_files(
             'jump_phase': result.get('jump_phase'),
         },
         noise_config=noise_config,
+        compatibility=compatibility,
+        fd_column_mode=fd_column_mode,
         verbose=verbose,
     )
 
@@ -1908,6 +2049,8 @@ def _run_general_fit_iterations(
     initial_astrometric_delay = setup.initial_astrometric_delay
     ssb_obs_pos_ls = setup.ssb_obs_pos_ls
     fd_params = setup.fd_params
+    fd_column_mode = setup.fd_column_mode
+    fit_compatibility = setup.compatibility
     initial_fd_delay = setup.initial_fd_delay
     sw_params_iter = setup.sw_params
     initial_sw_delay = setup.initial_sw_delay
@@ -1943,7 +2086,7 @@ def _run_general_fit_iterations(
     from jug.fitting.derivatives_astrometry import (
         compute_astrometric_delay, compute_astrometry_derivatives
     )
-    from jug.fitting.derivatives_fd import compute_fd_delay, compute_fd_derivatives
+    from jug.fitting.derivatives_fd import compute_fd_delay
     from jug.fitting.derivatives_sw import compute_sw_derivatives
     from jug.residuals.simple_calculator import compute_phase_residuals
     from jug.io.par_reader import get_longdouble
@@ -2240,8 +2383,14 @@ def _run_general_fit_iterations(
         # Batch spin parameters (spec-driven routing via component)
         spin_derivs = {}
         if spin_params_list:
-            # PINT spin derivatives are evaluated at barycentric TDB TOAs.
-            spin_derivs = compute_spin_derivatives(params, tdb_mjd, spin_params_list)
+            dt_for_spin = setup.dt_sec_ld if setup.dt_sec_ld is not None else setup.dt_sec_cached
+            spin_derivs = compute_spin_derivatives(
+                params,
+                tdb_mjd,
+                spin_params_list,
+                compatibility=fit_compatibility,
+                dt_sec=np.asarray(dt_for_spin, dtype=np.float64),
+            )
 
         # Batch DM parameters (spec-driven routing via component)
         dm_derivs = {}
@@ -2283,7 +2432,13 @@ def _run_general_fit_iterations(
         # Batch FD parameters (frequency-dependent delay derivatives)
         fd_derivs = {}
         if fd_params_list:
-            fd_derivs = compute_fd_derivatives(params, freq_mhz, fd_params_list)
+            fd_derivs = _compute_fd_derivatives_for_mode(
+                params=params,
+                freq_mhz=freq_mhz,
+                fit_params=fd_params_list,
+                tdb_mjd=tdb_mjd,
+                fd_column_mode=fd_column_mode,
+            )
 
         # Batch solar wind parameters (NE_SW)
         sw_derivs = {}
@@ -2768,8 +2923,14 @@ def _run_general_fit_iterations(
         # Red noise → F0/F1 + offset
         _tn_spin_fit = [p for p in ['F0', 'F1'] if p in fit_params]
         if n_red_noise_cols > 0 and _tn_spin_fit:
+            dt_for_spin = setup.dt_sec_ld if setup.dt_sec_ld is not None else setup.dt_sec_cached
             _tn_spin_derivs = compute_spin_derivatives(
-                params, tdb_mjd, _tn_spin_fit)
+                params,
+                tdb_mjd,
+                _tn_spin_fit,
+                compatibility=fit_compatibility,
+                dt_sec=np.asarray(dt_for_spin, dtype=np.float64),
+            )
             _tn_cols = [_tn_spin_derivs[p] for p in _tn_spin_fit]
             _tn_cols.append(np.ones(len(toas_mjd)))  # constant offset
             M_poly = np.column_stack(_tn_cols)
@@ -3071,7 +3232,9 @@ def _build_general_fit_setup_from_cache(
     fit_params: List[str],
     toa_mask: Optional[np.ndarray] = None,
     noise_config: Optional[object] = None,
-    subtract_noise_sec: Optional[np.ndarray] = None
+    subtract_noise_sec: Optional[np.ndarray] = None,
+    compatibility: str = "pint",
+    fd_column_mode: str | None = None,
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -3160,6 +3323,8 @@ def _build_general_fit_setup_from_cache(
         freq_mhz_bary=freq_mhz_bary,
         extras=extras,
         noise_config=noise_config,
+        compatibility=compatibility,
+        fd_column_mode=fd_column_mode,
         verbose=False,
         subtract_noise_sec=subtract_noise_sec,
     )
@@ -3223,6 +3388,7 @@ def _fit_parameters_general(
     device: Optional[str],
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
+    fd_column_mode: str | None = None,
 ) -> Dict:
     """General parameter fitter -- handles any parameter combination.
 
@@ -3239,6 +3405,7 @@ def _fit_parameters_general(
         par_file, tim_file, fit_params, clock_dir, verbose,
         compatibility=compatibility,
         engine_conventions=engine_conventions,
+        fd_column_mode=fd_column_mode,
     )
     cache_time = time.time() - cache_start
     

@@ -456,6 +456,9 @@ class TimingSession:
         
         return result
     
+    # TODO: expose ``fd_column_mode`` here (and forward through cached/file fit
+    # paths) so session users can select FD column convention without calling
+    # ``fit_parameters_optimized`` directly.
     def fit_parameters(
         self,
         fit_params: Optional[List[str]] = None,
@@ -603,7 +606,8 @@ class TimingSession:
                 fit_params,
                 toa_mask=toa_mask,
                 noise_config=noise_config,
-                subtract_noise_sec=subtract_noise_sec
+                subtract_noise_sec=subtract_noise_sec,
+                compatibility=self.compatibility,
             )
             
             # Run cached fit

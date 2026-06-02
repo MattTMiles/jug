@@ -43,7 +43,12 @@ from jug.delays.tempo2_geometry import (
 )
 from jug.io.par_reader import parse_dec, parse_ra
 from jug.residuals.diagnostic_conventions import DiagnosticConventions, TermDiagnosticMetadata
-from jug.residuals.engine_conventions import EngineConventionProfile, default_engine_profile
+from jug.residuals.engine_conventions import (
+    EngineConventionProfile,
+    default_engine_profile,
+    normalize_compatibility_mode,
+    validate_engine_profile_matches_compatibility,
+)
 from jug.utils.constants import C_KM_S, OBSERVATORIES, T_PLANET, T_SUN_SEC
 
 
@@ -72,10 +77,7 @@ class GeometryTerms:
 
 
 def _normalize_compatibility(compatibility: str) -> str:
-    mode = str(compatibility).lower()
-    if mode in ("tempo2", "tempo2-compatible", "tempo2_compatible"):
-        return "tempo2"
-    return "pint"
+    return normalize_compatibility_mode(compatibility)
 
 
 class DelayProvider(ABC):
@@ -93,8 +95,7 @@ class DelayProvider(ABC):
         mode = _normalize_compatibility(compatibility)
         self.profile = profile or default_engine_profile(mode)
         self.diagnostics = diagnostics or DiagnosticConventions()
-        if self.profile.compatibility != mode:
-            self.profile = self.profile.with_overrides(compatibility=mode)
+        validate_engine_profile_matches_compatibility(compatibility, self.profile)
 
     @abstractmethod
     def compute_geometry_terms(

@@ -15,11 +15,48 @@ TimeEph = Literal["IF99", "FB90"]
 T2CMethod = Literal["IAU2000B", "TEMPO"]
 
 
-def _normalize_compatibility(compatibility: str) -> str:
+def normalize_compatibility_mode(compatibility: str) -> str:
+    """Map API compatibility string to ``pint`` or ``tempo2``."""
     mode = str(compatibility).lower()
     if mode in ("tempo2", "tempo2-compatible", "tempo2_compatible"):
         return "tempo2"
     return "pint"
+
+
+def _normalize_compatibility(compatibility: str) -> str:
+    return normalize_compatibility_mode(compatibility)
+
+
+def validate_engine_profile_matches_compatibility(
+    compatibility: str,
+    engine_profile: EngineConventionProfile,
+) -> None:
+    """Reject mixed-mode runs where profile and API compatibility disagree."""
+    mode = normalize_compatibility_mode(compatibility)
+    if engine_profile.compatibility != mode:
+        raise ValueError(
+            f"engine_conventions.compatibility={engine_profile.compatibility!r} "
+            f"does not match compatibility={mode!r}. "
+            "Pass a profile built for the same mode (or omit engine_conventions)."
+        )
+
+
+def resolve_engine_profile(
+    params: dict[str, Any],
+    compatibility: str,
+    *,
+    engine_conventions: EngineConventionProfile | None = None,
+    implicit_tempo2_defaults: bool | None = None,
+) -> EngineConventionProfile:
+    """Return runtime profile for *compatibility*, validating against an explicit profile."""
+    if engine_conventions is not None:
+        validate_engine_profile_matches_compatibility(compatibility, engine_conventions)
+        return engine_conventions
+    return EngineConventionProfile.from_params(
+        params,
+        compatibility,
+        implicit_tempo2_defaults=implicit_tempo2_defaults,
+    )
 
 
 def _flag_from_par(params: dict[str, Any], key: str, default: bool = False) -> bool:

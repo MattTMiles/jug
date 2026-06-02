@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from jug.residuals.engine_conventions import EngineConventionProfile
+import pytest
+
+from jug.residuals.engine_conventions import (
+    EngineConventionProfile,
+    resolve_engine_profile,
+    validate_engine_profile_matches_compatibility,
+)
 
 
 def test_tempo2_implicit_defaults_on_tdb():
@@ -30,3 +36,17 @@ def test_explicit_par_overrides_implicit():
     assert profile.dilatefreq is False
     assert profile.planet_shapiro is False
     assert profile._sources["DILATEFREQ"] == "par"
+
+
+def test_mismatched_engine_profile_raises():
+    params = {"UNITS": "TDB", "EPHEM": "DE405"}
+    tempo2_profile = EngineConventionProfile.from_params(params, "tempo2")
+    with pytest.raises(ValueError, match="does not match compatibility"):
+        validate_engine_profile_matches_compatibility("pint", tempo2_profile)
+
+
+def test_resolve_engine_profile_rejects_mixed_mode():
+    params = {"UNITS": "TDB", "EPHEM": "DE405"}
+    tempo2_profile = EngineConventionProfile.from_params(params, "tempo2")
+    with pytest.raises(ValueError, match="does not match compatibility"):
+        resolve_engine_profile(params, "pint", engine_conventions=tempo2_profile)

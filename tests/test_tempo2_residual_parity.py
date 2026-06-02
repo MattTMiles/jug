@@ -14,7 +14,9 @@ from jug.utils.timescales import IFTE_K
 from jug.testing.tempo2_reference import tempo2_reference
 from jug.testing.fingerprint import extract_fingerprint, validate_tempo2_compatible
 
-from tempo2_fixtures import get_tempo2_fixture
+from tempo2_fixtures import get_tempo2_fixture, list_tempo2_tdb_diagnostic_fixtures
+
+NG5_TDB_FIXTURES = [fx["id"] for fx in list_tempo2_tdb_diagnostic_fixtures()]
 
 FINAL_RMS_DELTA_NS = 5.0
 FINAL_MAX_DELTA_NS = 25.0
@@ -89,6 +91,21 @@ def test_tempo2_mode_binary_residual_parity(fixture_id):
     )
     ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
 
+    _assert_residual_parity(jug, ref, fixture["id"])
+
+
+@pytest.mark.tempo2
+@pytest.mark.parametrize("fixture_id", NG5_TDB_FIXTURES)
+def test_tempo2_mode_ng5_tdb_residual_parity(fixture_id):
+    """Case B/C NG5 TDB fixtures (TZR + DD + DMX) vs libstempo."""
+    fixture = get_tempo2_fixture(fixture_id)
+    jug = compute_residuals_simple(
+        fixture["par_path"],
+        fixture["tim_path"],
+        verbose=False,
+        compatibility="tempo2",
+    )
+    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
     _assert_residual_parity(jug, ref, fixture["id"])
 
 

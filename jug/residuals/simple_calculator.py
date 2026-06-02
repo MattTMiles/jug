@@ -37,13 +37,22 @@ from jug.delays.barycentric import (
     rotate_equatorial_to_ecliptic,
 )
 from jug.delays.combined import compute_total_delay_jax
-from jug.residuals.compatibility_providers import get_delay_provider
+from jug.residuals.compatibility_providers import DelayProvider, get_delay_provider
 from jug.residuals.diagnostic_conventions import (
     DiagnosticConventions,
     default_conventions,
     resolve_planet_shapiro_enabled,
 )
-from jug.residuals.engine_conventions import EngineConventionProfile
+from jug.residuals.engine_conventions import (
+    EngineConventionProfile,
+    resolve_engine_profile,
+)
+from jug.residuals.tzr_geometry import (
+    TzrEpochs,
+    compute_tzr_astrometry_pint,
+    compute_tzr_astrometry_tempo2,
+    resolve_tzrmjd_epochs,
+)
 from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
@@ -841,18 +850,19 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
                        is_ecliptic, ssb_obs_pos_km, fd_coeffs,
                        planet_shapiro_enabled,
                        tzrmjd_scale, verbose,
-                       model_timescale='TDB'):
+                       model_timescale='TDB',
+                       delay_provider: DelayProvider | None = None,
+                       engine_profile: EngineConventionProfile | None = None):
     """Compute phase at the TZR reference point.
 
     Returns
     -------
     tzr_phase : np.longdouble
         Phase at TZRMJD, to be subtracted from TOA phases.
-    tzrmjd_scale_resolved : str
-        Timescale used for TZRMJD ('UTC' or 'TDB').
     """
-    TZRMJD_raw = get_longdouble(params, 'TZRMJD')
     SPEED_OF_LIGHT_KM_S = C_KM_S
+    if engine_profile is None:
+        engine_profile = EngineConventionProfile.from_params(params, "pint")
 
     # Resolve TZRSITE
     tzr_site_raw = params.get('TZRSITE', observatory)
@@ -873,142 +883,73 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
             tzr_obs_itrf_km[0] * u.km, tzr_obs_itrf_km[1] * u.km, tzr_obs_itrf_km[2] * u.km
         )
 
-    # Use the TZRSITE-specific clock for UTC->TDB conversion
     tzr_clock = obs_clocks.get(tzr_site, obs_clock) if obs_clocks else obs_clock
-
-    # Convert TZRMJD to both geometry TDB and the model timescale.
-    tzrmjd_scale_resolved = "UTC"
-    tzrmjd_scale_upper = tzrmjd_scale.upper()
     model_timescale = str(model_timescale).upper()
 
-    if tzr_is_ssb:
-        if model_timescale == 'TCB':
-            from jug.utils.timescales import convert_tcb_epoch_to_tdb
-            TZRMJD_model = TZRMJD_raw
-            TZRMJD_TDB = convert_tcb_epoch_to_tdb(TZRMJD_raw)
-        else:
-            TZRMJD_model = TZRMJD_raw
-            TZRMJD_TDB = TZRMJD_raw
-        delta_tzr_sec = 0.0
-        tzrmjd_scale_resolved = model_timescale
-        if verbose: print(f"   TZRMJD treated as {model_timescale} (TZRSITE=ssb, barycentric)")
-    elif tzrmjd_scale_upper in ("AUTO", "UTC"):
-        tzrmjd_scale_resolved = "UTC"
+    epochs = resolve_tzrmjd_epochs(
+        params=params,
+        tzrmjd_scale=tzrmjd_scale,
+        tzr_is_ssb=tzr_is_ssb,
+        tzr_site=tzr_site,
+        tzr_clock=tzr_clock,
+        bipm_clock=bipm_clock,
+        tzr_location=tzr_location,
+        model_timescale=model_timescale,
+        engine_profile=engine_profile,
+        verbose=verbose,
+    )
+    TZRMJD_model = epochs.tzrmjd_model
+    TZRMJD_TDB = epochs.tzrmjd_tdb
+    TZRMJD_raw = epochs.tzrmjd_raw
+    delta_tzr_sec = epochs.delta_tzr_sec
+    tzrmjd_scale_resolved = epochs.tzrmjd_scale_resolved
+
+    if delay_provider is not None:
+        use_tempo2_tzr = delay_provider.compatibility == "tempo2"
+    else:
+        use_tempo2_tzr = engine_profile.is_tempo2
+
+    if use_tempo2_tzr:
         if verbose:
-            label = "AUTO -> UTC" if tzrmjd_scale_upper == "AUTO" else "UTC (explicit override)"
-            print(f"   TZRMJD scale: {label} (site arrival time, converting to TDB via {tzr_site} clock)")
-        # Warn if explicitly forcing UTC but par file declares UNITS=TDB
-        _par_ts = params.get('_par_timescale', 'TDB').upper()
-        if tzrmjd_scale_upper == "UTC" and _par_ts == "TDB":
-            print(f"   [!] WARNING: tzrmjd_scale='UTC' contradicts par file UNITS=TDB. "
-                  f"This will apply a ~69 s clock correction to TZRMJD. "
-                  f"Use only for legacy par files with UTC TZRMJD values.")
-        TZRMJD_TDB_ld = compute_tdb_standalone_vectorized(
-            [int(TZRMJD_raw)], [float(TZRMJD_raw - int(TZRMJD_raw))],
-            tzr_clock, bipm_clock, tzr_location,
-        )[0]
-        TZRMJD_TDB = np.longdouble(TZRMJD_TDB_ld)
-        if model_timescale == 'TCB':
-            from jug.utils.timescales import convert_tdb_epoch_to_tempo2_tcb
-            TZRMJD_model = convert_tdb_epoch_to_tempo2_tcb(TZRMJD_TDB)
-        else:
-            TZRMJD_model = TZRMJD_TDB
-        delta_tzr_sec = float(TZRMJD_TDB - TZRMJD_raw) * SECS_PER_DAY
-        if verbose: print(f"   TZRMJD converted from UTC to TDB (delta = {delta_tzr_sec:.3f} s)")
-    elif tzrmjd_scale_upper == "TDB":
-        TZRMJD_TDB = TZRMJD_raw
-        if model_timescale == 'TCB':
-            from jug.utils.timescales import convert_tdb_epoch_to_tempo2_tcb
-            TZRMJD_model = convert_tdb_epoch_to_tempo2_tcb(TZRMJD_TDB)
-        else:
-            TZRMJD_model = TZRMJD_TDB
-        delta_tzr_sec = 0.0
-        tzrmjd_scale_resolved = "TDB"
-        if verbose: print(f"   TZRMJD treated as TDB (no conversion)")
-    else:
-        raise ValueError(f"Invalid tzrmjd_scale '{tzrmjd_scale}'. Must be 'AUTO', 'TDB', or 'UTC'.")
-
-    # Astrometry at TZR
-    # Check DILATEFREQ flag (needed for barycentric frequency computation)
-    dilate_freq = False
-    if 'DILATEFREQ' in params:
-        flag = str(params['DILATEFREQ']).upper().strip()
-        if flag in ('Y', '1', 'TRUE', 'T'):
-            dilate_freq = True
-
-    tzr_tdb_arr = np.array([float(TZRMJD_TDB)])
-    if tzr_is_ssb:
-        tzr_ssb_obs_pos = np.zeros((1, 3))
-        tzr_ssb_obs_vel = np.zeros((1, 3))
-    else:
-        tzr_ssb_obs_pos, tzr_ssb_obs_vel = compute_ssb_obs_pos_vel(tzr_tdb_arr, tzr_obs_itrf_km, ephemeris=ephem)
-
-    tzr_model_arr = np.array([float(TZRMJD_model)])
-    tzr_use_native_ecliptic = bool(params.get('_ecliptic_coords', False))
-    if tzr_use_native_ecliptic:
-        from jug.io.par_reader import OBLIQUITY_ARCSEC
-        ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010')).upper()
-        obl_arcsec = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC['IERS2010'])
-        tzr_obl_rad = obl_arcsec * np.pi / (180.0 * 3600.0)
-        tzr_L_hat = compute_ecliptic_pulsar_direction(
-            float(params['_ecliptic_lon_deg']),
-            float(params['_ecliptic_lat_deg']),
-            float(params.get('_ecliptic_pm_lon', 0.0)),
-            float(params.get('_ecliptic_pm_lat', 0.0)),
-            posepoch,
-            tzr_model_arr,
+            print("   TZR astrometry: tempo2-native path")
+        tzr_astro = compute_tzr_astrometry_tempo2(
+            params=params,
+            epochs=epochs,
+            tzr_obs_itrf_km=tzr_obs_itrf_km,
+            tzr_is_ssb=tzr_is_ssb,
+            ephem=ephem,
+            parallax_mas=parallax_mas,
+            engine_profile=engine_profile,
+            model_timescale=model_timescale,
+            verbose=verbose,
         )
-        tzr_ssb_obs_pos_delay = rotate_equatorial_to_ecliptic(tzr_ssb_obs_pos, tzr_obl_rad)
-        tzr_ssb_obs_vel_delay = rotate_equatorial_to_ecliptic(tzr_ssb_obs_vel, tzr_obl_rad)
     else:
-        tzr_L_hat = compute_pulsar_direction(ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day, posepoch, tzr_model_arr)
-        tzr_ssb_obs_pos_delay = tzr_ssb_obs_pos
-        tzr_ssb_obs_vel_delay = tzr_ssb_obs_vel
-    if model_timescale == 'TCB':
-        from jug.utils.timescales import IFTE_K
-        tzr_ssb_obs_pos_delay = tzr_ssb_obs_pos_delay * float(IFTE_K)
-        tzr_ssb_obs_vel_delay = tzr_ssb_obs_vel_delay * float(IFTE_K)
-    tzr_roemer = compute_roemer_delay(tzr_ssb_obs_pos_delay, tzr_L_hat, parallax_mas)[0]
-
-    # Sun Shapiro at TZR
-    tzr_times = Time(tzr_tdb_arr, format='mjd', scale='tdb')
-    with solar_system_ephemeris.set(ephem):
-        tzr_sun_pos = get_body_barycentric_posvel('sun', tzr_times)[0].xyz.to(u.km).value.T
-    tzr_obs_sun = tzr_sun_pos - tzr_ssb_obs_pos
-    tzr_obs_sun_delay = rotate_equatorial_to_ecliptic(tzr_obs_sun, tzr_obl_rad) if tzr_use_native_ecliptic else tzr_obs_sun
-    if model_timescale == 'TCB':
-        tzr_obs_sun_delay = tzr_obs_sun_delay * float(IFTE_K)
-    tzr_sun_shapiro = compute_shapiro_delay(tzr_obs_sun_delay, tzr_L_hat, T_SUN_SEC)[0]
-
-    # Planet Shapiro at TZR
-    tzr_planet_shapiro = 0.0
-    if planet_shapiro_enabled:
-        with solar_system_ephemeris.set(ephem):
-            for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
-                tzr_planet_pos = get_body_barycentric_posvel(planet, tzr_times)[0].xyz.to(u.km).value.T
-                tzr_obs_planet = tzr_planet_pos - tzr_ssb_obs_pos
-                tzr_obs_planet_delay = rotate_equatorial_to_ecliptic(tzr_obs_planet, tzr_obl_rad) if tzr_use_native_ecliptic else tzr_obs_planet
-                if model_timescale == 'TCB':
-                    tzr_obs_planet_delay = tzr_obs_planet_delay * float(IFTE_K)
-                tzr_planet_shapiro += compute_shapiro_delay(tzr_obs_planet_delay, tzr_L_hat, T_PLANET[planet])[0]
-
-    tzr_roemer_shapiro = tzr_roemer + tzr_sun_shapiro + tzr_planet_shapiro
-
-    # Barycentric frequency at TZR
-    if 'TZRFRQ' in params:
-        tzr_freq_raw = float(params['TZRFRQ'])
-        tzr_freq = tzr_freq_raw if np.isfinite(tzr_freq_raw) else 1e12
-    else:
-        tzr_freq = 1400.0
-    tzr_einstein_rate = None
-    if dilate_freq:
-        from jug.delays.barycentric import compute_einstein_rate
-        tzr_einstein_rate = compute_einstein_rate(
-            np.array([float(TZRMJD_TDB)]),
-            units=params.get('_timescale_in', params.get('_par_timescale', 'TDB'))
+        if verbose:
+            print("   TZR astrometry: pint-family path")
+        tzr_astro = compute_tzr_astrometry_pint(
+            params=params,
+            epochs=epochs,
+            tzr_obs_itrf_km=tzr_obs_itrf_km,
+            tzr_is_ssb=tzr_is_ssb,
+            ephem=ephem,
+            ra_rad=ra_rad,
+            dec_rad=dec_rad,
+            pmra_rad_day=pmra_rad_day,
+            pmdec_rad_day=pmdec_rad_day,
+            posepoch=posepoch,
+            parallax_mas=parallax_mas,
+            planet_shapiro_enabled=planet_shapiro_enabled,
+            model_timescale=model_timescale,
+            verbose=verbose,
         )
-    tzr_freq_bary = compute_barycentric_freq(np.array([tzr_freq]), tzr_ssb_obs_vel_delay, tzr_L_hat,
-                                              einstein_rate=tzr_einstein_rate)[0]
+
+    tzr_L_hat = tzr_astro.L_hat
+    tzr_roemer_shapiro = tzr_astro.roemer_shapiro_sec
+    tzr_freq_bary = tzr_astro.freq_bary_mhz
+    tzr_obs_sun_delay = tzr_astro.obs_sun_delay_km
+    tzr_ssb_obs_pos = tzr_astro.ssb_obs_pos_km.reshape(1, 3)
+    tzr_use_native_ecliptic = tzr_astro.use_native_ecliptic
+    tzr_obl_rad = tzr_astro.obl_rad
 
     # TZR DDK observer position
     model_id = bp['model_id']
@@ -1037,9 +978,10 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     tzr_ddk['obs_pos_ls_jax'] = jnp.array(tzr_obs_pos_for_ddk / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
 
     # Call delay kernel at TZR
+    tzr_obs_sun_for_kernel = np.asarray(tzr_obs_sun_delay, dtype=np.float64).reshape(1, 3)
     tzr_total_delay_jax = _call_delay_kernel(
         jnp.array([float(TZRMJD_model)]), jnp.array([tzr_freq_bary]),
-        jnp.array(tzr_obs_sun_delay), jnp.array(tzr_L_hat),
+        jnp.array(tzr_obs_sun_for_kernel), jnp.array(tzr_L_hat),
         dm_jax, bp, tzr_ddk, jnp.array([tzr_roemer_shapiro]),
         None, jnp.array([tzr_dmx_delay], dtype=jnp.float64),
     )
@@ -1068,6 +1010,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
 
         ne_sw = float(params.get('NE_SW', 0.0))
         if ne_sw != 0:
+            tzr_obs_sun = np.asarray(tzr_obs_sun_delay, dtype=np.float64).reshape(1, 3)
             r_km = np.sqrt(np.sum(tzr_obs_sun**2))
             r_au = r_km / AU_KM
             sun_dir = tzr_obs_sun / r_km
@@ -1162,12 +1105,12 @@ def compute_residuals_simple(
         Set to False for production/batch processing
     tzrmjd_scale : str, optional
         Timescale interpretation for TZRMJD. Options: "AUTO" (default), "TDB", "UTC".
-        - "AUTO": Derive from par file UNITS keyword (recommended). If UNITS=TDB,
-          treat TZRMJD as TDB; if UNITS=TCB/TT, fail via validate_par_timescale.
-        - "TDB": Force TZRMJD to be treated as TDB (no conversion).
-        - "UTC": Force legacy UTC->TDB conversion via clock chain. WARNING: This
-          contradicts UNITS=TDB and will produce ~69s offset. Use only for legacy
-          par files that genuinely have UTC TZRMJD values.
+        - "AUTO": In ``compatibility="tempo2"`` with par ``UNITS=TDB``, treat TZRMJD
+          as TDB (no site clock conversion). Otherwise treat TZRMJD as UTC site
+          arrival and convert to TDB via the ``TZRSITE`` clock chain.
+        - "TDB": TZRMJD is already TDB (no conversion).
+        - "UTC": Force UTC site-arrival conversion via ``TZRSITE`` clock chain.
+          On TDB par files this can apply a large offset; use only for legacy pars.
     geometry_cache : dict or None, optional
         Mutable dict for caching parameter-independent geometry (TDB times,
         SSB-observatory position, sun/planet positions).  On the first call
@@ -1322,9 +1265,10 @@ def compute_residuals_simple(
     if verbose: print(f"   Computed TDB for {len(tdb_mjd)} TOAs")
 
     diagnostic_conv = diagnostic_conventions or default_conventions(compatibility)
-    engine_profile = engine_conventions or EngineConventionProfile.from_params(
+    engine_profile = resolve_engine_profile(
         params,
         compatibility,
+        engine_conventions=engine_conventions,
         implicit_tempo2_defaults=diagnostic_conv.apply_tempo2_implicit_defaults(
             compatibility
         ),
@@ -1689,6 +1633,8 @@ def compute_residuals_simple(
             planet_shapiro_enabled,
             tzrmjd_scale, verbose,
             model_timescale=model_timescale,
+            delay_provider=delay_provider,
+            engine_profile=engine_profile,
         )
 
     # Phase computation + wrapping + conversion via shared canonical function.

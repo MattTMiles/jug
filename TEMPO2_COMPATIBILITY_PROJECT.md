@@ -9,8 +9,8 @@ code audit results, and the phased work plan.
 from the pint path: jplephem DE405 SPK for sun/planet vectors, separate provider
 modules, and ``EngineConventionProfile`` for runtime conventions.
 
-**Next step:** Phase C TZR / absolute phase (mode-specific native path). §3 decisions
-are locked.
+**Next step:** Phase D/E (CI consolidation, design matrix/fit on TDB). Phase C TZR
+(mode-specific native path) is implemented. §3 decisions are locked.
 
 ---
 
@@ -475,9 +475,18 @@ expected when ephemeris backends diverge; Roemer remains shared on equatorial B/
 
 ### Phase C — TZR / absolute phase
 
-- [ ] Gate TZR ecliptic handling on `compatibility="tempo2"`
-- [ ] Match tempo2 TZR clock/site for `TZRSITE=gbt`, `UNITS=TDB`
-- [ ] Validate on case C and TCB fixtures with TZR (e.g. `epta_j1909_t2`)
+- [x] Gate TZR ecliptic handling on `compatibility="tempo2"`
+- [x] Match tempo2 TZR clock/site for `TZRSITE=gbt`, `UNITS=TDB` (AUTO→TDB in tempo2 mode)
+- [x] Validate on case C and TCB fixtures with TZR (e.g. `epta_j1909_t2`)
+
+**Architecture (Phase C):**
+
+| Layer | Module | Role |
+|-------|--------|------|
+| TZR dispatch | `jug/residuals/simple_calculator.py` | `_compute_tzr_phase` branches on provider/profile |
+| Pint TZR geometry | `jug/residuals/tzr_geometry.py` | `compute_tzr_astrometry_pint` (Astropy, unchanged pint semantics) |
+| Tempo2 TZR geometry | `jug/residuals/tzr_geometry.py` | `compute_tzr_astrometry_tempo2` (jplephem on TDB; IFTE on TCB) |
+| TZRMJD scale | `resolve_tzrmjd_epochs` | tempo2 AUTO + UNITS=TDB → no UTC conversion |
 
 ### Phase D — Tests and regression fixtures
 

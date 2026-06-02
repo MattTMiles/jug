@@ -23,7 +23,10 @@ from typing import Dict, List, Optional, Any
 import numpy as np
 from astropy.time import Time
 
-from jug.residuals.engine_conventions import EngineConventionProfile
+from jug.residuals.engine_conventions import (
+    EngineConventionProfile,
+    validate_engine_profile_matches_compatibility,
+)
 
 # Import existing JUG modules
 from jug.io.par_reader import parse_par_file
@@ -93,7 +96,11 @@ class TimingSession:
         self.verbose = verbose
         self.compatibility = compatibility
         self.engine_conventions = engine_conventions
-        
+        if engine_conventions is not None:
+            validate_engine_profile_matches_compatibility(
+                compatibility, engine_conventions
+            )
+
         # Parse files once and cache
         if self.verbose:
             print(f"Opening session: {self.par_file.name} + {self.tim_file.name}")

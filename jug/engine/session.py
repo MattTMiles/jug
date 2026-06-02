@@ -19,8 +19,11 @@ Performance Impact:
 
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
 import numpy as np
 from astropy.time import Time
+
+from jug.residuals.engine_conventions import EngineConventionProfile
 
 # Import existing JUG modules
 from jug.io.par_reader import parse_par_file
@@ -68,6 +71,7 @@ class TimingSession:
         clock_dir: Optional[str] = None,
         verbose: bool = False,
         compatibility: str = "pint",
+        engine_conventions: EngineConventionProfile | None = None,
     ):
         """
         Initialize a timing session.
@@ -88,6 +92,7 @@ class TimingSession:
         self.clock_dir = clock_dir
         self.verbose = verbose
         self.compatibility = compatibility
+        self.engine_conventions = engine_conventions
         
         # Parse files once and cache
         if self.verbose:
@@ -325,6 +330,7 @@ class TimingSession:
                 verbose=False,
                 geometry_cache=self._geometry_cache,
                 compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
             )
         finally:
             tmp_par_path.unlink()
@@ -414,6 +420,7 @@ class TimingSession:
                 verbose=False,
                 geometry_cache=self._geometry_cache,
                 compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
             )
         
         # Cache the result (only for original params), keyed by subtract_tzr
@@ -615,6 +622,7 @@ class TimingSession:
                 device=device,
                 verbose=verbose,
                 compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
             )
         
         # Update session params with fitted values (CRITICAL for iterative fitting!)

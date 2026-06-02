@@ -56,6 +56,7 @@ import warnings
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
+from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.io.par_reader import parse_par_file, validate_par_timescale_for_compat, _parse_float
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.fitting.derivatives_dm import compute_dm_derivatives
@@ -706,6 +707,7 @@ def fit_parameters_optimized(
     verbose: bool = True,
     device: Optional[str] = None,
     compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
 ) -> Dict:
     """
     Fit timing model parameters to TOA data.
@@ -765,7 +767,7 @@ def fit_parameters_optimized(
 
     return _fit_parameters_general(
         par_file, tim_file, fit_params, max_iter, convergence_threshold,
-        clock_dir, verbose, device, compatibility
+        clock_dir, verbose, device, compatibility, engine_conventions
     )
 
 
@@ -1628,6 +1630,7 @@ def _build_general_fit_setup_from_files(
     verbose: bool,
     noise_config: Optional[object] = None,
     compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
@@ -1681,6 +1684,7 @@ def _build_general_fit_setup_from_files(
         par_file, tim_file, clock_dir=clock_dir,
         subtract_tzr=False, verbose=False,
         compatibility=compatibility,
+        engine_conventions=engine_conventions,
     )
 
     return _build_setup_common(
@@ -3218,6 +3222,7 @@ def _fit_parameters_general(
     verbose: bool,
     device: Optional[str],
     compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
 ) -> Dict:
     """General parameter fitter -- handles any parameter combination.
 
@@ -3233,6 +3238,7 @@ def _fit_parameters_general(
     setup = _build_general_fit_setup_from_files(
         par_file, tim_file, fit_params, clock_dir, verbose,
         compatibility=compatibility,
+        engine_conventions=engine_conventions,
     )
     cache_time = time.time() - cache_start
     

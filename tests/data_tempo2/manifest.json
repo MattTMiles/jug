@@ -105,5 +105,50 @@
       "NTOA": "501"
     },
     "notes": "Deterministic reduced TIM copy"
+  },
+  {
+    "id": "ng5_j1600_tdb_equatorial",
+    "par": "ng5_j1600_tdb_equatorial/ng5_j1600_tdb_equatorial.par",
+    "tim": "ng5_j1600_tdb_equatorial/ng5_j1600_tdb_equatorial.tim",
+    "source_par": "examples/notebooks-dev/data/demo-jug-like-libstempo/_tmp_equatorial_harm.par",
+    "source_tim": "examples/notebooks-dev/data/demo-jug-like-libstempo/J1600-3053_NANOGrav_dfg+12.tim",
+    "provenance": "NANOGrav_dfg+12",
+    "binary": "DD",
+    "toa_count": 625,
+    "fixture_case": "B",
+    "parity_status": "green",
+    "metadata": {
+      "PSRJ": "J1600-3053",
+      "CLK": "TT(BIPM2011)",
+      "UNITS": "TDB",
+      "EPHEM": "DE405",
+      "BINARY": "DD",
+      "NTOA": "625",
+      "COORDS": "equatorial"
+    },
+    "notes": "Case B: equatorial NG5 TDB anchor after T2CMETHOD removal only"
+  },
+  {
+    "id": "ng5_j1600_tdb_ecliptic_cross_engine",
+    "par": "ng5_j1600_tdb_ecliptic_cross_engine/ng5_j1600_tdb_ecliptic_cross_engine.par",
+    "tim": "ng5_j1600_tdb_ecliptic_cross_engine/ng5_j1600_tdb_ecliptic_cross_engine.tim",
+    "source_par": "examples/notebooks-dev/data/demo-jug-like-libstempo/J1600-3053_NANOGrav_dfg+12_cross_engine.par",
+    "source_tim": "examples/notebooks-dev/data/demo-jug-like-libstempo/J1600-3053_NANOGrav_dfg+12.tim",
+    "provenance": "NANOGrav_dfg+12",
+    "binary": "DD",
+    "toa_count": 625,
+    "fixture_case": "C",
+    "parity_status": "green",
+    "metadata": {
+      "PSRJ": "J1600-3053",
+      "CLK": "TT(BIPM2011)",
+      "UNITS": "TDB",
+      "EPHEM": "DE405",
+      "BINARY": "DD",
+      "ECL": "IERS2003",
+      "NTOA": "625",
+      "COORDS": "ecliptic"
+    },
+    "notes": "Case C: ecliptic cross-engine harmonized par for MetaPulsar notebook"
   }
 ]

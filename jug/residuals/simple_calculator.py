@@ -37,6 +37,13 @@ from jug.delays.barycentric import (
     rotate_equatorial_to_ecliptic,
 )
 from jug.delays.combined import compute_total_delay_jax
+from jug.residuals.compatibility_providers import get_delay_provider
+from jug.residuals.diagnostic_conventions import (
+    DiagnosticConventions,
+    default_conventions,
+    resolve_planet_shapiro_enabled,
+)
+from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
@@ -1122,6 +1129,8 @@ def compute_residuals_simple(
     tzrmjd_scale: str = "AUTO",
     geometry_cache: Optional[dict] = None,
     compatibility: str = "pint",
+    diagnostic_conventions: DiagnosticConventions | None = None,
+    engine_conventions: EngineConventionProfile | None = None,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -1312,15 +1321,23 @@ def compute_residuals_simple(
             if verbose: print(f"   Computed TDB per observatory: {all_obs_codes}")
     if verbose: print(f"   Computed TDB for {len(tdb_mjd)} TOAs")
 
-    compatibility_mode = str(compatibility).lower()
-    model_timescale = str(params.get('_timescale_in', params.get('_par_timescale', 'TDB'))).upper()
-    model_mjd = np.array(tdb_mjd, dtype=np.longdouble)
-    if compatibility_mode in ("tempo2", "tempo2-compatible", "tempo2_compatible") and model_timescale == 'TCB':
-        from jug.utils.timescales import convert_tdb_epoch_to_tempo2_tcb
-        model_mjd = np.array([convert_tdb_epoch_to_tempo2_tcb(np.longdouble(t)) for t in tdb_mjd], dtype=np.longdouble)
+    diagnostic_conv = diagnostic_conventions or default_conventions(compatibility)
+    engine_profile = engine_conventions or EngineConventionProfile.from_params(
+        params,
+        compatibility,
+        implicit_tempo2_defaults=diagnostic_conv.apply_tempo2_implicit_defaults(
+            compatibility
+        ),
+    )
+    delay_provider = get_delay_provider(
+        compatibility,
+        profile=engine_profile,
+        diagnostics=diagnostic_conv,
+    )
+    compatibility_mode = delay_provider.compatibility
 
-    # Astrometry
-    if verbose: print(f"\n4. Computing astrometric delays...")
+    # Astrometry via compatibility-specific provider (pint vs tempo2)
+    if verbose: print(f"\n4. Computing astrometric delays ({delay_provider.provider_name})...")
     ephem = _resolve_ephemeris(str(params.get('EPHEM', 'de440')).lower())
     ra_rad = float(params.get('_raj_rad', parse_ra(params['RAJ'])))
     dec_rad = float(params.get('_decj_rad', parse_dec(params['DECJ'])))
@@ -1329,120 +1346,44 @@ def compute_residuals_simple(
     posepoch = params.get('POSEPOCH', params['PEPOCH'])
     parallax_mas = params.get('PX', 0.0)
 
-    if not _geo_hit:
-        if not is_multi_obs:
-            ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(tdb_mjd, obs_itrf_km, ephemeris=ephem)
-        else:
-            # Multi-observatory: compute SSB-obs position per observatory
-            ssb_obs_pos_km = np.zeros((len(toas), 3))
-            ssb_obs_vel_km_s = np.zeros((len(toas), 3))
-            for obs_code in all_obs_codes:
-                idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
-                obs_loc_km = OBSERVATORIES.get(obs_code, obs_itrf_km)
-                pos, vel = compute_ssb_obs_pos_vel(tdb_mjd[idxs], obs_loc_km, ephemeris=ephem)
-                ssb_obs_pos_km[idxs] = pos
-                ssb_obs_vel_km_s[idxs] = vel
-
-    use_native_ecliptic = (
-        compatibility_mode in ("tempo2", "tempo2-compatible", "tempo2_compatible")
-        and bool(params.get('_ecliptic_coords', False))
+    geometry = delay_provider.compute_geometry_terms(
+        params=params,
+        tdb_mjd=tdb_mjd,
+        toas=toas,
+        obs_itrf_km=obs_itrf_km,
+        all_obs_codes=all_obs_codes,
+        ephem=ephem,
+        geometry_cache=geometry_cache,
+        geo_hit=_geo_hit,
+        verbose=verbose,
     )
-    if use_native_ecliptic:
-        from jug.io.par_reader import OBLIQUITY_ARCSEC
-        ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010')).upper()
-        obl_arcsec = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC['IERS2010'])
-        obl_rad = obl_arcsec * np.pi / (180.0 * 3600.0)
-        L_hat = compute_ecliptic_pulsar_direction(
-            float(params['_ecliptic_lon_deg']),
-            float(params['_ecliptic_lat_deg']),
-            float(params.get('_ecliptic_pm_lon', 0.0)),
-            float(params.get('_ecliptic_pm_lat', 0.0)),
-            posepoch,
-            model_mjd,
-        )
-        ssb_obs_pos_delay_km = rotate_equatorial_to_ecliptic(ssb_obs_pos_km, obl_rad)
-        ssb_obs_vel_delay_km_s = rotate_equatorial_to_ecliptic(ssb_obs_vel_km_s, obl_rad)
-    else:
-        # L_hat depends on RA/DEC/PM — always recompute (cheap, needed for Roemer/freq)
-        L_hat = compute_pulsar_direction(ra_rad, dec_rad, pmra_rad_day, pmdec_rad_day, posepoch, model_mjd)
-        ssb_obs_pos_delay_km = ssb_obs_pos_km
-        ssb_obs_vel_delay_km_s = ssb_obs_vel_km_s
-    if compatibility_mode in ("tempo2", "tempo2-compatible", "tempo2_compatible") and model_timescale == 'TCB':
-        from jug.utils.timescales import IFTE_K
-        ssb_obs_pos_delay_km = ssb_obs_pos_delay_km * float(IFTE_K)
-        ssb_obs_vel_delay_km_s = ssb_obs_vel_delay_km_s * float(IFTE_K)
+    model_mjd = geometry.model_mjd
+    model_timescale = geometry.model_timescale
+    L_hat = geometry.L_hat
+    ssb_obs_pos_km = geometry.ssb_obs_pos_km
+    ssb_obs_vel_km_s = geometry.ssb_obs_vel_km_s
+    ssb_obs_pos_delay_km = geometry.ssb_obs_pos_delay_km
+    ssb_obs_vel_delay_km_s = geometry.ssb_obs_vel_delay_km_s
+    roemer_sec = geometry.roemer_sec
+    sun_shapiro_sec = geometry.sun_shapiro_sec
+    planet_shapiro_sec = geometry.planet_shapiro_sec
+    roemer_shapiro = geometry.roemer_shapiro_sec
+    obs_sun_pos_km = geometry.obs_sun_pos_km
+    obs_sun_pos_delay_km = geometry.obs_sun_pos_delay_km
+    obs_planet_pos_ls_cached = geometry.obs_planet_pos_ls_cached
+    freq_bary_mhz = geometry.freq_bary_mhz
+    use_native_ecliptic = geometry.use_native_ecliptic
+    obl_rad = geometry.obl_rad
+    term_metadata = geometry.metadata
 
-    # Roemer and Shapiro delays
-    roemer_sec = compute_roemer_delay(ssb_obs_pos_delay_km, L_hat, parallax_mas)
+    # Planet Shapiro flag (for TZR); pint uses par-only semantics
+    planet_shapiro_enabled = resolve_planet_shapiro_enabled(params, engine_profile)
 
-    if not _geo_hit:
-        times = Time(tdb_mjd, format='mjd', scale='tdb')
-        with solar_system_ephemeris.set(ephem):
-            sun_pos = get_body_barycentric_posvel('sun', times)[0].xyz.to(u.km).value.T
-        obs_sun_pos_km = sun_pos - ssb_obs_pos_km
-        obs_sun_pos_delay_km = rotate_equatorial_to_ecliptic(obs_sun_pos_km, obl_rad) if use_native_ecliptic else obs_sun_pos_km
-    else:
-        obs_sun_pos_delay_km = rotate_equatorial_to_ecliptic(obs_sun_pos_km, obl_rad) if use_native_ecliptic else obs_sun_pos_km
-    if compatibility_mode in ("tempo2", "tempo2-compatible", "tempo2_compatible") and model_timescale == 'TCB':
-        obs_sun_pos_delay_km = obs_sun_pos_delay_km * float(IFTE_K)
-
-    sun_shapiro_sec = compute_shapiro_delay(obs_sun_pos_delay_km, L_hat, T_SUN_SEC)
-
-    # Planet Shapiro (if enabled)
-    planet_shapiro_enabled = str(params.get('PLANET_SHAPIRO', 'N')).upper() in ('Y', 'YES', 'TRUE', '1')
-    planet_shapiro_sec = np.zeros(len(tdb_mjd))
-    if planet_shapiro_enabled:
-        need_planet_compute = not _geo_hit or obs_planet_pos_ls_cached is None
-        if need_planet_compute:
-            if verbose: print(f"   Computing planetary Shapiro delays...")
-            times = Time(tdb_mjd, format='mjd', scale='tdb')
-            with solar_system_ephemeris.set(ephem):
-                obs_planet_pos_ls_cached = {}
-                for planet in ['jupiter', 'saturn', 'uranus', 'neptune', 'venus']:
-                    planet_pos = get_body_barycentric_posvel(planet, times)[0].xyz.to(u.km).value.T
-                    obs_planet_pos_ls_cached[planet] = planet_pos - ssb_obs_pos_km
-        for planet, obs_planet_km in obs_planet_pos_ls_cached.items():
-            obs_planet_delay_km = rotate_equatorial_to_ecliptic(obs_planet_km, obl_rad) if use_native_ecliptic else obs_planet_km
-            if compatibility_mode in ("tempo2", "tempo2-compatible", "tempo2_compatible") and model_timescale == 'TCB':
-                obs_planet_delay_km = obs_planet_delay_km * float(IFTE_K)
-            planet_shapiro_sec += compute_shapiro_delay(obs_planet_delay_km, L_hat, T_PLANET[planet])
-
-    roemer_shapiro = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
-
-    # Populate geometry cache on first call (cache miss).
-    # Only parameter-independent arrays go here: TDB times, SSB-observatory
-    # position/velocity, and sun/planet positions.  These never change between
-    # fits as long as the TOA set and ephemeris are unchanged.
     if geometry_cache is not None and not _geo_hit:
-        geometry_cache['tdb_mjd'] = tdb_mjd
-        geometry_cache['ssb_obs_pos_km'] = ssb_obs_pos_km
-        geometry_cache['ssb_obs_vel_km_s'] = ssb_obs_vel_km_s
-        geometry_cache['obs_sun_pos_km'] = obs_sun_pos_km
-        geometry_cache['obs_planet_pos_ls'] = obs_planet_pos_ls_cached if planet_shapiro_enabled else None
         geometry_cache['clock_issues'] = clock_issues
         geometry_cache['obs_clock'] = obs_clock
         geometry_cache['obs_clocks'] = obs_clocks
         geometry_cache['bipm_clock'] = bipm_clock
-
-    # Barycentric frequency (used for DM/SW/FD delays by both Tempo2 and PINT)
-    freq_mhz = np.array([toa.freq_mhz for toa in toas])
-    # DILATEFREQ: apply Einstein rate correction to barycentric frequency
-    dilate_freq = False
-    if 'DILATEFREQ' in params:
-        df_flag = str(params['DILATEFREQ']).upper().strip()
-        if df_flag in ('Y', '1', 'TRUE', 'T'):
-            dilate_freq = True
-    einstein_rate = None
-    if dilate_freq:
-        from jug.delays.barycentric import compute_einstein_rate
-        units = params.get('_timescale_in', params.get('_par_timescale', 'TDB'))
-        einstein_rate = compute_einstein_rate(tdb_mjd, units=units)
-        if verbose:
-            rate_dev = einstein_rate - 1.0
-            print(f"   DILATEFREQ: Einstein rate deviation from 1: "
-                  f"[{rate_dev.min():.3e}, {rate_dev.max():.3e}]")
-    freq_bary_mhz = compute_barycentric_freq(freq_mhz, ssb_obs_vel_delay_km_s, L_hat,
-                                              einstein_rate=einstein_rate)
 
     # Prepare JAX arrays
     if verbose: print(f"\n5. Running JAX delay kernel...")
@@ -1771,7 +1712,7 @@ def compute_residuals_simple(
         tzr_phase=tzr_phase if subtract_tzr else None,
         jump_phase=jump_phase,
         external_pulse_numbers=external_pn,
-        mean_mode="unweighted" if compatibility_mode in ("tempo2", "tempo2-compatible", "tempo2_compatible") else "weighted",
+        mean_mode=delay_provider.phase_mean_mode,
     )
 
     # Compute weighted RMS using raw errors
@@ -1860,9 +1801,44 @@ def compute_residuals_simple(
             except Exception:
                 orbital_phase = None
 
+    utc_to_tdb_sec = (np.asarray(tdb_mjd, dtype=np.float64) - np.asarray(mjd_utc, dtype=np.float64)) * SECS_PER_DAY
+    binary_delay_sec = None
+    binary_status = "unavailable"
+    if has_binary:
+        binary_delay_sec = np.asarray(total_delay_sec - prebinary_delay_sec, dtype=np.float64)
+        binary_status = "derived_total_minus_prebinary"
+
+    term_diagnostics = {
+        "roemer_sec": np.asarray(roemer_sec, dtype=np.float64),
+        "sun_shapiro_sec": np.asarray(sun_shapiro_sec, dtype=np.float64),
+        "planet_shapiro_sec": np.asarray(planet_shapiro_sec, dtype=np.float64),
+        "roemer_shapiro_sec": np.asarray(roemer_shapiro, dtype=np.float64),
+        "dm_delay_sec": np.asarray(dm_delay_sec, dtype=np.float64),
+        "sw_delay_sec": np.asarray(sw_delay_sec, dtype=np.float64),
+        "tropo_delay_sec": np.asarray(tropo_delay_sec, dtype=np.float64),
+        "prebinary_delay_sec": np.asarray(prebinary_delay_sec, dtype=np.float64),
+        "total_delay_sec": np.asarray(total_delay_sec, dtype=np.float64),
+        "freq_bary_mhz": np.asarray(freq_bary_mhz, dtype=np.float64),
+        "utc_to_tdb_sec": utc_to_tdb_sec,
+        "binary_delay_sec": binary_delay_sec,
+        "binary_status": binary_status,
+        "metadata": term_metadata.as_dict(),
+    }
+
     return {
-        'compatibility': str(compatibility).lower(),
+        'compatibility': compatibility_mode,
         'par_timescale': par_timescale,
+        'diagnostic_conventions': {
+            'residual_metric': diagnostic_conv.residual_metric,
+            'tempo2_tdb_defaults': diagnostic_conv.tempo2_tdb_defaults,
+            'oracle_terms': diagnostic_conv.oracle_terms,
+            'term_set': diagnostic_conv.term_set,
+            'phase_mean_mode': delay_provider.phase_mean_mode,
+            'tempo2_implicit_defaults': diagnostic_conv.tempo2_implicit_defaults_snapshot(),
+        },
+        'engine_conventions': engine_profile.as_dict(),
+        'delay_provider': delay_provider.provider_name,
+        'term_diagnostics': term_diagnostics,
         'residuals_us': residuals_us,
         'rms_us': float(weighted_rms),  # Use weighted RMS as primary
         'weighted_rms_us': float(weighted_rms),
@@ -1886,6 +1862,9 @@ def compute_residuals_simple(
         'dt_sec': np.array(dt_sec, dtype=np.float64),
         # Roemer+Shapiro delay for computing barycentric times (legacy, for backward compat)
         'roemer_shapiro_sec': np.array(roemer_shapiro, dtype=np.float64),
+        'roemer_sec': np.asarray(roemer_sec, dtype=np.float64),
+        'sun_shapiro_sec': np.asarray(sun_shapiro_sec, dtype=np.float64),
+        'planet_shapiro_sec': np.asarray(planet_shapiro_sec, dtype=np.float64),
         # Pre-binary delay: roemer_shapiro + DM + SW + tropo (PINT-compatible binary evaluation time)
         'prebinary_delay_sec': np.array(prebinary_delay_sec, dtype=np.float64),
         # Individual delay components (for diagnostics)

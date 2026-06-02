@@ -24,3 +24,13 @@ def get_tempo2_fixture(fixture_id: str) -> dict[str, Any]:
         if row["id"] == fixture_id:
             return row
     raise KeyError(f"Unknown Tempo2 fixture: {fixture_id}")
+
+
+def list_tempo2_tdb_diagnostic_fixtures() -> list[dict[str, Any]]:
+    """Return Case B/C TDB fixtures for Phase A/B diagnostics."""
+    return [
+        row
+        for row in load_tempo2_fixture_manifest()
+        if row.get("fixture_case") in ("B", "C")
+        or row["id"].startswith("ng5_j1600_tdb_")
+    ]

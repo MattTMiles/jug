@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union, Any
 
 from jug.engine.session import TimingSession
+from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.fitting.optimized_fitter import fit_parameters_optimized
 
@@ -31,6 +32,7 @@ def open_session(
     clock_dir: Optional[str] = None,
     verbose: bool = False,
     compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
 ) -> TimingSession:
     """
     Open a timing session for repeated operations.
@@ -72,6 +74,7 @@ def open_session(
         clock_dir=clock_dir,
         verbose=verbose,
         compatibility=compatibility,
+        engine_conventions=engine_conventions,
     )
 
 
@@ -82,6 +85,7 @@ def compute_residuals(
     subtract_tzr: bool = True,
     verbose: bool = False,
     compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
 ) -> Dict[str, Any]:
     """
     Compute timing residuals (legacy one-shot API).
@@ -129,6 +133,7 @@ def compute_residuals(
         subtract_tzr=subtract_tzr,
         verbose=verbose,
         compatibility=compatibility,
+        engine_conventions=engine_conventions,
     )
 
 

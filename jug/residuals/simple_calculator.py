@@ -966,6 +966,33 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         tzr_dmx_values = np.array([r.value for r in tzr_dmx_ranges])
         tzr_dmx_delay = float((tzr_dmx_matrix @ tzr_dmx_values)[0])
 
+    # Troposphere delay at the TZR fiducial point. Omitting it (passing None)
+    # leaves JUG's absolute phase reference inconsistent with PINT/Tempo2, which
+    # DO apply troposphere at the TZR (~15 ns for a GBT TZRSITE). The offset is
+    # constant across TOAs so it is gauge-absorbed in residuals, but it matters
+    # for absolute phase / pulse numbering and for parity with PINT. Uses the
+    # same precession-correct TETE elevation as the per-TOA troposphere path.
+    tzr_tropo_delay = 0.0
+    _tzr_correct_tropo = str(params.get('CORRECT_TROPOSPHERE', 'N')).upper() in ('Y', 'T', '1', 'TRUE')
+    if _tzr_correct_tropo and not tzr_is_ssb:
+        from jug.delays.troposphere import compute_tropospheric_delay
+        from astropy.coordinates import TETE
+        _tzr_src = SkyCoord(ra=ra_rad * u.rad, dec=dec_rad * u.rad, frame='icrs')
+        _tzr_time = Time(np.array([float(TZRMJD_raw)]), format='mjd', scale='utc')
+        _tzr_src_app = _tzr_src.transform_to(TETE(obstime=_tzr_time))
+        _tzr_last = _tzr_time.sidereal_time('apparent', longitude=tzr_location.lon)
+        _tzr_ha = (_tzr_last - _tzr_src_app.ra).rad
+        _tzr_sin_el = (np.sin(tzr_location.lat.rad) * np.sin(_tzr_src_app.dec.rad) +
+                       np.cos(tzr_location.lat.rad) * np.cos(_tzr_src_app.dec.rad) * np.cos(_tzr_ha))
+        _tzr_el = np.degrees(np.arcsin(np.clip(_tzr_sin_el, -1.0, 1.0)))
+        tzr_tropo_delay = float(np.asarray(compute_tropospheric_delay(
+            elevation_deg=_tzr_el,
+            height_m=tzr_location.height.to(u.m).value,
+            lat_deg=tzr_location.lat.deg,
+            mjd=np.array([float(TZRMJD_raw)]),
+        ))[0])
+        if verbose: print(f"   TZR troposphere delay: {tzr_tropo_delay * 1e9:.4f} ns")
+
     # Build TZR-specific DDK dict with TZR observer position
     tzr_ddk = dict(ddk)
     tzr_ddk['obs_pos_ls_jax'] = jnp.array(tzr_obs_pos_for_ddk / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
@@ -975,7 +1002,8 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         jnp.array([float(TZRMJD_TDB)]), jnp.array([tzr_freq_bary]),
         jnp.array(tzr_obs_sun), jnp.array(tzr_L_hat),
         dm_jax, bp, tzr_ddk, jnp.array([tzr_roemer_shapiro]),
-        None, jnp.array([tzr_dmx_delay], dtype=jnp.float64),
+        jnp.array([tzr_tropo_delay], dtype=jnp.float64),
+        jnp.array([tzr_dmx_delay], dtype=jnp.float64),
     )
 
     tzr_delay = np.longdouble(float(tzr_total_delay_jax[0]))
@@ -1421,14 +1449,21 @@ def compute_residuals_simple(
             
             mjd_obs = mjd_utc_arr[idxs]
             obs_times = Time(mjd_obs, format='mjd', scale='utc')
-            # Geometric elevation without annual aberration, matching Tempo2's
-            # asin(dot(zenith_gcrs, source_equatorial)) calculation.
-            # AltAz uses GCRS (includes ~20 arcsec aberration) which diverges badly
-            # near the horizon in the NMF height correction term.
+            # Apparent elevation via the true-equator/true-equinox-of-date frame
+            # (TETE): precess + nutate the J2000 (ICRS) source to the observation
+            # epoch so the hour angle is consistent with the of-date apparent
+            # sidereal time.  The previous code used the J2000 ICRS RA/Dec with
+            # of-date apparent LST, which omitted precession -> up to ~500 arcsec
+            # elevation error (~16 yr of precession) -> ~0.25 ns troposphere error
+            # at low elevation.  TETE excludes annual aberration, matching
+            # Tempo2's geometric convention; aberration is negligible here
+            # (<0.3 arcsec / <0.003 ns vs astropy AltAz down to ~7 deg elevation).
+            from astropy.coordinates import TETE
+            source_apparent = source_coord.transform_to(TETE(obstime=obs_times))
             last = obs_times.sidereal_time('apparent', longitude=obs_loc.lon)
-            ha_rad = (last - source_coord.ra).rad
-            sin_el = (np.sin(obs_loc.lat.rad) * np.sin(source_coord.dec.rad) +
-                      np.cos(obs_loc.lat.rad) * np.cos(source_coord.dec.rad) * np.cos(ha_rad))
+            ha_rad = (last - source_apparent.ra).rad
+            sin_el = (np.sin(obs_loc.lat.rad) * np.sin(source_apparent.dec.rad) +
+                      np.cos(obs_loc.lat.rad) * np.cos(source_apparent.dec.rad) * np.cos(ha_rad))
             elevation_deg = np.degrees(np.arcsin(np.clip(sin_el, -1.0, 1.0)))
             
             tropo_obs = np.asarray(compute_tropospheric_delay(
@@ -1777,6 +1812,10 @@ def compute_residuals_simple(
         'mean_us': float(np.mean(residuals_us)),
         'n_toas': len(residuals_us),
         'tdb_mjd': np.array(tdb_mjd, dtype=np.float64),
+        # Full-precision longdouble TDB for callers that need sub-us precision
+        # (e.g. parity tests, external high-precision pipelines). The float64
+        # 'tdb_mjd' above costs ~1 us ULP at MJD scale.
+        'tdb_mjd_ld': np.array(tdb_mjd, dtype=np.longdouble),
         'errors_us': errors_us,
         # Add computed delays for JAX fitting
         'total_delay_sec': np.array(total_delay_sec, dtype=np.float64),

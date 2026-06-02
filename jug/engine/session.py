@@ -176,36 +176,16 @@ class TimingSession:
             else:
                 return f"{param_name:<12} {value}"
 
-        # Keep temporary par files in the original coordinate family.  For an
-        # ELONG/ELAT file, do not add derived RAJ/DECJ or LAMBDA/BETA lines:
-        # parse_par_file() prefers RAJ and then LAMBDA, and the formatted
-        # round-trip loses enough precision to create ~100 ps Roemer changes.
-        ecliptic_temp = bool(params.get('_ecliptic_coords'))
-        temp_uses_lambda = (
-            ecliptic_temp
-            and 'LAMBDA' in self._initial_params
-            and 'ELONG' not in self._initial_params
+        # Keep temporary par files in the original coordinate family.
+        from jug.io.astrometry_state import (
+            ecliptic_aliases_from_equatorial,
+            native_ecliptic_family,
+            temp_par_skip_keys,
         )
+        ecliptic_temp = bool(params.get('_ecliptic_coords'))
+        temp_uses_lambda = native_ecliptic_family(self._initial_params) == 'lambda'
         if ecliptic_temp and temp_uses_lambda:
-            from jug.io.par_reader import parse_ra, parse_dec, convert_equatorial_to_ecliptic
-            ra_val = params.get('RAJ')
-            dec_val = params.get('DECJ')
-            if ra_val is not None and dec_val is not None:
-                ra_rad = parse_ra(ra_val) if isinstance(ra_val, str) else float(ra_val)
-                dec_rad = parse_dec(dec_val) if isinstance(dec_val, str) else float(dec_val)
-                ecl_frame = params.get('_ecliptic_frame', 'IERS2010')
-                ecl = convert_equatorial_to_ecliptic(
-                    ra_rad, dec_rad,
-                    pmra=params.get('PMRA', 0.0),
-                    pmdec=params.get('PMDEC', 0.0),
-                    ecl_frame=ecl_frame,
-                )
-                params['LAMBDA'] = ecl['LAMBDA']
-                params['BETA'] = ecl['BETA']
-                if 'PMLAMBDA' in params:
-                    params['PMLAMBDA'] = ecl['PMLAMBDA']
-                if 'PMBETA' in params:
-                    params['PMBETA'] = ecl['PMBETA']
+            params.update(ecliptic_aliases_from_equatorial(params, params))
 
         # Build temp par file with updated params
         # Convert KIN/KOM from DT92 back to IAU convention for par file
@@ -303,14 +283,7 @@ class TimingSession:
                 updated_lines.append(line)
 
         # Add any new parameters not in original file (skip internal keys).
-        # For ecliptic temp files, avoid adding derived coordinates from the
-        # other coordinate family; parse_par_file() would prefer them over the
-        # native high-precision ecliptic lines.
-        skip_ecliptic_derived = {'RAJ', 'DECJ', 'PMRA', 'PMDEC'}
-        if ecliptic_temp and not temp_uses_lambda:
-            skip_ecliptic_derived |= {'LAMBDA', 'BETA', 'PMLAMBDA', 'PMBETA'}
-        elif ecliptic_temp and temp_uses_lambda:
-            skip_ecliptic_derived |= {'ELONG', 'ELAT', 'PMELONG', 'PMELAT'}
+        skip_ecliptic_derived = temp_par_skip_keys(params, self._initial_params)
 
         for param_name, value in params.items():
             if ecliptic_temp and param_name.upper() in skip_ecliptic_derived:
@@ -635,53 +608,24 @@ class TimingSession:
             if 'DECJ' in updated_params:
                 updated_params['DECJ'] = format_dec(updated_params['DECJ'])
 
-            # Ecliptic fits update public ELONG/ELAT/PMELONG/PMELAT values.
-            # Keep the internal converted RAJ/DECJ/PMRA/PMDEC and _ecliptic_*
-            # keys in sync too; compute_residuals() uses those internal keys.
             if self.params.get('_ecliptic_coords'):
-                ecl_updates = {
-                    'ELONG': '_ecliptic_lon_deg',
-                    'ELAT': '_ecliptic_lat_deg',
-                    'PMELONG': '_ecliptic_pm_lon',
-                    'PMELAT': '_ecliptic_pm_lat',
-                }
-                if any(k in updated_params for k in ecl_updates):
-                    from jug.fitting.optimized_fitter import _reconvert_ecliptic_to_equatorial
-                    ecl_params = dict(self.params)
-                    ecl_params.update(updated_params)
-                    for public_key, internal_key in ecl_updates.items():
-                        if public_key in updated_params:
-                            ecl_params[internal_key] = float(updated_params[public_key])
-                    _reconvert_ecliptic_to_equatorial(ecl_params)
-                    for key in (
-                        '_ecliptic_lon_deg', '_ecliptic_lat_deg',
-                        '_ecliptic_pm_lon', '_ecliptic_pm_lat',
-                        'RAJ', 'DECJ', '_raj_rad', '_decj_rad',
-                        'PMRA', 'PMDEC',
-                    ):
-                        if key in ecl_params:
-                            updated_params[key] = ecl_params[key]
+                from jug.io.astrometry_state import (
+                    ecliptic_aliases_from_equatorial,
+                    sync_ecliptic_public_to_internal,
+                )
+                ecl_params = dict(self.params)
+                ecl_params.update(updated_params)
+                sync_ecliptic_public_to_internal(ecl_params, updated_params)
+                for key in (
+                    '_ecliptic_lon_deg', '_ecliptic_lat_deg',
+                    '_ecliptic_pm_lon', '_ecliptic_pm_lat',
+                    'RAJ', 'DECJ', '_raj_rad', '_decj_rad',
+                    'PMRA', 'PMDEC',
+                ):
+                    if key in ecl_params:
+                        updated_params[key] = ecl_params[key]
+                updated_params.update(ecliptic_aliases_from_equatorial(self.params, updated_params))
 
-            # For ecliptic pulsars, also update LAMBDA/BETA from fitted RAJ/DECJ.
-            if self.params.get('_ecliptic_coords') and 'RAJ' in updated_params:
-                from jug.io.par_reader import (
-                    parse_ra, parse_dec, convert_equatorial_to_ecliptic
-                )
-                ra_rad = parse_ra(updated_params['RAJ'])
-                dec_rad = parse_dec(updated_params['DECJ'])
-                ecl_frame = self.params.get('_ecliptic_frame', 'IERS2010')
-                ecl = convert_equatorial_to_ecliptic(
-                    ra_rad, dec_rad,
-                    pmra=updated_params.get('PMRA', self.params.get('PMRA', 0.0)),
-                    pmdec=updated_params.get('PMDEC', self.params.get('PMDEC', 0.0)),
-                    ecl_frame=ecl_frame,
-                )
-                updated_params['LAMBDA'] = ecl['LAMBDA']
-                updated_params['BETA'] = ecl['BETA']
-                if 'PMLAMBDA' in self.params:
-                    updated_params['PMLAMBDA'] = ecl['PMLAMBDA']
-                if 'PMBETA' in self.params:
-                    updated_params['PMBETA'] = ecl['PMBETA']
             self.params.update(updated_params)
 
             # Update _high_precision strings for fitted parameters whose

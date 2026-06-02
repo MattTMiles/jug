@@ -31,6 +31,22 @@ from jug.utils.constants import SECS_PER_DAY, SECS_PER_YEAR, T_SUN, DEG_TO_RAD, 
 jax.config.update("jax_enable_x64", True)
 
 
+def _resolve_pb_days(params: Dict) -> float:
+    """Orbital period in days, FB-aware (PB = 1/FB0 when PB is absent).
+
+    Prevents a bare params.get('PB', 1.0) from silently returning 1 day for
+    FB-parameterized binaries, which would corrupt pb-based formulas in the DD
+    derivative routines. See also _extract_dd_params (which additionally derives
+    PBDOT from FB1 for the forward model).
+    """
+    if 'PB' in params:
+        return float(params['PB'])
+    fb0 = params.get('FB0')
+    if fb0 is not None and float(fb0) != 0.0:
+        return 1.0 / (float(fb0) * SECS_PER_DAY)
+    return 1.0
+
+
 # =============================================================================
 # Eccentric Anomaly Solver (Kepler's Equation)
 # =============================================================================
@@ -255,7 +271,7 @@ def _extract_dd_params(params: Dict):
     sini, omdot, xdot, edot.
     """
     a1 = float(params.get('A1', 0.0))
-    pb = float(params.get('PB', 1.0))
+    pb = _resolve_pb_days(params)
     t0 = float(params.get('T0', 0.0))
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))
@@ -299,6 +315,26 @@ def _extract_dd_params(params: Dict):
     omdot = float(params.get('OMDOT', 0.0))
     xdot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
     edot = float(params.get('EDOT', 0.0))
+
+    # FB-parameterization guard: this DD core takes PB directly, so if a DD/BT
+    # pulsar uses FB instead of PB, PB would default to 1.0 day and silently
+    # corrupt the orbital phase, periastron accumulation, and the eq[52]
+    # inverse-correction nhat (this is the FB bug that hit ELL1; see
+    # derivatives_binary._compute_ell1_binary_delay_jit). Derive PB from FB0 and
+    # PBDOT from FB1 (PB = 1/FB0; PBDOT = dPB/dt = -FB1/FB0^2) so the DD core gets
+    # the right period. FB2+ are not representable by the DD PB/PBDOT pair.
+    if 'PB' not in params and 'FB0' in params:
+        fb0 = float(params['FB0'])
+        if fb0 != 0.0:
+            pb = 1.0 / (fb0 * SECS_PER_DAY)  # days
+            if 'PBDOT' not in params and 'FB1' in params:
+                fb1 = float(params['FB1'])
+                pbdot = -fb1 / fb0 ** 2  # dimensionless dPB/dt
+            if any(f'FB{i}' in params for i in range(2, 20)):
+                warnings.warn(
+                    "DD binary with FB2+ terms: the DD core only supports PB/PBDOT, "
+                    "so FB2+ orbital-frequency evolution is ignored. Use ELL1/T2 for "
+                    "full FB support.", UserWarning, stacklevel=2)
 
     return dict(a1=a1, pb=pb, t0=t0, ecc=ecc, om_deg=om_deg, pbdot=pbdot,
                 gamma=gamma, m2=m2, sini=sini, omdot=omdot, xdot=xdot, edot=edot)
@@ -560,6 +596,30 @@ def _compute_dd_binary_delay_jit(
     # Einstein delay
     einstein = compute_dd_einstein_delay(E, gamma, ecc_current)
 
+    # Damour & Deruelle (1986) eq [52] proper-time -> coordinate-time inverse
+    # correction. The kernel (jug/delays/binary_dd.py:dd_binary_delay) and PINT
+    # both apply this; omitting it here previously left this standalone helper
+    # ~200 us out of sync with the kernel for wide binaries (e.g. B1953+29).
+    # Dre = Roemer + Einstein; alpha/beta are the D&D [46],[47] terms.
+    sinE = jnp.sin(E)
+    cosE = jnp.cos(E)
+    alpha = a1_current * jnp.sin(om_rad)
+    beta = a1_current * jnp.sqrt(1.0 - ecc_current ** 2) * jnp.cos(om_rad)
+    Dre = roemer + einstein
+    Drep = -alpha * sinE + (beta + gamma) * cosE
+    Drepp = -alpha * cosE - (beta + gamma) * sinE
+    pb_sec = pb * SECS_PER_DAY
+    pb_prime_sec = pb_sec + pbdot * dt_sec
+    nhat = (2.0 * jnp.pi / pb_prime_sec) / (1.0 - ecc_current * cosE)
+    correction_factor = (
+        1.0
+        - nhat * Drep
+        + (nhat * Drep) ** 2
+        + 0.5 * nhat ** 2 * Dre * Drepp
+        - 0.5 * ecc_current * sinE / (1.0 - ecc_current * cosE) * nhat ** 2 * Dre * Drep
+    )
+    delay_inverse = Dre * correction_factor
+
     # Shapiro delay
     shapiro = jnp.where(
         (sini > 0) & (m2 > 0),
@@ -567,7 +627,7 @@ def _compute_dd_binary_delay_jit(
         0.0
     )
 
-    return roemer + einstein + shapiro
+    return delay_inverse + shapiro
 
 
 # =============================================================================
@@ -601,7 +661,7 @@ def compute_binary_derivatives_dd(
     
     # Extract base parameters
     a1 = float(params.get('A1', 0.0))
-    pb = float(params.get('PB', 1.0))
+    pb = _resolve_pb_days(params)
     t0 = float(params.get('T0', float(jnp.mean(toas_bary_mjd))))
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))
@@ -1289,7 +1349,7 @@ def compute_binary_derivatives_ddk(
     
     # Extract base DD parameters
     a1 = float(params.get('A1', 0.0))
-    pb = float(params.get('PB', 1.0))
+    pb = _resolve_pb_days(params)
     t0 = float(params.get('T0', float(jnp.mean(toas_bary_mjd))))
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))

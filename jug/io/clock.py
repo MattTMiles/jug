@@ -18,6 +18,60 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# Leap-second-aware MJD scale conversion
+# ---------------------------------------------------------------------------
+# Clock-correction files are tabulated against UTC MJD stamps (typically integer
+# day stamps). On a UTC day that contains a leap second, the day is 86401 s
+# rather than 86400 s long; a query MJD that falls inside such a day is not
+# linearly equidistant in physical seconds from the surrounding integer-day
+# clock entries unless we account for the inserted second.
+#
+# Astropy ``Time`` (used by PINT) handles this transparently via SOFA; JUG
+# previously interpolated directly on UTC MJD, giving ~ few-fs disagreement
+# with PINT on TOAs that fall on leap-second days.
+#
+# Fix: map both query and clock-file MJDs onto a continuous (TAI-like) scale by
+# adding cumulative leap-second offsets, then interpolate on that scale.  The
+# absolute zero-point cancels because the same transformation is applied to
+# both sides, so we omit the TAI-UTC base offset (10 s at MJD 41499) and just
+# add the cumulative count of leap seconds inserted at or before each MJD.
+
+# UTC MJD at the start of each day following a leap-second insertion.  For
+# every entry M, all UTC MJDs >= M have accumulated one additional leap second
+# relative to MJDs < M.  Table covers leaps from 1972-06-30 through 2016-12-31.
+_LEAP_INSERTION_MJDS = np.array([
+    41499, 41683, 42048, 42413, 42778, 43144, 43509, 43874, 44239,
+    44786, 45151, 45516, 46247, 47161, 47892, 48257, 48804, 49169,
+    49534, 50083, 50630, 51179, 53736, 54832, 56109, 57204, 57754,
+], dtype=np.int64)
+
+
+def utc_mjd_to_continuous(mjd):
+    """Map UTC MJD to a continuous (leap-second-aware) time coordinate.
+
+    Adds the cumulative count of leap seconds inserted at or before ``mjd``,
+    expressed in days, to convert from a UTC abscissa (where leap-second days
+    are 86401 s long) to a continuous abscissa suitable for linear
+    interpolation against clock-file MJDs treated the same way.
+
+    The absolute offset cancels when both query and clock-file MJDs are
+    converted; only the relative leap count between them matters.
+
+    Parameters
+    ----------
+    mjd : float or np.ndarray
+        UTC MJD value(s).
+
+    Returns
+    -------
+    Same shape as input; continuous-MJD scale.
+    """
+    mjd_arr = np.asarray(mjd, dtype=np.float64)
+    n_leaps = np.searchsorted(_LEAP_INSERTION_MJDS, mjd_arr, side='right')
+    return mjd_arr + n_leaps / 86400.0
+
+
+# ---------------------------------------------------------------------------
 # Graph-based clock chain (Tempo2-style Dijkstra path finding)
 # ---------------------------------------------------------------------------
 
@@ -315,16 +369,20 @@ def interpolate_clock(clock_data: dict, mjd: float) -> float:
     if mjd >= mjds[-1]:
         return 0.0
 
-    # Find bracketing points
+    # Find bracketing points (range-check on raw UTC MJDs; interpolation on
+    # leap-second-aware continuous scale below).
     idx = bisect_left(mjds, mjd)
     if idx == 0:
         return offsets[0]
 
-    # Linear interpolation
-    mjd0, mjd1 = mjds[idx-1], mjds[idx]
+    # Convert bracketing MJDs and query MJD to the continuous scale so the
+    # interpolation fraction is correct across leap-second boundaries.
+    mjd_cont   = float(utc_mjd_to_continuous(np.asarray([mjd], dtype=float))[0])
+    bracket    = utc_mjd_to_continuous(np.asarray([mjds[idx-1], mjds[idx]], dtype=float))
+    mjd0, mjd1 = float(bracket[0]), float(bracket[1])
     off0, off1 = offsets[idx-1], offsets[idx]
 
-    frac = (mjd - mjd0) / (mjd1 - mjd0)
+    frac = (mjd_cont - mjd0) / (mjd1 - mjd0)
     return off0 + frac * (off1 - off0)
 
 
@@ -391,7 +449,10 @@ def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray,
                 stacklevel=2,
             )
 
-    # Find insertion indices (right side gives us the upper bracket)
+    # Find insertion indices (right side gives us the upper bracket).
+    # Range-check uses the raw UTC MJDs so the warning thresholds are still
+    # human-readable; the actual interpolation is done on the leap-second-aware
+    # continuous scale below.
     idx = np.searchsorted(mjds, mjd_array, side='right')
 
     # Identify out-of-range TOAs (before first or after last entry).
@@ -402,15 +463,22 @@ def interpolate_clock_vectorized(clock_data: dict, mjd_array: np.ndarray,
     # Clip to valid range [1, len(mjds)-1] for interpolation
     idx = np.clip(idx, 1, len(mjds) - 1)
 
-    # Get bracketing points
-    mjd0 = mjds[idx - 1]
-    mjd1 = mjds[idx]
+    # Convert both clock-file MJDs and query MJDs onto the leap-second-aware
+    # continuous scale before computing the interpolation fraction. This makes
+    # JUG bit-equivalent to PINT/Astropy on TOAs that fall on leap-second days
+    # (otherwise ~5 fs disagreement per leap second between the two scales).
+    mjds_cont      = utc_mjd_to_continuous(mjds)
+    mjd_array_cont = utc_mjd_to_continuous(mjd_array)
+
+    # Get bracketing points (continuous scale)
+    mjd0 = mjds_cont[idx - 1]
+    mjd1 = mjds_cont[idx]
     off0 = offsets[idx - 1]
     off1 = offsets[idx]
 
     # Vectorized linear interpolation
     # Handle edge cases: if mjd0 == mjd1, frac should be 0 (use first offset)
-    frac = np.where(mjd1 != mjd0, (mjd_array - mjd0) / (mjd1 - mjd0), 0.0)
+    frac = np.where(mjd1 != mjd0, (mjd_array_cont - mjd0) / (mjd1 - mjd0), 0.0)
 
     # Clamp frac to [0, 1] for in-range values only
     frac = np.clip(frac, 0.0, 1.0)

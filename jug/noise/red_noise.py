@@ -152,28 +152,19 @@ def powerlaw_spectrum(
     log10_A: float,
     gamma: float,
 ) -> np.ndarray:
-    """Power-law PSD evaluated at given frequencies.
+    """Power-law PSD in the enterprise / Lentati et al. (2014) convention.
 
     .. math::
 
-        P(f) = \\frac{A^2}{12 \\pi^2} \\left(\\frac{f}{f_{\\rm yr}}\\right)^{-\\gamma} f_{\\rm yr}^{-1}
+        P(f) = \\frac{A^2}{12 \\pi^2} f_{\\rm yr}^{\\gamma - 3} f^{-\\gamma}
 
-    Parameters
-    ----------
-    freqs_hz : np.ndarray, shape (n,)
-        Frequencies in Hz.
-    log10_A : float
-        Log10 of the spectral amplitude.
-    gamma : float
-        Spectral index (positive = red).
-
-    Returns
-    -------
-    P : np.ndarray, shape (n,)
-        PSD values (s^3 = s^2/Hz).
+    Equivalently :math:`P(f) = (A^2 / 12\\pi^2) \\, \\mathrm{yr}^3 \\, (f \\cdot \\mathrm{yr})^{-\\gamma}`,
+    with units of :math:`{\\rm s}^3 = {\\rm s}^2 / {\\rm Hz}`. This matches the
+    per-coefficient prior variance used by :meth:`RedNoiseProcess.build_basis_and_prior`
+    after multiplication by :math:`\\Delta f = 1/T_{\\rm span}`.
     """
     A = 10.0 ** log10_A
-    return (A ** 2 / (12.0 * np.pi ** 2)) * (freqs_hz / _F_YR) ** (-gamma) / _F_YR
+    return (A ** 2 / (12.0 * np.pi ** 2)) * _F_YR ** (gamma - 3) * freqs_hz ** (-gamma)
 
 
 def turnover_spectrum(

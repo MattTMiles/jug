@@ -192,28 +192,16 @@ class TimingSession:
             else:
                 return f"{param_name:<12} {value}"
 
-        # For ecliptic par files, convert fitted RAJ/DECJ back to LAMBDA/BETA
-        # so the temp par file has consistent ecliptic coordinates
-        if params.get('_ecliptic_coords'):
-            from jug.io.par_reader import parse_ra, parse_dec, convert_equatorial_to_ecliptic
-            ra_val = params.get('RAJ')
-            dec_val = params.get('DECJ')
-            if ra_val is not None and dec_val is not None:
-                ra_rad = parse_ra(ra_val) if isinstance(ra_val, str) else float(ra_val)
-                dec_rad = parse_dec(dec_val) if isinstance(dec_val, str) else float(dec_val)
-                ecl_frame = params.get('_ecliptic_frame', 'IERS2010')
-                ecl = convert_equatorial_to_ecliptic(
-                    ra_rad, dec_rad,
-                    pmra=params.get('PMRA', 0.0),
-                    pmdec=params.get('PMDEC', 0.0),
-                    ecl_frame=ecl_frame,
-                )
-                params['LAMBDA'] = ecl['LAMBDA']
-                params['BETA'] = ecl['BETA']
-                if 'PMLAMBDA' in params:
-                    params['PMLAMBDA'] = ecl['PMLAMBDA']
-                if 'PMBETA' in params:
-                    params['PMBETA'] = ecl['PMBETA']
+        # Keep temporary par files in the original coordinate family.
+        from jug.io.astrometry_state import (
+            ecliptic_aliases_from_equatorial,
+            native_ecliptic_family,
+            temp_par_skip_keys,
+        )
+        ecliptic_temp = bool(params.get('_ecliptic_coords'))
+        temp_uses_lambda = native_ecliptic_family(self._initial_params) == 'lambda'
+        if ecliptic_temp and temp_uses_lambda:
+            params.update(ecliptic_aliases_from_equatorial(params, params))
 
         # Build temp par file with updated params
         # Convert KIN/KOM from DT92 back to IAU convention for par file
@@ -316,8 +304,12 @@ class TimingSession:
             else:
                 updated_lines.append(line)
 
-        # Add any new parameters not in original file (skip internal keys)
+        # Add any new parameters not in original file (skip internal keys).
+        skip_ecliptic_derived = temp_par_skip_keys(params, self._initial_params)
+
         for param_name, value in params.items():
+            if ecliptic_temp and param_name.upper() in skip_ecliptic_derived:
+                continue
             if param_name not in updated_params and not param_name.startswith('_'):
                 if isinstance(value, (int, float, str)):
                     new_line = format_param_value(param_name, value) + '\n'
@@ -641,31 +633,31 @@ class TimingSession:
         if result.get('success', True) and 'final_params' in result:
             from jug.io.par_reader import format_ra, format_dec
             updated_params = result['final_params'].copy()
+            updated_params.update(result.get('final_dmx_params', {}))
             # Convert RAJ/DECJ from radians back to string format for consistency
             if 'RAJ' in updated_params:
                 updated_params['RAJ'] = format_ra(updated_params['RAJ'])
             if 'DECJ' in updated_params:
                 updated_params['DECJ'] = format_dec(updated_params['DECJ'])
-            # For ecliptic pulsars, also update LAMBDA/BETA from fitted RAJ/DECJ
-            if self.params.get('_ecliptic_coords') and 'RAJ' in updated_params:
-                from jug.io.par_reader import (
-                    parse_ra, parse_dec, convert_equatorial_to_ecliptic
+
+            if self.params.get('_ecliptic_coords'):
+                from jug.io.astrometry_state import (
+                    ecliptic_aliases_from_equatorial,
+                    sync_ecliptic_public_to_internal,
                 )
-                ra_rad = parse_ra(updated_params['RAJ'])
-                dec_rad = parse_dec(updated_params['DECJ'])
-                ecl_frame = self.params.get('_ecliptic_frame', 'IERS2010')
-                ecl = convert_equatorial_to_ecliptic(
-                    ra_rad, dec_rad,
-                    pmra=updated_params.get('PMRA', self.params.get('PMRA', 0.0)),
-                    pmdec=updated_params.get('PMDEC', self.params.get('PMDEC', 0.0)),
-                    ecl_frame=ecl_frame,
-                )
-                updated_params['LAMBDA'] = ecl['LAMBDA']
-                updated_params['BETA'] = ecl['BETA']
-                if 'PMLAMBDA' in self.params:
-                    updated_params['PMLAMBDA'] = ecl['PMLAMBDA']
-                if 'PMBETA' in self.params:
-                    updated_params['PMBETA'] = ecl['PMBETA']
+                ecl_params = dict(self.params)
+                ecl_params.update(updated_params)
+                sync_ecliptic_public_to_internal(ecl_params, updated_params)
+                for key in (
+                    '_ecliptic_lon_deg', '_ecliptic_lat_deg',
+                    '_ecliptic_pm_lon', '_ecliptic_pm_lat',
+                    'RAJ', 'DECJ', '_raj_rad', '_decj_rad',
+                    'PMRA', 'PMDEC',
+                ):
+                    if key in ecl_params:
+                        updated_params[key] = ecl_params[key]
+                updated_params.update(ecliptic_aliases_from_equatorial(self.params, updated_params))
+
             self.params.update(updated_params)
 
             # Update _high_precision strings for fitted parameters whose
@@ -684,6 +676,18 @@ class TimingSession:
                     init_val = self._initial_params.get(p)
                     orig_hp_str = self._original_high_precision.get(p)
                     if init_val is not None and orig_hp_str is not None and float(init_val) != float(new_val):
+                        # If a high-precision parameter moved by only one float64 ULP,
+                        # the float64 result cannot represent the fitted sub-ULP value.
+                        # Keep the original high-precision value rather than snapping to
+                        # an arbitrary neighboring float, which can produce ns-level phase
+                        # errors for spin parameters over long data spans.
+                        if abs(float(new_val) - float(init_val)) <= abs(np.spacing(float(init_val))):
+                            self.params[p] = init_val
+                            updated_params[p] = init_val
+                            if p in result.get('final_params', {}):
+                                result['final_params'][p] = init_val
+                            hp[p] = orig_hp_str
+                            continue
                         orig_ld = np.longdouble(orig_hp_str)
                         delta = np.longdouble(float(new_val) - float(init_val))
                         new_ld = orig_ld + delta

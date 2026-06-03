@@ -172,6 +172,7 @@ def resolve_tzrmjd_epochs(
         tzr_clock,
         bipm_clock,
         tzr_location,
+        mjd_strings=[str(params.get("TZRMJD", tzrmjd_raw))],
     )[0]
     tzrmjd_tdb = np.longdouble(tzrmjd_tdb_ld)
     if model_timescale == "TCB":

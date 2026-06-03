@@ -245,5 +245,50 @@ def test_session_postfit_residuals_same_with_geometry_cache():
     )
 
 
+def test_session_residuals_at_params_matches_override_path():
+    """Fast in-memory residuals_at_params agrees with compute_residuals override path."""
+    from jug.engine.session import TimingSession
+
+    par, tim = get_mini_paths()
+    if par is None:
+        pytest.skip("Mini dataset not found")
+
+    session = TimingSession(par, tim, verbose=False)
+    session.compute_residuals(subtract_tzr=True)
+
+    trial = {'F0': float(session.params['F0']) + 1e-12}
+    slow = session.compute_residuals(params=trial, subtract_tzr=True)
+    fast = session.residuals_at_params(trial, subtract_tzr=True)
+
+    np.testing.assert_allclose(
+        fast['residuals_us'],
+        slow['residuals_us'],
+        rtol=0.0,
+        atol=6e-2,
+        err_msg="Fast residuals_at_params does not match canonical override residuals",
+    )
+    assert fast['used_fast_path'] is True
+    assert fast['n_toas'] == slow['n_toas']
+
+
+def test_session_residuals_at_params_avoids_temp_par_path(monkeypatch):
+    """residuals_at_params should not call _compute_residuals_with_params."""
+    from jug.engine.session import TimingSession
+
+    par, tim = get_mini_paths()
+    if par is None:
+        pytest.skip("Mini dataset not found")
+
+    session = TimingSession(par, tim, verbose=False)
+    session.compute_residuals(subtract_tzr=True)
+
+    def _fail(*_args, **_kwargs):
+        raise AssertionError("Unexpected slow temp-par path call")
+
+    monkeypatch.setattr(session, "_compute_residuals_with_params", _fail)
+    out = session.residuals_at_params({'F1': float(session.params.get('F1', 0.0))}, subtract_tzr=True)
+    assert 'residuals_us' in out
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

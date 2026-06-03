@@ -527,6 +527,7 @@ class TimingSession:
             session_cached_data,
             self.params,
             list(params.keys()),
+            compatibility=self.compatibility,
         )
 
         eval_params = dict(self.params)

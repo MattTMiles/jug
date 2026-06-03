@@ -39,6 +39,15 @@ def get_proper_paths():
     return None, None
 
 
+def _skip_if_tempo2_ephemeris_unavailable():
+    try:
+        from jug.delays.tempo2_ephemeris import resolve_tempo2_ephemeris_path
+
+        resolve_tempo2_ephemeris_path("de440")
+    except FileNotFoundError:
+        pytest.skip("tempo2 ephemeris files not available in this environment")
+
+
 # ---------------------------------------------------------------------------
 # compute_residuals_simple cache tests
 # ---------------------------------------------------------------------------
@@ -245,15 +254,49 @@ def test_session_postfit_residuals_same_with_geometry_cache():
     )
 
 
-def test_session_residuals_at_params_matches_override_path():
-    """Fast in-memory residuals_at_params agrees with compute_residuals override path."""
+@pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
+def test_session_residuals_at_params_forwards_compatibility(compatibility, monkeypatch):
+    """residuals_at_params must pass session compatibility into cached setup builder."""
+    from jug.engine import session as session_mod
     from jug.engine.session import TimingSession
 
     par, tim = get_mini_paths()
     if par is None:
         pytest.skip("Mini dataset not found")
 
-    session = TimingSession(par, tim, verbose=False)
+    captured = {}
+
+    def _capture_build(*args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop-after-setup")
+
+    monkeypatch.setattr(session_mod, "_build_general_fit_setup_from_cache", _capture_build)
+
+    session = TimingSession(par, tim, verbose=False, compatibility=compatibility)
+    session._cached_result_by_mode[True] = {
+        'dt_sec': np.zeros(20),
+        'tdb_mjd': np.zeros(20),
+        'freq_bary_mhz': np.ones(20),
+    }
+
+    with pytest.raises(RuntimeError, match="stop-after-setup"):
+        session.residuals_at_params({'F0': float(session.params['F0'])}, subtract_tzr=True)
+
+    assert captured.get('compatibility') == compatibility
+
+
+@pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
+def test_session_residuals_at_params_matches_override_path(compatibility):
+    """Fast in-memory residuals_at_params agrees with compute_residuals override path."""
+    from jug.engine.session import TimingSession
+
+    par, tim = get_mini_paths()
+    if par is None:
+        pytest.skip("Mini dataset not found")
+    if compatibility == "tempo2":
+        _skip_if_tempo2_ephemeris_unavailable()
+
+    session = TimingSession(par, tim, verbose=False, compatibility=compatibility)
     session.compute_residuals(subtract_tzr=True)
 
     trial = {'F0': float(session.params['F0']) + 1e-12}
@@ -265,21 +308,27 @@ def test_session_residuals_at_params_matches_override_path():
         slow['residuals_us'],
         rtol=0.0,
         atol=6e-2,
-        err_msg="Fast residuals_at_params does not match canonical override residuals",
+        err_msg=(
+            f"Fast residuals_at_params does not match canonical override residuals "
+            f"(compatibility={compatibility})"
+        ),
     )
     assert fast['used_fast_path'] is True
     assert fast['n_toas'] == slow['n_toas']
 
 
-def test_session_residuals_at_params_avoids_temp_par_path(monkeypatch):
+@pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
+def test_session_residuals_at_params_avoids_temp_par_path(compatibility, monkeypatch):
     """residuals_at_params should not call _compute_residuals_with_params."""
     from jug.engine.session import TimingSession
 
     par, tim = get_mini_paths()
     if par is None:
         pytest.skip("Mini dataset not found")
+    if compatibility == "tempo2":
+        _skip_if_tempo2_ephemeris_unavailable()
 
-    session = TimingSession(par, tim, verbose=False)
+    session = TimingSession(par, tim, verbose=False, compatibility=compatibility)
     session.compute_residuals(subtract_tzr=True)
 
     def _fail(*_args, **_kwargs):

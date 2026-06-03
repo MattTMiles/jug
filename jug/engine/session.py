@@ -35,6 +35,8 @@ from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.fitting.optimized_fitter import (
     fit_parameters_optimized,
     _build_general_fit_setup_from_cache,
+    _compute_full_model_residuals,
+    _update_param,
     fit_parameters_optimized_cached
 )
 
@@ -447,6 +449,108 @@ class TimingSession:
                 print("  Cached TOA data for fast postfit evaluation")
         
         return result
+
+    def residuals_at_params(
+        self,
+        params: Dict[str, float],
+        subtract_tzr: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Compute residual statistics for parameter overrides via cached in-memory data.
+
+        This is the public fast-path API for evaluating residuals at candidate
+        parameter values without rebuilding a temporary par file.
+
+        Parameters
+        ----------
+        params : dict
+            Parameter overrides to evaluate. Keys follow normal timing-model
+            names (e.g. ``F0``, ``F1``, ``DM``, ``PB``).
+        subtract_tzr : bool, default True
+            Whether to evaluate residuals in TZR-subtracted mode.
+
+        Returns
+        -------
+        result : dict
+            Residual summary with keys:
+            - 'residuals_us': residuals in microseconds
+            - 'residuals_sec': residuals in seconds
+            - 'chi2': chi-squared
+            - 'rms_us': weighted RMS in microseconds
+            - 'weighted_rms_us': weighted RMS in microseconds (alias)
+            - 'wrms_us': weighted RMS in microseconds (alias)
+            - 'n_toas': number of TOAs
+            - 'used_fast_path': True
+        """
+        if not isinstance(params, dict):
+            raise TypeError("params must be a dictionary of parameter overrides")
+
+        # Ensure delay/geometry arrays are available for the cached evaluator.
+        cached_result = self._cached_result_by_mode.get(subtract_tzr)
+        if cached_result is None:
+            self.compute_residuals(subtract_tzr=subtract_tzr, force_recompute=False)
+            cached_result = self._cached_result_by_mode.get(subtract_tzr)
+
+        has_required_cache = (
+            cached_result is not None
+            and 'dt_sec' in cached_result
+            and 'tdb_mjd' in cached_result
+            and 'freq_bary_mhz' in cached_result
+        )
+        if not has_required_cache:
+            raise RuntimeError(
+                "Cached residual arrays are unavailable for fast evaluation. "
+                "Call compute_residuals() first to populate cache."
+            )
+
+        toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in self.toas_data])
+        errors_us = np.array([toa.error_us for toa in self.toas_data])
+        toa_flags = [toa.flags for toa in self.toas_data]
+        session_cached_data = {
+            'dt_sec': cached_result['dt_sec'],
+            'dt_sec_ld': cached_result.get('dt_sec_ld'),
+            'tdb_mjd': cached_result['tdb_mjd'],
+            'freq_bary_mhz': cached_result['freq_bary_mhz'],
+            'toas_mjd': toas_mjd,
+            'errors_us': errors_us,
+            'toa_flags': toa_flags,
+            'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
+            'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
+            'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
+            'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
+            'jump_phase': cached_result.get('jump_phase'),
+            'tzr_phase': cached_result.get('tzr_phase'),
+        }
+
+        # Build setup only for parameters being overridden.
+        setup = _build_general_fit_setup_from_cache(
+            session_cached_data,
+            self.params,
+            list(params.keys()),
+        )
+
+        eval_params = dict(self.params)
+        for name, value in params.items():
+            if isinstance(value, (int, float, np.floating)):
+                _update_param(eval_params, name, float(value))
+            else:
+                eval_params[str(name).upper()] = value
+
+        residuals_sec, chi2, rms_us, wrms_us = _compute_full_model_residuals(
+            eval_params,
+            setup,
+        )
+        residuals_us = np.asarray(residuals_sec, dtype=np.float64) * 1e6
+        return {
+            'residuals_us': residuals_us,
+            'residuals_sec': np.asarray(residuals_sec, dtype=np.float64),
+            'chi2': float(chi2),
+            'rms_us': float(rms_us),
+            'weighted_rms_us': float(wrms_us),
+            'wrms_us': float(wrms_us),
+            'n_toas': int(len(residuals_us)),
+            'used_fast_path': True,
+        }
     
     # TODO: expose ``fd_column_mode`` here (and forward through cached/file fit
     # paths) so session users can select FD column convention without calling
@@ -1197,6 +1301,7 @@ class TimingSession:
             "  session.parameter_table(fit_result)  - Compare pre/post-fit with uncertainties",
             "  session.weighted_rms()               - Compute current weighted RMS (us)",
             "  session.compute_residuals()           - Compute timing residuals",
+            "  session.residuals_at_params(params)   - Fast in-memory residual evaluation",
             "  session.fit_parameters(fit_params)    - Fit specified parameters",
             "  session.get_initial_params()          - Original par file parameters",
             "  session.save_par(path, fit_result)    - Write par file",

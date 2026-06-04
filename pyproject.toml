@@ -36,9 +36,9 @@ dependencies = [
     "pyqtgraph>=0.14.0",
     "matplotlib>=3.10",
     # Server dependencies
-    "fastapi>=0.128.0",
-    "uvicorn[standard]>=0.40.0",
-    "python-multipart>=0.0.22",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "python-multipart>=0.0.6",
 ]
 
 [project.optional-dependencies]

@@ -97,15 +97,19 @@ def compute_ssb_obs_pos_vel(
         call_site = ' -> '.join(f"{s.filename.split('/')[-1]}:{s.lineno}" for s in stack[:-1])
         _call_stats['compute_ssb_obs_pos_vel']['call_sites'].append(call_site)
     
-    # Ensure arrays are proper dtype
-    tdb_mjd = np.asarray(tdb_mjd, dtype=np.float64)
+    # Keep TDB as longdouble until Astropy Time construction. Casting modern
+    # MJDs to float64 here shifts Earth/observatory positions by millimeters,
+    # leaving ~10 ps annual structure in Roemer-delay parity checks.
+    tdb_mjd_ld = np.asarray(tdb_mjd, dtype=np.longdouble)
+    tdb_mjd_cache = np.asarray(tdb_mjd_ld, dtype=np.float64)
     obs_itrf_km = np.asarray(obs_itrf_km, dtype=np.float64)
     
     # Try disk cache first
+    cache_ephem = ephemeris + "_v3"
     if use_cache:
         from jug.utils.geom_cache import get_geometry_cache
         cache = get_geometry_cache()
-        cached = cache.load(tdb_mjd, obs_itrf_km, ephemeris=ephemeris + "_v2")
+        cached = cache.load(tdb_mjd_cache, obs_itrf_km, ephemeris=cache_ephem)
         if cached is not None:
             if _PROFILE_ENABLED:
                 _call_stats['compute_ssb_obs_pos_vel']['count'] += 1
@@ -116,7 +120,13 @@ def compute_ssb_obs_pos_vel(
     
     t0 = time.perf_counter() if timings is not None else None
     
-    times = Time(tdb_mjd, format='mjd', scale='tdb')
+    tdb_mjd_int = np.floor(tdb_mjd_ld)
+    times = Time(
+        np.asarray(tdb_mjd_int, dtype=np.float64),
+        np.asarray(tdb_mjd_ld - tdb_mjd_int, dtype=np.float64),
+        format='mjd',
+        scale='tdb',
+    )
     
     if timings is not None:
         timings['time_obj_creation'] = time.perf_counter() - t0
@@ -171,7 +181,7 @@ def compute_ssb_obs_pos_vel(
     
     # Save to disk cache
     if use_cache:
-        cache.save(tdb_mjd, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris=ephemeris + "_v2")
+        cache.save(tdb_mjd_cache, obs_itrf_km, ssb_obs_pos, ssb_obs_vel, ephemeris=cache_ephem)
     
     # Update profiling stats
     if _PROFILE_ENABLED:
@@ -210,7 +220,15 @@ def compute_ssb_obs_pos_vel_gcrs_posvel(
     """
     t0 = time.perf_counter() if timings is not None else None
     
-    times = Time(tdb_mjd, format='mjd', scale='tdb')
+    tdb_mjd_ld = np.asarray(tdb_mjd, dtype=np.longdouble)
+    obs_itrf_km = np.asarray(obs_itrf_km, dtype=np.float64)
+    tdb_mjd_int = np.floor(tdb_mjd_ld)
+    times = Time(
+        np.asarray(tdb_mjd_int, dtype=np.float64),
+        np.asarray(tdb_mjd_ld - tdb_mjd_int, dtype=np.float64),
+        format='mjd',
+        scale='tdb',
+    )
     
     if timings is not None:
         timings['time_obj_creation'] = time.perf_counter() - t0
@@ -294,9 +312,16 @@ def compute_pulsar_direction(
 
     Notes
     -----
-    Proper motion is applied linearly from POSEPOCH. For nearby pulsars
-    with large proper motions, this can introduce small errors over long
-    baselines, but is sufficient for most pulsar timing applications.
+    Proper motion is propagated RIGOROUSLY along a great circle on the unit
+    sphere (not the linear ra/dec += PM*dt tangent-plane approximation), to
+    match PINT/astropy ``apply_space_motion`` (ERFA). The old linear update was
+    wrong at O((PM*dt)^2); for nearby high-PM pulsars (e.g. J0437-4715, PM ~141
+    mas/yr -> ~1 arcsec over the data span) that second-order error reached
+    ~0.4 ns in the Roemer delay (secular + quadratic in time).
+
+    Great-circle propagation:  p(t) = p0*cos(theta) + mhat*sin(theta),
+    where p0 is the unit direction at POSEPOCH, theta = |mu|*dt is the total
+    angular motion, and mhat is the unit on-sky proper-motion direction.
 
     Examples
     --------
@@ -309,24 +334,28 @@ def compute_pulsar_direction(
     >>> L_hat = compute_pulsar_direction(ra, dec, pmra, pmdec, posepoch, times)
     >>> print(f"Direction vectors: {L_hat.shape}")  # (2, 3)
     """
-    dt = t_mjd - posepoch
+    dt = np.atleast_1d(np.asarray(t_mjd, dtype=np.float64)) - posepoch
     cos_dec0 = np.cos(dec_rad)
+    sin_dec0 = np.sin(dec_rad)
+    cos_ra0 = np.cos(ra_rad)
+    sin_ra0 = np.sin(ra_rad)
 
-    # Apply proper motion
-    ra = ra_rad + pmra_rad_day * dt / cos_dec0
-    dec = dec_rad + pmdec_rad_day * dt
+    # Direction unit vector at POSEPOCH and the on-sky tangent basis.
+    p0 = np.array([cos_dec0 * cos_ra0, cos_dec0 * sin_ra0, sin_dec0])
+    e_ra = np.array([-sin_ra0, cos_ra0, 0.0])                       # +RA (on-sky)
+    e_dec = np.array([-sin_dec0 * cos_ra0, -sin_dec0 * sin_ra0, cos_dec0])  # +Dec
 
-    # Convert to unit vector
-    cos_dec = np.cos(dec)
-    sin_dec = np.sin(dec)
-    cos_ra = np.cos(ra)
-    sin_ra = np.sin(ra)
+    # On-sky proper-motion vector (rad/day). pmra_rad_day already includes the
+    # cos(dec) factor, so (pmra_rad_day, pmdec_rad_day) are the on-sky rates.
+    mu_vec = pmra_rad_day * e_ra + pmdec_rad_day * e_dec
+    mu_mag = float(np.hypot(pmra_rad_day, pmdec_rad_day))
 
-    return np.column_stack([
-        cos_dec * cos_ra,  # x
-        cos_dec * sin_ra,  # y
-        sin_dec            # z
-    ])
+    if mu_mag == 0.0:
+        return np.broadcast_to(p0, (dt.shape[0], 3)).copy()
+
+    mhat = mu_vec / mu_mag
+    theta = mu_mag * dt  # (n_times,)
+    return (np.outer(np.cos(theta), p0) + np.outer(np.sin(theta), mhat))
 
 
 def compute_roemer_delay(

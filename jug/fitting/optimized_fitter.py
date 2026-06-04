@@ -79,16 +79,6 @@ from jug.model.parameter_spec import (
 from jug.utils.constants import HIGH_PRECISION_PARAMS
 
 
-def _format_longdouble(value: np.longdouble) -> str:
-    """Format a longdouble scalar without routing through float64."""
-    return np.format_float_scientific(
-        np.longdouble(value),
-        precision=24,
-        unique=False,
-        trim='0',
-    )
-
-
 def _update_param(params: Dict, param: str, value: float) -> None:
     """Update a parameter value, keeping _high_precision cache consistent.
 
@@ -113,87 +103,25 @@ def _update_param(params: Dict, param: str, value: float) -> None:
     """
     param_upper = param.upper()
 
-    if param_upper == 'ELONG':
-        params['ELONG'] = value
-        params['_ecliptic_lon_deg'] = value
-        _reconvert_ecliptic_to_equatorial(params)
-        return
-    elif param_upper == 'ELAT':
-        params['ELAT'] = value
-        params['_ecliptic_lat_deg'] = value
-        _reconvert_ecliptic_to_equatorial(params)
-        return
-    elif param_upper == 'PMELONG':
-        params['PMELONG'] = value
-        params['_ecliptic_pm_lon'] = value
-        _reconvert_ecliptic_to_equatorial(params)
-        return
-    elif param_upper == 'PMELAT':
-        params['PMELAT'] = value
-        params['_ecliptic_pm_lat'] = value
-        _reconvert_ecliptic_to_equatorial(params)
+    if param_upper in ('ELONG', 'ELAT', 'PMELONG', 'PMELAT'):
+        from jug.io.astrometry_state import sync_ecliptic_public_to_internal
+        sync_ecliptic_public_to_internal(params, {param_upper: value})
         return
 
-    hp_value = None
-    if param_upper in HIGH_PRECISION_PARAMS:
-        hp_value = np.longdouble(value)
-        params[param_upper] = hp_value
-    else:
-        params[param_upper] = value
+    params[param_upper] = value
     # Keep _high_precision in sync so get_longdouble() returns the fitted
     # value during iterations (otherwise compute_phase_residuals uses stale
     # F0/F1 from the original par file, breaking the nonlinear model).
-    hp = params.setdefault('_high_precision', {})
-    if param_upper in HIGH_PRECISION_PARAMS:
-        hp[param_upper] = _format_longdouble(hp_value)
+    # Session.py reconstructs full longdouble HP after the fit completes.
+    hp = params.get('_high_precision')
+    if hp is not None and param_upper in hp:
+        hp[param_upper] = repr(float(value))
 
 
 def _reconvert_ecliptic_to_equatorial(params: Dict) -> None:
     """Reconvert ecliptic coords to equatorial after an ecliptic param update."""
-    from jug.io.par_reader import (
-        OBLIQUITY_ARCSEC, format_ra, format_dec
-    )
-    import numpy as np_
-
-    ecl_lon_deg = params.get('_ecliptic_lon_deg', 0.0)
-    ecl_lat_deg = params.get('_ecliptic_lat_deg', 0.0)
-    ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010'))
-    obl_rad = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC['IERS2010']) * np_.pi / (180.0 * 3600.0)
-
-    lon_rad = np_.radians(ecl_lon_deg)
-    lat_rad = np_.radians(ecl_lat_deg)
-    cos_lon, sin_lon = np_.cos(lon_rad), np_.sin(lon_rad)
-    cos_lat, sin_lat = np_.cos(lat_rad), np_.sin(lat_rad)
-    cos_obl, sin_obl = np_.cos(obl_rad), np_.sin(obl_rad)
-
-    x = cos_lon * cos_lat
-    y = sin_lon * cos_lat * cos_obl - sin_lat * sin_obl
-    z = sin_lon * cos_lat * sin_obl + sin_lat * cos_obl
-
-    ra_rad = np_.arctan2(y, x) % (2 * np_.pi)
-    dec_rad = np_.arctan2(z, np_.sqrt(x**2 + y**2))
-
-    params['RAJ'] = format_ra(ra_rad)
-    params['DECJ'] = format_dec(dec_rad)
-    params['_raj_rad'] = float(ra_rad)
-    params['_decj_rad'] = float(dec_rad)
-
-    # Reconvert proper motions if present
-    pm_lon = params.get('_ecliptic_pm_lon', 0.0)
-    pm_lat = params.get('_ecliptic_pm_lat', 0.0)
-    if pm_lon != 0.0 or pm_lat != 0.0:
-        dx = -sin_lon * pm_lon - cos_lon * sin_lat * pm_lat
-        dy = cos_lon * pm_lon - sin_lon * sin_lat * pm_lat
-        dz = cos_lat * pm_lat
-
-        dx_eq = dx
-        dy_eq = dy * cos_obl - dz * sin_obl
-        dz_eq = dy * sin_obl + dz * cos_obl
-
-        cos_ra, sin_ra = np_.cos(ra_rad), np_.sin(ra_rad)
-        cos_dec, sin_dec = np_.cos(dec_rad), np_.sin(dec_rad)
-        params['PMRA'] = -sin_ra * dx_eq + cos_ra * dy_eq
-        params['PMDEC'] = -cos_ra * sin_dec * dx_eq - sin_ra * sin_dec * dy_eq + cos_dec * dz_eq
+    from jug.io.astrometry_state import reconvert_ecliptic_to_equatorial
+    reconvert_ecliptic_to_equatorial(params)
 
 
 @dataclass
@@ -295,6 +223,7 @@ class GeneralFitSetup:
     # DMX design matrix (Phase 2 integration)
     dmx_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmx_ranges) DMX design matrix
     dmx_labels: Optional[List[str]]          # DMX parameter labels
+    initial_dmx_delay: Optional[np.ndarray]  # Initial DMX delay for deterministic DMX fitting
     # DMJUMP design matrix
     dmjump_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmjumps) DMJUMP design matrix
     dmjump_labels: Optional[List[str]]          # DMJUMP parameter labels
@@ -981,11 +910,7 @@ def _build_setup_common(
             print("[SETUP] Converting RNAMP/RNIDX to TNRedAmp/TNRedGam format")
 
     if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
-        # PINT evaluates Fourier red-noise phases using absolute barycentric
-        # TDB seconds (tdbld * day). Match that convention for GLS parity.
-        red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(
-            tdb_mjd, reference_mjd=0.0
-        )
+        red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
         print(f"[SETUP] Building RED NOISE basis: {red_noise_basis.shape[1]} columns")
         if verbose:
             print(f"  Red noise: log10_A={red_noise_proc.log10_A:.3f}, "
@@ -994,7 +919,7 @@ def _build_setup_common(
 
     if dm_noise_proc is not None and noise_config.is_enabled("DMNoise"):
         dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
-            tdb_mjd, freq_mhz_bary, reference_mjd=0.0
+            toas_mjd, freq_mhz_bary
         )
         print(f"[SETUP] Building DM NOISE basis: {dm_noise_basis.shape[1]} columns")
         if verbose:
@@ -1004,7 +929,7 @@ def _build_setup_common(
 
     if chromatic_noise_proc is not None and noise_config.is_enabled("ChromaticNoise"):        
         chromatic_noise_basis, chromatic_noise_prior = chromatic_noise_proc.build_basis_and_prior(
-            tdb_mjd, freq_mhz_bary, reference_mjd=0.0
+            toas_mjd, freq_mhz_bary
         )
         print(f"[SETUP] Building CHROMATIC NOISE basis: {chromatic_noise_basis.shape[1]} columns")
         if verbose:
@@ -1028,9 +953,7 @@ def _build_setup_common(
             band_noise_priors = []
             band_noise_labels = []
             for bp in band_procs:
-                F, phi = bp.build_basis_and_prior(
-                    tdb_mjd, freq_mhz_bary, reference_mjd=0.0
-                )
+                F, phi = bp.build_basis_and_prior(toas_mjd, freq_mhz_bary)
                 band_noise_bases.append(F)
                 band_noise_priors.append(phi)
                 label = f"BandNoise_{int(bp.freq_lo)}_{int(bp.freq_hi)}"
@@ -1048,9 +971,7 @@ def _build_setup_common(
             group_noise_priors = []
             group_noise_labels = []
             for gp in group_procs:
-                F, phi = gp.build_basis_and_prior(
-                    tdb_mjd, group_flags=group_flags, reference_mjd=0.0
-                )
+                F, phi = gp.build_basis_and_prior(toas_mjd, group_flags=group_flags)
                 group_noise_bases.append(F)
                 group_noise_priors.append(phi)
                 label = f"GroupNoise_{gp.group_name}"
@@ -1063,7 +984,7 @@ def _build_setup_common(
     dmx_labels = None
     from jug.model.dmx import parse_dmx_ranges, build_dmx_design_matrix
     dmx_ranges = parse_dmx_ranges(params)
-    if dmx_ranges and noise_config.is_enabled("DMX"):
+    if dmx_ranges:
         dmx_design_matrix, dmx_labels = build_dmx_design_matrix(
             toas_mjd, freq_mhz_bary, dmx_ranges
         )
@@ -1094,6 +1015,18 @@ def _build_setup_common(
                         n_scaled = np.sum(dmefac_array != 1.0)
                         print(f"  DMEFAC: Applied scaling to {n_scaled}/{len(toas_mjd)} TOAs "
                               f"({len(dmefac_entries)} backend groups)")
+
+    if dmx_labels:
+        # DMX is deterministic timing-model structure, not stochastic noise.
+        # It used to ride in the GLS noise basis because its design matrix is
+        # basis-like, but keeping it in fit_params makes each nonlinear
+        # iteration update the DMX baseline just like PINT.
+        existing = set(fit_params)
+        added_dmx = [label for label in dmx_labels if label not in existing]
+        if added_dmx:
+            fit_params = list(fit_params) + added_dmx
+            if verbose:
+                print(f"  Auto-added {len(added_dmx)} DMX timing parameters")
 
     # --- DMJUMP design matrix ----------------------------------------------
     dmjump_design_matrix = None
@@ -1230,9 +1163,6 @@ def _build_setup_common(
         elif param == 'SINI' and isinstance(value, str) and value.upper() == 'KIN':
             kin_deg = float(params.get('KIN', 0.0))
             value = float(jnp.sin(jnp.deg2rad(kin_deg)))
-        elif param.upper() in HIGH_PRECISION_PARAMS:
-            from jug.io.par_reader import get_longdouble
-            value = get_longdouble(params, param)
         elif isinstance(value, str):
             value = float(value)
         param_values_start.append(value)
@@ -1240,6 +1170,7 @@ def _build_setup_common(
     # --- Classify parameters (spec-driven) ---------------------------------
     spin_params = get_spin_params_from_list(fit_params)
     dm_params = get_dm_params_from_list(fit_params)
+    dmx_params_list = [p for p in fit_params if dmx_labels and p in dmx_labels]
     binary_params = get_binary_params_from_list(fit_params)
     astrometry_params = get_astrometry_params_from_list(fit_params)
     fd_params = get_fd_params_from_list(fit_params)
@@ -1314,6 +1245,11 @@ def _build_setup_common(
     obs_sun_pos_ls = extras.get('obs_sun_pos_ls')
     # Planet positions relative to observer (for planet Shapiro recomputation)
     obs_planet_pos_ls = extras.get('obs_planet_pos_ls')
+
+    initial_dmx_delay = None
+    if dmx_design_matrix is not None and dmx_labels:
+        initial_dmx_values = np.array([float(params.get(label, 0.0)) for label in dmx_labels])
+        initial_dmx_delay = np.asarray(dmx_design_matrix @ initial_dmx_values, dtype=np.float64)
 
     # --- Binary delay setup ------------------------------------------------
     roemer_shapiro_sec = extras.get('roemer_shapiro_sec')
@@ -1416,6 +1352,7 @@ def _build_setup_common(
         group_noise_labels=group_noise_labels,
         dmx_design_matrix=dmx_design_matrix,
         dmx_labels=dmx_labels,
+        initial_dmx_delay=initial_dmx_delay,
         dmjump_design_matrix=dmjump_design_matrix,
         dmjump_labels=dmjump_labels,
         jump_masks=jump_masks,
@@ -1562,6 +1499,13 @@ def _compute_full_model_residuals(
         dm_delay_change = new_dm_delay - setup.initial_dm_delay
         dt_sec_np = dt_sec_np - dm_delay_change
 
+    # Apply DMX delay correction. DMX bins are deterministic timing
+    # parameters, so nonlinear residual checks must see updated bin values.
+    if setup.dmx_design_matrix is not None and setup.dmx_labels and setup.initial_dmx_delay is not None:
+        current_dmx_values = np.array([float(params.get(label, 0.0)) for label in setup.dmx_labels])
+        new_dmx_delay = np.asarray(setup.dmx_design_matrix @ current_dmx_values, dtype=np.float64)
+        dt_sec_np = dt_sec_np - (new_dmx_delay - setup.initial_dmx_delay)
+
     # Apply binary delay correction (route to correct binary model)
     binary_params = setup.binary_params
     if binary_params and setup.initial_binary_delay is not None:
@@ -1701,6 +1645,7 @@ def _run_general_fit_iterations(
     dt_sec_cached = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)
     tdb_mjd = setup.tdb_mjd
     initial_dm_delay = setup.initial_dm_delay
+    initial_dmx_delay = setup.initial_dmx_delay
     dm_params = setup.dm_params
     spin_params = setup.spin_params
     binary_params = setup.binary_params
@@ -1734,6 +1679,7 @@ def _run_general_fit_iterations(
     # Pre-compute param list categorization ONCE (these never change during fitting)
     spin_params_list = get_spin_params_from_list(fit_params)
     dm_params_list = get_dm_params_from_list(fit_params)
+    dmx_params_list = [p for p in fit_params if setup.dmx_labels and p in setup.dmx_labels]
     binary_params_list = get_binary_params_from_list(fit_params)
     astrometry_params_list = get_astrometry_params_from_list(fit_params)
     fd_params_list = get_fd_params_from_list(fit_params)
@@ -1751,7 +1697,7 @@ def _run_general_fit_iterations(
     from jug.io.par_reader import get_longdouble
 
     # Convergence criteria
-    xtol = convergence_threshold
+    xtol = 1e-12
     min_iterations = 5
     
     # Save the exact prefit residual vector from the cached emission times
@@ -1796,7 +1742,9 @@ def _run_general_fit_iterations(
     n_dm_noise_cols = setup.dm_noise_basis.shape[1] if getattr(setup, 'dm_noise_basis', None) is not None else 0
     n_chromatic_noise_cols = setup.chromatic_noise_basis.shape[1] if getattr(setup, 'chromatic_noise_basis', None) is not None else 0
     n_ecorr_cols = setup.ecorr_basis.shape[1] if getattr(setup, 'ecorr_basis', None) is not None else 0
-    n_dmx_cols = setup.dmx_design_matrix.shape[1] if getattr(setup, 'dmx_design_matrix', None) is not None else 0
+    # DMX columns are deterministic timing parameters now, not stochastic
+    # noise amplitudes. Keep them out of the augmented noise basis.
+    n_dmx_cols = 0
     n_dmjump_cols = setup.dmjump_design_matrix.shape[1] if getattr(setup, 'dmjump_design_matrix', None) is not None else 0
     n_band_noise_cols_list = []
     n_band_noise_total = 0
@@ -1957,6 +1905,14 @@ def _run_general_fit_iterations(
             dm_delay_change = new_dm_delay - initial_dm_delay
             dt_sec_np = dt_sec_np - dm_delay_change
 
+        # If fitting DMX parameters, update dt_sec with new DMX delay.
+        # DMX uses the same fixed design matrix as PINT; only bin values move.
+        if dmx_params_list and setup.dmx_design_matrix is not None and initial_dmx_delay is not None:
+            current_dmx_values = np.array([float(params.get(label, 0.0)) for label in setup.dmx_labels])
+            new_dmx_delay = np.asarray(setup.dmx_design_matrix @ current_dmx_values, dtype=np.float64)
+            dmx_delay_change = new_dmx_delay - initial_dmx_delay
+            dt_sec_np = dt_sec_np - dmx_delay_change
+
         # If fitting binary parameters, update dt_sec with new binary delay
         # Use PINT-compatible pre-binary time (roemer_shapiro + DM + SW + tropo)
         if binary_params and initial_binary_delay is not None:
@@ -2040,15 +1996,22 @@ def _run_general_fit_iterations(
         # Batch spin parameters (spec-driven routing via component)
         spin_derivs = {}
         if spin_params_list:
-            # PINT spin derivatives are evaluated at barycentric TDB TOAs.
-            spin_derivs = compute_spin_derivatives(params, tdb_mjd, spin_params_list)
+            spin_derivs = compute_spin_derivatives(params, toas_mjd, spin_params_list)
 
         # Batch DM parameters (spec-driven routing via component)
         dm_derivs = {}
         if dm_params_list:
-            # DM polynomial terms are evaluated at barycentric TDB TOAs in the
-            # forward model; use the same time argument for derivative parity.
-            dm_derivs = compute_dm_derivatives(params, tdb_mjd, freq_mhz, dm_params_list)
+            dm_derivs = compute_dm_derivatives(params, toas_mjd, freq_mhz, dm_params_list)
+
+        # DMX bins are deterministic timing parameters with one design
+        # column per bin. The design matrix is fixed by TOA MJD/frequency.
+        dmx_derivs = {}
+        if dmx_params_list and setup.dmx_design_matrix is not None and setup.dmx_labels is not None:
+            dmx_index = {label: i for i, label in enumerate(setup.dmx_labels)}
+            for dp in dmx_params_list:
+                idx = dmx_index.get(dp)
+                if idx is not None:
+                    dmx_derivs[dp] = setup.dmx_design_matrix[:, idx]
 
         # Batch binary parameters (routed via binary_registry)
         # Use PINT-compatible pre-binary time (roemer_shapiro + DM + SW + tropo)
@@ -2059,8 +2022,6 @@ def _run_general_fit_iterations(
                     "Binary fitting requires prebinary_delay_sec in setup. "
                     "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
                 )
-            # PINT evaluates binary derivatives at the pre-binary barycentric
-            # arrival time, not raw topocentric/SAT MJD.
             toas_prebinary_mjd = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
             # Pass obs_pos_ls for DDK Kopeikin parallax corrections
             binary_derivs = compute_binary_derivatives(
@@ -2121,6 +2082,7 @@ def _run_general_fit_iterations(
         all_derivs = {}
         all_derivs.update(spin_derivs)
         all_derivs.update(dm_derivs)
+        all_derivs.update(dmx_derivs)
         all_derivs.update(binary_derivs)
         all_derivs.update(astrometry_derivs)
         all_derivs.update(fd_derivs)
@@ -2147,10 +2109,7 @@ def _run_general_fit_iterations(
         M = np.empty((len(toas_mjd), total_cols), dtype=np.float64)
         col = 0
         if has_offset:
-            # Match PINT's implicit Offset column. The design matrix is in
-            # seconds, while Offset is a phase offset in cycles, so
-            # d(residual_time)/dOffset = 1/F0.
-            M[:, 0] = 1.0 / float(params.get('F0', 1.0))
+            M[:, 0] = 1.0
             col = 1
         for i, mc in enumerate(M_columns):
             M[:, col + i] = np.asarray(mc, dtype=np.float64)
@@ -2303,14 +2262,6 @@ def _run_general_fit_iterations(
                 print(f"         GLS: NS-RMS {_wls_ns_rms:.4f} -> {_gls_ns_rms:.4f} us"
                       f" (NL-RMS {trial_nl_rms:.4f} us)")
 
-            if _gls_ns_rms > _wls_ns_rms * (1.0 + 1e-6):
-                for i, p in enumerate(fit_params):
-                    _update_param(params, p, param_values_curr[i])
-                converged = True
-                if verbose:
-                    print("         (GLS step rejected: noise-subtracted RMS worsened, converged)")
-                break
-
             # Accept GLS corrections: update params and save state
             param_values_curr = trial_param_values
             best_param_values = trial_param_values.copy()
@@ -2392,6 +2343,13 @@ def _run_general_fit_iterations(
                 dt_sec_cached = dt_sec_cached - (accepted_dm - initial_dm_delay)
                 initial_dm_delay = accepted_dm
                 setup.initial_dm_delay = accepted_dm
+
+            if dmx_params_list and setup.dmx_design_matrix is not None and initial_dmx_delay is not None:
+                accepted_dmx_values = np.array([float(params.get(label, 0.0)) for label in setup.dmx_labels])
+                accepted_dmx = np.asarray(setup.dmx_design_matrix @ accepted_dmx_values, dtype=np.float64)
+                dt_sec_cached = dt_sec_cached - (accepted_dmx - initial_dmx_delay)
+                initial_dmx_delay = accepted_dmx
+                setup.initial_dmx_delay = accepted_dmx
 
             if binary_params and initial_binary_delay is not None:
                 accepted_binary = np.array(compute_binary_delay(
@@ -2477,7 +2435,7 @@ def _run_general_fit_iterations(
         rms_history.append(current_rms_us)
 
         # Check convergence based on parameter changes becoming small
-        param_norm = np.linalg.norm(np.asarray(param_values_curr, dtype=np.float64))
+        param_norm = np.linalg.norm(param_values_curr)
         delta_norm = np.linalg.norm(delta_params)
         param_converged = delta_norm <= xtol * (param_norm + xtol)
         
@@ -2502,16 +2460,18 @@ def _run_general_fit_iterations(
             # Single-step forced convergence was wrong: one linearized GLS step
             # can make large binary param jumps (e.g. KOM ~4°) before the noise
             # model has converged, landing at a wrong local minimum.
-            # Do not let RMS-flat convergence stop GLS early: parameter/noise
-            # cross-talk can leave a small but deterministic F0 step.
-            converged = False
-            if iteration >= min_iterations and delta_norm <= convergence_threshold:
+            # Use loose relative tol since GLS noise fitting is inherently
+            # less precise than WLS timing (1e-6 relative is ~ns level).
+            gls_rel_tol = 1e-6
+            param_norm_safe = max(np.linalg.norm(param_values_curr), 1.0)
+            if iteration >= min_iterations and delta_norm <= gls_rel_tol * param_norm_safe:
                 converged = True
         elif _gls_phase and _dmx_only and iteration >= min_iterations:
             # DMX-only GLS: DMX is solved afresh each iter (no accumulation),
-            # so convergence = timing-param convergence.
-            converged = False
-            if delta_norm <= convergence_threshold:
+            # so convergence = timing-param convergence at ~1e-6 relative tol.
+            rel_tol = 1e-6
+            param_norm_safe = max(np.linalg.norm(param_values_curr), 1.0)
+            if delta_norm <= rel_tol * param_norm_safe:
                 converged = True
 
         if verbose:
@@ -2553,7 +2513,7 @@ def _run_general_fit_iterations(
         _tn_spin_fit = [p for p in ['F0', 'F1'] if p in fit_params]
         if n_red_noise_cols > 0 and _tn_spin_fit:
             _tn_spin_derivs = compute_spin_derivatives(
-                params, tdb_mjd, _tn_spin_fit)
+                params, toas_mjd, _tn_spin_fit)
             _tn_cols = [_tn_spin_derivs[p] for p in _tn_spin_fit]
             _tn_cols.append(np.ones(len(toas_mjd)))  # constant offset
             M_poly = np.column_stack(_tn_cols)
@@ -2579,7 +2539,7 @@ def _run_general_fit_iterations(
         _tn_dm_fit = [p for p in ['DM', 'DM1', 'DM2'] if p in fit_params]
         if n_dm_noise_cols > 0 and _tn_dm_fit:
             _tn_dm_derivs = compute_dm_derivatives(
-                params, tdb_mjd, freq_mhz, _tn_dm_fit)
+                params, toas_mjd, freq_mhz, _tn_dm_fit)
             _tn_dm_cols = [_tn_dm_derivs[p] for p in _tn_dm_fit]
             M_dm_poly = np.column_stack(_tn_dm_cols)
             w = 1.0 / errors_sec
@@ -2607,7 +2567,7 @@ def _run_general_fit_iterations(
         )
     
     # Compute final residuals.
-    # For augmented fits (DMX/noise basis columns), use LINEAR postfit residuals
+    # For augmented fits (noise basis columns), use LINEAR postfit residuals
     # (r_pre - M @ delta). The nonlinear recompute + separate DMX subtraction
     # introduces an offset mismatch because the solver jointly optimizes timing,
     # DMX, and an offset column, but the split approach doesn't correctly account
@@ -2619,14 +2579,14 @@ def _run_general_fit_iterations(
     if _saved_residuals_sec is not None:
         if n_augmented > 0:
             # GLS: Subtract only the timing model correction (timing params + offset
-            # + DMX + DMJUMP). All noise realizations (Red, DM, Chromatic, ECORR,
+            # + deterministic timing columns such as DMX/DMJUMP). Noise realizations (Red, DM, Chromatic, ECORR,
             # Band, Group) are left in the residuals for GUI subtract workflow.
             delta_model_only = _saved_delta_all.copy()
             noise_start = n_timing_cols
             noise_end = (n_timing_cols + n_red_noise_cols + n_dm_noise_cols
                          + n_chromatic_noise_cols + n_ecorr_cols)
             delta_model_only[noise_start:noise_end] = 0.0
-            # Band and group noise columns sit after DMX/DMJUMP
+            # Band and group noise columns sit after deterministic DMJUMP columns
             bg_start = noise_end + n_dmx_cols + n_dmjump_cols
             bg_end = bg_start + n_band_noise_total + n_group_noise_total
             delta_model_only[bg_start:bg_end] = 0.0
@@ -2664,8 +2624,34 @@ def _run_general_fit_iterations(
     # nonlinear residuals using the Woodbury identity (noise-only Wiener filter).
     # This is appropriate post-convergence because the timing model is fixed.
     noise_realizations = {}
-    noise_coefficients = {}
-    gls_debug = {}
+    final_dmx_params = {}
+    final_dmx_uncertainties = {}
+
+    # GUI/backward-compatibility: expose deterministic DMX as the same
+    # per-TOA realization keys the GUI already knows how to overlay/subtract.
+    # Internally DMX is now fitted through timing columns, not F_noise.
+    if setup.dmx_design_matrix is not None and setup.dmx_labels is not None:
+        initial_dmx_values = np.array([float(param_values_start[fit_params.index(label)])
+                                       for label in setup.dmx_labels if label in fit_params])
+        final_dmx_values = np.array([float(params.get(label, 0.0))
+                                     for label in setup.dmx_labels if label in fit_params])
+        dmx_fit_labels = [label for label in setup.dmx_labels if label in fit_params]
+        if dmx_fit_labels:
+            dmx_cols = [setup.dmx_labels.index(label) for label in dmx_fit_labels]
+            F_dmx = setup.dmx_design_matrix[:, dmx_cols]
+            dmx_delta = final_dmx_values - initial_dmx_values
+            noise_realizations['DMX'] = (F_dmx @ dmx_delta) * 1e6
+            dmx_fit_indices = [fit_params.index(label) for label in dmx_fit_labels]
+            if cov is not None and cov.shape[0] >= len(fit_params):
+                C_dmx = cov[np.ix_(dmx_fit_indices, dmx_fit_indices)]
+                noise_realizations['DMX_err'] = np.sqrt(
+                    np.maximum(np.sum((F_dmx @ C_dmx) * F_dmx, axis=1), 0.0)
+                ) * 1e6
+            for label in dmx_fit_labels:
+                final_dmx_params[label] = float(params.get(label, 0.0))
+                if label in uncertainties:
+                    final_dmx_uncertainties[label] = float(uncertainties[label])
+
     if n_augmented > 0:
         # Re-solve noise at the final nonlinear residuals
         nl_resid_sec, _, _, _ = _compute_full_model_residuals(params, setup)
@@ -2738,24 +2724,12 @@ def _run_general_fit_iterations(
                     optimal_noise_coeffs = np.zeros(n_augmented)
                     C_post = None
 
-            if _saved_residuals_sec is not None and _saved_M is not None:
-                gls_debug = {
-                    'saved_residuals_sec': np.asarray(_saved_residuals_sec).copy(),
-                    'saved_design_matrix': np.asarray(_saved_M).copy(),
-                    'saved_delta_all': np.asarray(_saved_delta_all).copy(),
-                    'n_timing_cols': n_timing_cols,
-                    'noise_labels': list(noise_labels),
-                    'noise_phiinv': np.asarray(_gls_phiinv_raw).copy(),
-                    'errors_sec': np.asarray(errors_sec).copy(),
-                }
-
             # Build noise realizations from re-solved coefficients
             offset = 0
             for label, nc in noise_labels:
                 coeffs = optimal_noise_coeffs[offset:offset + nc]
                 idx = [i for i, (l, _) in enumerate(noise_labels) if l == label][0]
                 F = noise_bases[idx]
-                noise_coefficients[label] = coeffs.copy()
                 noise_realizations[label] = (F @ coeffs) * 1e6
                 if C_post is not None:
                     C_block = C_post[offset:offset + nc, offset:offset + nc]
@@ -2763,6 +2737,18 @@ def _run_general_fit_iterations(
 
                 # DMX/DMJUMP: subtract from residuals (timing model, not noise)
                 if label == 'DMX':
+                    if setup.dmx_labels is not None:
+                        dmx_sigmas = None
+                        if C_post is not None:
+                            dmx_sigmas = np.sqrt(np.maximum(np.diag(C_block), 0.0))
+                        for i_dmx, (dmx_name, dmx_delta) in enumerate(zip(setup.dmx_labels, coeffs)):
+                            final_dmx_params[dmx_name] = (
+                                float(params.get(dmx_name, 0.0)) + float(dmx_delta)
+                            )
+                            if dmx_sigmas is not None:
+                                dmx_sigma = float(dmx_sigmas[i_dmx])
+                                final_dmx_uncertainties[dmx_name] = dmx_sigma
+                                uncertainties[dmx_name] = dmx_sigma
                     if _saved_residuals_sec is None:
                         residuals_final_sec = residuals_final_sec - F @ coeffs
                         residuals_final_us = residuals_final_sec * 1e6
@@ -2835,8 +2821,8 @@ def _run_general_fit_iterations(
         'covariance': cov,
         'final_chi2': final_chi2,
         'noise_realizations': noise_realizations,
-        'noise_coefficients': noise_coefficients,
-        'gls_debug': gls_debug,
+        'final_dmx_params': final_dmx_params,
+        'final_dmx_uncertainties': final_dmx_uncertainties,
         'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
     }
 

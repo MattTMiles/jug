@@ -108,8 +108,7 @@ def _has_chromatic_noise(params: dict) -> bool:
 
 
 def _has_dmx(params: dict) -> bool:
-    fit_flags = params.get("_fit_flags", {})
-    return any(k.startswith("DMX_") for k in fit_flags)
+    return any(k.startswith("DMXR1_") for k in params)
 
 
 def _has_band_noise(params: dict) -> bool:

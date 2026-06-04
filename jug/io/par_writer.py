@@ -70,7 +70,7 @@ _SKIP_KEYS = {
     '_high_precision', '_noise_lines', '_jump_lines', '_fdjump_lines',
     '_ecliptic_coords', '_ecliptic_frame',
     '_ecliptic_lon_deg', '_ecliptic_lat_deg',
-    '_ecliptic_pmlon', '_ecliptic_pmlat', '_par_timescale',
+    '_ecliptic_pm_lon', '_ecliptic_pm_lat', '_par_timescale',
     '_fit_flags',
     # Position keys handled by the dedicated position section
     'RAJ', 'DECJ', 'PMRA', 'PMDEC',
@@ -284,8 +284,8 @@ def _write_position(params, lines, hp, fit_params, uncertainties, written):
 
         elong = params.get('_ecliptic_lon_deg', params.get('ELONG', 0.0))
         elat = params.get('_ecliptic_lat_deg', params.get('ELAT', 0.0))
-        pmelong = params.get('_ecliptic_pmlon', params.get('PMELONG', 0.0))
-        pmelat = params.get('_ecliptic_pmlat', params.get('PMELAT', 0.0))
+        pmelong = params.get('_ecliptic_pm_lon', params.get('PMELONG', 0.0))
+        pmelat = params.get('_ecliptic_pm_lat', params.get('PMELAT', 0.0))
 
         # Map fitter names (RAJ/DECJ/PMRA/PMDEC) to ecliptic equivalents
         _fitter_map = {

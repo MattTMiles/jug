@@ -106,7 +106,11 @@ def compute_tropospheric_delay(elevation_deg, height_m, lat_deg, mjd, pressure_m
     lat_weight = (abs_lat - lat0) / (lat1 - lat0)
 
     season_offset = 0.5 if lat_deg < 0 else 0.0
-    year_fraction = jnp.mod(2000.0 + (mjd - 51544.5 + 28.0) / 365.25 + season_offset, 1.0)
+    # Niell (1996) references the annual term to ~DOY 28, i.e. cos(2*pi*(DOY-28)/yr).
+    # The MJD->phase offset must therefore be NEGATIVE (matches PINT's
+    # DOY_OFFSET = -28). A previous +28.0 here had the wrong sign, shifting the
+    # seasonal phase by 56 days (~0.003 ns tropo error).
+    year_fraction = jnp.mod(2000.0 + (mjd - 51544.5 - 28.0) / 365.25 + season_offset, 1.0)
     cos_t = jnp.cos(2.0 * jnp.pi * year_fraction)
 
     def herring_map(alt_rad, a, b, c):

@@ -300,7 +300,7 @@ def compute_pulsar_unit_vector(
     n_x, n_y, n_z : jnp.ndarray or float
         Components of unit vector pointing to pulsar
     """
-    if toas_mjd is not None and posepoch_mjd is not None and (pmra_rad_yr != 0 or pmdec_rad_yr != 0):
+    if toas_mjd is not None and posepoch_mjd is not None:
         # Apply proper motion correction
         dt_years = (toas_mjd - posepoch_mjd) / 365.25
         
@@ -572,7 +572,13 @@ def compute_astrometric_delay(
     else:
         psr_dec = jnp.float64(decj_value)
 
-    posepoch = jnp.float64(params.get('POSEPOCH', params.get('PEPOCH', float(jnp.mean(toas_mjd)))))
+    if 'POSEPOCH' in params:
+        posepoch_value = params['POSEPOCH']
+    elif 'PEPOCH' in params:
+        posepoch_value = params['PEPOCH']
+    else:
+        posepoch_value = jnp.mean(toas_mjd)
+    posepoch = jnp.asarray(posepoch_value, dtype=jnp.float64)
 
     # Get proper motion (convert from mas/yr to rad/yr if present)
     pmra_mas_yr = params.get('PMRA', 0.0)

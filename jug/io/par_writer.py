@@ -5,7 +5,7 @@ including noise parameters in log10 format where appropriate.
 
 All parameters stored in the JUG params dict are written back faithfully:
 spin derivatives (F0–F20), DM derivatives (DM–DM20), binary frequency
-derivatives (FB0–FB20), FD parameters, JUMPs, FDJUMPs, DMX ranges,
+derivatives (FB0..FBN), FD parameters, JUMPs, FDJUMPs, DMX ranges,
 white noise (EFAC/EQUAD/ECORR), and correlated noise (red, DM, chromatic,
 band, group).  Any unrecognised keys are written at the end so that no
 information is silently dropped.
@@ -29,7 +29,7 @@ _METADATA_ORDER = [
 ]
 
 # Binary parameters — fixed-name keys written in this order when present.
-# FB0–FB20 are handled dynamically after these.
+# FB0..FBN are handled dynamically after these.
 _BINARY_FIXED = [
     'BINARY', 'PB', 'A1', 'ECC', 'E', 'T0', 'OM', 'OMDOT', 'PBDOT',
     'GAMMA', 'M2', 'SINI', 'KIN', 'KOM',
@@ -330,7 +330,7 @@ def _write_position(params, lines, hp, fit_params, uncertainties, written):
 
 
 def _write_binary(params, lines, hp, fit_params, uncertainties, written):
-    """Write binary model parameters including FB0–FB20."""
+    """Write binary model parameters including arbitrary FB0..FBN."""
     binary_type = params.get('BINARY')
     if not binary_type:
         return
@@ -349,7 +349,7 @@ def _write_binary(params, lines, hp, fit_params, uncertainties, written):
                 lines.append(_fmt_line(key, _repr_num(val), fit, unc))
             written.add(key)
 
-    # FB0–FB20 (dynamic)
+    # FB0..FBN (dynamic)
     for key in _collect_numbered(params, 'FB'):
         if key not in written:
             _write_param(lines, key, params, hp, fit_params, uncertainties)

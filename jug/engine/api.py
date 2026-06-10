@@ -136,7 +136,8 @@ def fit_parameters(
     convergence_threshold: float = 1e-14,
     clock_dir: Optional[str] = None,
     device: Optional[str] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    fit_dmx: bool = True,
 ) -> Dict[str, Any]:
     """
     Fit timing model parameters (legacy one-shot API).
@@ -162,7 +163,11 @@ def fit_parameters(
         'cpu', 'gpu', or None (auto-detect)
     verbose : bool, default False
         Print fitting progress
-    
+    fit_dmx : bool, default True
+        If True (default), DMX_* bins in the PAR are auto-added as fitted
+        timing parameters. If False, fixed DMX delays from the PAR are still
+        applied but DMX_* are not fitted (use for global-DM recovery checks).
+
     Returns
     -------
     result : dict
@@ -194,5 +199,6 @@ def fit_parameters(
         convergence_threshold=convergence_threshold,
         clock_dir=clock_dir,
         device=device,
-        verbose=verbose
+        verbose=verbose,
+        fit_dmx=fit_dmx,
     )

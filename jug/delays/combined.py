@@ -12,10 +12,11 @@ import jax
 
 import jax.numpy as jnp
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY, T_SUN_SEC, PC_TO_LIGHT_SEC, AU_KM, AU_PC
-from jug.delays.binary_bt import bt_binary_delay
+from jug.delays.binary_bt import bt_binary_delay_from_tt0
 from jug.delays.binary_dd import (
     dd_binary_delay,
     ddk_binary_delay,
+    dd_binary_delay_from_tt0,
 )
 # Note: Kopeikin corrections (K96 proper motion, annual orbital parallax) are
 # implemented inline in branch_ddk() below, not as separate importable functions.
@@ -38,7 +39,10 @@ def combined_delays(
     # Tropospheric delay (for PINT-compatible pre-binary time)
     tropo_sec=None,
     # DMX delay (for PINT-compatible pre-binary time)
-    dmx_sec=None
+    dmx_sec=None,
+    # Precomputed (tdb - binary_epoch)*86400 in longdouble, then cast to float64.
+    # Avoids float64 cancellation when computing t - T0 inside JAX at MJD ~58000.
+    tt_binary_sec=None
 ):
     """Combined delay calculation - single JAX kernel for maximum performance.
 
@@ -97,33 +101,40 @@ def combined_delays(
         dmx_sec
     ) if dmx_sec is not None else jnp.zeros_like(tdbld)
 
+    # High-precision binary epoch offset (precomputed in longdouble outside JAX)
+    tt_binary_arr = jnp.where(
+        tt_binary_sec is None,
+        jnp.zeros_like(tdbld),
+        tt_binary_sec
+    ) if tt_binary_sec is not None else jnp.zeros_like(tdbld)
+
     # === Universal Binary Delay Dispatch ===
     def compute_binary_universal(args):
-        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val, dmx_val) = args
+        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val, dmx_val, tt_binary_val) = args
 
-        # Binary evaluation time: PINT-compatible "pre-binary" time
-        #
-        # PINT's delay component order is:
-        #   AstrometryEquatorial -> TroposphereDelay -> SolarSystemShapiro ->
-        #   SolarWindDispersion -> DispersionDM -> DispersionDMX -> BinaryDD -> FD
-        #
-        # So PINT evaluates BinaryDD at:
-        #   t_prebinary = tdbld - (all delays before BinaryDD) / 86400
-        #
-        # This includes: Roemer (astrometry), Troposphere, SS Shapiro, Solar Wind, DM, DMX
-        # but NOT FD (which comes after BinaryDD).
-        #
+        # Pre-binary delay sum: sum of all delays before BinaryDD in PINT's order.
         # roemer_shapiro_val includes: Roemer + SS Shapiro (Sun + planets)
         # We add: DM, DMX, Solar Wind, Troposphere
-        t_prebinary = tdbld_val - (roemer_shapiro_val + dm_val + dmx_val + sw_val + tropo_val) / SECS_PER_DAY
+        prebinary_sum = roemer_shapiro_val + dm_val + dmx_val + sw_val + tropo_val
+
+        # High-precision time for binary model:
+        #   tt_binary_val = (tdb - binary_epoch) * SECS_PER_DAY, precomputed in longdouble.
+        # Subtract the pre-binary delays to get the time at which the binary model is evaluated.
+        # This avoids float64 cancellation when computing (tdb_mjd - T0) inside JAX at MJD ~58000.
+        tt_binary_prebinary = tt_binary_val - prebinary_sum
+
+        # MJD-based prebinary time (still needed for DDK observer position geometry)
+        t_prebinary = tdbld_val - prebinary_sum / SECS_PER_DAY
 
         # Branch 0: None
-        def branch_none(t): return 0.0
+        def branch_none(tt0): return 0.0
 
         # Branch 1: ELL1 / ELL1H (Inline Optimized)
-        def branch_ell1(t):
-            dt_days = t - tasc
-            dt_sec_bin = dt_days * SECS_PER_DAY
+        # tt_binary_val was computed as (tdb - TASC)*86400, so tt_binary_prebinary
+        # is already (t_prebinary - TASC) in seconds.
+        def branch_ell1(tt0):
+            dt_sec_bin = tt0
+            dt_days = dt_sec_bin / SECS_PER_DAY
 
             # Phase calculation (FB or PB)
             def compute_phase_fb():
@@ -243,34 +254,37 @@ def combined_delays(
             return binary_roemer + einstein_binary + shapiro_binary
 
         # Branch 2: DD / DDK
-        def branch_dd(t):
-            return dd_binary_delay(
-                t, pb, a1, ecc, om, t0, gamma, pbdot, omdot, xdot, edot,
+        # tt0 = (t_prebinary - T0) * SECS_PER_DAY (precomputed in longdouble)
+        def branch_dd(tt0):
+            return dd_binary_delay_from_tt0(
+                tt0, pb, a1, ecc, om, gamma, pbdot, omdot, xdot, edot,
                 sini, m2, h3, h4, stig
             )
 
-        # Branch 3: T2
-        def branch_t2(t):
+        # Branch 3: T2. Evaluate in a relative-day coordinate so both the
+        # PB/T0 and FB/TASC parameterizations use the longdouble-derived
+        # binary epoch offset supplied by the caller.
+        def branch_t2(tt0):
+            t = tt0 / SECS_PER_DAY
             return t2_binary_delay(
-                t, pb, a1, ecc, om, t0, gamma, pbdot, xdot, edot, omdot,
+                t, pb, a1, ecc, om, 0.0, gamma, pbdot, xdot, edot, omdot,
                 m2, sini, kin, kom,
-                fb_coeffs, fb_factorials, fb_epoch, use_fb
+                fb_coeffs, fb_factorials, 0.0, use_fb
             )
 
         # Branch 4: BT
-        def branch_bt(t):
-            return bt_binary_delay(
-                t, pb, a1, ecc, om, t0, gamma, pbdot, m2, sini, omdot, xdot
+        def branch_bt(tt0):
+            return bt_binary_delay_from_tt0(
+                tt0, pb, a1, ecc, om, gamma, pbdot, omdot, xdot, edot
             )
 
         # Branch 5: DDK (DD with Kopeikin annual orbital parallax + K96 proper motion)
-        def branch_ddk(t):
+        def branch_ddk(tt0):
             # Apply Kopeikin corrections if we have the required parameters
             # obs_pos_ls_val is the per-TOA observer position in light-seconds
 
-            # Time since T0 in seconds (for K96 proper motion corrections)
-            dt_days = t - t0
-            tt0_sec = dt_days * SECS_PER_DAY
+            # Time since T0 in seconds (precomputed in longdouble for precision)
+            tt0_sec = tt0
 
             # Base values
             kin_rad = jnp.deg2rad(kin)
@@ -370,16 +384,18 @@ def combined_delays(
                 sini
             )
 
-            return dd_binary_delay(
-                t, pb, a1_eff, ecc, om_eff, t0, gamma, pbdot, omdot, xdot, edot,
+            return dd_binary_delay_from_tt0(
+                tt0, pb, a1_eff, ecc, om_eff, gamma, pbdot, omdot, xdot, edot,
                 sini_eff, m2, h3, h4, stig
             )
 
         # Switch logic (6 branches: 0=None, 1=ELL1, 2=DD, 3=T2, 4=BT, 5=DDK)
+        # All branches receive tt_binary_prebinary = (t_prebinary - binary_epoch) * 86400
+        # precomputed in longdouble, avoiding float64 cancellation at MJD ~58000.
         return jax.lax.switch(
             binary_model_id,
             [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt, branch_ddk],
-            t_prebinary
+            tt_binary_prebinary
         )
 
     # Prepare observer position - use zeros if not provided (for non-DDK models)
@@ -391,7 +407,7 @@ def combined_delays(
 
     binary_sec = jnp.where(
         has_binary,
-        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr, dmx_arr)),
+        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr, dmx_arr, tt_binary_arr)),
         0.0
     )
 
@@ -416,7 +432,9 @@ def compute_total_delay_jax(
     # Tropospheric delay (for PINT-compatible pre-binary time)
     tropo_sec=None,
     # DMX delay (for PINT-compatible pre-binary time)
-    dmx_sec=None
+    dmx_sec=None,
+    # Precomputed (tdb - binary_epoch)*86400 in longdouble then cast to float64.
+    tt_binary_sec=None
 ):
     """Compute total delay in a single JAX kernel.
 
@@ -453,8 +471,8 @@ def compute_total_delay_jax(
         obs_pos_ls, px, sin_ra, cos_ra, sin_dec, cos_dec,
         k96, pmra_rad_per_sec, pmdec_rad_per_sec,
         tropo_sec,
-        dmx_sec
+        dmx_sec,
+        tt_binary_sec
     )
 
     return roemer_shapiro + combined_sec
-

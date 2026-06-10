@@ -54,7 +54,7 @@ import math
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.io.par_reader import parse_par_file, validate_par_timescale, _parse_float
+from jug.io.par_reader import parse_par_file, validate_par_timescale, _parse_float, get_longdouble
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
@@ -355,7 +355,11 @@ def compute_dm_delay_fast(tdb_mjd: np.ndarray, freq_mhz: np.ndarray,
 
     # Compute DM polynomial: DM(t) = sum(DM_i * (t-DMEPOCH)^i / i!)
     # Note: PINT uses years, so convert MJD difference to years
-    dt_years = (tdb_mjd - dm_epoch) / 365.25
+    dt_years = np.asarray(
+        (np.asarray(tdb_mjd, dtype=np.longdouble) - np.longdouble(dm_epoch))
+        / np.longdouble(365.25),
+        dtype=np.float64,
+    )
 
     dm_eff = np.zeros_like(tdb_mjd)
     for i, (coeff, factorial) in enumerate(zip(dm_coeffs, dm_factorials)):
@@ -374,9 +378,42 @@ def _has_gpu():
     return _has_gpu._result
 
 
+def _gls_cov_from_factors(factors, compute_noise_cov=False):
+    """Materialize covariance from saved SVD factors.
+
+    Performs exactly the operations _solve_gls_augmented_svd used to do
+    inline (bitwise-identical results); split out so the per-iteration
+    solve can skip the O(n_total^2)+ covariance work and only the final
+    consumer pays for it once.
+
+    Returns (cov, cov_all) with the same layout as the solver outputs.
+    """
+    Vt = factors['Vt']
+    S_inv = factors['S_inv']
+    col_norm = factors['col_norm']
+    n_tcols = factors['n_tcols']
+    n_total = factors['n_total']
+    t0 = factors['t0']
+
+    cov_norm = (Vt.T * S_inv**2) @ Vt
+    inv_cn = 1.0 / col_norm
+    cov_full = cov_norm * np.outer(inv_cn, inv_cn)
+    cov_timing = cov_full[:n_tcols, :n_tcols]
+    cov = cov_timing[t0:, t0:]
+    cov_all = np.zeros((n_total, n_total))
+    cov_all[:n_tcols, :n_tcols] = cov_timing
+    if compute_noise_cov:
+        np.fill_diagonal(
+            cov_all[n_tcols:, n_tcols:],
+            np.diag(cov_full[n_tcols:, n_tcols:])
+        )
+    return cov, cov_all
+
+
 def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
                              phiinv_noise, has_offset, n_timing_params,
-                             precomputed=None, compute_noise_cov=False):
+                             precomputed=None, compute_noise_cov=False,
+                             M_full=None, defer_cov=False):
     """Solve GLS timing+noise fit using the augmented system with SVD.
 
     Builds the N^{-1}-whitened augmented system and solves via SVD:
@@ -410,7 +447,16 @@ def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
 
     Returns
     -------
-    delta_params, cov, delta_params_all, cov_all, noise_coeffs
+    delta_params, cov, delta_params_all, cov_all, noise_coeffs, factors
+
+    When ``defer_cov`` is True, cov and cov_all are returned as None and
+    ``factors`` carries the SVD products needed to materialize them later
+    via _gls_cov_from_factors (bitwise-identical). When False, cov/cov_all
+    are computed here exactly as before and factors is None.
+
+    ``M_full``: optional pre-assembled [M_timing, F_noise] array (e.g. the
+    iteration's design matrix); when provided the hstack copy is skipped.
+    Must contain exactly the same values.
     """
     n_toa, n_tcols = M_timing.shape
     n_noise = F_noise.shape[1]
@@ -427,7 +473,10 @@ def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
     # Timing columns span ~20 orders of magnitude in norm, which destroys
     # SVD precision without normalization. Normalizing reduces cond(A)
     # from ~1e18 to ~1e6.
-    M_aug = np.hstack([M_timing, F_noise])
+    if M_full is not None and M_full.shape == (n_toa, n_total):
+        M_aug = M_full
+    else:
+        M_aug = np.hstack([M_timing, F_noise])
     col_norm = np.sqrt(np.sum(M_aug**2, axis=0))
     col_norm[col_norm == 0] = 1.0
     M_aug_n = M_aug / col_norm  # normalized columns
@@ -459,28 +508,19 @@ def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
     delta_timing = delta_all[:n_tcols]
     noise_coeffs = delta_all[n_tcols:]
 
-    # Covariance from SVD: un-normalize by outer product of 1/col_norm
-    cov_norm = (Vt.T * S_inv**2) @ Vt
-    inv_cn = 1.0 / col_norm
-    cov_full = cov_norm * np.outer(inv_cn, inv_cn)
-
-    # Extract timing covariance
-    cov_timing = cov_full[:n_tcols, :n_tcols]
-
-    # Build output
     t0 = 1 if has_offset else 0
     delta_params = delta_timing[t0:]
-    cov = cov_timing[t0:, t0:]
 
-    cov_all = np.zeros((n_total, n_total))
-    cov_all[:n_tcols, :n_tcols] = cov_timing
-    if compute_noise_cov:
-        np.fill_diagonal(
-            cov_all[n_tcols:, n_tcols:],
-            np.diag(cov_full[n_tcols:, n_tcols:])
-        )
+    factors = {
+        'Vt': Vt, 'S_inv': S_inv, 'col_norm': col_norm,
+        'n_tcols': n_tcols, 'n_total': n_total, 't0': t0,
+    }
+    if defer_cov:
+        return delta_params, None, delta_all, None, noise_coeffs, factors
 
-    return delta_params, cov, delta_all, cov_all, noise_coeffs
+    # Covariance from SVD: un-normalize by outer product of 1/col_norm
+    cov, cov_all = _gls_cov_from_factors(factors, compute_noise_cov)
+    return delta_params, cov, delta_all, cov_all, noise_coeffs, factors
 
 
 def _compute_FtNiF_sparse(F_noise, Ni, blocks):
@@ -614,6 +654,7 @@ def fit_parameters_optimized(
     clock_dir: str | None = None,
     verbose: bool = True,
     device: Optional[str] = None,
+    fit_dmx: bool = True,
 ) -> Dict:
     """
     Fit timing model parameters to TOA data.
@@ -645,6 +686,12 @@ def fit_parameters_optimized(
     device : str, optional
         Device preference: 'cpu', 'gpu', or 'auto'.
         If None, uses global preference (default: 'cpu').
+    fit_dmx : bool, default True
+        If True (default), DMX_* bins found in the PAR are auto-added as
+        fitted timing parameters (PINT-like). If False, the fixed DMX delays
+        from the PAR are still applied to the residuals, but DMX_* bins are
+        NOT fitted. Use False for global-DM recovery checks where fitting DM
+        plus all DMX bins is degenerate.
 
     Returns
     -------
@@ -673,7 +720,7 @@ def fit_parameters_optimized(
 
     return _fit_parameters_general(
         par_file, tim_file, fit_params, max_iter, convergence_threshold,
-        clock_dir, verbose, device
+        clock_dir, verbose, device, fit_dmx=fit_dmx
     )
 
 
@@ -785,8 +832,12 @@ def _drop_degenerate_jumps(
         if mask is not None:
             M_aug[:, j + 1] = mask.astype(np.float64) * sqrt_w
 
-    # QR with column pivoting to detect rank deficiency
-    _Q, R, piv = _scipy_linalg.qr(M_aug, pivoting=True)
+    # QR with column pivoting to detect rank deficiency.
+    # mode='r' returns only (R, piv) -- we never use Q, and the default
+    # mode='full' computes an (n_toa x n_toa) Q (e.g. 23000x23000 = 4 GB for
+    # B1937) just to discard it. R and piv are bit-identical between modes,
+    # so this is a provably-equivalent ~1700x speedup on large TOA sets.
+    R, piv = _scipy_linalg.qr(M_aug, pivoting=True, mode='r')
 
     diag_R = np.abs(np.diag(R))
     max_diag = diag_R[0] if len(diag_R) > 0 else 1.0
@@ -833,6 +884,7 @@ def _build_setup_common(
     noise_config: object,
     verbose: bool = False,
     subtract_noise_sec: Optional[np.ndarray] = None,
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Shared setup builder for both file-based and cache-based paths.
 
@@ -1016,7 +1068,7 @@ def _build_setup_common(
                         print(f"  DMEFAC: Applied scaling to {n_scaled}/{len(toas_mjd)} TOAs "
                               f"({len(dmefac_entries)} backend groups)")
 
-    if dmx_labels:
+    if dmx_labels and fit_dmx:
         # DMX is deterministic timing-model structure, not stochastic noise.
         # It used to ride in the GLS noise basis because its design matrix is
         # basis-like, but keeping it in fit_params makes each nonlinear
@@ -1027,6 +1079,11 @@ def _build_setup_common(
             fit_params = list(fit_params) + added_dmx
             if verbose:
                 print(f"  Auto-added {len(added_dmx)} DMX timing parameters")
+    elif dmx_labels and not fit_dmx and verbose:
+        # fit_dmx=False: keep fixed DMX delays from the PAR (still applied via
+        # dmx_design_matrix @ par_values in residual recompute), but do NOT add
+        # DMX_* columns to the fit. Avoids global DM / DMX degeneracy.
+        print(f"  fit_dmx=False: holding {len(dmx_labels)} DMX bins fixed at PAR values")
 
     # --- DMJUMP design matrix ----------------------------------------------
     dmjump_design_matrix = None
@@ -1235,7 +1292,8 @@ def _build_setup_common(
     # --- DM delay cache ----------------------------------------------------
     initial_dm_delay = None
     if dm_params:
-        dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+        _dm_epoch_key = 'DMEPOCH' if 'DMEPOCH' in params else 'PEPOCH'
+        dm_epoch = get_longdouble(params, _dm_epoch_key, default=55000.0)
         initial_dm_params = {p: params[p] for p in dm_params if p in params}
         initial_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz_bary, initial_dm_params, dm_epoch)
 
@@ -1371,7 +1429,8 @@ def _build_general_fit_setup_from_files(
     fit_params: List[str],
     clock_dir: str,
     verbose: bool,
-    noise_config: Optional[object] = None
+    noise_config: Optional[object] = None,
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
@@ -1447,6 +1506,7 @@ def _build_general_fit_setup_from_files(
         },
         noise_config=noise_config,
         verbose=verbose,
+        fit_dmx=fit_dmx,
     )
 
 
@@ -1490,12 +1550,26 @@ def _compute_full_model_residuals(
     # Start with longdouble dt_sec (contains initial delays)
     dt_sec_np = dt_sec_base.copy()
 
+    # Per-family delay memo: within one fit only the fitted parameters
+    # change between calls (trial steps / accepted steps often repeat the
+    # exact same family values), so a delay vector keyed on the exact float
+    # values of its family's fitted parameters can be reused bit-for-bit.
+    memo = getattr(setup, '_delay_memo', None)
+    if memo is None:
+        memo = {}
+        setup._delay_memo = memo
+
     # Apply DM delay correction (float64 corrections promoted to longdouble)
     dm_params = setup.dm_params
     if dm_params:
-        dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+        _dm_epoch_key = 'DMEPOCH' if 'DMEPOCH' in params else 'PEPOCH'
+        dm_epoch = get_longdouble(params, _dm_epoch_key, default=55000.0)
         current_dm_params = {p: params[p] for p in dm_params}
-        new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
+        _key = ('dm', tuple(sorted(current_dm_params.items())))
+        new_dm_delay = memo.get(_key)
+        if new_dm_delay is None:
+            new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
+            memo[_key] = new_dm_delay
         dm_delay_change = new_dm_delay - setup.initial_dm_delay
         dt_sec_np = dt_sec_np - dm_delay_change
 
@@ -1509,9 +1583,13 @@ def _compute_full_model_residuals(
     # Apply binary delay correction (route to correct binary model)
     binary_params = setup.binary_params
     if binary_params and setup.initial_binary_delay is not None:
-        toas_prebinary = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
-        new_binary_delay = np.array(compute_binary_delay(
-            toas_prebinary, params, obs_pos_ls=setup.ssb_obs_pos_ls))
+        _key = ('binary', tuple((p, float(params.get(p, 0.0))) for p in binary_params))
+        new_binary_delay = memo.get(_key)
+        if new_binary_delay is None:
+            toas_prebinary = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
+            new_binary_delay = np.array(compute_binary_delay(
+                toas_prebinary, params, obs_pos_ls=setup.ssb_obs_pos_ls))
+            memo[_key] = new_binary_delay
         binary_delay_change = new_binary_delay - setup.initial_binary_delay
         dt_sec_np = dt_sec_np - binary_delay_change
 
@@ -1519,11 +1597,15 @@ def _compute_full_model_residuals(
     astrometry_params = setup.astrometry_params
     if astrometry_params and setup.initial_astrometric_delay is not None:
         from jug.fitting.derivatives_astrometry import compute_astrometric_delay
-        new_astrometric_delay = np.array(compute_astrometric_delay(
-            params, tdb_mjd, setup.ssb_obs_pos_ls,
-            obs_sun_pos_ls=setup.obs_sun_pos_ls,
-            obs_planet_pos_ls=setup.obs_planet_pos_ls
-        ))
+        _key = ('astrometry', tuple((p, float(params.get(p, 0.0))) for p in astrometry_params))
+        new_astrometric_delay = memo.get(_key)
+        if new_astrometric_delay is None:
+            new_astrometric_delay = np.array(compute_astrometric_delay(
+                params, tdb_mjd, setup.ssb_obs_pos_ls,
+                obs_sun_pos_ls=setup.obs_sun_pos_ls,
+                obs_planet_pos_ls=setup.obs_planet_pos_ls
+            ))
+            memo[_key] = new_astrometric_delay
         astrometric_delay_change = new_astrometric_delay - setup.initial_astrometric_delay
         dt_sec_np = dt_sec_np - astrometric_delay_change
 
@@ -1532,7 +1614,11 @@ def _compute_full_model_residuals(
     if fd_params and setup.initial_fd_delay is not None:
         from jug.fitting.derivatives_fd import compute_fd_delay
         current_fd_params = {p: params[p] for p in fd_params if p in params}
-        new_fd_delay = np.asarray(compute_fd_delay(freq_mhz, current_fd_params), dtype=np.float64)
+        _key = ('fd', tuple(sorted(current_fd_params.items())))
+        new_fd_delay = memo.get(_key)
+        if new_fd_delay is None:
+            new_fd_delay = np.asarray(compute_fd_delay(freq_mhz, current_fd_params), dtype=np.float64)
+            memo[_key] = new_fd_delay
         fd_delay_change = new_fd_delay - setup.initial_fd_delay
         dt_sec_np = dt_sec_np - fd_delay_change
 
@@ -1561,7 +1647,6 @@ def _compute_full_model_residuals(
     if setup.jump_masks:
         jump_params_list = [p for p in (setup.fit_param_list or []) if is_jump_param(p)]
         if jump_params_list:
-            from jug.io.par_reader import get_longdouble
             base = setup.jump_phase if setup.jump_phase is not None else np.zeros(len(tdb_mjd), dtype=np.longdouble)
             current_jump_phase = np.array(base, dtype=np.longdouble).copy()
             F0_ld = get_longdouble(params, 'F0')
@@ -1694,11 +1779,13 @@ def _run_general_fit_iterations(
     from jug.fitting.derivatives_fd import compute_fd_delay, compute_fd_derivatives
     from jug.fitting.derivatives_sw import compute_sw_derivatives
     from jug.residuals.simple_calculator import compute_phase_residuals
-    from jug.io.par_reader import get_longdouble
 
-    # Convergence criteria
+    # Convergence criteria. ``iteration`` is zero-based, so 1 means at least
+    # two completed nonlinear solves before convergence is allowed. The old
+    # value 5 made convergence impossible when callers used max_iter=5 and
+    # forced every fit to consume the full iteration budget.
     xtol = 1e-12
-    min_iterations = 5
+    min_iterations = 1
     
     # Save the exact prefit residual vector from the cached emission times
     # before any fitter update touches params.  In particular, _update_param()
@@ -1724,6 +1811,10 @@ def _run_general_fit_iterations(
     _saved_M = None
     _saved_delta_all = None
     _saved_lambda = 1.0
+    _saved_M_labels = None
+    _saved_M_n_timing = 0
+    _last_gls_factors = None
+    cov = None
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
@@ -1899,7 +1990,8 @@ def _run_general_fit_iterations(
 
         # If fitting DM parameters, update dt_sec with new DM delay
         if dm_params:
-            dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+            _dm_epoch_key = 'DMEPOCH' if 'DMEPOCH' in params else 'PEPOCH'
+            dm_epoch = get_longdouble(params, _dm_epoch_key, default=55000.0)
             current_dm_params = {p: params[p] for p in dm_params}
             new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
             dm_delay_change = new_dm_delay - initial_dm_delay
@@ -2152,12 +2244,16 @@ def _run_general_fit_iterations(
             M_t = M_solve[:, :n_timing_cols]
             F_n = M_solve[:, n_timing_cols:]
             is_final = _gls_phase or (iteration == max_iter - 1)
-            delta_params, cov, delta_params_all, cov_all, _iter_noise_coeffs = \
+            # Covariance deferred: only the post-loop consumers need it, and
+            # only from the last solve — materialized once from the factors.
+            delta_params, cov, delta_params_all, cov_all, _iter_noise_coeffs, \
+                _last_gls_factors = \
                 _solve_gls_augmented_svd(M_t, F_n, r_solve, sigma_solve,
                                          _gls_phiinv_raw, has_offset,
                                          n_timing_params,
                                          precomputed=_woodbury_precomputed,
-                                         compute_noise_cov=is_final)
+                                         compute_noise_cov=is_final,
+                                         M_full=M_solve, defer_cov=True)
         elif solver_mode == "fast":
             # WLS FAST solver: QR-based lstsq with proper conditioning
             r1 = r_solve / sigma_solve
@@ -2272,6 +2368,8 @@ def _run_general_fit_iterations(
 
             _saved_residuals_sec = residuals.copy()
             _saved_M = M.copy()
+            _saved_M_labels = (['OFFSET'] if has_offset else []) + list(fit_params)
+            _saved_M_n_timing = n_timing_cols
             # Build full delta_all matching M's column layout (timing + noise)
             _saved_delta_all = np.zeros(M.shape[1])
             _saved_delta_all[:n_timing_cols] = delta_params_all[:n_timing_cols]
@@ -2313,6 +2411,8 @@ def _run_general_fit_iterations(
 
                     _saved_residuals_sec = residuals.copy()
                     _saved_M = M.copy()
+                    _saved_M_labels = (['OFFSET'] if has_offset else []) + list(fit_params)
+                    _saved_M_n_timing = n_timing_cols
                     _saved_delta_all = (lambda_ * _wls_delta_all).copy()
                     _saved_lambda = lambda_
                     break
@@ -2337,7 +2437,8 @@ def _run_general_fit_iterations(
         # next iteration computes only SMALL delay changes.
         if step_accepted:
             if dm_params:
-                dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
+                _dm_epoch_key = 'DMEPOCH' if 'DMEPOCH' in params else 'PEPOCH'
+                dm_epoch = get_longdouble(params, _dm_epoch_key, default=55000.0)
                 accepted_dm = compute_dm_delay_fast(tdb_mjd, freq_mhz,
                     {p: params[p] for p in dm_params}, dm_epoch)
                 dt_sec_cached = dt_sec_cached - (accepted_dm - initial_dm_delay)
@@ -2615,6 +2716,13 @@ def _run_general_fit_iterations(
     for i, param in enumerate(fit_params):
         _update_param(params, param, param_values_curr[i])
     
+    # Materialize deferred GLS covariance (bitwise-identical to the inline
+    # computation the solver used to do every iteration; see
+    # _gls_cov_from_factors). cov is non-None here only if a WLS-path solve
+    # was the last to run and already produced it.
+    if cov is None and _last_gls_factors is not None:
+        cov, cov_all = _gls_cov_from_factors(_last_gls_factors, compute_noise_cov=True)
+
     # Compute uncertainties
     uncertainties = {param: np.sqrt(cov[i, i]) for i, param in enumerate(fit_params)}
 
@@ -2824,6 +2932,20 @@ def _run_general_fit_iterations(
         'final_dmx_params': final_dmx_params,
         'final_dmx_uncertainties': final_dmx_uncertainties,
         'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
+        # Timing design matrix from the last accepted iteration (n_toa x
+        # n_cols), columns in design_matrix_labels order ('OFFSET' first
+        # when the augmented/GLS solver was used; DMX_*/JUMP columns
+        # included when fitted). Matches PINT model.designmatrix()
+        # (= enterprise Mmat) in sign and units for all parameter columns
+        # (verified on J1022+1001: 75/75 shared columns, <=2e-4 relative;
+        # residual difference is evaluation point, not convention), with
+        # two PINT differences: the OFFSET column is 1.0 here vs 1/F0 in
+        # PINT, and XDOT is PINT's A1DOT. Evaluated at the parameter
+        # values of the last accepted step (== fitted values once
+        # converged). Unweighted, unwhitened, unnormalized.
+        'design_matrix': (_saved_M[:, :_saved_M_n_timing].copy()
+                          if _saved_M is not None else None),
+        'design_matrix_labels': _saved_M_labels,
     }
 
 
@@ -2835,7 +2957,8 @@ def _build_general_fit_setup_from_cache(
     fit_params: List[str],
     toa_mask: Optional[np.ndarray] = None,
     noise_config: Optional[object] = None,
-    subtract_noise_sec: Optional[np.ndarray] = None
+    subtract_noise_sec: Optional[np.ndarray] = None,
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -2926,6 +3049,7 @@ def _build_general_fit_setup_from_cache(
         noise_config=noise_config,
         verbose=False,
         subtract_noise_sec=subtract_noise_sec,
+        fit_dmx=fit_dmx,
     )
 
 
@@ -2984,7 +3108,8 @@ def _fit_parameters_general(
     convergence_threshold: float,
     clock_dir: str,
     verbose: bool,
-    device: Optional[str]
+    device: Optional[str],
+    fit_dmx: bool = True,
 ) -> Dict:
     """General parameter fitter -- handles any parameter combination.
 
@@ -2998,7 +3123,7 @@ def _fit_parameters_general(
     # STEP 1: Build setup from files (expensive)
     cache_start = time.time()
     setup = _build_general_fit_setup_from_files(
-        par_file, tim_file, fit_params, clock_dir, verbose
+        par_file, tim_file, fit_params, clock_dir, verbose, fit_dmx=fit_dmx
     )
     cache_time = time.time() - cache_start
     

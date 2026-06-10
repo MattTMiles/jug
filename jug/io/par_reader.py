@@ -24,6 +24,20 @@ import numpy as np
 from jug.utils.constants import HIGH_PRECISION_PARAMS
 
 
+_INDEXED_HIGH_PRECISION_EPOCH = re.compile(
+    r'^(?:GLEP|EXPEP|GAUSEP|DMXR1|DMXR2|DMXEP|T0|TASC)_\d+$'
+)
+_FIXED_HIGH_PRECISION_EPOCHS = {'START', 'FINISH', 'PBEPOCH'}
+
+
+def _is_high_precision_param(key: str) -> bool:
+    return (
+        key in HIGH_PRECISION_PARAMS
+        or key in _FIXED_HIGH_PRECISION_EPOCHS
+        or _INDEXED_HIGH_PRECISION_EPOCH.fullmatch(key) is not None
+    )
+
+
 # Obliquity of the ecliptic in arcseconds, matching PINT/Tempo2 conventions.
 # Source: IERS Technical Notes and IAU resolutions.
 OBLIQUITY_ARCSEC = {
@@ -144,7 +158,7 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                 value_str = parts[1]
 
                 # Store high-precision parameters as strings
-                if key in HIGH_PRECISION_PARAMS:
+                if _is_high_precision_param(key):
                     params_str[key] = value_str
                     try:
                         params[key] = _parse_float(value_str)

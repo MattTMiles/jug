@@ -23,12 +23,28 @@ import warnings
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from typing import Dict, List
 
+from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY, SECS_PER_YEAR, T_SUN, DEG_TO_RAD, PC_TO_LIGHT_SEC
 
 # Enable float64 for precision
 jax.config.update("jax_enable_x64", True)
+
+
+def _compute_tt0_sec(toas_bary_mjd: np.ndarray, t0: float) -> np.ndarray:
+    """Return (toas_bary_mjd - t0) in seconds using longdouble to avoid float64 cancellation.
+
+    Direct float64 subtraction at MJD ~58000 loses ~4 decimal digits (~600 ns in tt0,
+    ~67 ps Roemer error).  Computing in longdouble before returning float64 eliminates
+    this; if the caller provides longdouble prebin_mjd the result is sub-ns accurate.
+    """
+    t0_ld = np.longdouble(t0)
+    return np.asarray(
+        (np.asarray(toas_bary_mjd, dtype=np.longdouble) - t0_ld) * np.longdouble(SECS_PER_DAY),
+        dtype=np.float64,
+    )
 
 
 def _resolve_pb_days(params: Dict) -> float:
@@ -101,8 +117,11 @@ def compute_true_anomaly(E: jnp.ndarray, ecc: float) -> jnp.ndarray:
     theta : jnp.ndarray
         True anomaly in radians
     """
-    beta = jnp.sqrt((1 + ecc) / (1 - ecc))
-    theta = 2 * jnp.arctan2(beta * jnp.sin(E / 2), jnp.cos(E / 2))
+    half_E = E / 2.0
+    theta = 2.0 * jnp.arctan2(
+        jnp.sqrt(1.0 + ecc) * jnp.sin(half_E),
+        jnp.sqrt(1.0 - ecc) * jnp.cos(half_E),
+    )
     return theta
 
 
@@ -272,7 +291,7 @@ def _extract_dd_params(params: Dict):
     """
     a1 = float(params.get('A1', 0.0))
     pb = _resolve_pb_days(params)
-    t0 = float(params.get('T0', 0.0))
+    t0 = get_longdouble(params, 'T0', default=0.0)
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
@@ -330,7 +349,10 @@ def _extract_dd_params(params: Dict):
             if 'PBDOT' not in params and 'FB1' in params:
                 fb1 = float(params['FB1'])
                 pbdot = -fb1 / fb0 ** 2  # dimensionless dPB/dt
-            if any(f'FB{i}' in params for i in range(2, 20)):
+            if any(
+                key.startswith('FB') and key[2:].isdigit() and int(key[2:]) >= 2
+                for key in params
+            ):
                 warnings.warn(
                     "DD binary with FB2+ terms: the DD core only supports PB/PBDOT, "
                     "so FB2+ orbital-frequency evolution is ignored. Use ELL1/T2 for "
@@ -352,7 +374,6 @@ def _compute_kopeikin_corrections(
     Returns (delta_a1, delta_om_deg, sini_eff) where delta_a1 and
     delta_om_deg are per-TOA arrays, and sini_eff is sin(KIN_eff).
     """
-    import numpy as np
     n_toas = len(toas_bary_mjd)
 
     kin_deg = float(params.get('KIN', 0.0))
@@ -385,8 +406,7 @@ def _compute_kopeikin_corrections(
     use_k96 = k96_flag and (pmra_mas_yr != 0 or pmdec_mas_yr != 0)
     has_parallax = px_mas > 0.0 and abs(kin_deg) > 0.0
 
-    dt_days = toas_bary_mjd - t0
-    tt0_sec = dt_days * SECS_PER_DAY
+    tt0_sec = _compute_tt0_sec(np.asarray(toas_bary_mjd), t0)
 
     sin_kom = jnp.sin(kom_rad)
     cos_kom = jnp.cos(kom_rad)
@@ -504,10 +524,11 @@ def compute_dd_binary_delay(
         Total binary delay in seconds
     """
     p = _extract_dd_params(params)
+    tt0_sec = _compute_tt0_sec(np.asarray(toas_bary_mjd), p['t0'])
 
     return _compute_dd_binary_delay_jit(
-        jnp.asarray(toas_bary_mjd),
-        p['a1'], p['pb'], p['t0'], p['ecc'], p['om_deg'], p['omdot'],
+        jnp.asarray(tt0_sec),
+        p['a1'], p['pb'], p['ecc'], p['om_deg'], p['omdot'],
         p['pbdot'], p['gamma'], p['sini'], p['m2'], p['xdot'], p['edot']
     )
 
@@ -540,7 +561,8 @@ def compute_ddk_binary_delay(
         Total binary delay in seconds
     """
     p = _extract_dd_params(params)
-    toas_bary_mjd = jnp.asarray(toas_bary_mjd)
+    toas_bary_mjd_np = np.asarray(toas_bary_mjd)
+    tt0_sec = _compute_tt0_sec(np.asarray(toas_bary_mjd), p['t0'])
 
     delta_a1, delta_om_deg, sini_eff = _compute_kopeikin_corrections(
         params, toas_bary_mjd, p['a1'], p['t0'], obs_pos_ls
@@ -551,30 +573,36 @@ def compute_ddk_binary_delay(
     om_eff_deg = p['om_deg'] + delta_om_deg
 
     return _compute_dd_binary_delay_jit(
-        toas_bary_mjd,
-        a1_eff, p['pb'], p['t0'], p['ecc'], om_eff_deg, p['omdot'],
+        jnp.asarray(tt0_sec),
+        a1_eff, p['pb'], p['ecc'], om_eff_deg, p['omdot'],
         p['pbdot'], p['gamma'], sini_eff, p['m2'], p['xdot'], p['edot']
     )
 
 
 @jax.jit
 def _compute_dd_binary_delay_jit(
-    toas_bary_mjd: jnp.ndarray,
-    a1: float, pb: float, t0: float, ecc: float, om_deg: float, omdot_deg_yr: float,
+    tt0_sec: jnp.ndarray,
+    a1: float, pb: float, ecc: float, om_deg: float, omdot_deg_yr: float,
     pbdot: float, gamma: float, sini: float, m2: float,
     xdot: float, edot: float
 ) -> jnp.ndarray:
-    """JIT-compiled DD binary delay computation."""
-    # Time since T0
-    dt = toas_bary_mjd - t0  # days
-    dt_sec = dt * SECS_PER_DAY
+    """JIT-compiled DD binary delay computation.
+
+    tt0_sec is (toas_bary_mjd - T0) in seconds, precomputed via _compute_tt0_sec
+    to avoid float64 catastrophic cancellation at MJD ~58000.
+    """
+    pb_sec = pb * SECS_PER_DAY
 
     # Apply secular changes to a1 and eccentricity
-    a1_current = a1 + xdot * dt_sec
-    ecc_current = ecc + edot * dt_sec
+    a1_current = a1 + xdot * tt0_sec
+    ecc_current = ecc + edot * tt0_sec
 
-    # Mean anomaly
-    M = compute_mean_anomaly_dd(toas_bary_mjd, pb, t0, pbdot)
+    # Mean anomaly: divide by pb_sec (single division, matching binary_dd.py kernel)
+    # then reduce to [0, 2π) so ULP(M) ~ ULP(frac_orbits*2π) ≪ ULP(orbits*2π).
+    orbits = tt0_sec / pb_sec - 0.5 * pbdot * (tt0_sec / pb_sec) ** 2
+    norbits = jnp.floor(orbits)
+    frac_orbits = orbits - norbits
+    M = 2.0 * jnp.pi * frac_orbits
 
     # Solve Kepler's equation for eccentric anomaly
     E = solve_kepler(M, ecc_current)
@@ -584,8 +612,6 @@ def _compute_dd_binary_delay_jit(
 
     # Periastron advance: D&D 1986 eq [25]: omega = omega_0 + k*Ae
     # k = OMDOT / n (dimensionless); Ae = accumulated true anomaly
-    orbits = dt / pb - 0.5 * pbdot * (dt / pb) ** 2
-    norbits = jnp.floor(orbits)
     Ae = 2.0 * jnp.pi * norbits + theta  # accumulated true anomaly
     k_omdot = omdot_deg_yr * pb / (360.0 * 365.25)
     om_rad = jnp.deg2rad(om_deg) + k_omdot * Ae
@@ -608,8 +634,7 @@ def _compute_dd_binary_delay_jit(
     Dre = roemer + einstein
     Drep = -alpha * sinE + (beta + gamma) * cosE
     Drepp = -alpha * cosE - (beta + gamma) * sinE
-    pb_sec = pb * SECS_PER_DAY
-    pb_prime_sec = pb_sec + pbdot * dt_sec
+    pb_prime_sec = pb_sec + pbdot * tt0_sec
     nhat = (2.0 * jnp.pi / pb_prime_sec) / (1.0 - ecc_current * cosE)
     correction_factor = (
         1.0
@@ -657,12 +682,21 @@ def compute_binary_derivatives_dd(
     derivatives : Dict[str, jnp.ndarray]
         Dictionary mapping parameter names to derivative arrays
     """
-    toas_bary_mjd = jnp.asarray(toas_bary_mjd)
+    toas_bary_mjd_np = np.asarray(toas_bary_mjd)
     
     # Extract base parameters
     a1 = float(params.get('A1', 0.0))
     pb = _resolve_pb_days(params)
-    t0 = float(params.get('T0', float(jnp.mean(toas_bary_mjd))))
+    t0_ld = get_longdouble(
+        params, 'T0', default=float(np.mean(toas_bary_mjd_np, dtype=np.float64))
+    )
+    # All DD derivative formulas depend on time only through (TOA - T0).
+    # Shift to a relative-day coordinate before entering JAX: this preserves
+    # the longdouble subtraction without exposing float128 scalars to JAX.
+    toas_bary_mjd = jnp.asarray(
+        _compute_tt0_sec(toas_bary_mjd_np, t0_ld) / SECS_PER_DAY
+    )
+    t0 = 0.0
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
@@ -681,12 +715,12 @@ def compute_binary_derivatives_dd(
     # Apply XDOT/EDOT secular evolution to get effective per-TOA a1 and ecc
     xdot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
     edot = float(params.get('EDOT', 0.0))
-    dt_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
+    dt_sec = _compute_tt0_sec(np.asarray(toas_bary_mjd), t0)
     a1_eff = a1 + xdot * dt_sec
     ecc_eff = ecc + edot * dt_sec
 
     # Apply periastron advance for omega
-    dt_yr = (toas_bary_mjd - t0) / 365.25
+    dt_yr = dt_sec / SECS_PER_YEAR
     om_rad = (om_deg + omdot * dt_yr) * DEG_TO_RAD
     
     derivatives = {}
@@ -1344,13 +1378,19 @@ def compute_binary_derivatives_ddk(
     derivatives : Dict[str, jnp.ndarray]
         Dictionary mapping parameter names to derivative arrays
     """
-    toas_bary_mjd = jnp.asarray(toas_bary_mjd)
-    n_toas = len(toas_bary_mjd)
+    toas_bary_mjd_np = np.asarray(toas_bary_mjd)
+    n_toas = len(toas_bary_mjd_np)
     
     # Extract base DD parameters
     a1 = float(params.get('A1', 0.0))
     pb = _resolve_pb_days(params)
-    t0 = float(params.get('T0', float(jnp.mean(toas_bary_mjd))))
+    t0_ld = get_longdouble(
+        params, 'T0', default=float(np.mean(toas_bary_mjd_np, dtype=np.float64))
+    )
+    toas_bary_mjd = jnp.asarray(
+        _compute_tt0_sec(toas_bary_mjd_np, t0_ld) / SECS_PER_DAY
+    )
+    t0 = 0.0
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
@@ -1360,7 +1400,7 @@ def compute_binary_derivatives_ddk(
     
     # Apply EDOT secular evolution to get effective per-TOA ecc
     edot = float(params.get('EDOT', 0.0))
-    dt_sec_from_t0 = (toas_bary_mjd - t0) * SECS_PER_DAY
+    dt_sec_from_t0 = _compute_tt0_sec(np.asarray(toas_bary_mjd), t0)
     ecc_eff = ecc + edot * dt_sec_from_t0
     
     # DDK-specific parameters
@@ -1406,8 +1446,7 @@ def compute_binary_derivatives_ddk(
     d_ls = 1000.0 * PC_TO_LIGHT_SEC / px_safe
     
     # Time since T0
-    dt_days = toas_bary_mjd - t0
-    tt0_sec = dt_days * SECS_PER_DAY
+    tt0_sec = _compute_tt0_sec(np.asarray(toas_bary_mjd), t0)
     
     # Observer position for Kopeikin projections.
     # For ecliptic pulsars, rotate ICRS obs_pos to ecliptic frame.
@@ -1830,6 +1869,3 @@ def _d_delay_d_H4(
     dSINI_dH4 = 2.0 * h3 * (h3**2 - h4**2) / h3h4_denom**2
 
     return d_M2 * dM2_dH4 + d_SINI * dSINI_dH4
-
-
-

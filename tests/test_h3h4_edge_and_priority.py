@@ -162,15 +162,12 @@ class TestValidateFitParam:
         with pytest.raises(ValueError, match="not yet implemented"):
             validate_fit_param('FD25')
 
-    def test_fb_in_range_valid(self):
+    def test_fb_family_valid(self):
         from jug.model.parameter_spec import validate_fit_param
         assert validate_fit_param('FB0') is True
         assert validate_fit_param('FB20') is True
-
-    def test_fb_out_of_range_raises(self):
-        from jug.model.parameter_spec import validate_fit_param
-        with pytest.raises(ValueError, match="not yet implemented"):
-            validate_fit_param('FB21')
+        assert validate_fit_param('FB21') is True
+        assert validate_fit_param('FB40') is True
 
     def test_jump_valid(self):
         from jug.model.parameter_spec import validate_fit_param

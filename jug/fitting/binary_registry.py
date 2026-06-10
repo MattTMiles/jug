@@ -232,12 +232,15 @@ def _register_builtin_models():
         compute_binary_derivatives_ddk
     )
 
-    # BT (Blandford-Teukolsky) - uses DD-style parameterization
-    # Register separately in case it needs different handling later
+    # BT (Blandford-Teukolsky) has a distinct delay equation from DD.
+    from jug.delays.binary_bt import (
+        compute_bt_binary_delay,
+        compute_binary_derivatives_bt,
+    )
     register_binary_model(
         ['BT', 'BTX'],
-        compute_dd_binary_delay,
-        compute_binary_derivatives_dd
+        compute_bt_binary_delay,
+        compute_binary_derivatives_bt
     )
 
     # ELL1 (low-eccentricity model)

@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 from typing import Dict
 
+from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY
 
 
@@ -174,10 +175,12 @@ def compute_spin_derivatives(
     (3,)
     """
     # Get PEPOCH
-    pepoch_mjd = params.get('PEPOCH', toas_mjd[0])
-    
-    # Compute dt in seconds
-    dt_sec = (toas_mjd - pepoch_mjd) * SECS_PER_DAY  # MJD to seconds
+    pepoch_mjd = get_longdouble(params, 'PEPOCH', default=float(toas_mjd[0]))
+
+    # Compute dt in seconds using longdouble to avoid float64 cancellation at MJD ~58000
+    toas_ld = np.asarray(toas_mjd, dtype=np.longdouble)
+    pepoch_ld = np.longdouble(pepoch_mjd)
+    dt_sec = np.asarray((toas_ld - pepoch_ld) * np.longdouble(SECS_PER_DAY), dtype=np.float64)
     
     # Get all F terms for API compatibility (not used in derivative)
     f_terms = []
@@ -200,6 +203,5 @@ def compute_spin_derivatives(
             derivatives[param] = -deriv_phase / f0  # seconds/Hz (NEGATIVE)
     
     return derivatives
-
 
 

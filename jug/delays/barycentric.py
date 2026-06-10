@@ -48,7 +48,8 @@ def compute_ssb_obs_pos_vel(
     obs_itrf_km: np.ndarray,
     timings: Optional[Dict[str, float]] = None,
     use_cache: bool = True,
-    ephemeris: str = "de440"
+    ephemeris: str = "de440",
+    utc_mjd_ld: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute observatory position and velocity relative to Solar System Barycenter.
 
@@ -67,6 +68,11 @@ def compute_ssb_obs_pos_vel(
               'gcrs_transform_plus', 'velocity_derivation'
     use_cache : bool, default True
         Whether to use disk cache for repeated datasets.
+    utc_mjd_ld : np.ndarray, optional
+        Raw topocentric UTC times in MJD (longdouble). If provided, used for
+        the ITRF→GCRS rotation instead of TDB times, matching PINT's
+        gcrs_posvel_from_itrf convention and reducing Römer-delay parity
+        differences by ~10×.
 
     Returns
     -------
@@ -104,8 +110,8 @@ def compute_ssb_obs_pos_vel(
     tdb_mjd_cache = np.asarray(tdb_mjd_ld, dtype=np.float64)
     obs_itrf_km = np.asarray(obs_itrf_km, dtype=np.float64)
     
-    # Try disk cache first
-    cache_ephem = ephemeris + "_v3"
+    # v5: reverted to TDB-for-GCRS (matches PINT; UTC was using pre-correction time).
+    cache_ephem = ephemeris + "_v5"
     if use_cache:
         from jug.utils.geom_cache import get_geometry_cache
         cache = get_geometry_cache()
@@ -149,10 +155,12 @@ def compute_ssb_obs_pos_vel(
         obs_itrf_km[2] * u.km
     )
 
-    # Get observatory position and velocity in GCRS using astropy's analytical method.
-    # This matches PINT's gcrs_posvel_from_itrf / get_gcrs_posvel approach and avoids
-    # the ~10 mm/s systematic error that the 1-second finite-difference introduced.
-    gcrs_pv = obs_itrf.get_gcrs_posvel(obstime=times)
+    # GCRS rotation uses clock-corrected TDB, matching PINT's gcrs_posvel_from_itrf.
+    # Raw (pre-correction) UTC is physically wrong by the clock correction (~μs–ms),
+    # causing ~0.1–1 μm/s radial velocity error → ~ppb f_bary offset vs PINT.
+    # utc_mjd_ld is accepted for backward compatibility but ignored.
+    gcrs_times = times
+    gcrs_pv = obs_itrf.get_gcrs_posvel(obstime=gcrs_times)
     geo_obs_pos = np.column_stack([
         gcrs_pv[0].x.to(u.km).value,
         gcrs_pv[0].y.to(u.km).value,
@@ -334,7 +342,11 @@ def compute_pulsar_direction(
     >>> L_hat = compute_pulsar_direction(ra, dec, pmra, pmdec, posepoch, times)
     >>> print(f"Direction vectors: {L_hat.shape}")  # (2, 3)
     """
-    dt = np.atleast_1d(np.asarray(t_mjd, dtype=np.float64)) - posepoch
+    dt = np.asarray(
+        np.asarray(t_mjd, dtype=np.longdouble) - np.longdouble(posepoch),
+        dtype=np.float64,
+    )
+    dt = np.atleast_1d(dt)
     cos_dec0 = np.cos(dec_rad)
     sin_dec0 = np.sin(dec_rad)
     cos_ra0 = np.cos(ra_rad)

@@ -636,11 +636,9 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
 
     **Convention handling:**
 
-    - ``TNDMAMP`` / ``TNDMAmp``, ``DMAMP``, and ``DM_log10_A`` are all
-      treated as ``log10_A`` in the enterprise/PINT convention (i.e. the
-      value from the par file is used directly with no offset applied).
-      The par file value is ``log10(A)`` where the PSD is
-      ``A² / (12π² f³) × (f/fyr)^{-γ} × (1400 MHz / freq)^2``.
+    - ``TNDMAMP`` / ``TNDMAmp`` use the Tempo2/TempoNest convention and
+      are converted to the enterprise/PINT convention with ``TNDM_OFFSET``.
+    - ``DMAMP`` and ``DM_log10_A`` are already in the enterprise convention.
     """
     keys = DMNoiseProcess._par_keys
     amp_key = _find_key(params, keys["log10_A"])
@@ -648,6 +646,8 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
 
     if amp_key and gam_key:
         log10_A = float(params[amp_key])
+        if amp_key.upper() == "TNDMAMP":
+            log10_A -= TNDM_OFFSET
         nharm_key = _find_key(params, keys["n_harmonics"])
         return DMNoiseProcess(
             log10_A=log10_A,

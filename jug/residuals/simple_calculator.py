@@ -7,6 +7,7 @@ session, API, and fitter modules.
 """
 
 import math
+import os
 from pathlib import Path
 from typing import Optional
 import numpy as np
@@ -398,6 +399,162 @@ def _resolve_ephemeris(name: str) -> str:
         return _DEFAULT_EPHEMERIS
 
 
+def _track_pulse_numbers_loop(phase, sort_idx):
+    """Reference Tempo2 TRACK -2 pulse-number tracking (sequential loop).
+
+    Kept as the exact-semantics fallback for _track_pulse_numbers when the
+    vectorized path's rounding-margin guard fails.
+    """
+    pulse_number = np.zeros(len(phase), dtype=np.longdouble)
+    # First TOA: use nearest integer
+    pulse_number[sort_idx[0]] = np.round(phase[sort_idx[0]])
+    for k in range(1, len(sort_idx)):
+        i = sort_idx[k]
+        i_prev = sort_idx[k - 1]
+        # Predict pulse number from previous TOA's residual
+        predicted_n = phase[i] - (phase[i_prev] - pulse_number[i_prev])
+        pulse_number[i] = np.round(predicted_n)
+    return pulse_number
+
+
+def _track_pulse_numbers(phase, sort_idx):
+    """Phase-connected pulse-number tracking (Tempo2 TRACK -2), vectorized.
+
+    The loop recurrence is  pn[k] = round(phase[k] - (phase[k-1] - pn[k-1]))
+    in time-sorted order.  Since pn[k-1] is an exact integer, the rounding
+    argument equals  pn[k-1] + d[k]  with  d[k] = phase[k] - phase[k-1], so
+    pn[k] = pn[k-1] + round(d[k])  whenever d[k] is not within FP error of a
+    half-integer (where the loop's larger |phase|-magnitude rounding error,
+    ~ulp(phase) ≈ 1e-8 turns, and round-half-even tie parity could differ).
+    d[k] from adjacent longdouble phases is accurate to ≲1e-11 turns, so a
+    1e-6-turn margin guard is conservative: if every d[k] (and the first
+    phase) is at least 1e-6 turns away from a half-integer, the vectorized
+    result is identical to the loop; otherwise fall back to the loop.
+    """
+    n = len(phase)
+    if n < 3:
+        return _track_pulse_numbers_loop(phase, sort_idx)
+
+    phase_sorted = phase[sort_idx]
+    d = np.diff(phase_sorted)
+    inc = np.round(d)
+    first = phase_sorted[0]
+    first_pn = np.round(first)
+
+    # Guard: distance of every rounding argument from the nearest
+    # half-integer tie. |x - round(x)| <= 0.5 always; a value near 0.5
+    # means a tie was nearly hit and loop/vector paths could disagree.
+    tie_dist = 0.5 - max(np.max(np.abs(d - inc)), abs(float(first - first_pn)))
+    # cumsum of integers in longdouble is exact while |pn| < 2^62
+    pn_sorted = first_pn + np.concatenate(
+        (np.zeros(1, dtype=np.longdouble), np.cumsum(inc))
+    )
+    if tie_dist < 1e-6 or np.max(np.abs(pn_sorted)) >= np.longdouble(2.0) ** 62:
+        return _track_pulse_numbers_loop(phase, sort_idx)
+
+    pulse_number = np.empty(n, dtype=np.longdouble)
+    pulse_number[sort_idx] = pn_sorted
+    return pulse_number
+
+
+def _compute_apparent_elevation_deg_astropy(ra_rad, dec_rad, mjd_obs, obs_loc):
+    """Apparent source elevation (deg) at each UTC MJD for one observatory.
+
+    Apparent elevation via the true-equator/true-equinox-of-date frame
+    (TETE): precess + nutate the J2000 (ICRS) source to the observation
+    epoch so the hour angle is consistent with the of-date apparent
+    sidereal time.  Using J2000 ICRS RA/Dec with of-date apparent LST
+    would omit precession -> up to ~500 arcsec elevation error (~16 yr of
+    precession) -> ~0.25 ns troposphere error at low elevation.  TETE
+    excludes annual aberration, matching Tempo2's geometric convention;
+    aberration is negligible here (<0.3 arcsec / <0.003 ns vs astropy
+    AltAz down to ~7 deg elevation).
+
+    Reference implementation via astropy frames; the production path is
+    _compute_apparent_elevation_deg_erfa, which reproduces this
+    bit-for-bit (asserted in tests) without the frame-machinery overhead.
+    """
+    from astropy.coordinates import TETE
+    source_coord = SkyCoord(ra=ra_rad * u.rad, dec=dec_rad * u.rad, frame='icrs')
+    obs_times = Time(mjd_obs, format='mjd', scale='utc')
+    source_apparent = source_coord.transform_to(TETE(obstime=obs_times))
+    last = obs_times.sidereal_time('apparent', longitude=obs_loc.lon)
+    ha_rad = (last - source_apparent.ra).rad
+    sin_el = (np.sin(obs_loc.lat.rad) * np.sin(source_apparent.dec.rad) +
+              np.cos(obs_loc.lat.rad) * np.cos(source_apparent.dec.rad) * np.cos(ha_rad))
+    return np.degrees(np.arcsin(np.clip(sin_el, -1.0, 1.0)))
+
+
+def _compute_apparent_elevation_deg_erfa(ra_rad, dec_rad, mjd_obs, obs_loc):
+    """Bit-identical replication of the astropy ICRS->TETE elevation path
+    using direct ERFA calls.
+
+    Replays exactly the ERFA operations astropy 7.x performs for a
+    unit-vector ICRS source transformed to TETE with the default
+    (geocentric) location — icrs_to_gcrs (erfa.apcs astrometry context +
+    the atciqz light-deflection/aberration sequence) followed by
+    gcrs_to_tete (erfa.pnm06a rotation) — while skipping the astropy frame
+    machinery (per-element frame-equivalence comparisons) that dominates
+    the runtime. Any divergence from the astropy path is a bug; tests
+    assert np.array_equal against _compute_apparent_elevation_deg_astropy.
+    """
+    import erfa
+    from astropy.coordinates.builtin_frames.utils import (
+        get_jd12, pav2pv, prepare_earth_position_vel,
+    )
+
+    obs_times = Time(mjd_obs, format='mjd', scale='utc')
+    jd1_tt, jd2_tt = get_jd12(obs_times, 'tt')
+
+    # ICRS -> GCRS for a geocentric observer (TETE default location):
+    # astropy erfa_astrom.apcs with obsgeoloc = obsgeovel = 0.
+    zeros = np.zeros(np.shape(jd1_tt) + (3,))
+    obs_pv = pav2pv(zeros, zeros)
+    earth_pv, earth_heliocentric = prepare_earth_position_vel(obs_times)
+    astrom = erfa.apcs(jd1_tt, jd2_tt, obs_pv, earth_pv, earth_heliocentric)
+
+    # astropy's atciqz for a unit-vector (no-distance) source: q = pco.
+    pco = erfa.s2c(ra_rad, dec_rad)
+    pnat = erfa.ld(1.0, pco, pco, astrom['eh'], astrom['em'], 1e-6)
+    ppr = erfa.ab(pnat, astrom['v'], astrom['em'], astrom['bm1'])
+    pi_vec = erfa.rxp(astrom['bpn'], ppr)  # bpn is identity for apcs
+    ri, di = erfa.c2s(pi_vec)
+    gcrs_ra = erfa.anp(ri)
+    gcrs_dec = di
+
+    # GCRS -> TETE: classical NPB matrix, IAU 2006/2000A.
+    rbpn = erfa.pnm06a(jd1_tt, jd2_tt)
+    tete_vec = erfa.rxp(rbpn, erfa.s2c(gcrs_ra, gcrs_dec))
+    t_lon, t_lat = erfa.c2s(tete_vec)
+    # Realize a TETE frame and read .ra/.dec through it: the frame maps
+    # ra/dec to DEGREES, so SkyCoord.ra.rad does a rad->deg->rad roundtrip
+    # (2 ULP). Going through the frame reproduces those exact conversions.
+    from astropy.coordinates import TETE, UnitSphericalRepresentation
+    rep = UnitSphericalRepresentation(
+        lon=u.Quantity(t_lon, u.radian, copy=False),
+        lat=u.Quantity(t_lat, u.radian, copy=False),
+        copy=False,
+    )
+    app = TETE(obstime=obs_times).realize_frame(rep)
+
+    last = obs_times.sidereal_time('apparent', longitude=obs_loc.lon)
+    ha_rad = (last - app.ra).rad
+    sin_el = (np.sin(obs_loc.lat.rad) * np.sin(app.dec.rad) +
+              np.cos(obs_loc.lat.rad) * np.cos(app.dec.rad) * np.cos(ha_rad))
+    return np.degrees(np.arcsin(np.clip(sin_el, -1.0, 1.0)))
+
+
+def _compute_apparent_elevation_deg(ra_rad, dec_rad, mjd_obs, obs_loc):
+    """Apparent elevation (deg); direct-ERFA fast path by default.
+
+    Set JUG_TROPO_ASTROPY=1 to force the astropy frame-based reference
+    implementation (bit-identical, ~2x slower).
+    """
+    if os.environ.get('JUG_TROPO_ASTROPY', '').strip() == '1':
+        return _compute_apparent_elevation_deg_astropy(ra_rad, dec_rad, mjd_obs, obs_loc)
+    return _compute_apparent_elevation_deg_erfa(ra_rad, dec_rad, mjd_obs, obs_loc)
+
+
 def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
                             tzr_phase=None, tdb_sec_ld=None, jump_phase=None,
                             external_pulse_numbers=None):
@@ -514,15 +671,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         pulse_number = base_pn + np.asarray(external_pulse_numbers, dtype=np.longdouble)
     else:
         sort_idx = np.argsort(dt)
-        pulse_number = np.zeros(len(phase), dtype=np.longdouble)
-        # First TOA: use nearest integer
-        pulse_number[sort_idx[0]] = np.round(phase[sort_idx[0]])
-        for k in range(1, len(sort_idx)):
-            i = sort_idx[k]
-            i_prev = sort_idx[k - 1]
-            # Predict pulse number from previous TOA's residual
-            predicted_n = phase[i] - (phase[i_prev] - pulse_number[i_prev])
-            pulse_number[i] = np.round(predicted_n)
+        pulse_number = _track_pulse_numbers(phase, sort_idx)
     frac_phase = phase - pulse_number
 
     # Convert to float64 seconds
@@ -645,7 +794,10 @@ def _extract_binary_params(params, verbose):
 
     # FB mode
     has_fb0 = 'FB0' in params
-    has_higher_fb = any(f'FB{i}' in params for i in range(1, 13))
+    has_higher_fb = any(
+        key.startswith('FB') and key[2:].isdigit() and int(key[2:]) > 0
+        for key in params
+    )
     use_fb = has_fb0 or (has_higher_fb and 'PB' in params)
     if use_fb:
         if not has_fb0 and 'PB' in params:
@@ -784,7 +936,7 @@ def _prepare_ddk_kopeikin(params, model_id, is_ecliptic, ssb_obs_pos_km,
 
 def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
                        dm_jax, bp, ddk, roemer_shapiro_jax,
-                       tropo_jax, dmx_jax):
+                       tropo_jax, dmx_jax, tt_binary_jax=None):
     """Call the JAX combined delay kernel with all parameters.
 
     Parameters
@@ -793,6 +945,9 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         ne_sw_jax, fd_coeffs_jax, has_fd_jax.
     bp : dict from _extract_binary_params.
     ddk : dict from _prepare_ddk_kopeikin.
+    tt_binary_jax : jnp.ndarray or None
+        Precomputed (tdb - binary_epoch)*86400 in float64 (computed in longdouble
+        externally to avoid float64 cancellation at MJD ~58000).
     """
     return compute_total_delay_jax(
         tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
@@ -809,7 +964,7 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         ddk['obs_pos_ls_jax'], ddk['px_jax'],
         ddk['sin_ra_jax'], ddk['cos_ra_jax'], ddk['sin_dec_jax'], ddk['cos_dec_jax'],
         ddk['k96_jax'], ddk['pmra_rad_per_sec_jax'], ddk['pmdec_rad_per_sec_jax'],
-        tropo_jax, dmx_jax,
+        tropo_jax, dmx_jax, tt_binary_jax,
     ).block_until_ready()
 
 
@@ -997,6 +1152,16 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     tzr_ddk = dict(ddk)
     tzr_ddk['obs_pos_ls_jax'] = jnp.array(tzr_obs_pos_for_ddk / SPEED_OF_LIGHT_KM_S, dtype=jnp.float64)
 
+    # High-precision TZR binary epoch offset (same logic as main kernel)
+    _tzr_binary_epoch_key = 'T0' if 'T0' in params else ('TASC' if 'TASC' in params else None)
+    _tzr_has_binary = bp['has_binary_jax']
+    if _tzr_binary_epoch_key is not None and bool(_tzr_has_binary):
+        _tzr_epoch_ld = get_longdouble(params, _tzr_binary_epoch_key)
+        _tzr_tt_binary = float((np.longdouble(TZRMJD_TDB) - _tzr_epoch_ld) * np.longdouble(86400.0))
+        tzr_tt_binary_jax = jnp.array([_tzr_tt_binary], dtype=jnp.float64)
+    else:
+        tzr_tt_binary_jax = None
+
     # Call delay kernel at TZR
     tzr_total_delay_jax = _call_delay_kernel(
         jnp.array([float(TZRMJD_TDB)]), jnp.array([tzr_freq_bary]),
@@ -1004,6 +1169,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         dm_jax, bp, tzr_ddk, jnp.array([tzr_roemer_shapiro]),
         jnp.array([tzr_tropo_delay], dtype=jnp.float64),
         jnp.array([tzr_dmx_delay], dtype=jnp.float64),
+        tzr_tt_binary_jax,
     )
 
     tzr_delay = np.longdouble(float(tzr_total_delay_jax[0]))
@@ -1023,8 +1189,11 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
             else:
                 break
         dm_coeffs = dm_coeffs or [0.0]
-        dm_epoch = float(params.get('DMEPOCH', params['PEPOCH']))
-        dt_years = (float(TZRMJD_TDB) - dm_epoch) / 365.25
+        _dm_epoch_key = 'DMEPOCH' if 'DMEPOCH' in params else 'PEPOCH'
+        dm_epoch = get_longdouble(params, _dm_epoch_key)
+        dt_years = float(
+            (np.longdouble(TZRMJD_TDB) - dm_epoch) / np.longdouble(365.25)
+        )
         dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
         tzr_dm_delay = K_DM_SEC * dm_eff / (tzr_freq_bary ** 2)
 
@@ -1091,6 +1260,7 @@ def compute_residuals_simple(
     verbose: bool = True,
     tzrmjd_scale: str = "AUTO",
     geometry_cache: Optional[dict] = None,
+    toas: Optional[list] = None,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -1136,6 +1306,11 @@ def compute_residuals_simple(
         arrays are reused directly.  The caller is responsible for keeping
         the cache consistent with the TOA set (i.e. clear it if TOAs change).
         Pass ``None`` (default) to disable caching entirely.
+    toas : list of TOA or None, optional
+        Pre-parsed TOAs (from ``parse_tim_file_mjds``). When provided,
+        ``tim_file`` is not re-parsed. Must correspond to ``tim_file``;
+        the caller is responsible for consistency (same contract as
+        ``geometry_cache``). TOAs are treated as read-only.
 
     Returns
     -------
@@ -1177,7 +1352,8 @@ def compute_residuals_simple(
     par_timescale = validate_par_timescale(params, context="compute_residuals_simple", verbose=verbose)
     if verbose: print(f"   Par file timescale: {par_timescale}")
     
-    toas = parse_tim_file_mjds(tim_file)
+    if toas is None:
+        toas = parse_tim_file_mjds(tim_file)
     if verbose: print(f"   Loaded {len(toas)} TOAs from {Path(tim_file).name}")
     if verbose: print(f"   Loaded timing model from {Path(par_file).name}")
 
@@ -1241,6 +1417,11 @@ def compute_residuals_simple(
     mjd_ints = [toa.mjd_int for toa in toas]
     mjd_fracs = [toa.mjd_frac for toa in toas]
     mjd_strings = [toa.mjd_str for toa in toas]
+    # Raw topocentric UTC (pre-clock-correction), used for GCRS rotation to
+    # match PINT's gcrs_posvel_from_itrf convention.
+    utc_raw_ld = np.array(
+        [np.longdouble(i) + np.longdouble(f) for i, f in zip(mjd_ints, mjd_fracs)]
+    )
 
     # Extract -to flags (TIME statement offsets, in seconds)
     time_offsets = np.array([float(toa.flags.get('to', 0.0)) for toa in toas])
@@ -1249,7 +1430,42 @@ def compute_residuals_simple(
         print(f"   Applying -to time offsets to {n_to} TOAs")
 
     if not _geo_hit:
-        if not is_multi_obs:
+        # Disk-cache the TDB chain result, keyed on every input that
+        # determines it: exact TOA times (including the original MJD strings,
+        # which carry sub-float64 precision into Time construction), -to
+        # offsets, per-TOA observatory assignment, observatory positions,
+        # the merged clock-chain arrays, and the BIPM correction arrays.
+        # astropy/ERFA versions are validated by the cache itself, so a hit
+        # returns bit-for-bit the previously computed longdouble TDB.
+        from jug.utils.geom_cache import get_geometry_cache
+        _tdb_disk = get_geometry_cache()
+        _obs_i = {c: i for i, c in enumerate(all_obs_codes)}
+        _tdb_keys = {
+            'mjd_ints': np.asarray(mjd_ints, dtype=np.float64),
+            'mjd_fracs': np.asarray(mjd_fracs, dtype=np.float64),
+            'mjd_str_bytes': np.frombuffer(
+                '\n'.join(str(s) for s in mjd_strings).encode(), dtype=np.uint8
+            ),
+            'time_offsets': np.asarray(time_offsets, dtype=np.float64),
+            'obs_idx': np.array(
+                [_obs_i.get(t.observatory.lower(), -1) for t in toas], dtype=np.float64
+            ),
+            'obs_pos_km': np.concatenate([
+                np.asarray(OBSERVATORIES.get(c, obs_itrf_km), dtype=np.float64)
+                for c in all_obs_codes
+            ]),
+            'bipm_mjd': np.asarray(bipm_clock['mjd'], dtype=np.float64),
+            'bipm_off': np.asarray(bipm_clock['offset'], dtype=np.float64),
+        }
+        for _ci, _cc in enumerate(all_obs_codes):
+            _clk = obs_clocks.get(_cc, obs_clock)
+            _tdb_keys[f'clk{_ci}_mjd'] = np.asarray(_clk['mjd'], dtype=np.float64)
+            _tdb_keys[f'clk{_ci}_off'] = np.asarray(_clk['offset'], dtype=np.float64)
+        _tdb_hit = _tdb_disk.load_named('tdb_v1', _tdb_keys, ['tdb_mjd'])
+        if _tdb_hit is not None:
+            tdb_mjd = np.asarray(_tdb_hit['tdb_mjd'], dtype=np.longdouble)
+            if verbose: print(f"   [TDB disk cache hit]")
+        elif not is_multi_obs:
             tdb_mjd = compute_tdb_standalone_vectorized(
                 mjd_ints, mjd_fracs,
                 obs_clock, bipm_clock,
@@ -1275,6 +1491,8 @@ def compute_residuals_simple(
                     mjd_strings=[mjd_strings[i] for i in idxs],
                 )
             if verbose: print(f"   Computed TDB per observatory: {all_obs_codes}")
+        if _tdb_hit is None:
+            _tdb_disk.save_named('tdb_v1', _tdb_keys, {'tdb_mjd': np.asarray(tdb_mjd)})
     if verbose: print(f"   Computed TDB for {len(tdb_mjd)} TOAs")
 
     # Astrometry
@@ -1284,7 +1502,8 @@ def compute_residuals_simple(
     dec_rad = float(params.get('_decj_rad', parse_dec(params['DECJ'])))
     pmra_rad_day = params.get('PMRA', 0.0) * (np.pi / 180 / 3600000) / 365.25
     pmdec_rad_day = params.get('PMDEC', 0.0) * (np.pi / 180 / 3600000) / 365.25
-    posepoch = params.get('POSEPOCH', params['PEPOCH'])
+    _posepoch_key = 'POSEPOCH' if 'POSEPOCH' in params else 'PEPOCH'
+    posepoch = get_longdouble(params, _posepoch_key)
     parallax_mas = params.get('PX', 0.0)
 
     if not _geo_hit:
@@ -1413,6 +1632,18 @@ def compute_residuals_simple(
     model_id = bp['model_id']
     has_binary = bp['has_binary']
 
+    # High-precision (tdb - binary_epoch)*86400 for binary delay computation.
+    # Precomputed in longdouble to avoid float64 catastrophic cancellation when
+    # computing (tdb_mjd - T0) inside JAX at MJD ~58000, which would cause
+    # ~600 ns timing errors → ~67 ps binary Roemer delay errors.
+    binary_epoch_key = 'T0' if 'T0' in params else ('TASC' if 'TASC' in params else None)
+    if binary_epoch_key is not None and has_binary:
+        binary_epoch_ld = get_longdouble(params, binary_epoch_key)
+        tt_binary_sec_ld = (np.asarray(tdb_mjd, dtype=np.longdouble) - binary_epoch_ld) * np.longdouble(86400.0)
+        tt_binary_jax = jnp.array(np.asarray(tt_binary_sec_ld, dtype=np.float64), dtype=jnp.float64)
+    else:
+        tt_binary_jax = None
+
     # DDK Kopeikin parameters
     is_ecliptic = bool(params.get('_ecliptic_coords', False))
     ddk = _prepare_ddk_kopeikin(params, model_id, is_ecliptic, ssb_obs_pos_km,
@@ -1431,12 +1662,20 @@ def compute_residuals_simple(
     if correct_troposphere:
         if verbose: print(f"   Calculating tropospheric delay (Davis ZHD + Niell MF)...")
         from jug.delays.troposphere import compute_tropospheric_delay
-        
-        # Source coordinate (J2000)
-        source_coord = SkyCoord(ra=ra_rad*u.rad, dec=dec_rad*u.rad, frame='icrs')
-        
+
         mjd_utc_arr = np.array([t.mjd_int + t.mjd_frac for t in toas])
-        
+
+        # Apparent elevation depends only on (source RA/DEC, observatory,
+        # TOA UTC times) — cache it at two levels keyed on exact input bits:
+        #  1. session geometry_cache (repeat evaluations, param overrides)
+        #  2. disk cache (fresh sessions on the same dataset)
+        # A hit returns the stored array bit-for-bit, so the troposphere
+        # delay is unchanged; RA/DEC updates (e.g. postfit) change the key
+        # and force recomputation.
+        _elev_session_cache = None
+        if geometry_cache is not None:
+            _elev_session_cache = geometry_cache.setdefault('tropo_elev_deg', {})
+
         # Multi-observatory: compute tropospheric delay per observatory using correct location
         for obs_code in all_obs_codes:
             idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
@@ -1446,26 +1685,33 @@ def compute_residuals_simple(
             )
             loc_height_m = obs_loc.height.to(u.m).value
             loc_lat_deg = obs_loc.lat.deg
-            
+
             mjd_obs = mjd_utc_arr[idxs]
-            obs_times = Time(mjd_obs, format='mjd', scale='utc')
-            # Apparent elevation via the true-equator/true-equinox-of-date frame
-            # (TETE): precess + nutate the J2000 (ICRS) source to the observation
-            # epoch so the hour angle is consistent with the of-date apparent
-            # sidereal time.  The previous code used the J2000 ICRS RA/Dec with
-            # of-date apparent LST, which omitted precession -> up to ~500 arcsec
-            # elevation error (~16 yr of precession) -> ~0.25 ns troposphere error
-            # at low elevation.  TETE excludes annual aberration, matching
-            # Tempo2's geometric convention; aberration is negligible here
-            # (<0.3 arcsec / <0.003 ns vs astropy AltAz down to ~7 deg elevation).
-            from astropy.coordinates import TETE
-            source_apparent = source_coord.transform_to(TETE(obstime=obs_times))
-            last = obs_times.sidereal_time('apparent', longitude=obs_loc.lon)
-            ha_rad = (last - source_apparent.ra).rad
-            sin_el = (np.sin(obs_loc.lat.rad) * np.sin(source_apparent.dec.rad) +
-                      np.cos(obs_loc.lat.rad) * np.cos(source_apparent.dec.rad) * np.cos(ha_rad))
-            elevation_deg = np.degrees(np.arcsin(np.clip(sin_el, -1.0, 1.0)))
-            
+
+            _skey = (obs_code, float(ra_rad), float(dec_rad))
+            elevation_deg = None
+            if _elev_session_cache is not None:
+                elevation_deg = _elev_session_cache.get(_skey)
+            if elevation_deg is None:
+                from jug.utils.geom_cache import get_geometry_cache
+                _disk = get_geometry_cache()
+                _key_arrays = {
+                    'mjd_utc': mjd_obs,
+                    'obs_itrf_km': np.asarray(obs_loc_km, dtype=np.float64),
+                    'src_radec_rad': np.array([ra_rad, dec_rad], dtype=np.float64),
+                }
+                _hit = _disk.load_named('tropo_elev_v1', _key_arrays, ['elevation_deg'])
+                if _hit is not None:
+                    elevation_deg = _hit['elevation_deg']
+                else:
+                    elevation_deg = _compute_apparent_elevation_deg(
+                        ra_rad, dec_rad, mjd_obs, obs_loc
+                    )
+                    _disk.save_named('tropo_elev_v1', _key_arrays,
+                                     {'elevation_deg': elevation_deg})
+                if _elev_session_cache is not None:
+                    _elev_session_cache[_skey] = elevation_deg
+
             tropo_obs = np.asarray(compute_tropospheric_delay(
                 elevation_deg=elevation_deg,
                 height_m=loc_height_m,
@@ -1495,7 +1741,7 @@ def compute_residuals_simple(
     if verbose: print(f"\n6. Running JAX delay kernel...")
     total_delay_jax = _call_delay_kernel(
         tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
-        dm_jax, bp, ddk, roemer_shapiro_jax, tropo_jax, dmx_jax,
+        dm_jax, bp, ddk, roemer_shapiro_jax, tropo_jax, dmx_jax, tt_binary_jax,
     )
     total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble)
 
@@ -1505,8 +1751,12 @@ def compute_residuals_simple(
 
     # Compute DM and SW delays separately for pre-binary time (needed by fitter)
     # These replicate the kernel formulas in NumPy for use outside the kernel
-    dm_epoch = float(params.get('DMEPOCH', params['PEPOCH']))
-    dt_years = (np.array(tdb_mjd) - dm_epoch) / 365.25
+    _dm_epoch_key = 'DMEPOCH' if 'DMEPOCH' in params else 'PEPOCH'
+    dm_epoch = get_longdouble(params, _dm_epoch_key)
+    dt_years = np.asarray(
+        (np.asarray(tdb_mjd, dtype=np.longdouble) - dm_epoch) / np.longdouble(365.25),
+        dtype=np.float64,
+    )
     dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
     dm_delay_sec = K_DM_SEC * dm_eff / (freq_bary_mhz ** 2)
 
@@ -1526,12 +1776,15 @@ def compute_residuals_simple(
     # Only applied for t > EXPEP. EXPINDEX defaults to -2 if not set.
     exp_idx = 1
     while f'EXPEP_{exp_idx}' in params:
-        expep = float(params[f'EXPEP_{exp_idx}'])
+        expep = get_longdouble(params, f'EXPEP_{exp_idx}')
         expph = float(params.get(f'EXPPH_{exp_idx}', 0.0))
         exptau = float(params.get(f'EXPTAU_{exp_idx}', 1.0))
         expindex = float(params.get(f'EXPINDEX_{exp_idx}', -2.0))
         
-        dt_exp = np.array(tdb_mjd, dtype=np.float64) - expep
+        dt_exp = np.asarray(
+            np.asarray(tdb_mjd, dtype=np.longdouble) - expep,
+            dtype=np.float64,
+        )
         active = dt_exp > 0
         if np.any(active):
             freq_norm = np.array(freq_bary_mhz, dtype=np.float64) / 1400.0
@@ -1775,6 +2028,21 @@ def compute_residuals_simple(
     # DMX is included explicitly here because dm_delay_sec is DM-only now.
     prebinary_delay_sec = (roemer_shapiro + dm_delay_sec + dmx_delay_sec
                            + sw_delay_sec + tropo_delay_sec)
+
+    # Barycentric (infinite-frequency SSB) arrival times, matching PINT's
+    # get_barycentric_toas(): TDB minus all delays ordered before the binary
+    # component (astrometric Roemer/Shapiro, troposphere, DM, DMX, solar
+    # wind). JUMPs are excluded: PINT models par-file JUMPs as PhaseJump
+    # (applied after spindown), so they do not enter barycentric TOAs —
+    # verified against PINT on J1022+1001 (agreement 0.000 ns per TOA;
+    # including JUMPs reproduces exactly the par JUMP values as offsets).
+    # enterprise's PintPulsar uses exactly this quantity (in seconds) as
+    # its default `toas`; libstempo/Tempo2Pulsar's psr.toas() (BATs) is
+    # the same concept.
+    bat_mjd_ld = np.array(tdb_mjd, dtype=np.longdouble) - (
+        np.asarray(prebinary_delay_sec, dtype=np.longdouble)
+        / np.longdouble(SECS_PER_DAY)
+    )
     
     # Compute orbital phase (if binary)
     orbital_phase = None
@@ -1831,6 +2099,12 @@ def compute_residuals_simple(
         'roemer_shapiro_sec': np.array(roemer_shapiro, dtype=np.float64),
         # Pre-binary delay: roemer_shapiro + DM + SW + tropo (PINT-compatible binary evaluation time)
         'prebinary_delay_sec': np.array(prebinary_delay_sec, dtype=np.float64),
+        # Barycentric (infinite-frequency SSB) arrival times in TDB MJD,
+        # matching PINT get_barycentric_toas() / Tempo2 BATs. enterprise's
+        # default `psr.toas` equals bat_mjd * 86400 (seconds, float64).
+        'bat_mjd_ld': bat_mjd_ld,
+        'bat_mjd': np.array(bat_mjd_ld, dtype=np.float64),
+        'bat_sec': np.array(bat_mjd_ld * np.longdouble(SECS_PER_DAY), dtype=np.float64),
         # Individual delay components (for diagnostics)
         'dm_delay_sec': np.array(dm_delay_sec, dtype=np.float64),
         'dmx_delay_sec': np.array(dmx_delay_sec, dtype=np.float64),

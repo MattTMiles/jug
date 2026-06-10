@@ -55,9 +55,11 @@ Reference:
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from functools import partial
 from typing import Dict, List, Tuple
 
+from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY, T_SUN
 
 
@@ -80,15 +82,27 @@ def _resolve_pb_days(params: Dict) -> float:
 jax.config.update('jax_enable_x64', True)
 
 
+def _compute_ttasc_sec(toas_bary_mjd: np.ndarray, tasc: np.longdouble) -> np.ndarray:
+    """Return (toas_bary_mjd - tasc) in seconds using longdouble to avoid float64 cancellation.
+
+    Direct float64 subtraction at MJD ~58000 loses ~600 ns in ttasc → ~30 ps Roemer
+    error.  Computing in longdouble before returning float64 eliminates this.
+    """
+    return np.asarray(
+        (np.asarray(toas_bary_mjd, dtype=np.longdouble) - np.longdouble(tasc))
+        * np.longdouble(SECS_PER_DAY),
+        dtype=np.float64,
+    )
+
+
 # =============================================================================
 # Core ELL1 Functions (PINT-compatible with 3rd order corrections)
 # =============================================================================
 
 @jax.jit
 def compute_orbital_phase_ell1(
-    toas_bary_mjd: jnp.ndarray,
+    ttasc_sec: jnp.ndarray,
     pb: float,
-    tasc: float,
     pbdot: float = 0.0,
     fb_coeffs: jnp.ndarray = None,
 ) -> jnp.ndarray:
@@ -103,24 +117,21 @@ def compute_orbital_phase_ell1(
     
     Parameters
     ----------
-    toas_bary_mjd : jnp.ndarray
-        BARYCENTRIC TOA times in MJD
+    ttasc_sec : jnp.ndarray
+        Time since TASC in seconds (precomputed in longdouble by caller)
     pb : float
         Orbital period in days (used if FB not used)
-    tasc : float
-        Time of ascending node in MJD
     pbdot : float, optional
         Orbital period derivative
     fb_coeffs : jnp.ndarray, optional
         FB coefficients (FB0, FB1, ...). If present/not empty, uses FB model.
-        
+
     Returns
     -------
     phi : jnp.ndarray
         Orbital phase in radians
     """
-    ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY  # seconds
-    
+
     def compute_phi_standard():
         pb_sec = pb * SECS_PER_DAY
         orbits = ttasc_sec / pb_sec - 0.5 * pbdot * (ttasc_sec / pb_sec) ** 2
@@ -901,11 +912,11 @@ def compute_ell1_binary_delay(
     # Extract numeric parameters with defaults (avoid passing strings to JAX)
     a1 = float(params.get('A1', 0.0))
     pb = _resolve_pb_days(params)
-    tasc = float(params.get('TASC', 0.0))
+    tasc = get_longdouble(params, 'TASC', default=0.0)
     eps1 = float(params.get('EPS1', 0.0))
     eps2 = float(params.get('EPS2', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
-    a1dot = float(params.get('A1DOT', params.get('XDOT', 0.0)))
+    a1dot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
     sini = float(params.get('SINI', 0.0))
     m2 = float(params.get('M2', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
@@ -948,25 +959,29 @@ def compute_ell1_binary_delay(
     eps1dot = float(params.get('EPS1DOT', 0.0))
     eps2dot = float(params.get('EPS2DOT', 0.0))
 
-    # Call JIT-compiled inner function with extracted numeric values
+    # Precompute time since TASC in longdouble to avoid float64 cancellation
+    # at MJD ~58000 (~600 ns error → ~30 ps Roemer delay error).
+    ttasc_sec_f64 = _compute_ttasc_sec(np.asarray(toas_bary_mjd), tasc)
     return _compute_ell1_binary_delay_jit(
-        jnp.asarray(toas_bary_mjd),
-        a1, pb, tasc, eps1, eps2, pbdot, a1dot, sini, m2, gamma,
+        jnp.asarray(ttasc_sec_f64),
+        a1, pb, eps1, eps2, pbdot, a1dot, sini, m2, gamma,
         h3, h4, stig, fb_coeffs, eps1dot, eps2dot
     )
 
 
 @jax.jit
 def _compute_ell1_binary_delay_jit(
-    toas_bary_mjd: jnp.ndarray,
-    a1: float, pb: float, tasc: float, eps1: float, eps2: float,
+    ttasc_sec: jnp.ndarray,
+    a1: float, pb: float, eps1: float, eps2: float,
     pbdot: float, a1dot: float, sini: float, m2: float, gamma: float,
     h3: float, h4: float, stig: float, fb_coeffs: jnp.ndarray,
     eps1dot: float = 0.0, eps2dot: float = 0.0
 ) -> jnp.ndarray:
-    """JIT-compiled ELL1 binary delay computation."""
-    # Time since TASC
-    ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY
+    """JIT-compiled ELL1 binary delay computation.
+
+    ttasc_sec must be precomputed as (toas_bary_mjd - TASC)*86400 in longdouble
+    by the caller to avoid float64 catastrophic cancellation at MJD ~58000.
+    """
     pb_sec = pb * SECS_PER_DAY
 
     # Effective a1 with time evolution
@@ -977,7 +992,7 @@ def _compute_ell1_binary_delay_jit(
     eps2_eff = eps2 + eps2dot * ttasc_sec
 
     # Orbital phase
-    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
+    phi = compute_orbital_phase_ell1(ttasc_sec, pb, pbdot, fb_coeffs)
 
     # nhat = instantaneous orbital angular frequency (rad/s). For FB-parameterized
     # binaries (no PB) it must be derived from the FB series like the kernel
@@ -1102,26 +1117,29 @@ def compute_binary_derivatives_ell1(
     This function exactly matches PINT's design matrix for ELL1 binary models.
     The inverse delay corrections provide ~0.01-0.02% improvement over Tempo2.
     """
-    toas_bary_mjd = jnp.asarray(toas_bary_mjd)
     n_toas = len(toas_bary_mjd)
-    
+
     # Extract parameters with defaults
     a1 = float(params.get('A1', 0.0))
     pb = _resolve_pb_days(params)
-    tasc = float(params.get('TASC', float(jnp.mean(toas_bary_mjd))))
+    tasc = get_longdouble(
+        params,
+        'TASC',
+        default=float(np.mean(np.asarray(toas_bary_mjd, dtype=np.float64))),
+    )
     eps1 = float(params.get('EPS1', 0.0))
     eps2 = float(params.get('EPS2', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
-    a1dot = float(params.get('A1DOT', params.get('XDOT', 0.0)))
+    a1dot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
     eps1dot = float(params.get('EPS1DOT', 0.0))
     eps2dot = float(params.get('EPS2DOT', 0.0))
     sini = float(params.get('SINI', 0.0))
     m2 = float(params.get('M2', 0.0))
-    
-    # Time since TASC
-    ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY  # seconds
+
+    # Time since TASC — longdouble to avoid float64 cancellation at MJD ~58000.
+    ttasc_sec = jnp.asarray(_compute_ttasc_sec(np.asarray(toas_bary_mjd), tasc))
     pb_sec = pb * SECS_PER_DAY
-    
+
     # Effective parameters (with time evolution)
     # a1(t) = A1 + A1DOT * ttasc
     a1_eff = a1 + a1dot * ttasc_sec
@@ -1146,9 +1164,9 @@ def compute_binary_derivatives_ell1(
     else:
         fb_coeffs = jnp.array([], dtype=jnp.float64)
     
-    # Compute orbital phase
-    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
-    
+    # Compute orbital phase (ttasc_sec already in seconds, longdouble-derived)
+    phi = compute_orbital_phase_ell1(ttasc_sec, pb, pbdot, fb_coeffs)
+
     # nhat = instantaneous orbital angular frequency (rad/s). For FB-parameterized
     # binaries (no PB) it must be derived from the FB series like the kernel
     # (combined.py:branch_ell1 compute_n0_fb): nhat = 2*pi*sum(FB_i * dt^i / i!).
@@ -1165,7 +1183,7 @@ def compute_binary_derivatives_ell1(
         nhat = 2.0 * jnp.pi * _F_orb
     else:
         nhat = 2.0 * jnp.pi / pb_sec
-    
+
     # Compute Dre, Drep, Drepp (inverse delay quantities)
     # Dre = (a1/c) * d_delayR_da1 - but a1 is already in light-seconds,
     # so Dre = a1 * d_delayR_da1 has units of light-seconds = seconds (with c=1)

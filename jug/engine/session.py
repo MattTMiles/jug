@@ -306,6 +306,7 @@ class TimingSession:
                 subtract_tzr=subtract_tzr,
                 verbose=False,
                 geometry_cache=self._geometry_cache,
+                toas=self.toas_data,
             )
         finally:
             tmp_par_path.unlink()
@@ -394,6 +395,7 @@ class TimingSession:
                 subtract_tzr=subtract_tzr,
                 verbose=False,
                 geometry_cache=self._geometry_cache,
+                toas=self.toas_data,
             )
         
         # Cache the result (only for original params), keyed by subtract_tzr
@@ -432,7 +434,8 @@ class TimingSession:
         toa_mask: Optional[np.ndarray] = None,
         solver_mode: str = "exact",
         noise_config: Optional[object] = None,
-        subtract_noise_sec: Optional[np.ndarray] = None
+        subtract_noise_sec: Optional[np.ndarray] = None,
+        fit_dmx: bool = True,
     ) -> Dict[str, Any]:
         """
         Fit timing model parameters.
@@ -466,6 +469,12 @@ class TimingSession:
             after subtracting a noise realization from the displayed residuals,
             the fitter should work on the cleaned data. If None, no noise
             subtraction is applied.
+        fit_dmx : bool, default True
+            If True (default), DMX_* bins in the PAR are auto-added as fitted
+            timing parameters (PINT-like). If False, the fixed DMX delays from
+            the PAR are still applied to residuals but DMX_* are NOT fitted.
+            Use False for global-DM recovery checks (fitting DM + all DMX is
+            degenerate).
 
         Returns
         -------
@@ -569,7 +578,8 @@ class TimingSession:
                 fit_params,
                 toa_mask=toa_mask,
                 noise_config=noise_config,
-                subtract_noise_sec=subtract_noise_sec
+                subtract_noise_sec=subtract_noise_sec,
+                fit_dmx=fit_dmx,
             )
             
             # Run cached fit
@@ -580,6 +590,14 @@ class TimingSession:
                 verbose=verbose,
                 solver_mode=solver_mode
             )
+
+            # Barycentric arrival times the fitter evaluated the binary model
+            # at (prefit-parameter values; enterprise-compatible, see
+            # compute_residuals_simple). For BATs at the fitted parameters,
+            # call compute_residuals() after this fit.
+            for _bat_key in ('bat_mjd_ld', 'bat_mjd', 'bat_sec'):
+                if _bat_key in cached_result and _bat_key not in result:
+                    result[_bat_key] = cached_result[_bat_key]
         else:
             # FALLBACK PATH: Use file-based fitting (slower but always works)
             if verbose:
@@ -593,7 +611,8 @@ class TimingSession:
                 convergence_threshold=convergence_threshold,
                 clock_dir=self.clock_dir,
                 device=device,
-                verbose=verbose
+                verbose=verbose,
+                fit_dmx=fit_dmx,
             )
         
         # Update session params with fitted values (CRITICAL for iterative fitting!)
@@ -627,6 +646,18 @@ class TimingSession:
                 updated_params.update(ecliptic_aliases_from_equatorial(self.params, updated_params))
 
             self.params.update(updated_params)
+            # Strip stale aliases: if canonical key just updated, remove any
+            # alias keys that still hold the old par-file value.
+            # Example: par file has A1DOT, fitter updates XDOT (canonical) →
+            # session.params ends up with both; downstream code reading A1DOT
+            # gets the stale value.  Remove aliases for every updated canonical.
+            from jug.model.parameter_spec import _ALIAS_MAP
+            _reverse_alias = {}
+            for _a, _c in _ALIAS_MAP.items():
+                _reverse_alias.setdefault(_c, []).append(_a)
+            for _key in updated_params:
+                for _alias in _reverse_alias.get(_key, []):
+                    self.params.pop(_alias, None)
 
             # Update _high_precision strings for fitted parameters whose
             # values changed.  Always compute from the ORIGINAL longdouble
@@ -842,9 +873,13 @@ class TimingSession:
             binary_keys = ['PB', 'A1', 'ECC', 'E', 'T0', 'OM', 'OMDOT', 'PBDOT',
                            'GAMMA', 'M2', 'SINI', 'KIN', 'KOM',
                            'EPS1', 'EPS2', 'EPS1DOT', 'EPS2DOT', 'TASC',
-                           'FB0', 'FB1', 'A1DOT', 'XDOT', 'EDOT',
+                           'A1DOT', 'XDOT', 'EDOT',
                            'DR', 'DTH', 'A0', 'B0', 'SHAPMAX',
                            'H3', 'H4', 'STIGMA', 'K96']
+            binary_keys.extend(sorted(
+                (k for k in p if k.startswith('FB') and k[2:].isdigit()),
+                key=lambda k: int(k[2:]),
+            ))
             for k in binary_keys:
                 if k in p:
                     lines.append(_row(k, p[k]))

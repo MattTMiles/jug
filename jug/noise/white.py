@@ -263,6 +263,22 @@ def parse_noise_lines(lines: Sequence[str]) -> List[WhiteNoiseEntry]:
             equad_us = 10**log10_val * 1e6
             entries.append(WhiteNoiseEntry('EQUAD', flag_name, flag_value, equad_us))
 
+        elif keyword == 'TNEC':
+            # TempoNest ECORR in log10(seconds): TNEC -group <name> <log10_s>.
+            # Parallels TNEQ for EQUAD. Matches PINT's TNEC keyword (which
+            # converts log10(seconds) -> ECORR in us). Unambiguously log10,
+            # unlike TNECORR whose sign is used to guess the convention.
+            if len(parts) < 4:
+                continue
+            flag_name = parts[1].lstrip('-')
+            flag_value = parts[2]
+            try:
+                log10_val = float(parts[3])
+            except ValueError:
+                continue
+            ecorr_us = 10**log10_val * 1e6
+            entries.append(WhiteNoiseEntry('ECORR', flag_name, flag_value, ecorr_us))
+
     return entries
 
 

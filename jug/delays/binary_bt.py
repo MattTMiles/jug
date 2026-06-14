@@ -19,6 +19,7 @@ jax.config.update("jax_enable_x64", True)
 
 from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY
+from jug.utils.orbit_reduction import reduce_binary_time_sec
 
 JULIAN_YEAR_SEC = 365.25 * SECS_PER_DAY
 
@@ -65,11 +66,22 @@ def solve_kepler(mean_anomaly, eccentricity, tol=1e-12, max_iter=20):
 @jax.jit
 def bt_binary_delay_from_tt0(
     tt0_sec, pb, a1, ecc, om, gamma, pbdot,
-    omdot=0.0, xdot=0.0, edot=0.0,
+    omdot=0.0, xdot=0.0, edot=0.0, tt0_red_sec=None,
 ):
-    """Compute PINT-compatible BT delay from ``(BAT - T0)`` in seconds."""
+    """Compute PINT-compatible BT delay from ``(BAT - T0)`` in seconds.
+
+    tt0_red_sec (optional): tt0 reduced by whole orbital periods in
+    LONGDOUBLE (jug.utils.orbit_reduction.reduce_binary_time_sec with the
+    same float64 pb). The linear orbit term then uses it — integer orbits
+    drop out of the Kepler solve and all trig — removing the ~ps float64
+    phase floor. Secular terms keep the full tt0. When omitted, behavior is
+    bitwise-identical to before.
+    """
     pb_sec = pb * SECS_PER_DAY
-    orbits = tt0_sec / pb_sec - 0.5 * pbdot * (tt0_sec / pb_sec) ** 2
+    if tt0_red_sec is None:
+        orbits = tt0_sec / pb_sec - 0.5 * pbdot * (tt0_sec / pb_sec) ** 2
+    else:
+        orbits = tt0_red_sec / pb_sec - 0.5 * pbdot * (tt0_sec / pb_sec) ** 2
     mean_anomaly = 2.0 * jnp.pi * orbits
 
     ecc_current = ecc + edot * tt0_sec
@@ -131,12 +143,13 @@ def _compute_tt0_sec(toas_bary_mjd, t0):
 
 def compute_bt_binary_delay(toas_bary_mjd, params, **kwargs):
     """Fitter/registry BT delay entry point using high-precision epoch subtraction."""
-    tt0_sec = _compute_tt0_sec(
-        toas_bary_mjd, get_longdouble(params, "T0", default=0.0)
-    )
+    t0_ld = get_longdouble(params, "T0", default=0.0)
+    tt0_ld = ((np.asarray(toas_bary_mjd, dtype=np.longdouble) - np.longdouble(t0_ld))
+              * np.longdouble(SECS_PER_DAY))
+    pb = float(params.get("PB", 0.0))
     return bt_binary_delay_from_tt0(
-        jnp.asarray(tt0_sec),
-        float(params.get("PB", 0.0)),
+        jnp.asarray(np.asarray(tt0_ld, dtype=np.float64)),
+        pb,
         float(params.get("A1", 0.0)),
         float(params.get("ECC", params.get("E", 0.0))),
         float(params.get("OM", 0.0)),
@@ -145,6 +158,7 @@ def compute_bt_binary_delay(toas_bary_mjd, params, **kwargs):
         float(params.get("OMDOT", 0.0)),
         float(params.get("XDOT", params.get("A1DOT", 0.0))),
         float(params.get("EDOT", 0.0)),
+        tt0_red_sec=jnp.asarray(reduce_binary_time_sec(tt0_ld, pb_days=pb)),
     )
 
 

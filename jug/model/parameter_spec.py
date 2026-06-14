@@ -379,6 +379,7 @@ _BINARY_PARAMS = [
         aliases=("PORB",),
         display_format=".15f",
         tcb_scaling_dim=1,
+        high_precision=True,
     ),
     ParameterSpec(
         name="A1",
@@ -498,6 +499,50 @@ _BINARY_PARAMS = [
         par_unit_str="Msun",
         display_unit="MSun",
         display_format=".12f",
+        tcb_scaling_dim=0,
+    ),
+    # DDS alternate Shapiro inclination: SHAPMAX = -log(1 - sin i).
+    ParameterSpec(
+        name="SHAPMAX",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        display_format=".12f",
+        tcb_scaling_dim=0,
+    ),
+    # DDGR total system mass (derives SINI/GAMMA/PBDOT/OMDOT/DR/DTH via GR).
+    ParameterSpec(
+        name="MTOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="Msun",
+        par_unit_str="Msun",
+        display_unit="MSun",
+        display_format=".12f",
+        tcb_scaling_dim=0,
+    ),
+    # DDGR excess periastron advance / orbital decay beyond GR.
+    ParameterSpec(
+        name="XOMDOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="deg/yr",
+        par_unit_str="deg/yr",
+        display_format=".6e",
+        tcb_scaling_dim=0,
+    ),
+    ParameterSpec(
+        name="XPBDOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="s/s",
+        par_unit_str="s/s",
+        display_format=".6e",
         tcb_scaling_dim=0,
     ),
     # Time derivatives
@@ -666,6 +711,7 @@ for i in range(21):
             par_unit_str="",
             display_format=".6e",
             tcb_scaling_dim=-(i + 1),
+            high_precision=(i == 0),
         )
     )
 
@@ -805,6 +851,7 @@ def get_spec(name: str) -> Optional[ParameterSpec]:
             par_unit_str="",
             display_format=".6e",
             tcb_scaling_dim=-(index + 1),
+            high_precision=(index == 0),
         )
     return None
 

@@ -77,6 +77,8 @@ def dd_binary_delay(
     h3_sec=None,
     h4_sec=None,
     stig=None,
+    dr=0.0,
+    dth=0.0,
 ):
     """Compute DD binary delay at a single barycentric time.
 
@@ -193,9 +195,9 @@ def dd_binary_delay(
 
     # Alpha and Beta parameters (D&D eqs [46], [47])
     # Note: er = ecc*(1 + DR), eTheta = ecc*(1 + DTH)
-    # For standard DD model: DR=0, DTH=0
-    er = ecc_current
-    eTheta = ecc_current
+    # For standard DD model: DR=0, DTH=0 (DDGR passes derived dr/dth).
+    er = ecc_current * (1.0 + dr)
+    eTheta = ecc_current * (1.0 + dth)
 
     alpha = a1_current * sinOm  # eq [46]
     beta = a1_current * jnp.sqrt(1.0 - eTheta**2) * cosOm  # eq [47]
@@ -360,12 +362,23 @@ def dd_binary_delay_from_tt0(
     h3_sec=None,
     h4_sec=None,
     stig=None,
+    tt0_red_sec=None,
+    dr=0.0,
+    dth=0.0,
 ):
     """DD binary delay given tt0_sec = (t_prebinary - T0) in seconds.
 
     Like dd_binary_delay but accepts the time-since-T0 directly.
     Use this instead of dd_binary_delay when tt0_sec has been precomputed
     in longdouble to avoid float64 cancellation errors at MJD ~58000.
+
+    tt0_red_sec (optional): tt0 reduced by a whole number of orbital periods
+    in LONGDOUBLE (jug.utils.orbit_reduction.reduce_binary_time_sec, with the
+    same float64 pb_days). When given, the fractional orbit — and hence the
+    mean anomaly — is built from it, removing the ~ps float64
+    phase-quantization floor of tt0/pb_sec at ~1e4 orbits. norbits (used only
+    in the secular OMDOT/Ae term) still comes from the full tt0, where float64
+    is ample. When omitted, behavior is bitwise-identical to before.
     """
     # tt0_sec is already (t - T0) * SECS_PER_DAY, computed outside JAX in longdouble.
     # Alias to match the rest of the function body.
@@ -376,7 +389,19 @@ def dd_binary_delay_from_tt0(
     orbits = tt0 / pb_sec - 0.5 * pbdot * (tt0 / pb_sec)**2
 
     norbits = jnp.floor(orbits)
-    frac_orbits = orbits - norbits
+    if tt0_red_sec is None:
+        frac_orbits = orbits - norbits
+    else:
+        # High-precision fractional orbit: linear term from the reduced time
+        # (integer orbits already subtracted in longdouble), PBDOT quadratic
+        # from the full time. Differs from orbits by an integer, which drops
+        # out of the mean anomaly; re-wrap to [0, 1) to keep the downstream
+        # nu/Ae branch structure identical to the unreduced path.
+        orbit_shift = jnp.rint((tt0 - tt0_red_sec) / pb_sec)
+        orbits_hp = (orbit_shift + tt0_red_sec / pb_sec
+                     - 0.5 * pbdot * (tt0 / pb_sec)**2)
+        norbits = jnp.floor(orbits_hp)
+        frac_orbits = orbits_hp - norbits
     mean_anomaly = frac_orbits * 2.0 * jnp.pi
 
     a1_current = a1_lt_sec + xdot * dt_sec
@@ -398,8 +423,10 @@ def dd_binary_delay_from_tt0(
     sinOm = jnp.sin(omega_rad)
     cosOm = jnp.cos(omega_rad)
 
-    er = ecc_current
-    eTheta = ecc_current
+    # Relativistic deformation (DDGR): er = ecc*(1+DR), eTheta = ecc*(1+DTH).
+    # Standard DD passes dr=dth=0 -> er = eTheta = ecc_current.
+    er = ecc_current * (1.0 + dr)
+    eTheta = ecc_current * (1.0 + dth)
 
     alpha = a1_current * sinOm
     beta = a1_current * jnp.sqrt(1.0 - eTheta**2) * cosOm

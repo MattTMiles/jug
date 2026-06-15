@@ -23,6 +23,8 @@ from jug.utils.jax_setup import ensure_jax_x64
 ensure_jax_x64()
 
 from jug.io.par_reader import parse_par_file, get_longdouble, parse_ra, parse_dec, validate_par_timescale
+from jug.signals import detect_signals
+from jug.utils.orbit_reduction import reduce_binary_time_sec
 from jug.io.tim_reader import parse_tim_file_mjds, compute_tdb_standalone_vectorized
 from jug.io.clock import parse_clock_file, ClockGraph
 from jug.delays.barycentric import (
@@ -284,6 +286,7 @@ def _get_known_par_keywords():
         'START', 'FINISH', 'TRACK',
         'TZRMJD', 'TZRFRQ', 'TZRSITE',
         'BINARY', 'INFO', 'PLANET_SHAPIRO',
+        'MTOT', 'XOMDOT', 'XPBDOT',  # DDGR: consumed via compute_ddgr_pk_params
         'CORRECT_TROPOSPHERE', 'K96',
         'RNAMP', 'RNIDX', 'TNREDAMP', 'TNREDGAM', 'TNREDC',
         'TNDMAMP', 'TNDMGAM', 'TNDMC',
@@ -294,7 +297,7 @@ def _get_known_par_keywords():
         'DILATEFREQ', 'CLK_CORR_CHAIN',
         'DMMODEL', 'CONSTRAIN', 'NCOEFF',
         'RM', 'SWM', 'SOLARN0',
-        'DMX',
+        'DMX', 'DM_SERIES',
     }
     # DMX ranges: DMX_nnnn, DMXR1_nnnn, DMXR2_nnnn, DMXF1_nnnn, DMXF2_nnnn, DMXEP_nnnn
     _KNOWN_PAR_KEYWORDS = known
@@ -315,10 +318,33 @@ def _is_known_param(key):
         return True
     if re.match(r'^(EXP(EP|PH|TAU|INDEX))_\d+$', key_upper):
         return True
+    # Glitch parameters (GLEP_n, GLPH_n, GLF0_n, GLF1_n, GLF2_n, GLF0D_n,
+    # GLTD_n). JUG DOES model glitches -- compute_phase_residuals reads these
+    # per glitch index and applies the glitch phase -- so they are recognized,
+    # not ignored. (Without this they spuriously tripped the "ignored by JUG"
+    # warning even though the glitch was being applied.)
+    if re.match(r'^GL(EP|PH|F0|F1|F2|F0D|TD)_\d+$', key_upper):
+        return True
     if re.match(r'^FDJUMP\d*(_\d+)?$', key_upper) or key_upper == 'FDJUMP_SCALE' or key_upper == 'FDJUMPDM':
         return True
-    if re.match(r'^TN(ECORR|EF|EQ|SQ|SECORR)', key_upper):
+    if re.match(r'^TN(ECORR|EF|EQ|EC|SQ|SECORR|GW|SW)', key_upper):
         return True
+    # Stochastic solar-wind noise (SWAMP/SWGAM/SWC/SWNEARTH) and GW background
+    # noise -- modelled by JUG (see jug.noise.red_noise GW/SWNoiseProcess).
+    if key_upper in ('SWAMP', 'SWGAM', 'SWC', 'SWNEARTH', 'GWAMP', 'GWGAM', 'GWC'):
+        return True
+    # Deterministic chromatic Gaussian bump / annual signals (jug.signals
+    # ChromBumpSignal / ChromaticAnnualSignal). Keywords have no underscore so
+    # the SIGNAL_REGISTRY prefix check below does not catch them.
+    if re.match(r'^CHROM(BUMP|ANNUAL)', key_upper):
+        return True
+    # jug.signals deterministic-signal parameters (CHROMEV_*, CW_*, ...):
+    # recognized by prefix derived from each registered signal's par keys.
+    from jug.signals.base import SIGNAL_REGISTRY
+    for _cls in SIGNAL_REGISTRY.values():
+        for _k in _cls.required_par_keys():
+            if key_upper.startswith(_k.split('_')[0] + '_'):
+                return True
     return False
 
 
@@ -728,11 +754,15 @@ def _extract_binary_params(params, verbose):
     if verbose: print(f"\n5. Detecting binary model: {binary_model} (ID: {model_id})")
 
     # --- Scalar parameter extraction ---
-    pb_val = float(params.get('PB', 0.0))
+    pb_ld = get_longdouble(params, 'PB', default=0.0)
+    pb_val = float(pb_ld)
     if pb_val == 0.0 and 'FB0' in params:
         fb0 = float(params['FB0'])
         if fb0 != 0.0:
-            pb_val = (1.0 / fb0) / SECS_PER_DAY
+            pb_ld = np.longdouble(1.0) / (
+                np.longdouble(fb0) * np.longdouble(SECS_PER_DAY)
+            )
+            pb_val = float(pb_ld)
 
     a1_val = float(params.get('A1', 0.0))
     t0_val = float(params.get('T0', 0.0))
@@ -773,11 +803,46 @@ def _extract_binary_params(params, verbose):
     else:
         sini_val = float(sini_param)
 
+    # DDS model: SHAPMAX = -log(1 - sin i) (Kramer et al. 2006; PINT
+    # DDS_model.SINI = 1 - exp(-SHAPMAX)). A DDS par has no SINI, so without
+    # this the Shapiro delay (sini_val=0) would be silently dropped.
+    if sini_val == 0.0 and 'SHAPMAX' in params:
+        sini_val = float(1.0 - jnp.exp(-float(params['SHAPMAX'])))
+
     kin_val = float(params.get('KIN', 0.0))
     kom_val = float(params.get('KOM', 0.0))
     h3_val = float(params.get('H3', 0.0))
     h4_val = float(params.get('H4', 0.0))
     stig_val = float(params.get('STIG', 0.0))
+
+    # DDGR: GR assumed correct -> derive the post-Keplerian parameters (SINI,
+    # GAMMA, PBDOT, OMDOT) from the system masses (MTOT, M2) + Keplerian
+    # elements, exactly as PINT's BinaryDDGR does. The par's explicit
+    # OMDOT/PBDOT/GAMMA/SINI (if any) are GR-recomputed; XOMDOT/XPBDOT add any
+    # excess beyond GR (default 0). Without this, JUG treated DDGR as plain DD
+    # with SINI=GAMMA=0 -> Shapiro and Einstein delays silently dropped
+    # (J0955-6150: SINI=0.99, GAMMA=0.55 ms missing). DR/DTH are also derived
+    # but the DD kernel does not yet consume them (sub-ns for typical systems).
+    dr_val = 0.0
+    dth_val = 0.0
+    if binary_model == 'DDGR' and 'MTOT' in params and m2_val > 0.0 \
+            and pb_val > 0.0 and a1_val > 0.0:
+        from jug.delays.ddgr import compute_ddgr_pk_params
+        _pk = compute_ddgr_pk_params(
+            float(params['MTOT']), m2_val, pb_val, a1_val, ecc_val,
+            xomdot_deg_yr=float(params.get('XOMDOT', 0.0)),
+            xpbdot=float(params.get('XPBDOT', 0.0)))
+        sini_val = _pk['sini']
+        gamma_val = _pk['gamma_sec']
+        pbdot_val = _pk['pbdot']
+        omdot_val = _pk['omdot_deg_yr']
+        dr_val = _pk['dr']
+        dth_val = _pk['dth']
+        if verbose:
+            print(f"   DDGR PK from MTOT={float(params['MTOT']):.4f} "
+                  f"M2={m2_val:.4f}: SINI={sini_val:.6f} "
+                  f"GAMMA={gamma_val:.4e}s OMDOT={omdot_val:.4e}deg/yr "
+                  f"PBDOT={pbdot_val:.3e}")
 
     # Shapiro parameterization: H3/STIG, H3/H4, H3-only, or M2/SINI
     r_shap_val = 0.0
@@ -794,6 +859,7 @@ def _extract_binary_params(params, verbose):
 
     # FB mode
     has_fb0 = 'FB0' in params
+    fb0_ld = get_longdouble(params, 'FB0') if has_fb0 else None
     has_higher_fb = any(
         key.startswith('FB') and key[2:].isdigit() and int(key[2:]) > 0
         for key in params
@@ -803,6 +869,7 @@ def _extract_binary_params(params, verbose):
         if not has_fb0 and 'PB' in params:
             pb_sec = float(params['PB']) * SECS_PER_DAY
             params['FB0'] = 1.0 / pb_sec
+            fb0_ld = np.longdouble(1.0) / (pb_ld * np.longdouble(SECS_PER_DAY))
         fb_coeffs = []
         fb_idx = 0
         while f'FB{fb_idx}' in params:
@@ -810,7 +877,10 @@ def _extract_binary_params(params, verbose):
             fb_idx += 1
         fb_coeffs_jax = jnp.array(fb_coeffs, dtype=jnp.float64)
         fb_factorials_jax = jnp.array([float(math.factorial(i)) for i in range(len(fb_coeffs))], dtype=jnp.float64)
-        fb_epoch_jax = jnp.array(float(params.get('TASC', params.get('T0', params['PEPOCH']))))
+        fb_epoch_jax = jnp.array(float(
+            params['TASC'] if 'TASC' in params else
+            params['T0'] if 'T0' in params else params['PEPOCH']
+        ))
         use_fb_jax = jnp.array(True)
         if pb_val == 0.0:
             pb_val = 1.0
@@ -824,8 +894,13 @@ def _extract_binary_params(params, verbose):
     bp = {
         'model_id': model_id, 'has_binary': has_binary, 'binary_model': binary_model,
         # Scalar values (needed by TZR debug and orbital phase)
-        'pb_val': pb_val, 'a1_val': a1_val, 't0_val': t0_val, 'tasc_val': tasc_val,
+        'pb_val': pb_val, 'pb_ld': pb_ld,
+        'a1_val': a1_val, 't0_val': t0_val, 'tasc_val': tasc_val,
         'ecc_val': ecc_val, 'om_val': om_val, 'sini_val': sini_val,
+        # Python-level period info for longdouble orbit-count reduction.
+        'use_fb': use_fb,
+        'fb0_val': (fb_coeffs[0] if use_fb and fb_coeffs else None),
+        'fb0_ld': fb0_ld,
         # JAX scalars
         'has_binary_jax': jnp.array(has_binary),
         'binary_model_id_jax': jnp.array(model_id, dtype=jnp.int32),
@@ -837,6 +912,7 @@ def _extract_binary_params(params, verbose):
         'gamma_jax': jnp.array(gamma_val), 'pbdot_jax': jnp.array(pbdot_val),
         'xdot_jax': jnp.array(xdot_val), 'omdot_jax': jnp.array(omdot_val),
         'edot_jax': jnp.array(edot_val),
+        'dr_jax': jnp.array(dr_val), 'dth_jax': jnp.array(dth_val),
         'm2_jax': jnp.array(m2_val), 'sini_jax': jnp.array(sini_val),
         'kin_jax': jnp.array(kin_val), 'kom_jax': jnp.array(kom_val),
         'h3_jax': jnp.array(h3_val), 'h4_jax': jnp.array(h4_val),
@@ -936,7 +1012,8 @@ def _prepare_ddk_kopeikin(params, model_id, is_ecliptic, ssb_obs_pos_km,
 
 def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
                        dm_jax, bp, ddk, roemer_shapiro_jax,
-                       tropo_jax, dmx_jax, tt_binary_jax=None):
+                       tropo_jax, dmx_jax, tt_binary_jax=None,
+                       tt_binary_red_jax=None):
     """Call the JAX combined delay kernel with all parameters.
 
     Parameters
@@ -948,6 +1025,9 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
     tt_binary_jax : jnp.ndarray or None
         Precomputed (tdb - binary_epoch)*86400 in float64 (computed in longdouble
         externally to avoid float64 cancellation at MJD ~58000).
+    tt_binary_red_jax : jnp.ndarray or None
+        Orbit-count-reduced tt_binary (longdouble reduction; see
+        jug.utils.orbit_reduction). Removes the ~ps float64 phase floor.
     """
     return compute_total_delay_jax(
         tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
@@ -964,7 +1044,8 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         ddk['obs_pos_ls_jax'], ddk['px_jax'],
         ddk['sin_ra_jax'], ddk['cos_ra_jax'], ddk['sin_dec_jax'], ddk['cos_dec_jax'],
         ddk['k96_jax'], ddk['pmra_rad_per_sec_jax'], ddk['pmdec_rad_per_sec_jax'],
-        tropo_jax, dmx_jax, tt_binary_jax,
+        tropo_jax, dmx_jax, tt_binary_jax, tt_binary_red_jax,
+        bp['dr_jax'], bp['dth_jax'],
     ).block_until_ready()
 
 
@@ -1157,10 +1238,19 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     _tzr_has_binary = bp['has_binary_jax']
     if _tzr_binary_epoch_key is not None and bool(_tzr_has_binary):
         _tzr_epoch_ld = get_longdouble(params, _tzr_binary_epoch_key)
-        _tzr_tt_binary = float((np.longdouble(TZRMJD_TDB) - _tzr_epoch_ld) * np.longdouble(86400.0))
-        tzr_tt_binary_jax = jnp.array([_tzr_tt_binary], dtype=jnp.float64)
+        _tzr_tt_binary_ld = (np.longdouble(TZRMJD_TDB) - _tzr_epoch_ld) * np.longdouble(86400.0)
+        tzr_tt_binary_jax = jnp.array([float(_tzr_tt_binary_ld)], dtype=jnp.float64)
+        # Orbit-count reduction (same period logic as the main kernel call)
+        if bp.get('use_fb') and bp['model_id'] == 1:
+            _tzr_tt_red = reduce_binary_time_sec(
+                np.array([_tzr_tt_binary_ld]), fb0_hz=bp.get('fb0_ld'))
+        else:
+            _tzr_tt_red = reduce_binary_time_sec(
+                np.array([_tzr_tt_binary_ld]), pb_days=bp['pb_ld'])
+        tzr_tt_binary_red_jax = jnp.array(_tzr_tt_red, dtype=jnp.float64)
     else:
         tzr_tt_binary_jax = None
+        tzr_tt_binary_red_jax = None
 
     # Call delay kernel at TZR
     tzr_total_delay_jax = _call_delay_kernel(
@@ -1170,6 +1260,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         jnp.array([tzr_tropo_delay], dtype=jnp.float64),
         jnp.array([tzr_dmx_delay], dtype=jnp.float64),
         tzr_tt_binary_jax,
+        tzr_tt_binary_red_jax,
     )
 
     tzr_delay = np.longdouble(float(tzr_total_delay_jax[0]))
@@ -1641,8 +1732,19 @@ def compute_residuals_simple(
         binary_epoch_ld = get_longdouble(params, binary_epoch_key)
         tt_binary_sec_ld = (np.asarray(tdb_mjd, dtype=np.longdouble) - binary_epoch_ld) * np.longdouble(86400.0)
         tt_binary_jax = jnp.array(np.asarray(tt_binary_sec_ld, dtype=np.float64), dtype=jnp.float64)
+        # Orbit-count reduction in longdouble (kills the ~ps float64 phase
+        # floor in the kernel's linear phase term). ELL1 FB pulsars reduce by
+        # 1/FB0 (the kernel's linear coefficient); everything else by PB.
+        # T2 ignores the reduced time (see combined.py branch_t2).
+        if bp.get('use_fb') and bp['model_id'] == 1:
+            tt_binary_red_jax = jnp.array(reduce_binary_time_sec(
+                tt_binary_sec_ld, fb0_hz=bp.get('fb0_ld')), dtype=jnp.float64)
+        else:
+            tt_binary_red_jax = jnp.array(reduce_binary_time_sec(
+                tt_binary_sec_ld, pb_days=bp['pb_ld']), dtype=jnp.float64)
     else:
         tt_binary_jax = None
+        tt_binary_red_jax = None
 
     # DDK Kopeikin parameters
     is_ecliptic = bool(params.get('_ecliptic_coords', False))
@@ -1742,6 +1844,7 @@ def compute_residuals_simple(
     total_delay_jax = _call_delay_kernel(
         tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         dm_jax, bp, ddk, roemer_shapiro_jax, tropo_jax, dmx_jax, tt_binary_jax,
+        tt_binary_red_jax,
     )
     total_delay_sec = np.asarray(total_delay_jax, dtype=np.longdouble)
 
@@ -1794,6 +1897,26 @@ def compute_residuals_simple(
             if verbose:
                 print(f"   Applied EXP dip {exp_idx}: epoch={expep:.1f}, amp={expph:.3e} s, tau={exptau:.1f} d")
         exp_idx += 1
+
+    # Deterministic signals (jug.signals registry: chromatic events, CW,
+    # burst memory...). Detected from par parameters; evaluated ONCE at the
+    # par values (no fittable parameters yet) and ADDED to the total delay,
+    # post-binary like FD — matching the frozen PINT delay component used by
+    # jug/scripts/compare_pint_batch.py (category 'frequency_dependent').
+    # Chromatic scaling uses BARYCENTRIC frequencies (enterprise ssbfreqs
+    # convention); the comparison script must use the same. Not applied at
+    # the TZR TOA: that is a constant phase offset, absorbed by OFFSET.
+    signal_delay_sec = np.zeros(len(tdb_mjd), dtype=np.float64)
+    _detected_signals = detect_signals(params)
+    if _detected_signals:
+        for _sig in _detected_signals:
+            signal_delay_sec += np.asarray(_sig.compute_waveform(
+                np.asarray(tdb_mjd, dtype=np.float64),
+                np.asarray(freq_bary_mhz, dtype=np.float64),
+            ), dtype=np.float64)
+            if verbose:
+                print(f"   Applied deterministic signal: {_sig.summary()}")
+        total_delay_sec += signal_delay_sec
 
     # Apply JUMPs as phase offsets (not delay subtractions).
     # Tempo2 treats JUMPs as phase shifts: delta_phase = F0 * JUMP_value.
@@ -2111,6 +2234,9 @@ def compute_residuals_simple(
         'sw_delay_sec': np.array(sw_delay_sec, dtype=np.float64),
         'sw_geometry_pc': np.array(sw_geometry_pc, dtype=np.float64) if sw_geometry_pc is not None else None,
         'tropo_delay_sec': np.array(tropo_delay_sec, dtype=np.float64),
+        # Deterministic signal delay (jug.signals registry; zeros when no
+        # signal params in the par file). Already included in total_delay_sec.
+        'signal_delay_sec': np.array(signal_delay_sec, dtype=np.float64),
         # SSB to observatory position in light-seconds (needed for astrometry derivatives)
         'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),
         # Sun position relative to observer in light-seconds (for Shapiro recomputation)

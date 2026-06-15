@@ -618,19 +618,17 @@ def _write_dm_noise(params: Dict[str, Any], lines: List[str],
                     written: set) -> None:
     """Write DM noise as DMAMP / DMGAM / DMC (enterprise convention).
 
-    JUG outputs DM noise in the enterprise convention (no offset).
-    If the source value came from a TempoNest key (TNDMAMP), the
-    TNDM_OFFSET is subtracted so the written value is correct.
+    The amplitude is the enterprise/PINT log10 spectral amplitude regardless of
+    source keyword spelling (TNDMAMP included) -- JUG no longer applies the old
+    Tempo2->enterprise TNDM_OFFSET on read, and PINT reads TNDMAMP directly, so
+    no offset is applied on write either (round-trip consistent with the
+    reader; see parse_dm_noise_params).
     """
-    from jug.noise.red_noise import TNDM_OFFSET
-
-    # Amplitude — find source key and apply offset if needed
+    # Amplitude — value is already enterprise convention, written unchanged
     amp_val = None
     for k in ('DMAMP', 'TNDMAMP', 'TNDMAmp', 'DM_log10_A'):
         if k in params:
             amp_val = float(params[k])
-            if k.upper().startswith('TN'):
-                amp_val -= TNDM_OFFSET
             written.add(k)
             break
 

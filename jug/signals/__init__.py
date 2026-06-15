@@ -19,6 +19,7 @@ from jug.signals.base import (
 from jug.signals import continuous_wave  # noqa: F401
 from jug.signals import burst_memory     # noqa: F401
 from jug.signals import chromatic_event  # noqa: F401
+from jug.signals import chromatic_deterministic  # noqa: F401
 
 __all__ = [
     "DeterministicSignal",

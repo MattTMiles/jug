@@ -2099,7 +2099,10 @@ def compute_residuals_simple(
         external_pulse_numbers=external_pn
     )
 
-    # Compute weighted RMS using raw errors
+    # Compute weighted RMS using raw errors.
+    # Formula sqrt(sum(w*r^2)/sum(w)) with w=1/sigma^2 is identical to
+    # jug.engine.stats.compute_residual_stats (subtract_mean=False, the engine
+    # default). Keep the two in sync if either is changed.
     weighted_rms = np.sqrt(np.sum(weights * residuals_us**2) / np.sum(weights))
 
     # Compute weighted RMS with EFAC/EQUAD-scaled errors (PINT-compatible)

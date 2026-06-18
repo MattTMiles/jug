@@ -923,15 +923,15 @@ def _d_delay_d_PB(
     # d(theta)/d(E) = sqrt(1-e^2) / (1 - e*cos(E))
     dtheta_dE = sqrt_1_e2 / (1 - ecc * jnp.cos(E))
     
-    # d(Shapiro)/d(theta)
-    # DD Shapiro delay: Deltat_S = -2r ln(1 - s sin(omega+theta))
-    # where r = T_Sun M2, s = sin(i).
-    # d(Deltat_S)/dtheta = 2r s cos(omega+theta) / [1 - s sin(omega+theta)]
+    # d(Shapiro)/d(theta) for the (1 - s sin(omega+theta)) factor of the DD
+    # Shapiro log-arg, where r = T_Sun M2, s = sin(i):
+    # d/dtheta[-2r ln(1 - s sin(omega+theta))] = 2r s cos(omega+theta) / [1 - s sin(omega+theta)]
     #
-    # NOTE: This is the DD analogue of the ELL1 cos(Phi) factor.
-    # PINT and Tempo2 omit cos(omega+theta) in the equivalent expression.
-    # PINT's ELL1H model (d_delayS_H3_STIGMA_exact_d_Phi)
-    # includes cos(Phi), while ELL1 model does not.
+    # NOTE: PINT's DD model includes this cos(omega+theta) factor — its
+    # d_delayS_d_par chains through omega/E and DD_model.dsDelay_domega equals
+    # 2*TM2*SINI*cos(omega+theta)/(1-s*sin(omega+theta)). The cos-factor omission
+    # is specific to PINT's *ELL1* base model (ELL1_model.d_delayS_d_Phi drops
+    # cos(Phi)); PINT's ELL1H model includes it. JUG includes it everywhere.
     #
     # Wolfram Alpha: d/dx [-2*a*ln(1 - b*sin(x))]  ->  2*a*b*cos(x)/(1-b*sin(x))
     r = T_SUN * m2
@@ -940,9 +940,14 @@ def _d_delay_d_PB(
     denom = 1 - sini * sin_omega_theta
     denom = jnp.maximum(denom, 1e-10)
     dShapiro_dtheta = 2 * r * sini * cos_omega_theta / denom
-    
-    dShapiro_dE = dShapiro_dtheta * dtheta_dE
-    
+
+    # Full DD Shapiro log-arg factors as (1 - e*cosE)(1 - s*sin(omega+theta)); the
+    # (1 - e*cosE) factor's E-dependence (-2r * e*sinE/(1 - e*cosE)) was previously
+    # dropped. Include it so d(Shapiro)/dE is the complete D&D 1986 eq.[26] derivative
+    # (matches dlogArg_dE in _d_delay_d_ECC and PINT DD_model.dsDelay_dE).
+    dShapiro_dE = (dShapiro_dtheta * dtheta_dE
+                   - 2 * r * ecc * jnp.sin(E) / (1 - ecc * jnp.cos(E)))
+
     return (dRoemer_dE + dShapiro_dE) * dE_dM * dM_dPB
 
 
@@ -977,8 +982,11 @@ def _d_delay_d_T0(
     cos_omega_theta = jnp.cos(om_rad + theta)
     denom = jnp.maximum(1 - sini * sin_omega_theta, 1e-10)
     dShapiro_dtheta = 2 * r * sini * cos_omega_theta / denom
-    dShapiro_dE = dShapiro_dtheta * dtheta_dE
-    
+    # Include the (1 - e*cosE) factor's E-dependence (full D&D 1986 eq.[26]
+    # Shapiro log-arg); previously dropped. See _d_delay_d_PB for the derivation.
+    dShapiro_dE = (dShapiro_dtheta * dtheta_dE
+                   - 2 * r * ecc * jnp.sin(E) / (1 - ecc * jnp.cos(E)))
+
     return (dRoemer_dE + dShapiro_dE) * dE_dM * dM_dT0
 
 
@@ -1100,8 +1108,11 @@ def _d_delay_d_PBDOT(
     cos_omega_theta = jnp.cos(om_rad + theta)
     denom = jnp.maximum(1 - sini * sin_omega_theta, 1e-10)
     dShapiro_dtheta = 2 * r * sini * cos_omega_theta / denom
-    dShapiro_dE = dShapiro_dtheta * dtheta_dE
-    
+    # Include the (1 - e*cosE) factor's E-dependence (full D&D 1986 eq.[26]
+    # Shapiro log-arg); previously dropped. See _d_delay_d_PB for the derivation.
+    dShapiro_dE = (dShapiro_dtheta * dtheta_dE
+                   - 2 * r * ecc * jnp.sin(E) / (1 - ecc * jnp.cos(E)))
+
     return (dRoemer_dE + dShapiro_dE) * dE_dM * dM_dPBDOT
 
 

@@ -1,8 +1,13 @@
 """
 WLS (Weighted Least Squares) Fitter - PINT-compatible implementation.
 
-This implements PINT's fit_wls_svd algorithm using JAX for autodiff while
-maintaining full numerical compatibility with PINT's fitter.
+This implements PINT's fit_wls_svd algorithm while maintaining full numerical
+compatibility with PINT's fitter. The timing-model derivatives (design matrix
+columns) are analytic, hand-coded expressions in jug/fitting/derivatives_*.py;
+JAX is used for JIT-compiled array arithmetic (the SVD solve and normalization).
+Exception: the BT/BTX binary model derivatives are computed by exact JAX
+autodiff (jax.grad/jacfwd in jug/delays/binary_bt.py); all other models
+(spin, DM, astrometry, DD-family, ELL1-family, jump, FD, SW) are hand-coded.
 """
 
 from jug.utils.jax_setup import ensure_jax_x64

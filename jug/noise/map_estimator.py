@@ -54,9 +54,14 @@ def _build_numpyro_model(
     ecorr_epoch_groups: Optional[Dict[str, List[List[int]]]] = None,
     n_red_harmonics: int = 30,
     n_dm_harmonics: int = 30,
+    n_chrom_harmonics: int = 0,
     include_red_noise: bool = True,
     include_dm_noise: bool = True,
     include_ecorr: bool = True,
+    include_chrom: bool = False,
+    chrom_idx_low: float = 0.0,
+    chrom_idx_high: float = 7.0,
+    chrom_idx_fixed: Optional[float] = None,
 ):
     """Build a NumPyro model for noise parameter estimation.
 
@@ -102,29 +107,48 @@ def _build_numpyro_model(
     n_toa = len(residuals_sec)
     T_span = (toas_mjd.max() - toas_mjd.min()) * 86400.0  # seconds
 
-    # Pre-compute Fourier design matrices
-    F_columns = []
+    # Pre-compute Fourier design matrices.
+    # Red (achromatic) and DM ((1400/nu)^2) columns have fixed frequency weighting
+    # and are precomputed here. Chromatic-scattering columns use a *sampled*
+    # chromaticity index beta, so only the unweighted time basis is precomputed;
+    # the (1400/nu)^beta weighting is applied inside model() where beta is sampled.
+    from jug.noise.red_noise import build_fourier_design_matrix
+    fixed_columns = []
     n_red_cols = 0
     n_dm_cols = 0
+    n_chrom_cols = 0
 
     if include_red_noise and n_red_harmonics > 0:
-        from jug.noise.red_noise import build_fourier_design_matrix
         F_red, _ = build_fourier_design_matrix(toas_mjd, n_red_harmonics)
         n_red_cols = F_red.shape[1]
-        F_columns.append(jnp.array(F_red))
+        fixed_columns.append(jnp.array(F_red))
 
     if include_dm_noise and n_dm_harmonics > 0:
-        from jug.noise.red_noise import build_fourier_design_matrix
         F_dm_time, _ = build_fourier_design_matrix(toas_mjd, n_dm_harmonics)
-        # DM noise scales as 1/freq^2
-        from jug.utils.constants import K_DM_SEC
-        dm_scale = K_DM_SEC / (freq_mhz ** 2)
+        # DM noise chromatic weight in the enterprise/GLS convention: (1400/nu)^2,
+        # matching jug.noise.red_noise.DMNoiseProcess (ref freq 1400 MHz) so the
+        # recovered TNDMAMP is on the same scale as JUG's GLS and Discovery.
+        # (Previously used K_DM_SEC/nu^2, which put log10_A_dm on a different scale.)
+        dm_scale = (1400.0 / freq_mhz) ** 2
         F_dm = F_dm_time * dm_scale[:, None]
         n_dm_cols = F_dm.shape[1]
-        F_columns.append(jnp.array(F_dm))
+        fixed_columns.append(jnp.array(F_dm))
 
-    F_total = jnp.concatenate(F_columns, axis=1) if F_columns else None
-    n_fourier = n_red_cols + n_dm_cols
+    F_fixed = jnp.concatenate(fixed_columns, axis=1) if fixed_columns else None
+
+    # Chromatic scattering basis: variable chromaticity index. Only the unweighted
+    # time basis and the (1400/nu) ratio are precomputed; (1400/nu)^beta is applied
+    # in model(). Matches jug.noise.red_noise.ChromaticNoiseProcess so TNCHROMAMP is
+    # on the enterprise/GLS scale (beta=2 -> DM-like, beta~4 -> scattering).
+    F_chrom_time = None
+    chrom_ratio = None
+    if include_chrom and n_chrom_harmonics > 0:
+        F_ct, _ = build_fourier_design_matrix(toas_mjd, n_chrom_harmonics)
+        F_chrom_time = jnp.array(F_ct)
+        chrom_ratio = jnp.array(1400.0 / freq_mhz)  # (n_toa,)
+        n_chrom_cols = F_chrom_time.shape[1]
+
+    n_fourier = n_red_cols + n_dm_cols + n_chrom_cols
 
     # Convert to JAX arrays
     r = jnp.array(residuals_sec)
@@ -162,11 +186,14 @@ def _build_numpyro_model(
 
     # Frequency references for power-law spectra
     f_yr = 1.0 / (365.25 * 86400.0)  # 1/year in Hz
-    freqs = jnp.arange(1, max(n_red_harmonics, n_dm_harmonics) + 1) / T_span
+    freqs = jnp.arange(1, max(n_red_harmonics, n_dm_harmonics, n_chrom_harmonics) + 1) / T_span
 
     def model():
         # --- White noise parameters ---
-        # Diagonal noise variance: N_ii = (EFAC_b * sigma_i)^2 + EQUAD_b^2
+        # Diagonal noise variance (Tempo2/PINT convention):
+        #   N_ii = EFAC_b^2 * (sigma_i^2 + EQUAD_b^2)
+        # EQUAD is added in quadrature inside the parentheses and EFAC scales
+        # the whole term -- NOT the ENTERPRISE form (EFAC*sigma)^2 + EQUAD^2.
         N_diag = jnp.zeros(n_toa)
 
         for name in backend_names:
@@ -180,8 +207,8 @@ def _build_numpyro_model(
                 dist.Uniform(-10.0, -4.0)
             )
             equad = 10.0 ** log10_equad
-            # N_ii = (EFAC * sigma)^2 + EQUAD^2
-            backend_var = (efac * sigma_orig) ** 2 + equad ** 2
+            # N_ii = EFAC^2 * (sigma^2 + T2EQUAD^2)
+            backend_var = efac ** 2 * (sigma_orig ** 2 + equad ** 2)
             N_diag = N_diag + mask * backend_var
 
         # Ensure no zeros
@@ -214,11 +241,14 @@ def _build_numpyro_model(
                 dist.Uniform(0.0, 7.0)
             )
             A_red = 10.0 ** log10_A_red
-            # Power-law spectrum: P(f) = A^2/(12pi^2) * (f/f_yr)^(-gamma) * T_span
-            # Diagonal prior variance for each pair [cos, sin]
+            # Per-coefficient prior variance, enterprise/Lentati (2014) convention
+            # (identical to jug.noise.red_noise.RedNoiseProcess.build_basis_and_prior):
+            #   phi_k = A^2/(12 pi^2) * f_yr^(gamma-3) * f_k^(-gamma) * df,  df = 1/T_span
+            # The f_yr^(-3) factor is essential: without it log10_A is ~11 dex off the
+            # enterprise scale and the red term contributes negligible variance.
             rn_freqs = freqs[:n_red_harmonics]
             rn_psd = (A_red ** 2 / (12.0 * jnp.pi ** 2)) * \
-                     (rn_freqs / f_yr) ** (-gamma_red) / T_span
+                     (rn_freqs / f_yr) ** (-gamma_red) * f_yr ** (-3.0) / T_span
             # Each harmonic has cos and sin -> duplicate
             rn_prior = jnp.repeat(rn_psd, 2)
             phi_diag = phi_diag.at[:n_red_cols].set(rn_prior)
@@ -233,11 +263,54 @@ def _build_numpyro_model(
                 dist.Uniform(0.0, 7.0)
             )
             A_dm = 10.0 ** log10_A_dm
+            # Same enterprise convention as red noise (with the (1400/nu)^2 basis above).
             dm_freqs = freqs[:n_dm_harmonics]
             dm_psd = (A_dm ** 2 / (12.0 * jnp.pi ** 2)) * \
-                     (dm_freqs / f_yr) ** (-gamma_dm) / T_span
+                     (dm_freqs / f_yr) ** (-gamma_dm) * f_yr ** (-3.0) / T_span
             dm_prior = jnp.repeat(dm_psd, 2)
             phi_diag = phi_diag.at[n_red_cols:n_red_cols + n_dm_cols].set(dm_prior)
+
+        # --- Chromatic scattering noise (variable chromaticity index) ---
+        F_chrom = None
+        if include_chrom and n_chrom_cols > 0:
+            log10_A_chrom = numpyro.sample(
+                "log10_A_chrom",
+                dist.Uniform(-20.0, -10.0)
+            )
+            gamma_chrom = numpyro.sample(
+                "gamma_chrom",
+                dist.Uniform(0.0, 7.0)
+            )
+            # Chromaticity index beta (2 = DM-like, ~4 = scattering). Sampled when
+            # free; held fixed when chrom_idx_fixed is given. Fixing beta removes the
+            # amplitude<->index degeneracy that biases the MAP *mode* of a free-index
+            # chromatic process (the joint mode != marginal posterior; full sampling
+            # recovers it, the point estimate does not). Matches the Wright/PINT
+            # PLChromNoise convention of a fixed TNCHROMIDX (default 4).
+            if chrom_idx_fixed is not None:
+                chrom_idx = float(chrom_idx_fixed)
+            else:
+                chrom_idx = numpyro.sample(
+                    "chrom_idx",
+                    dist.Uniform(chrom_idx_low, chrom_idx_high)
+                )
+            A_chrom = 10.0 ** log10_A_chrom
+            ch_freqs = freqs[:n_chrom_harmonics]
+            ch_psd = (A_chrom ** 2 / (12.0 * jnp.pi ** 2)) * \
+                     (ch_freqs / f_yr) ** (-gamma_chrom) * f_yr ** (-3.0) / T_span
+            ch_prior = jnp.repeat(ch_psd, 2)
+            c0 = n_red_cols + n_dm_cols
+            phi_diag = phi_diag.at[c0:c0 + n_chrom_cols].set(ch_prior)
+            # Variable-chromaticity weighting (1400/nu)^beta applied to the time basis.
+            F_chrom = F_chrom_time * (chrom_ratio ** chrom_idx)[:, None]
+
+        # Assemble the full Fourier basis: fixed (red+DM) + variable chromatic columns.
+        if F_fixed is not None and F_chrom is not None:
+            F_total = jnp.concatenate([F_fixed, F_chrom], axis=1)
+        elif F_chrom is not None:
+            F_total = F_chrom
+        else:
+            F_total = F_fixed
 
         # --- Marginalized log-likelihood ---
         # C = N + U J U^T + F Phi F^T
@@ -411,9 +484,14 @@ def estimate_noise_parameters(
     params: Dict[str, Any],
     n_red_harmonics: int = 30,
     n_dm_harmonics: int = 30,
+    n_chrom_harmonics: int = 30,
     include_red_noise: bool = True,
     include_dm_noise: bool = True,
     include_ecorr: bool = True,
+    include_chrom: bool = False,
+    chrom_idx_low: float = 0.0,
+    chrom_idx_high: float = 7.0,
+    chrom_idx_fixed: Optional[float] = None,
     batch_size: int = 1000,
     max_num_batches: int = 50,
     patience: int = 3,
@@ -444,6 +522,14 @@ def estimate_noise_parameters(
         Number of Fourier harmonics for red/DM noise.
     include_red_noise, include_dm_noise, include_ecorr : bool
         Whether to include each noise component.
+    include_chrom : bool
+        Whether to include a chromatic scattering process with a *fitted*
+        chromaticity index beta (basis weight (1400/nu)^beta; beta=2 is DM-like,
+        beta~4 is scattering). Outputs TNCHROMAMP/TNCHROMGAM/TNCHROMIDX/TNCHROMC.
+    n_chrom_harmonics : int
+        Number of Fourier harmonics for the chromatic process.
+    chrom_idx_low, chrom_idx_high : float
+        Uniform-prior bounds on the chromaticity index beta (default 0..7).
     batch_size : int
         SVI batch size (steps per training batch).
     max_num_batches : int
@@ -532,7 +618,8 @@ def estimate_noise_parameters(
         f"MAP estimation: {len(backend_masks)} backends, "
         f"{len(ecorr_masks)} ECORR groups, "
         f"red={include_red_noise} ({n_red_harmonics}), "
-        f"dm={include_dm_noise} ({n_dm_harmonics})"
+        f"dm={include_dm_noise} ({n_dm_harmonics}), "
+        f"chrom={include_chrom} ({n_chrom_harmonics})"
     )
 
     # Build NumPyro model
@@ -546,9 +633,14 @@ def estimate_noise_parameters(
         ecorr_epoch_groups=ecorr_epoch_groups,
         n_red_harmonics=n_red_harmonics,
         n_dm_harmonics=n_dm_harmonics,
+        n_chrom_harmonics=n_chrom_harmonics,
         include_red_noise=include_red_noise,
         include_dm_noise=include_dm_noise,
         include_ecorr=include_ecorr,
+        include_chrom=include_chrom,
+        chrom_idx_low=chrom_idx_low,
+        chrom_idx_high=chrom_idx_high,
+        chrom_idx_fixed=chrom_idx_fixed,
     )
 
     # Set up SVI with AutoDelta guide (MAP estimation)
@@ -575,6 +667,9 @@ def estimate_noise_parameters(
         key.removesuffix("_auto_loc"): float(value)
         for key, value in raw_params.items()
     }
+    # Surface a fixed chromaticity index alongside the sampled params.
+    if include_chrom and chrom_idx_fixed is not None:
+        clean_params["chrom_idx"] = float(chrom_idx_fixed)
 
     logger.info(f"MAP estimation complete. Parameters: {clean_params}")
 
@@ -584,6 +679,8 @@ def estimate_noise_parameters(
         ecorr_masks=ecorr_masks,
         n_red_harmonics=n_red_harmonics,
         n_dm_harmonics=n_dm_harmonics,
+        n_chrom_harmonics=n_chrom_harmonics,
+        chrom_idx_fixed=chrom_idx_fixed,
     )
 
     return NoiseEstimateResult(
@@ -601,6 +698,8 @@ def _convert_to_jug_format(
     ecorr_masks: Optional[Dict[str, np.ndarray]] = None,
     n_red_harmonics: int = 30,
     n_dm_harmonics: int = 30,
+    n_chrom_harmonics: int = 30,
+    chrom_idx_fixed: Optional[float] = None,
 ) -> Dict[str, float]:
     """Convert estimated parameters to JUG par-file format.
 
@@ -637,5 +736,14 @@ def _convert_to_jug_format(
         result["TNDMAMP"] = estimated["log10_A_dm"]
         result["TNDMGAM"] = estimated.get("gamma_dm", 0.0)
         result["TNDMC"] = float(n_dm_harmonics)
+
+    if "log10_A_chrom" in estimated:
+        # Chromatic scattering noise with fitted chromaticity index.
+        result["TNCHROMAMP"] = estimated["log10_A_chrom"]
+        result["TNCHROMGAM"] = estimated.get("gamma_chrom", 0.0)
+        # chrom_idx is sampled when free; absent (fixed) -> use the fixed value.
+        result["TNCHROMIDX"] = (float(chrom_idx_fixed) if chrom_idx_fixed is not None
+                                else estimated.get("chrom_idx", 4.0))
+        result["TNCHROMC"] = float(n_chrom_harmonics)
 
     return result

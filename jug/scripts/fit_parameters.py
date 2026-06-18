@@ -70,8 +70,12 @@ Environment Variable:
     # Fit parameters
     parser.add_argument('--fit', nargs='+',
                        metavar='PARAM',
-                       help='Parameters to fit (e.g., F0 F1 DM)')
-    
+                       help='Parameters to fit (e.g., F0 F1 DM). '
+                            'Default: the fit-flagged parameters in the par file.')
+    parser.add_argument('--no-fit', action='store_true',
+                       help='Skip fitting; compute prefit residuals only '
+                            '(overrides par fit flags).')
+
     # Device selection
     parser.add_argument('--device', type=str, choices=['cpu', 'gpu', 'auto'],
                        default=None,
@@ -111,20 +115,32 @@ Environment Variable:
         parser.error("par_file and tim_file are required unless using --show-devices")
         return 1
     
-    # If --fit not specified, run in no-fit mode (just compute prefit residuals)
-    no_fit_mode = (args.fit is None or len(args.fit) == 0)
-    
     # Validate files exist
     par_file = Path(args.par_file)
     tim_file = Path(args.tim_file)
-    
+
     if not par_file.exists():
         print(f"Error: Par file not found: {par_file}", file=sys.stderr)
         return 1
-    
+
     if not tim_file.exists():
         print(f"Error: Tim file not found: {tim_file}", file=sys.stderr)
         return 1
+
+    # Parameter selection:
+    #   --no-fit        -> prefit residuals only (overrides par flags)
+    #   --fit P1 P2 ... -> fit exactly those parameters
+    #   neither         -> fit the par file's fit-flagged params
+    #                      (matches TimingSession.free_params / the GUI)
+    if args.no_fit:
+        args.fit = None
+    elif args.fit is None:
+        import re
+        _flags = parse_par_file(par_file).get('_fit_flags', {})
+        args.fit = [k for k in sorted(_flags) if not re.match(r'^DMX_\d+$', k)]
+
+    # No-fit mode when nothing to fit (explicit --no-fit, or no flags in par)
+    no_fit_mode = (args.fit is None or len(args.fit) == 0)
     
     # Set device preference if specified
     if args.device:

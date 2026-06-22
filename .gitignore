@@ -90,3 +90,7 @@ playground/
 
 # Serena MCP workspace
 .serena/
+
+# Clock/EOP updater local backups
+data/clock/.backup/
+data/earth/.backup/

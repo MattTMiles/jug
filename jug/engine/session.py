@@ -628,6 +628,15 @@ class TimingSession:
             for _bat_key in ('bat_mjd_ld', 'bat_mjd', 'bat_sec'):
                 if _bat_key in cached_result and _bat_key not in result:
                     result[_bat_key] = cached_result[_bat_key]
+
+            # Expose barycentric observing frequencies (MHz) and per-TOA flags
+            # alongside bat_mjd/design_matrix. Sourced from the same residual
+            # path (compute_residuals_simple) and the same self.toas_data order
+            # as bat_mjd, so they are row-for-row aligned (unmasked, full length).
+            if 'freq_bary_mhz' in cached_result and 'freq_bary_mhz' not in result:
+                result['freq_bary_mhz'] = cached_result['freq_bary_mhz']
+            if 'toa_flags' not in result:
+                result['toa_flags'] = toa_flags
         else:
             # FALLBACK PATH: Use file-based fitting (slower but always works)
             if verbose:

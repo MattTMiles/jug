@@ -19,12 +19,12 @@
       "size_bytes": 80566
     },
     "clock/tai2tt_bipm2022.clk": {
-      "sha256": "3008fb0db51eea448aeb913dd9329c59aea76850a5adde1dddeeb972b3757f80",
-      "size_bytes": 75758
+      "sha256": "f2659c5192db7994f6b9b79e33875ab8b035f9ac0a5a580980d9847470ad80af",
+      "size_bytes": 78522
     },
     "clock/tai2tt_bipm2021.clk": {
-      "sha256": "14a85a50f4ae37a0202202f55a9c8ee5f10b36caec6cfdea4220115f151125f5",
-      "size_bytes": 74785
+      "sha256": "b7918b0442304e59ed5d6cd803d62e8b734397c3b83418edfc28ca63665295c4",
+      "size_bytes": 77513
     },
     "clock/utc2tai.clk": {
       "sha256": "cade8c0b65ad37682e8e265a10e7587454faf9c5a1d77009458daacf940847bf",
@@ -33,6 +33,42 @@
     "observatory/observatories.dat": {
       "sha256": "1bb9faad79ab66a653d4f7b0a4556bb621a3f7a95a13ef8b2eaf2c366b6731cf",
       "size_bytes": 10439
+    },
+    "clock/gps2utc.clk": {
+      "sha256": "f102b90720aef46809a60bfc26375ee578927980ce09e80fcbb690de2d3128d9",
+      "size_bytes": 338450
+    },
+    "clock/jb2gps.clk": {
+      "sha256": "d4b3ddb5543ba8b9dc02a8261c42a59494c9915dc004f803d48bb1ce3058b37c",
+      "size_bytes": 4584504
+    },
+    "clock/mk2utc_observatory.clk": {
+      "sha256": "932e6711c105f8502b5eeb740c9b1b8b8129ad766527c0b957de04cbe0c1766e",
+      "size_bytes": 6168446
+    },
+    "clock/ncyobs2obspm.clk": {
+      "sha256": "7d7d3aabd4ca7ca07792aeac442bc05f8666a10d07375bb058d829d2c7d14e8b",
+      "size_bytes": 555227
+    },
+    "clock/obspm2gps.clk": {
+      "sha256": "f1a89b4bb20e4ddaab9b9dfcaa576c9eb9ee783a7305ceed64a8895ebbc7262c",
+      "size_bytes": 233465
+    },
+    "clock/pks2gps.clk": {
+      "sha256": "53c2ea5e57df1b902b70c3363d8308b3e01a75ba329bb5f3c750a6ba3d0e6e7d",
+      "size_bytes": 1303727
+    },
+    "clock/tai2tt_bipm2020.clk": {
+      "sha256": "5b77068b5fd5407c7349227e27a73400357ba60902659045866ea6cd5023be49",
+      "size_bytes": 76478
+    },
+    "clock/tai2tt_bipm2023.clk": {
+      "sha256": "f99dc4c467568d0fb01d6b076af36ed5add935e2593adf60e33611ebdd5f363d",
+      "size_bytes": 79560
+    },
+    "earth/eopc04_IAU2000.62-now": {
+      "sha256": "64a9286aefe6022359acc704c417bcb041dd1228ec22edfdd92c143fcf9d8f93",
+      "size_bytes": 3669861
     }
   }
 }

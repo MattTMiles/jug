@@ -279,6 +279,9 @@ class NoiseControlPanel(QWidget):
 
     # Processes that support subtract-from-residuals
     _SUBTRACTABLE = {"RedNoise", "DMNoise", "ChromaticNoise", "CW", "BWM", "ChromaticEvent"}
+    # Noise-registry processes hidden from this panel (handled elsewhere in the GUI).
+    # DMX is fitted from the "Parameters to Fit" side, so it must not also appear here.
+    _HIDDEN_PROCESSES = {"DMX"}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -412,6 +415,11 @@ class NoiseControlPanel(QWidget):
         self._est_cb_dm.setStyleSheet(cb_style)
         el_layout.addWidget(self._est_cb_dm)
 
+        self._est_cb_chrom = QCheckBox("Chromatic Scattering\n(fitted index)")
+        self._est_cb_chrom.setChecked(False)
+        self._est_cb_chrom.setStyleSheet(cb_style)
+        el_layout.addWidget(self._est_cb_chrom)
+
         # "Estimate" action button
         self._est_run_btn = QPushButton(">  Estimate")
         self._est_run_btn.setCursor(Qt.PointingHandCursor)
@@ -529,6 +537,8 @@ class NoiseControlPanel(QWidget):
         entries = parse_noise_lines(noise_lines) if noise_lines else []
 
         for proc_name in get_noise_display_order():
+            if proc_name in self._HIDDEN_PROCESSES:
+                continue
             detected = self._noise_config.is_enabled(proc_name)
 
             if not detected:
@@ -572,12 +582,16 @@ class NoiseControlPanel(QWidget):
         self._rebuild_add_list()
 
         # Update estimate checkboxes to match detected noise
-        from jug.noise.red_noise import parse_red_noise_params, parse_dm_noise_params
+        from jug.noise.red_noise import (
+            parse_red_noise_params, parse_dm_noise_params, parse_chromatic_noise_params,
+        )
         has_red = parse_red_noise_params(params) is not None
         has_dm = parse_dm_noise_params(params) is not None
+        has_chrom = parse_chromatic_noise_params(params) is not None
         has_ecorr = any(e.kind.upper() == 'ECORR' for e in entries)
         self._est_cb_red.setChecked(has_red)
         self._est_cb_dm.setChecked(has_dm)
+        self._est_cb_chrom.setChecked(has_chrom)
         self._est_cb_ecorr.setChecked(has_ecorr)
 
     def get_noise_config(self) -> Optional["NoiseConfig"]:
@@ -792,6 +806,7 @@ class NoiseControlPanel(QWidget):
             'include_ecorr': self._est_cb_ecorr.isChecked(),
             'include_red': self._est_cb_red.isChecked(),
             'include_dm': self._est_cb_dm.isChecked(),
+            'include_chrom': self._est_cb_chrom.isChecked(),
         }
         self.estimate_noise_requested.emit(selections)
 
@@ -829,6 +844,8 @@ class NoiseControlPanel(QWidget):
 
         any_available = False
         for name in get_noise_display_order():
+            if name in self._HIDDEN_PROCESSES:
+                continue
             if name not in self._rows:
                 any_available = True
                 btn = QPushButton(get_noise_label(name))

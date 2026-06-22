@@ -1326,7 +1326,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     # Compute phase at TZR using generic Taylor series (same as FB pattern).
     # Subtract MJDs first for longdouble precision (see dt_sec note in
     # compute_residuals_simple).
-    tzr_dt_sec = (TZRMJD_TDB - PEPOCH) * np.longdouble(SECS_PER_DAY) - tzr_delay
+    tzr_dt_sec = ((TZRMJD_TDB - PEPOCH) - tzr_delay / np.longdouble(SECS_PER_DAY)) * np.longdouble(SECS_PER_DAY)
     n_f = len(f_coeffs)
     tzr_phase = np.longdouble(0.0)
     for i in range(n_f - 1, -1, -1):
@@ -2041,7 +2041,11 @@ def compute_residuals_simple(
     # ~5e-10 s ~ 500 ps), bleeding ~130 ps RMS into the prefit residual
     # versus PINT's MJD-first convention.
     tdb_mjd_ld = np.array(tdb_mjd, dtype=np.longdouble)
-    dt_sec = (tdb_mjd_ld - PEPOCH) * np.longdouble(SECS_PER_DAY) - delay_sec
+    # Subtract the barycentric delay in DAYS (before scaling to seconds) so it is
+    # removed from the O(10^4 d) time difference rather than the O(10^8 s) value --
+    # matches PINT's Spindown.get_dt arithmetic order and removes the ~few-ps,
+    # baseline-end-growing JUG-PINT difference from doing this at a different scale.
+    dt_sec = ((tdb_mjd_ld - PEPOCH) - delay_sec / np.longdouble(SECS_PER_DAY)) * np.longdouble(SECS_PER_DAY)
 
     # Phase computation is done by the shared function below (after TZR block)
 

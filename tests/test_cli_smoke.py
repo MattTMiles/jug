@@ -28,7 +28,6 @@ CLI_MODULES = [
     ("jug.scripts.fit_parameters", ["--help"], "fit parameters CLI"),
     ("jug.gui.main", ["--help"], "GUI main"),
     ("jug.scripts.benchmark_stages", ["--help"], "benchmark CLI"),
-    ("jug.scripts.jugd", ["--help"], "jugd daemon"),
 ]
 
 # Console script names (optional - may not be installed)
@@ -37,7 +36,6 @@ CLI_COMMANDS = [
     "jug-fit", 
     "jug-gui",
     "jug-benchmark",
-    "jugd",
 ]
 
 

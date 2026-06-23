@@ -337,7 +337,12 @@ class GeometryDiskCache:
         """
         hashes = {name: compute_array_hash(arr) for name, arr in sorted(key_arrays.items())}
         joined = "_".join(hashes[name] for name in sorted(hashes))
-        return f"geom_{tag}_{joined}", hashes
+        # Digest the joined hashes to a fixed-length filename component. With many
+        # key arrays the raw join exceeds the 255-byte filename limit (OSError 36).
+        # The full per-array hashes still live in metadata['key_hashes'] and are
+        # checked exactly on load, so collapsing the filename keeps validation strict.
+        digest = hashlib.sha256(joined.encode()).hexdigest()[:32]
+        return f"geom_{tag}_{digest}", hashes
 
     def load_named(self, tag: str, key_arrays: dict, names: list) -> Optional[dict]:
         """Load a generic named-array cache entry (same validation rules as

@@ -803,6 +803,8 @@ def gather(jname, par, tim, maxiter, clock_dir, pint_clock_dir, signal_mode,
             "glitch params frozen in BOTH codes (no JUG glitch-fit derivatives "
             "yet; applied deterministically at par values): "
             + ", ".join(sorted(D["_frozen_glitch"])))
+    # fit_dmx defaults to flag-driven (fit each DMX bin iff flagged free in the
+    # PAR), which already mirrors PINT, so no special handling is needed here.
     fit_result = session.fit_parameters(max_iter=maxiter)
     comps = session.compute_residuals(subtract_tzr=True, force_recompute=True)
     D["comps"] = comps

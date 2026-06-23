@@ -499,12 +499,14 @@ class TimingSession:
             after subtracting a noise realization from the displayed residuals,
             the fitter should work on the cleaned data. If None, no noise
             subtraction is applied.
-        fit_dmx : bool, default True
-            If True (default), DMX_* bins in the PAR are auto-added as fitted
-            timing parameters (PINT-like). If False, the fixed DMX delays from
-            the PAR are still applied to residuals but DMX_* are NOT fitted.
-            Use False for global-DM recovery checks (fitting DM + all DMX is
-            degenerate).
+        fit_dmx : bool or str, default True
+            Which DMX_* bins to auto-add as fitted timing parameters.
+            - True (default): fit each DMX bin iff flagged free in the PAR
+              (per-bin flag = 1), like every other parameter and like PINT.
+              Frozen bins keep PAR values applied to residuals but are not fit.
+            - False: fit no DMX bins (PAR delays still applied). Use for
+              global-DM recovery checks where DM + DMX is degenerate.
+            - "all": force-fit every DMX bin regardless of flag (legacy).
 
         Returns
         -------

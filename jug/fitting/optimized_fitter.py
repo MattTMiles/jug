@@ -779,12 +779,16 @@ def fit_parameters_optimized(
     device : str, optional
         Device preference: 'cpu', 'gpu', or 'auto'.
         If None, uses global preference (default: 'cpu').
-    fit_dmx : bool, default True
-        If True (default), DMX_* bins found in the PAR are auto-added as
-        fitted timing parameters (PINT-like). If False, the fixed DMX delays
-        from the PAR are still applied to the residuals, but DMX_* bins are
-        NOT fitted. Use False for global-DM recovery checks where fitting DM
-        plus all DMX bins is degenerate.
+    fit_dmx : bool or str, default True
+        Controls which DMX_* bins are auto-added as fitted timing parameters.
+        - True (default): fit each DMX bin iff it is flagged free in the PAR
+          (per-bin fit flag = 1), exactly like every other parameter and like
+          PINT. Frozen bins (flag 0 / absent) keep their PAR values applied to
+          the residuals but are not fitted.
+        - False: fit no DMX bins (PAR delays still applied). Use for global-DM
+          recovery checks where fitting DM plus DMX bins is degenerate.
+        - "all": force-fit every DMX bin regardless of its flag (legacy
+          behaviour, for PARs that omit DMX flags but where you want them fit).
 
     Returns
     -------
@@ -1207,12 +1211,31 @@ def _build_setup_common(
         # It used to ride in the GLS noise basis because its design matrix is
         # basis-like, but keeping it in fit_params makes each nonlinear
         # iteration update the DMX baseline just like PINT.
+        #
+        # WHICH bins to fit follows the per-bin PAR fit flag, exactly like every
+        # other parameter and exactly like PINT (a bin is fit iff flagged free).
+        # Previously ALL bins were auto-fit regardless of flag, which silently
+        # overfit hundreds of frozen DMX bins on a PAR whose DMX is held fixed
+        # (e.g. an injection truth PAR). Pass fit_dmx="all" to force-fit every
+        # bin regardless of flags (legacy behaviour, for PARs that omit DMX
+        # flags but where you still want every bin fitted).
         existing = set(fit_params)
-        added_dmx = [label for label in dmx_labels if label not in existing]
+        if fit_dmx == "all":
+            candidate_dmx = list(dmx_labels)
+        else:
+            dmx_flags = params.get("_fit_flags", {}) or {}
+            candidate_dmx = [label for label in dmx_labels if dmx_flags.get(label)]
+        added_dmx = [label for label in candidate_dmx if label not in existing]
         if added_dmx:
             fit_params = list(fit_params) + added_dmx
             if verbose:
-                print(f"  Auto-added {len(added_dmx)} DMX timing parameters")
+                how = "all bins" if fit_dmx == "all" else "PAR-flagged free"
+                print(f"  Auto-added {len(added_dmx)} DMX timing parameters ({how})")
+        elif verbose:
+            # No bins selected: every DMX bin is frozen in the PAR. Delays still
+            # applied at PAR values via dmx_design_matrix @ par_values.
+            print(f"  Holding {len(dmx_labels)} DMX bins fixed at PAR values "
+                  f"(no free DMX flags)")
     elif dmx_labels and not fit_dmx and verbose:
         # fit_dmx=False: keep fixed DMX delays from the PAR (still applied via
         # dmx_design_matrix @ par_values in residual recompute), but do NOT add

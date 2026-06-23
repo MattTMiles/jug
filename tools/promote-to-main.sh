@@ -29,7 +29,7 @@ MAIN_BRANCH="main"
 REMOTE="origin"
 
 # Paths that must NEVER land on main (extended-glob patterns).
-EXCLUDE_GLOBS=( 'notebooks/*' '.jug_speed_baseline.json' )
+EXCLUDE_GLOBS=( 'notebooks/*' '.jug_speed_baseline.json' 'tools/promote-to-main.sh' )
 
 dry_run=0
 msg=""

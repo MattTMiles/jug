@@ -216,8 +216,47 @@ def _par_uses_dilatefreq(par_path):
     return False
 
 
+def _match_tempo2_ell1h(model):
+    """Align PINT's ELL1H Shapiro harmonics with Tempo2 (= the par author = JUG).
+
+    Tempo2 ELL1Hmodel.C and PINT disagree on the ELL1H Shapiro by DEFAULT, and at
+    FIXED Tempo2-fit par params those defaults give the wrong prefit residuals:
+
+    * H3+STIGMA: PINT default = delayS_H3_STIGMA_exact (full log, F&W Eq. 29);
+      Tempo2 mode 1 = Eq. 28, which drops the k=1,2 harmonics (degenerate with the
+      ELL1 Roemer a1/EPS terms, already absorbed by the fit). Eq. 29 double-counts
+      them. J1902-5105 (STIG=1.154): PINT default WRMS 2.356 us w/ sin/cos(2Phi)
+      structure -> 3p-exact 1.696 us == par TRES 1.637 == JUG. Select PINT's own
+      delayS3p_H3_STIGMA_exact (Eq. 28).
+
+    * H3+H4: PINT forces NHARMS=max(NHARMS,7); Tempo2 default nharm=4 (calcDH:
+      ds = -4/3*h3*sin(3Phi) + h4*cos(4Phi), the sd5 harmonics 5+ only switch on
+      for nharm>4). JUG uses the same nharm=4 truncation. The extra harmonics are
+      a real ~300 ns term (J0613-0200: NHARMS=7 -> JUG-PINT 296.7 ns; NHARMS=4 ->
+      7.4 ns, i.e. TCB floor). Set NHARMS=4.
+
+    All three (Tempo2, JUG, PINT) then agree. H3-only (stig=0) is unaffected.
+    """
+    comp = model.components.get("BinaryELL1H")
+    if comp is None:
+        return
+    bi = getattr(comp, "binary_instance", None)
+    fit_params = getattr(bi, "fit_params", None) if bi is not None else None
+    if fit_params == ["H3", "STIGMA"]:
+        try:
+            bi.ds_func = bi.delayS3p_H3_STIGMA_exact
+        except AttributeError:
+            pass
+    elif fit_params == ["H3", "H4"]:
+        try:
+            model.NHARMS.value = 4
+        except Exception:
+            pass
+
+
 def prepare_pint_model(model, par_path):
     """Apply notebook-compatible model conventions before loading TOAs."""
+    _match_tempo2_ell1h(model)
     if not _par_uses_dilatefreq(par_path):
         return model
     from jug.delays.barycentric import compute_einstein_rate
@@ -241,6 +280,21 @@ def prepare_pint_toas(model, toas):
 
     corrected = np.asarray([float(t.value) for t in toas.table["mjd"]], dtype=float)
     toas.table["mjd_float"] = corrected * u.d
+    # TRACK -2 (Tempo2 phase-connected pulse numbering): PINT's Residuals() raises
+    # "Pulse numbers missing from TOAs but track_mode requires them" unless the
+    # TOAs carry pulse numbers. JUG honors TRACK -2 via its own phase-connection
+    # (_track_pulse_numbers, simple_calculator.py:446); these PPTA tims carry no
+    # -pn flags, so derive PINT's pulse numbers from the model phase to keep both
+    # codes in tracking mode (apples-to-apples). A divergence here would itself be
+    # a finding rather than something to paper over.
+    track = getattr(model, "TRACK", None)
+    if (track is not None and str(getattr(track, "value", "")).strip() in ("-2", "-2.0")
+            and "pulse_number" not in toas.table.colnames):
+        try:
+            toas.compute_pulse_numbers(model)
+        except Exception as exc:
+            print(f"    TRACK -2: compute_pulse_numbers failed ({exc}); "
+                  f"PINT will not track")
     model.find_empty_masks(toas, freeze=True)
     return toas
 
@@ -273,7 +327,13 @@ def detect_jug_signals(par_path: Path):
         # "CHROMBUMPAMP_" for the latter, matching nothing -> dummy params
         # leaked into PINT -> get_noise_weights crash.
         if "_" in keys[0]:
-            prefixes.add(keys[0].split("_")[0] + "_")
+            # One prefix PER required key, not just keys[0]: most signals share a
+            # single first segment (CHROMEV_*, CW_*), but the exponential-dip
+            # signal owns four distinct ones (EXPEP_/EXPPH_/EXPTAU_/EXPINDEX_) that
+            # must ALL be stripped, else PINT re-loads its SimpleExponentialDip from
+            # the leftovers and double-counts the (JUG-injected) dip.
+            for k in keys:
+                prefixes.add(k.split("_")[0] + "_")
         else:
             prefixes.add(os.path.commonprefix(keys))
     return signals, prefixes
@@ -292,16 +352,182 @@ def write_pint_safe_par(par_path: Path, strip_prefixes, workdir: Path) -> Path:
     return out
 
 
+def _inject_pint_fb0(path: Path, workdir: Path, stem: str) -> Path | None:
+    """Add FB0 = 1/(PB*86400) and drop PB so PINT can load an FB-parameterized
+    binary that gives PB + FB1.. but no FB0 (Tempo2/PPTA convention).
+
+    PINT's BinaryELL1/DD setup hard-raises "Some FBn parameters are set but FB0
+    is not." JUG handles this natively (simple_calculator.py:867-872 synthesizes
+    FB0 = 1/(PB*86400) from the same float64 PB). This makes the PINT side use
+    the IDENTICAL constant orbital frequency -- a pure reparameterization (PB and
+    FB0 are exact inverses), so the physical solution is preserved. JUG still
+    reads the ORIGINAL par; only the PINT model is reparameterized. Returns the
+    new par path, or None if there is no PB to convert.
+    """
+    pb_days = None
+    kept = []
+    for line in path.read_text().splitlines():
+        tok = line.split()
+        if tok and tok[0].upper() == "PB":
+            try:
+                pb_days = float(tok[1])
+            except (IndexError, ValueError):
+                kept.append(line)
+            continue  # drop PB line
+        kept.append(line)
+    if pb_days is None or pb_days == 0.0:
+        return None
+    fb0 = 1.0 / (pb_days * 86400.0)
+    kept.append(f"FB0            {fb0:.20e} 0")
+    out = workdir / (stem + ".fb0.par")
+    out.write_text("\n".join(kept) + "\n")
+    return out
+
+
+def _sanitize_pint_par(par_path: Path, workdir: Path) -> Path:
+    """Trim Tempo2 constructs PINT mis-parses, without touching the original.
+
+    TRACK -2 may carry a trailing TZR pulse-number token
+    ("TRACK -2 181204727.0024..."); PINT reads the extra token as an uncertainty
+    on the TRACK strParameter and raises NotImplementedError. JUG reads the full
+    line (TimingSession gets the ORIGINAL par); only the PINT copy is trimmed to
+    "TRACK -2". Returns the original path if nothing needed changing.
+
+    EPS1DOT/EPS2DOT dual-convention mismatch. Tempo2 (readParfile.C ~2136)
+    interprets these with a MAGNITUDE-dependent unit:
+        readValue(... param_eps1dot ...);
+        if (fabs(val) > 1e-7) val *= 1.0e-12;   // "1e-12/s" convention
+        // else: val left as-is, i.e. already physical s^-1
+    So a "large" written value (e.g. 5.0) means 5e-12/s, while a "small" value
+    (e.g. -5.876e-16, as in the PPTA DR4 pars) is taken as raw physical s^-1.
+    PINT only implements the first branch -- it defines the parameter unit as
+    1e-12/s (binary_ell1.py) and ALWAYS multiplies by 1e-12 -- so for the small
+    (raw-physical) convention it reads the value 1e12x too small and drops the
+    ~hundreds-of-ns cos(2*Phi) secular Roemer term (J2129 532 ns, J2145 339 ns).
+    JUG reads the value as physical s^-1, matching Tempo2 for this branch (and the
+    data: PINT's own free re-fit recovers physical -5.7e-16/s == the par face
+    value). We rewrite the PINT copy so PINT's unconditional *1e-12 reproduces the
+    Tempo2 physical value:
+        phys      = face*1e-12 if |face|>1e-7 else face          (Tempo2 rule)
+        face_PINT = phys*1e12  ==>  scale by 1e12 ONLY when |face|<=1e-7
+    JUG sees the ORIGINAL par untouched.
+    """
+    par_path = Path(par_path)
+    lines = par_path.read_text().splitlines()
+    changed = False
+    out_lines = []
+    for line in lines:
+        tok = line.split()
+        if tok and tok[0].upper() == "TRACK" and len(tok) > 2:
+            out_lines.append(f"{tok[0]} {tok[1]}")
+            changed = True
+        elif tok and tok[0].upper() in ("EPS1DOT", "EPS2DOT") and len(tok) > 1:
+            try:
+                face = float(tok[1])
+                # Tempo2 leaves |face|>1e-7 in 1e-12/s units (PINT already
+                # matches that); only the raw-physical branch needs rescaling.
+                if abs(face) <= 1e-7:
+                    tok[1] = repr(face * 1e12)
+                    out_lines.append(" ".join(tok))
+                    changed = True
+                else:
+                    out_lines.append(line)
+            except ValueError:
+                out_lines.append(line)
+        else:
+            out_lines.append(line)
+    if not changed:
+        return par_path
+    out = workdir / (par_path.stem + ".sanitized.par")
+    out.write_text("\n".join(out_lines) + "\n")
+    return out
+
+
+def _tcb_to_tdb_par(par_path: Path, workdir: Path) -> Path:
+    """Hand PINT a TDB par converted by JUG, bypassing PINT's TCB conversion.
+
+    PPTA DR4 pars are UNITS=TCB. JUG and PINT both convert TCB->TDB internally,
+    but PINT's allow_tcb conversion carries a ~linear ~14 ns/decade error vs the
+    canonical conversion, while JUG's matches the Tempo2-produced *_tdb.par to
+    ~0.02 ns. Verified on J1909-3744, which ships both a TCB and a TDB par for the
+    same data: JUG(TCB) vs canonical TDB par = 0.023 ns; PINT(TCB) vs canonical
+    = 14.486 ns. So the residual TCB "floor" (J1909 14.5, J1744 10.6, J0437 7.5,
+    ...) is PINT's conversion, not JUG's.
+
+    Fix for the comparison: convert the par to TDB with JUG's IFTE/IF99 conversion
+    (jug.io.par_reader.validate_par_timescale -> jug.utils.timescales) and feed
+    that TDB par to PINT. We do a line-level rewrite -- swap only the converted
+    numeric values (epochs from the longdouble _high_precision strings, scaled
+    params from the converted floats) and flip UNITS to TDB -- so every PINT-
+    relevant construct (JUMP/noise/TZR/flags) is preserved verbatim. JUG itself
+    keeps reading the ORIGINAL TCB par (its conversion is identical), so this only
+    removes PINT's conversion error from the comparison. No-op for TDB pars.
+    """
+    from jug.io.par_reader import parse_par_file, validate_par_timescale
+    par_path = Path(par_path)
+    conv = parse_par_file(str(par_path))
+    validate_par_timescale(conv, verbose=False)  # TCB->TDB in place (if TCB)
+    if conv.get("_timescale_in") != "TCB":
+        return par_path  # already TDB, nothing to do
+    hp = conv.get("_high_precision", {})
+
+    def _tdb_str(key, orig_tok):
+        if key in hp:
+            return hp[key]
+        v = conv.get(key)
+        return repr(v) if isinstance(v, float) else orig_tok
+
+    # JUMP values are themselves TCB->TDB scaled (time dimension, *1/IFTE_K) by
+    # the converter -- this matters: huge phase-connecting jumps (J2124-3358 has
+    # -1.55e6 s, J0030+0451 -2.4e5 s) amplify the 1.5e-8 scale into ~24 ms /
+    # ~3.6 ms, i.e. 100s of us of residual, if PINT gets the unscaled value. JUG
+    # applies the scaled jumps; emit the converter's scaled _jump_lines so PINT
+    # matches. (Pulsars with only us-scale jumps, e.g. J1909-3744, are unaffected
+    # either way.)
+    scaled_jump_lines = conv.get("_jump_lines", [])
+    out_lines = []
+    for line in par_path.read_text().splitlines():
+        tok = line.split()
+        if not tok:
+            out_lines.append(line)
+            continue
+        key = tok[0].upper()
+        if key == "JUMP":
+            continue  # re-emitted (scaled) below
+        if key == "UNITS":
+            out_lines.append("UNITS TDB")
+        elif len(tok) >= 2 and key in conv and not key.startswith("JUMP"):
+            tok[1] = _tdb_str(key, tok[1])
+            out_lines.append(" ".join(tok))
+        else:
+            out_lines.append(line)
+    out_lines.extend(scaled_jump_lines)
+    out = workdir / (par_path.stem + ".tdb.par")
+    out.write_text("\n".join(out_lines) + "\n")
+    return out
+
+
 def load_pint_model_retry(par_path: Path, workdir: Path, max_strips: int = 25):
     import pint.models
 
-    path = par_path
+    path = _tcb_to_tdb_par(par_path, workdir)
+    path = _sanitize_pint_par(path, workdir)
     stripped = []
+    _fb0_tried = False
     for _ in range(max_strips):
         try:
             return (pint.models.get_model(str(path), allow_T2=True,
                                           allow_tcb=True), stripped, path)
         except Exception as e:
+            # FB-parameterized binary with PB but no FB0: reparameterize for PINT.
+            if (not _fb0_tried
+                    and "FBn parameters are set but FB0 is not" in str(e)):
+                _fb0_tried = True
+                new = _inject_pint_fb0(path, workdir, par_path.stem)
+                if new is not None:
+                    stripped.append("PB->FB0(reparam)")
+                    path = new
+                    continue
             m = (re.search(r"Unrecognized parfile line ['\"]?(\w+)", str(e))
                  or re.search(r"parameter ['\"]?(\w+)", str(e)))
             if m is None:

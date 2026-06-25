@@ -62,6 +62,7 @@ from typing import Dict, List, Tuple
 from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY, T_SUN
 from jug.utils.orbit_reduction import reduce_binary_time_sec
+from jug.delays.combined import _ELL1H_MAX_NHARM
 
 
 def _resolve_pb_days(params: Dict) -> np.longdouble:
@@ -949,6 +950,7 @@ def compute_ell1_binary_delay(
     h3 = float(params.get('H3', 0.0))
     h4 = float(params.get('H4', 0.0))
     stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
+    nharm = float(params.get('NHARMS', params.get('NHARM', 4.0)) or 4.0)
 
     # Convert orthometric Shapiro parameters to SINI/M2
     # Only convert when the derived STIG is physically valid (0 < STIG ≤ 1).
@@ -1006,6 +1008,7 @@ def compute_ell1_binary_delay(
         a1, pb, eps1, eps2, pbdot, a1dot, sini, m2, gamma,
         h3, h4, stig, fb_coeffs, eps1dot, eps2dot,
         ttasc_red_sec=jnp.asarray(ttasc_red_f64),
+        nharm=nharm,
     )
 
 
@@ -1017,6 +1020,7 @@ def _compute_ell1_binary_delay_jit(
     h3: float, h4: float, stig: float, fb_coeffs: jnp.ndarray,
     eps1dot: float = 0.0, eps2dot: float = 0.0,
     ttasc_red_sec: jnp.ndarray = None,
+    nharm: float = 4.0,
 ) -> jnp.ndarray:
     """JIT-compiled ELL1 binary delay computation.
 
@@ -1078,13 +1082,18 @@ def _compute_ell1_binary_delay_jit(
 
     sin_phi = jnp.sin(phi)
 
-    # ELL1H Shapiro delay, H3 + STIGMA -> EXACT form (Freire & Wex 2010 Eq. 29),
-    # matching PINT BinaryELL1H (delayS_H3_STIGMA_exact):
-    #   ds = -2*(H3/stig³) * log(1 + stig² - 2*stig*sin(Φ))
-    # (Must stay in sync with combined.py:branch_ell1 shapiro_ell1h. The k=1,2
-    # harmonic-removal terms were Tempo2 mode-1; PINT keeps them in the Shapiro.)
+    # ELL1H Shapiro delay, H3 + STIGMA -> 3rd-harmonic-and-up EXACT form
+    # (Freire & Wex 2010 Eq. 28), matching Tempo2 ELL1Hmodel.C mode 1:
+    #   lsc = log(1+stig²-2*stig*sin(Φ)) + 2*stig*sin(Φ) - stig²*cos(2Φ)
+    #   ds  = -2*(H3/stig³) * lsc
+    # The k=1,2 harmonics are degenerate with the ELL1 Roemer a1/EPS terms and are
+    # absorbed by the (Tempo2-fit) Keplerian params; the FULL log (Eq.29) would
+    # double-count them at fixed params. Must stay in sync with
+    # combined.py:branch_ell1 shapiro_ell1h (see that comment for the J1902-5105
+    # verification).
+    cos_2phi = jnp.cos(2.0 * phi)
     fs = 1.0 + stig**2 - 2.0 * stig * sin_phi
-    lsc = jnp.log(fs)
+    lsc = jnp.log(fs) + 2.0 * stig * sin_phi - stig**2 * cos_2phi
     r_ell1h = h3 / jnp.maximum(stig**3, 1e-30)
     shapiro_ell1h = -2.0 * r_ell1h * lsc
 
@@ -1096,16 +1105,32 @@ def _compute_ell1_binary_delay_jit(
         0.0
     )
 
-    # H3/H4 harmonic Shapiro delay (Freire & Wex 2010)
+    # H3/H4 harmonic Shapiro delay (Tempo2 ELL1Hmodel.C calcDH; see
+    # combined.py:branch_ell1 for the full derivation). nharm-dependent sd5 term
+    # (harmonics 5..nharm), masked divergence-safe; sd5=0 for nharm<=4.
+    s_h4 = h4 / jnp.where(h3 != 0.0, h3, 1.0)
+    fs_h3h4 = 0.0
+    for _k in range(5, _ELL1H_MAX_NHARM + 1):
+        base = jnp.where(_k <= nharm, s_h4, 0.0)
+        term = base ** (_k - 4)
+        if _k % 2 == 1:
+            coeff = ((-1.0) ** ((_k - 1) // 2)) / _k
+            fs_h3h4 = fs_h3h4 + coeff * term * jnp.sin(_k * phi)
+        else:
+            coeff = ((-1.0) ** (_k // 2)) / _k
+            fs_h3h4 = fs_h3h4 + coeff * term * jnp.cos(_k * phi)
     shapiro_harmonic = jnp.where(
         (sini == 0.0) & (m2 == 0.0) & (h3 > 0.0) & (stig == 0.0),
-        -(4.0 / 3.0) * h3 * jnp.sin(3.0 * phi) + h4 * jnp.cos(4.0 * phi),
+        -(4.0 / 3.0) * h3 * jnp.sin(3.0 * phi) + h4 * jnp.cos(4.0 * phi)
+        + 4.0 * h4 * fs_h3h4,
         0.0
     )
 
-    # Select: ELL1H lsc if 0 < stig ≤ 1, else standard/harmonic
+    # Select: ELL1H lsc if stig > 0 (H3+STIGMA), else standard/harmonic.
+    # No stig<=1 bound: matches PINT delayS_H3_STIGMA_exact for any STIGMA
+    # (see combined.py:branch_ell1 for the J1902-5105 STIG=1.154 case).
     shapiro_delay = jnp.where(
-        (stig > 0.0) & (stig <= 1.0),
+        stig > 0.0,
         shapiro_ell1h,
         shapiro_standard + shapiro_harmonic
     )

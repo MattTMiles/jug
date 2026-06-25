@@ -83,6 +83,34 @@ _OBS_CLOCK_SCALE = {
     'gmrt':      'UTC(GMRT)',
 }
 
+# Per-observatory clock chain, PINT/Tempo2-equivalent and BY FILENAME (so it is
+# independent of the .clk header timescale labels). Each value is
+#   (list of observatory->GPS clock files in order, apply_gps2utc)
+# and the effective chain is  Σ(files) [+ gps2utc.clk if apply_gps2utc].
+# BIPM (TT(TAI)->TT(BIPM)) is added separately downstream, also by filename.
+#
+# This mirrors PINT's model (observatories.json clock_files + apply_gps2utc +
+# the fixed gps2utc.clk / tai2tt_<bipm>.clk corrections) and Tempo2's anchored
+# chain walk. Because routing is by filename, an upstream clock refresh that
+# only relabels a header (e.g. gps2utc.clk "UTC(GPS) UTC" -> "UTC(GPS)
+# UTC(USNO)") cannot silently re-route an observatory onto a different UTC
+# realization (the 2026-06-22 NG-GBT/VLA regression). Observatories NOT listed
+# here fall back to the header-based ClockGraph shortest-path (still correct for
+# the EPTA/other sites, with UTC(USNO) normalized to UTC in _read_clock_header).
+_OBS_CLOCK_FILES: dict[str, tuple[list[str], bool]] = {
+    'parkes': (['pks2gps.clk'], True), 'pks': (['pks2gps.clk'], True),
+    'pk': (['pks2gps.clk'], True), '7': (['pks2gps.clk'], True),
+    'gbt': (['gbt2gps.clk'], True), '1': (['gbt2gps.clk'], True),
+    'gb': (['gbt2gps.clk'], True),
+    'ao': (['ao2gps.clk'], True), 'arecibo': (['ao2gps.clk'], True),
+    '3': (['ao2gps.clk'], True),
+    'vla': (['vla2gps.clk'], True), 'vl': (['vla2gps.clk'], True),
+    # mk2utc.clk already reaches UTC, so no gps2utc (mirrors the validated
+    # MeerKAT chain; PINT's apply_gps2utc=True there is a double-correction).
+    'meerkat': (['mk2utc.clk'], False), 'mk': (['mk2utc.clk'], False),
+}
+
+
 # Module-level ClockGraph cache (keyed on clock_dir str) to avoid re-scanning
 # on every call — the graph is built once per unique clock directory.
 _clock_graph_cache: dict[str, 'ClockGraph'] = {}
@@ -106,8 +134,31 @@ def _load_obs_chain(clock_dir, obs_code: str, verbose: bool = False) -> dict:
     Falls back to a zero correction if no path is found or the observatory
     is unknown.
     """
+    from jug.io.clock import ClockGraph
+
+    code = obs_code.lower()
+
+    # Preferred path: PINT/Tempo2-equivalent configured chain (by filename).
+    cfg = _OBS_CLOCK_FILES.get(code)
+    if cfg is not None:
+        files, apply_gps2utc = cfg
+        paths = [Path(clock_dir) / f for f in files]
+        if apply_gps2utc:
+            paths.append(Path(clock_dir) / 'gps2utc.clk')
+        if all(p.exists() for p in paths):
+            chain = ClockGraph._merge_chain(paths)
+            if verbose:
+                print(f"   Clock chain for {obs_code} (configured): "
+                      f"{' → '.join(p.name for p in paths)}")
+            return chain
+        elif verbose:
+            print(f"   [!] Configured clock files missing for '{obs_code}' "
+                  f"({[p.name for p in paths if not p.exists()]}); "
+                  f"falling back to graph routing")
+
+    # Fallback: header-based shortest-path over all .clk files.
     graph = _get_clock_graph(clock_dir)
-    obs_scale = _OBS_CLOCK_SCALE.get(obs_code.lower())
+    obs_scale = _OBS_CLOCK_SCALE.get(code)
     if obs_scale is None:
         if verbose:
             print(f"   [!] No clock scale known for '{obs_code}'; using zero correction")
@@ -298,6 +349,7 @@ def _get_known_par_keywords():
         'DMMODEL', 'CONSTRAIN', 'NCOEFF',
         'RM', 'SWM', 'SOLARN0',
         'DMX', 'DM_SERIES',
+        'NHARMS', 'NHARM',  # ELL1H H3/H4 Shapiro harmonic count (honored)
     }
     # DMX ranges: DMX_nnnn, DMXR1_nnnn, DMXR2_nnnn, DMXF1_nnnn, DMXF2_nnnn, DMXEP_nnnn
     _KNOWN_PAR_KEYWORDS = known
@@ -814,6 +866,9 @@ def _extract_binary_params(params, verbose):
     h3_val = float(params.get('H3', 0.0))
     h4_val = float(params.get('H4', 0.0))
     stig_val = float(params.get('STIG', 0.0))
+    # ELL1H H3/H4 Shapiro harmonics: honor par NHARMS (Tempo2 default 4). Only the
+    # H3+H4 branch of the kernel uses it.
+    nharm_val = float(params.get('NHARMS', params.get('NHARM', 4.0)) or 4.0)
 
     # DDGR: GR assumed correct -> derive the post-Keplerian parameters (SINI,
     # GAMMA, PBDOT, OMDOT) from the system masses (MTOT, M2) + Keplerian
@@ -916,7 +971,7 @@ def _extract_binary_params(params, verbose):
         'm2_jax': jnp.array(m2_val), 'sini_jax': jnp.array(sini_val),
         'kin_jax': jnp.array(kin_val), 'kom_jax': jnp.array(kom_val),
         'h3_jax': jnp.array(h3_val), 'h4_jax': jnp.array(h4_val),
-        'stig_jax': jnp.array(stig_val),
+        'stig_jax': jnp.array(stig_val), 'nharm_jax': jnp.array(nharm_val),
         'r_shap_jax': jnp.array(r_shap_val), 's_shap_jax': jnp.array(s_shap_val),
         # FB arrays
         'fb_coeffs_jax': fb_coeffs_jax, 'fb_factorials_jax': fb_factorials_jax,
@@ -1045,7 +1100,7 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         ddk['sin_ra_jax'], ddk['cos_ra_jax'], ddk['sin_dec_jax'], ddk['cos_dec_jax'],
         ddk['k96_jax'], ddk['pmra_rad_per_sec_jax'], ddk['pmdec_rad_per_sec_jax'],
         tropo_jax, dmx_jax, tt_binary_jax, tt_binary_red_jax,
-        bp['dr_jax'], bp['dth_jax'],
+        bp['dr_jax'], bp['dth_jax'], bp['nharm_jax'],
     ).block_until_ready()
 
 
@@ -1588,7 +1643,23 @@ def compute_residuals_simple(
 
     # Astrometry
     if verbose: print(f"\n4. Computing astrometric delays...")
-    ephem = _resolve_ephemeris(str(params.get('EPHEM', 'de440')).lower())
+    _requested_ephem = str(params.get('EPHEM', 'de440')).lower()
+    ephem = _resolve_ephemeris(_requested_ephem)
+    # Authoritative check: warn LOUDLY whenever the ephemeris actually used is
+    # not the one the par requested (e.g. download failed -> DE440 fallback, or
+    # an unrecognized EPHEM name passed through untouched and astropy substitutes
+    # its default). _resolve_ephemeris returns either a bare name ('de440') or a
+    # cached kernel path ('.../de436.bsp'); reduce both to a comparable stem.
+    _eff = Path(str(ephem)).stem.lower() if os.sep in str(ephem) else str(ephem).lower()
+    if _requested_ephem not in _eff and _eff not in _requested_ephem:
+        import warnings as _warnings
+        _warnings.warn(
+            f"Ephemeris mismatch: par requested EPHEM={_requested_ephem.upper()} "
+            f"but JUG is using {_eff.upper()}. The barycentric solution will NOT "
+            f"match a code that honors the par ephemeris (e.g. PINT). Ensure the "
+            f"requested kernel is downloadable/cached.",
+            RuntimeWarning, stacklevel=2,
+        )
     ra_rad = float(params.get('_raj_rad', parse_ra(params['RAJ'])))
     dec_rad = float(params.get('_decj_rad', parse_dec(params['DECJ'])))
     pmra_rad_day = params.get('PMRA', 0.0) * (np.pi / 180 / 3600000) / 365.25
@@ -1873,30 +1944,13 @@ def compute_residuals_simple(
         total_delay_sec += np.asarray(dmx_delay_sec, dtype=np.float64)
         if verbose: print(f"   Applied {len(dmx_ranges)} DMX ranges to total delay")
 
-    # Exponential dip model (Tempo2 EXPEP/EXPPH/EXPTAU/EXPINDEX)
-    # Adds frequency-dependent exponential decay delays for DM events.
-    # Formula: delay += EXPPH * (freq_SSB/1.4GHz)^EXPINDEX * exp(-(t-EXPEP)/EXPTAU)
-    # Only applied for t > EXPEP. EXPINDEX defaults to -2 if not set.
-    exp_idx = 1
-    while f'EXPEP_{exp_idx}' in params:
-        expep = get_longdouble(params, f'EXPEP_{exp_idx}')
-        expph = float(params.get(f'EXPPH_{exp_idx}', 0.0))
-        exptau = float(params.get(f'EXPTAU_{exp_idx}', 1.0))
-        expindex = float(params.get(f'EXPINDEX_{exp_idx}', -2.0))
-        
-        dt_exp = np.asarray(
-            np.asarray(tdb_mjd, dtype=np.longdouble) - expep,
-            dtype=np.float64,
-        )
-        active = dt_exp > 0
-        if np.any(active):
-            freq_norm = np.array(freq_bary_mhz, dtype=np.float64) / 1400.0
-            exp_delay = np.zeros(len(tdb_mjd), dtype=np.float64)
-            exp_delay[active] = expph * (freq_norm[active] ** expindex) * np.exp(-dt_exp[active] / exptau)
-            total_delay_sec -= exp_delay
-            if verbose:
-                print(f"   Applied EXP dip {exp_idx}: epoch={expep:.1f}, amp={expph:.3e} s, tau={exptau:.1f} d")
-        exp_idx += 1
+    # Exponential dip model (Tempo2 EXPEP/EXPPH/EXPTAU/EXPINDEX) is now applied
+    # via the deterministic-signal registry (ExponentialDipSignal,
+    # jug/signals/chromatic_event.py) in the signal block below -- same Tempo2
+    # formula, single application. Routing it through the registry lets the
+    # compare_pint_batch harness detect/strip/inject it into PINT (whose
+    # SimpleExponentialDip uses a smoothed variant that differs near the epoch).
+    # (Previously duplicated here AND in the registry -> double-counted the dip.)
 
     # Deterministic signals (jug.signals registry: chromatic events, CW,
     # burst memory...). Detected from par parameters; evaluated ONCE at the

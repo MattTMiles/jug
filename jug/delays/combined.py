@@ -22,6 +22,12 @@ from jug.delays.binary_dd import (
 # implemented inline in branch_ddk() below, not as separate importable functions.
 from jug.delays.binary_t2 import t2_binary_delay
 
+# Highest ELL1H H3/H4 Shapiro harmonic JUG evaluates when a par sets NHARMS.
+# Tempo2's calcDH sums harmonics 3..NHARMS; realistic NHARMS is <=7, so 12 is a
+# safe ceiling. Harmonics k>nharm are masked (base->0) so the partial sum is exact
+# for the requested nharm and never diverges (the H3/H4 series grows as (H4/H3)^k).
+_ELL1H_MAX_NHARM = 12
+
 
 @jax.jit
 def combined_delays(
@@ -51,7 +57,10 @@ def combined_delays(
     tt_binary_red_sec=None,
     # DD relativistic-deformation parameters (DDGR-derived; standard DD = 0).
     # er = ecc*(1+dr), eTheta = ecc*(1+dth) in the DD Roemer.
-    dr=0.0, dth=0.0
+    dr=0.0, dth=0.0,
+    # ELL1H H3/H4 Shapiro harmonic count (par NHARMS, Tempo2 default 4). Only the
+    # H3+H4 branch uses it; H3+STIGMA (exact) and H3-only are unaffected.
+    nharm=4.0
 ):
     """Combined delay calculation - single JAX kernel for maximum performance.
 
@@ -241,19 +250,24 @@ def combined_delays(
 
             einstein_binary = jnp.where(gamma != 0.0, gamma * sin_Phi, 0.0)
             
-            # ELL1H Shapiro delay, H3 + STIGMA -> EXACT form (Freire & Wex 2010
-            # Eq. 29), matching PINT's BinaryELL1H (delayS_H3_STIGMA_exact, used
-            # whenever H3 AND STIGMA are supplied):
-            #   ds = -2*(H3/stig^3) * log(1 + stig^2 - 2*stig*sin(Phi))
-            # The earlier form subtracted the k=1,2 harmonics (2*stig*sin(Phi)
-            # - stig^2*cos(2*Phi)) to match Tempo2 ELL1Hmodel.C mode 1, which
-            # ABSORBS them into the Roemer/EPS fit. PINT keeps them in the
-            # Shapiro -- for medium/high stigma the difference is large (J0613
-            # stig=0.55: 2.9 us, EPS1 8.6sigma off). Use the full log to match
-            # PINT. (stig->0 H3-only path below is unaffected; the k=1,2 terms
-            # vanish as stig->0 anyway.)
+            # ELL1H Shapiro delay, H3 + STIGMA -> "3rd-harmonic-and-up" EXACT form
+            # (Freire & Wex 2010 Eq. 28), matching Tempo2 ELL1Hmodel.C mode 1:
+            #   lsc = log(1+stig^2-2*stig*sin(Phi)) + 2*stig*sin(Phi)
+            #                                       - stig^2*cos(2*Phi)
+            #   ds  = -2*(H3/stig^3) * lsc
+            # The k=1,2 harmonics (+2*stig*sin(Phi) - stig^2*cos(2*Phi)) are
+            # EXACTLY degenerate with the ELL1 Roemer a1/EPS1/EPS2 terms, so the
+            # par's Keplerian values (fit by Tempo2 with this Eq.28 form) already
+            # absorb them. Using the FULL log (Eq.29, as PINT's default
+            # delayS_H3_STIGMA_exact does) at these fixed params DOUBLE-COUNTS k=1,2
+            # -- verified on J1902-5105 (STIG=1.154): Eq.29 -> own WRMS 2.356 us
+            # with sin(Phi)/cos(2Phi) structure (corr -0.52/+0.28); Eq.28 -> 1.694 us
+            # flat == par TRES 1.637. (An earlier change to Eq.29 chased PINT parity
+            # but was only ever validated on stig->0 pulsars where Eq.28 == Eq.29.)
+            # PINT can match via its delayS3p_H3_STIGMA_exact (Eq.28); the batch
+            # harness selects it. stig->0 (H3-only) path below is unaffected.
             fs = 1.0 + stig**2 - 2.0 * stig * sin_Phi
-            lsc = jnp.log(fs)
+            lsc = jnp.log(fs) + 2.0 * stig * sin_Phi - stig**2 * cos_2Phi
             r_ell1h = h3 / jnp.maximum(stig**3, 1e-30)
             shapiro_ell1h = -2.0 * r_ell1h * lsc
             
@@ -269,17 +283,44 @@ def combined_delays(
                 -(4.0 / 3.0) * h3 * sin_3Phi,
                 0.0
             )
-            # ELL1H mode 2: H3/H4 harmonic expansion (Freire & Wex 2010, nharm=4)
-            # ds = -4/3*H3*sin(3Phi) + H4*cos(4Phi)
+            # ELL1H mode 2/3: H3/H4 harmonic Shapiro (Tempo2 ELL1Hmodel.C calcDH):
+            #   ds = sd3 + sd4 + sd5
+            #   sd3 = -4/3*H3*sin(3Phi),  sd4 = H4*cos(4Phi),  sd5 = 4*H4*fs
+            #   fs  = sum_{k=5}^{nharm} c_k * s^(k-4) * trig_k(k*Phi),  s = H4/H3
+            #     k odd : c_k = (-1)^((k-1)/2)/k, trig = sin
+            #     k even: c_k = (-1)^(k/2)/k,     trig = cos
+            # sd5 vanishes for nharm<=4 (Tempo2 default), recovering the classic
+            # -4/3*H3*sin(3Phi) + H4*cos(4Phi). nharm is a runtime scalar (par
+            # NHARMS, default 4); harmonics k>nharm are masked by zeroing the base
+            # so s^(k-4)=0 even when s>1 and the series diverges (e.g. J0613-0200
+            # s=H4/H3=1.11) -- no inf*0=nan.
             cos_4Phi = jnp.cos(4.0 * Phi)
+            s_h4 = h4 / jnp.where(h3 != 0.0, h3, 1.0)
+            fs_h3h4 = 0.0
+            for _k in range(5, _ELL1H_MAX_NHARM + 1):
+                base = jnp.where(_k <= nharm, s_h4, 0.0)
+                term = base ** (_k - 4)
+                if _k % 2 == 1:
+                    coeff = ((-1.0) ** ((_k - 1) // 2)) / _k
+                    fs_h3h4 = fs_h3h4 + coeff * term * jnp.sin(_k * Phi)
+                else:
+                    coeff = ((-1.0) ** (_k // 2)) / _k
+                    fs_h3h4 = fs_h3h4 + coeff * term * jnp.cos(_k * Phi)
+            sd5_h3h4 = 4.0 * h4 * fs_h3h4
             shapiro_h3h4 = jnp.where(
                 (h4 != 0.0) & (stig == 0.0),
-                -(4.0 / 3.0) * h3 * sin_3Phi + h4 * cos_4Phi,
+                -(4.0 / 3.0) * h3 * sin_3Phi + h4 * cos_4Phi + sd5_h3h4,
                 0.0
             )
-            # Select: ELL1H lsc if 0 < stig <= 1, else h3h4/h3only/standard
+            # Select: ELL1H lsc if stig > 0 (H3+STIGMA), else h3h4/h3only/standard.
+            # No stig<=1 upper bound: PINT's delayS_H3_STIGMA_exact applies the
+            # exact log for ANY STIGMA (ELL1H does not validate STIGMA<=1), and the
+            # log argument (1+stig^2-2*stig*sin(Phi)) stays positive for the
+            # mildly-superunity STIGMA that fits sometimes produce (e.g. J1902-5105
+            # STIG=1.154). Guarding stig<=1 silently dropped the entire ELL1H
+            # Shapiro for those pulsars (~1.2 us at orbital frequency vs PINT).
             shapiro_binary = jnp.where(
-                (stig > 0.0) & (stig <= 1.0),
+                stig > 0.0,
                 shapiro_ell1h,
                 shapiro_standard + shapiro_h3only + shapiro_h3h4
             )
@@ -479,7 +520,9 @@ def compute_total_delay_jax(
     # Orbit-count-reduced tt_binary_sec (see combined_delays / orbit_reduction).
     tt_binary_red_sec=None,
     # DD relativistic-deformation parameters (DDGR-derived; standard DD = 0).
-    dr=0.0, dth=0.0
+    dr=0.0, dth=0.0,
+    # ELL1H H3/H4 Shapiro harmonic count (par NHARMS, Tempo2 default 4).
+    nharm=4.0
 ):
     """Compute total delay in a single JAX kernel.
 
@@ -520,7 +563,8 @@ def compute_total_delay_jax(
         tt_binary_sec,
         tt_binary_red_sec,
         dr,
-        dth
+        dth,
+        nharm
     )
 
     return roemer_shapiro + combined_sec

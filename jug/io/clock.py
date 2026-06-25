@@ -89,7 +89,19 @@ def _read_clock_header(path) -> tuple[str, str, int] | None:
 
     Returns ``(from_scale, to_scale, weight)`` both timescales upper-cased,
     or ``None`` if the header cannot be parsed.
+
+    Timescale normalization: ``UTC(USNO)`` is collapsed to ``UTC``. The IPTA/
+    Tempo2 ``gps2utc.clk`` declares its target as the USNO realization of UTC
+    (``# UTC(GPS) UTC(USNO)``); without collapsing it, JUG's Dijkstra cannot
+    terminate on ``gps2utc.clk`` and reroutes GPS->UTC observatories onto a
+    *different* UTC realization (e.g. VLA via ``vla2nist.clk -> nist2utc.clk``),
+    which disagrees with Tempo2/PINT by ~µs. USNO is the canonical UTC
+    realization the GPS chain targets, so it IS ``UTC`` for routing purposes.
+    (A pure data refresh that only relabels this header would otherwise silently
+    flip the clock chain -- the cause of the 2026-06-22 NG-GBT/VLA regression.)
     """
+    def _norm(scale: str) -> str:
+        return "UTC" if scale == "UTC(USNO)" else scale
     try:
         with open(path) as f:
             for line in f:
@@ -103,7 +115,7 @@ def _read_clock_header(path) -> tuple[str, str, int] | None:
                                 weight = int(parts[2])
                             except ValueError:
                                 pass
-                        return parts[0].upper(), parts[1].upper(), weight
+                        return _norm(parts[0].upper()), _norm(parts[1].upper()), weight
                     return None
     except OSError:
         pass

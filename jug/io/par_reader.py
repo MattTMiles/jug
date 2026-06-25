@@ -170,6 +170,17 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                     except ValueError:
                         params[key] = value_str
 
+                # EPS1DOT/EPS2DOT dual-convention (Tempo2 readParfile.C ~2136):
+                # a "large" written value (|val|>1e-7) is in units of 1e-12 s^-1
+                # and is multiplied by 1e-12; a "small" value is already physical
+                # s^-1 and left as-is. JUG stores everything in physical s^-1, so
+                # replicate the conditional scaling here. (PPTA DR4 values are
+                # ~1e-16, so they take the no-scale branch -- matching the data
+                # and disagreeing with PINT, which always applies the 1e-12.)
+                if key in ("EPS1DOT", "EPS2DOT") and isinstance(params.get(key), float):
+                    if abs(params[key]) > 1e-7:
+                        params[key] *= 1.0e-12
+
                 # Extract fit flag: parts[2] is '1' or '0' if present
                 if len(parts) >= 3 and parts[2] in ('0', '1'):
                     if parts[2] == '1':

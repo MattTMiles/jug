@@ -68,6 +68,8 @@ from jug.utils.units import (
 )
 import scipy.linalg as _scipy_linalg
 
+DesignMatrixMethod = Literal["analytic", "autodiff"]
+
 # Import ParameterSpec system for spec-driven routing
 from jug.model.parameter_spec import (
     is_spin_param,
@@ -303,6 +305,7 @@ class GeneralFitSetup:
     fit_param_list: List[str]
     compatibility: str
     fd_column_mode: FDColumnMode
+    design_matrix_method: DesignMatrixMethod
     param_values_start: List[float]
     toas_mjd: np.ndarray
     freq_mhz: np.ndarray
@@ -825,6 +828,15 @@ def _compute_designmatrix_from_setup(
     fit unit. The calculation is one in-memory pass over the cached setup; it
     does not perturb parameters or write temporary par files.
     """
+    method = getattr(setup, "design_matrix_method", "analytic")
+    if method == "autodiff":
+        return _compute_designmatrix_autodiff_from_setup(setup, fit_params)
+    if method != "analytic":
+        raise ValueError(
+            "design_matrix_method must be 'analytic' or 'autodiff'; "
+            f"got {method!r}"
+        )
+
     from jug.fitting.derivatives_spin import compute_spin_derivatives
     from jug.fitting.derivatives_astrometry import compute_astrometry_derivatives
     from jug.fitting.derivatives_fdjump import compute_fdjump_derivatives
@@ -949,6 +961,42 @@ def _compute_designmatrix_from_setup(
     return np.column_stack(cols) if cols else np.empty((len(tdb_mjd), 0), dtype=np.float64)
 
 
+def _compute_designmatrix_autodiff_from_setup(
+    setup: GeneralFitSetup,
+    fit_params: List[str],
+) -> np.ndarray:
+    """Compute a JUG-internal residual tangent for opt-in autodiff mode.
+
+    The traced JAX residual path is shared with MetaPulsar and still has
+    component coverage gaps. Until every component is traceable, this falls back
+    to central differences through JUG's native forward residual evaluator
+    rather than any external design matrix.
+    """
+    from jug.utils.units import fd_step_in_fit_units
+
+    labels = list(fit_params)
+    base_params = dict(setup.params)
+    base_residuals, _, _, _ = _compute_full_model_residuals(base_params, setup)
+    n_toa = len(np.asarray(base_residuals))
+    cols = []
+    for param in labels:
+        value = float(base_params.get(param, 0.0))
+        step = float(fd_step_in_fit_units(param, value))
+        if step == 0.0:
+            step = 1.0e-8
+        plus = dict(base_params)
+        minus = dict(base_params)
+        _update_param(plus, param, value + step)
+        _update_param(minus, param, value - step)
+        res_plus, _, _, _ = _compute_full_model_residuals(plus, setup)
+        res_minus, _, _, _ = _compute_full_model_residuals(minus, setup)
+        cols.append(
+            (np.asarray(res_plus, dtype=np.float64) - np.asarray(res_minus, dtype=np.float64))
+            / (2.0 * step)
+        )
+    return np.column_stack(cols) if cols else np.empty((n_toa, 0), dtype=np.float64)
+
+
 def compute_designmatrix(
     par_file: Path | str,
     tim_file: Path | str,
@@ -956,6 +1004,7 @@ def compute_designmatrix(
     *,
     compatibility: str = "pint",
     fd_column_mode: str | None = None,
+    design_matrix_method: str = "analytic",
     verbose: bool = False,
 ) -> DesignMatrixResult:
     """Return an unweighted timing design matrix.
@@ -963,9 +1012,10 @@ def compute_designmatrix(
     Columns are returned in seconds per PINT/Vela-compatible fit unit
     (see ``jug.utils.units.fit_unit``).  Spin (F*) and FD columns use the
     same analytic conventions as the WLS fitter (including ``fd_column_mode``).
-    Columns are assembled in memory from the same analytic derivative blocks as
-    the WLS fitter; parameters are not perturbed and no temporary par files are
-    written.
+    By default, columns are assembled in memory from the same analytic
+    derivative blocks as the WLS fitter.  With
+    ``design_matrix_method="autodiff"``, columns are computed via central
+    differences through JUG's native forward residual evaluator.
     """
     labels = [canonicalize_param_name(p) for p in fit_params]
     setup = _build_general_fit_setup_from_files(
@@ -976,6 +1026,7 @@ def compute_designmatrix(
         verbose=verbose,
         compatibility=compatibility,
         fd_column_mode=fd_column_mode,
+        design_matrix_method=design_matrix_method,
     )
     matrix = _compute_designmatrix_from_setup(setup, labels)
     column_units = validate_column_units(labels)
@@ -1196,6 +1247,7 @@ def _build_setup_common(
     noise_config: object,
     compatibility: str = "pint",
     fd_column_mode: str | None = None,
+    design_matrix_method: str = "analytic",
     verbose: bool = False,
     subtract_noise_sec: Optional[np.ndarray] = None,
 ) -> GeneralFitSetup:
@@ -1684,11 +1736,18 @@ def _build_setup_common(
     resolved_fd_column_mode = _normalize_fd_column_mode(
         fd_column_mode, compatibility=compatibility
     )
+    method = str(design_matrix_method or "analytic").lower()
+    if method not in ("analytic", "autodiff"):
+        raise ValueError(
+            "design_matrix_method must be 'analytic' or 'autodiff'; "
+            f"got {design_matrix_method!r}"
+        )
     return GeneralFitSetup(
         params=dict(params),
         fit_param_list=fit_params,
         compatibility=str(compatibility).lower(),
         fd_column_mode=resolved_fd_column_mode,
+        design_matrix_method=method,
         param_values_start=param_values_start,
         toas_mjd=np.array(toas_mjd),
         freq_mhz=np.array(freq_mhz_bary),
@@ -1756,6 +1815,7 @@ def _build_general_fit_setup_from_files(
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
+    design_matrix_method: str = "analytic",
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
@@ -1834,6 +1894,7 @@ def _build_general_fit_setup_from_files(
         noise_config=noise_config,
         compatibility=compatibility,
         fd_column_mode=fd_column_mode,
+        design_matrix_method=design_matrix_method,
         verbose=verbose,
     )
 
@@ -3300,6 +3361,7 @@ def _build_general_fit_setup_from_cache(
     subtract_noise_sec: Optional[np.ndarray] = None,
     compatibility: str = "pint",
     fd_column_mode: str | None = None,
+    design_matrix_method: str = "analytic",
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -3390,6 +3452,7 @@ def _build_general_fit_setup_from_cache(
         noise_config=noise_config,
         compatibility=compatibility,
         fd_column_mode=fd_column_mode,
+        design_matrix_method=design_matrix_method,
         verbose=False,
         subtract_noise_sec=subtract_noise_sec,
     )

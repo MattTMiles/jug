@@ -418,6 +418,34 @@ def validate_par_timescale_for_compat(
     raise ValueError(f"{context}: unknown compatibility mode {compatibility!r}")
 
 
+def normalize_model_params(
+    params: Dict[str, Any],
+    *,
+    compatibility: str = "pint",
+    context: str = "JUG",
+    verbose: bool = False,
+) -> None:
+    """Convert parsed par parameters to JUG's numeric model representation.
+
+    Call after ``parse_par_file()`` and before any computational use (session
+    init, fit setup, design matrix, residual evaluation). Modifies ``params`` in
+    place.
+
+    This enforces the contract documented on ``GeneralFitSetup``: sky
+    coordinates are stored as radians, not tempo2 HMS/DMS strings.
+    """
+    validate_par_timescale_for_compat(
+        params,
+        compatibility=compatibility,
+        context=context,
+        verbose=verbose,
+    )
+    if "RAJ" in params and isinstance(params["RAJ"], str):
+        params["RAJ"] = parse_ra(params["RAJ"])
+    if "DECJ" in params and isinstance(params["DECJ"], str):
+        params["DECJ"] = parse_dec(params["DECJ"])
+
+
 def convert_t2_kin_kom_to_ddk_convention(params: Dict[str, Any]) -> None:
     """Convert Tempo2 T2 KIN/KOM angles to JUG's DDK convention once.
 

@@ -56,7 +56,7 @@ from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.residuals.engine_conventions import EngineConventionProfile
-from jug.io.par_reader import parse_par_file, validate_par_timescale_for_compat, _parse_float
+from jug.io.par_reader import parse_par_file, _parse_float
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
@@ -1273,6 +1273,15 @@ def _build_setup_common(
         before fitting. This implements the Tempo2-style workflow where noise
         is subtracted from the data and then refit without that noise process.
     """
+    from jug.io.par_reader import normalize_model_params
+
+    normalize_model_params(
+        params,
+        compatibility=compatibility,
+        context="_build_setup_common",
+        verbose=verbose,
+    )
+
     # --- White noise scaling (EFAC/EQUAD) and ECORR whitener ---------------
     ecorr_whitener = None
     noise_entries = None
@@ -1833,19 +1842,15 @@ def _build_general_fit_setup_from_files(
 
     # Parse files
     params = parse_par_file(par_file)
-    validate_par_timescale_for_compat(
+    from jug.io.par_reader import normalize_model_params
+
+    normalize_model_params(
         params,
         compatibility=compatibility,
         context="create_general_fit_setup",
+        verbose=verbose,
     )
     toas_data = parse_tim_file_mjds(tim_file)
-
-    # Convert RAJ/DECJ from strings to radians
-    from jug.io.par_reader import parse_ra, parse_dec
-    if 'RAJ' in params and isinstance(params['RAJ'], str):
-        params['RAJ'] = parse_ra(params['RAJ'])
-    if 'DECJ' in params and isinstance(params['DECJ'], str):
-        params['DECJ'] = parse_dec(params['DECJ'])
 
     # Tempo2's T2 model uses IAU convention for KIN/KOM.
     # JUG's DDK code (from PINT) uses DT92 convention.

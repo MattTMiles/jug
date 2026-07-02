@@ -108,10 +108,9 @@ class TimingSession:
             print(f"Opening session: {self.par_file.name} + {self.tim_file.name}")
         
         self.params = parse_par_file(self.par_file)
-        
-        # Validate/normalize ingest according to selected compatibility backend.
-        from jug.io.par_reader import validate_par_timescale_for_compat
-        validate_par_timescale_for_compat(
+
+        from jug.io.par_reader import normalize_model_params
+        normalize_model_params(
             self.params,
             compatibility=self.compatibility,
             context="TimingSession",

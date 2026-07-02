@@ -51,7 +51,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Literal
 import time
 import math
-import tempfile
 import warnings
 from dataclasses import dataclass
 
@@ -64,9 +63,7 @@ from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.fitting.wls_fitter import wls_solve_svd
 from jug.fitting.binary_registry import compute_binary_delay, compute_binary_derivatives
 from jug.utils.units import (
-    fd_step_in_fit_units,
-    fit_to_native_value,
-    native_to_fit_value,
+    native_derivative_to_fit_column,
     validate_column_units,
 )
 import scipy.linalg as _scipy_linalg
@@ -816,59 +813,140 @@ def fit_parameters_optimized(
     )
 
 
-def _format_designmatrix_param_value(param: str, value: float) -> str:
-    """Format a finite-difference parameter value for a temporary par file.
+def _compute_designmatrix_from_setup(
+    setup: GeneralFitSetup,
+    fit_params: List[str],
+) -> np.ndarray:
+    """Assemble the public timing design matrix from cached derivative blocks.
 
-    ``value`` is in native storage units (radians for RAJ/DECJ sexagesimal).
+    The exported convention matches the documented ``compute_designmatrix`` API:
+    columns are the fitter timing basis (``-d residual / d param``, equivalently
+    delay derivatives for ordinary timing parameters) in seconds per PINT/Vela
+    fit unit. The calculation is one in-memory pass over the cached setup; it
+    does not perturb parameters or write temporary par files.
     """
-    param_upper = param.upper()
-    if param_upper == "RAJ":
-        from jug.io.par_reader import format_ra
+    from jug.fitting.derivatives_spin import compute_spin_derivatives
+    from jug.fitting.derivatives_astrometry import compute_astrometry_derivatives
+    from jug.fitting.derivatives_fdjump import compute_fdjump_derivatives
+    from jug.fitting.derivatives_sw import compute_sw_derivatives
 
-        return format_ra(value)
-    if param_upper == "DECJ":
-        from jug.io.par_reader import format_dec
+    params = dict(setup.params)
+    tdb_mjd = np.asarray(setup.tdb_mjd, dtype=np.float64)
+    freq_mhz = np.asarray(setup.freq_mhz, dtype=np.float64)
 
-        return format_dec(value)
-    return f"{value:.17g}"
+    spin_params = get_spin_params_from_list(fit_params)
+    dm_params = get_dm_params_from_list(fit_params)
+    dmx_params = [p for p in fit_params if setup.dmx_labels and p in setup.dmx_labels]
+    binary_params = get_binary_params_from_list(fit_params)
+    astrometry_params = get_astrometry_params_from_list(fit_params)
+    fd_params = get_fd_params_from_list(fit_params)
+    sw_params = get_sw_params_from_list(fit_params)
+    jump_params = [p for p in fit_params if is_jump_param(p)]
+    fdjump_params = [p for p in fit_params if p.startswith("FDJUMP")]
 
+    derivs: dict[str, np.ndarray] = {}
 
-def _write_param_variant(par_file: Path | str, param: str, value: float) -> str:
-    """Write a temporary par file with one scalar parameter replaced."""
-    lines = Path(par_file).read_text().splitlines()
-    out_lines = []
-    replaced = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and stripped.split()[0].upper() == param.upper():
-            parts = line.split()
-            parts[1] = _format_designmatrix_param_value(param, value)
-            out_lines.append(" ".join(parts))
-            replaced = True
-        else:
-            out_lines.append(line)
-    if not replaced:
-        raise ValueError(f"Parameter '{param}' not found in {par_file}")
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".par", delete=False)
-    with tmp:
-        tmp.write("\n".join(out_lines))
-        tmp.write("\n")
-    return tmp.name
+    if spin_params:
+        dt_for_spin = (
+            np.asarray(setup.dt_sec_ld, dtype=np.float64)
+            if setup.dt_sec_ld is not None
+            else np.asarray(setup.dt_sec_cached, dtype=np.float64)
+        )
+        derivs.update(
+            compute_spin_derivatives(
+                params,
+                tdb_mjd,
+                spin_params,
+                compatibility=setup.compatibility,
+                dt_sec=dt_for_spin,
+            )
+        )
 
+    if dm_params:
+        dm_derivs = compute_dm_derivatives(params, tdb_mjd, freq_mhz, dm_params)
+        # ``compute_dm_derivatives`` returns residual derivatives (-d delay/dDM);
+        # the public design-matrix basis matches the fitter/libstempo convention
+        # (d delay/dparam), so DM-family columns need this sign conversion here.
+        derivs.update({name: -np.asarray(col) for name, col in dm_derivs.items()})
 
-def _designmatrix_param_value(params: Dict, param: str) -> float:
-    """Return parameter value in native storage units."""
-    param_upper = param.upper()
-    value = params[param_upper]
-    if param_upper == "RAJ" and isinstance(value, str):
-        from jug.io.par_reader import parse_ra
+    if dmx_params and setup.dmx_design_matrix is not None and setup.dmx_labels is not None:
+        dmx_index = {label: idx for idx, label in enumerate(setup.dmx_labels)}
+        for label in dmx_params:
+            idx = dmx_index.get(label)
+            if idx is not None:
+                derivs[label] = np.asarray(setup.dmx_design_matrix[:, idx], dtype=np.float64)
 
-        return float(parse_ra(value))
-    if param_upper == "DECJ" and isinstance(value, str):
-        from jug.io.par_reader import parse_dec
+    if binary_params:
+        if setup.prebinary_delay_sec is None:
+            raise ValueError(
+                "Binary design-matrix columns require prebinary_delay_sec in setup."
+            )
+        toas_prebinary_mjd = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
+        derivs.update(
+            compute_binary_derivatives(
+                params,
+                toas_prebinary_mjd,
+                binary_params,
+                obs_pos_ls=setup.ssb_obs_pos_ls,
+            )
+        )
 
-        return float(parse_dec(value))
-    return float(value)
+    if astrometry_params:
+        if setup.ssb_obs_pos_ls is None:
+            raise ValueError("Astrometry design-matrix columns require ssb_obs_pos_ls.")
+        derivs.update(
+            compute_astrometry_derivatives(
+                params,
+                tdb_mjd,
+                setup.ssb_obs_pos_ls,
+                astrometry_params,
+            )
+        )
+
+    if fd_params:
+        derivs.update(
+            _compute_fd_derivatives_for_mode(
+                params=params,
+                freq_mhz=freq_mhz,
+                fit_params=fd_params,
+                tdb_mjd=tdb_mjd,
+                fd_column_mode=setup.fd_column_mode,
+            )
+        )
+
+    if sw_params:
+        if setup.sw_geometry_pc is None:
+            raise ValueError("Solar-wind design-matrix columns require sw_geometry_pc.")
+        derivs.update(compute_sw_derivatives(setup.sw_geometry_pc, freq_mhz, sw_params))
+
+    if jump_params and setup.jump_masks:
+        for name in jump_params:
+            mask = setup.jump_masks.get(name)
+            if mask is not None:
+                derivs[name] = -np.asarray(mask, dtype=np.float64)
+
+    if fdjump_params and setup.fdjump_masks:
+        derivs.update(
+            compute_fdjump_derivatives(
+                params,
+                freq_mhz,
+                fdjump_params,
+                fdjump_masks=setup.fdjump_masks,
+            )
+        )
+
+    cols = []
+    for param in fit_params:
+        if param not in derivs:
+            raise ValueError(
+                f"No design-matrix derivative computed for parameter {param!r}."
+            )
+        col_native = np.asarray(derivs[param], dtype=np.float64)
+        cols.append(
+            np.asarray(native_derivative_to_fit_column(param, col_native), dtype=np.float64)
+        )
+
+    return np.column_stack(cols) if cols else np.empty((len(tdb_mjd), 0), dtype=np.float64)
 
 
 def compute_designmatrix(
@@ -885,84 +963,30 @@ def compute_designmatrix(
     Columns are returned in seconds per PINT/Vela-compatible fit unit
     (see ``jug.utils.units.fit_unit``).  Spin (F*) and FD columns use the
     same analytic conventions as the WLS fitter (including ``fd_column_mode``).
-    Remaining parameters use symmetric finite differences on residuals.
+    Columns are assembled in memory from the same analytic derivative blocks as
+    the WLS fitter; parameters are not perturbed and no temporary par files are
+    written.
     """
-    resolved_fd = _normalize_fd_column_mode(
-        fd_column_mode, compatibility=compatibility
-    )
-    base = compute_residuals_simple(
-        par_file,
-        tim_file,
+    labels = [canonicalize_param_name(p) for p in fit_params]
+    setup = _build_general_fit_setup_from_files(
+        Path(par_file),
+        Path(tim_file),
+        labels,
+        clock_dir=None,
         verbose=verbose,
         compatibility=compatibility,
+        fd_column_mode=fd_column_mode,
     )
-    params = parse_par_file(par_file)
-    tdb_mjd = np.asarray(base["tdb_mjd"], dtype=np.float64)
-    freq_bary_mhz = np.asarray(base["freq_bary_mhz"], dtype=np.float64)
-    dt_sec_ld = base.get("dt_sec_ld")
-    dt_for_spin = (
-        np.asarray(dt_sec_ld, dtype=np.float64)
-        if dt_sec_ld is not None
-        else None
-    )
-    mode = str(compatibility).lower()
-    tempo2_mode = mode in ("tempo2", "tempo2-compatible", "tempo2_compatible")
-
-    from jug.fitting.derivatives_spin import compute_spin_derivatives
-
-    cols = []
-    for param in fit_params:
-        if param not in params:
-            raise ValueError(f"Parameter '{param}' not found in {par_file}")
-        param_upper = param.upper()
-
-        if tempo2_mode and param_upper.startswith("F") and param_upper[1:].isdigit():
-            spin_col = compute_spin_derivatives(
-                params,
-                tdb_mjd,
-                [param],
-                compatibility="tempo2",
-                dt_sec=dt_for_spin,
-            )[param]
-            cols.append(np.asarray(spin_col, dtype=np.float64))
-            continue
-
-        if param_upper.startswith("FD") and param_upper[2:].isdigit():
-            fd_derivs = _compute_fd_derivatives_for_mode(
-                params=params,
-                freq_mhz=freq_bary_mhz,
-                fit_params=[param],
-                tdb_mjd=tdb_mjd,
-                fd_column_mode=resolved_fd,
-            )
-            cols.append(np.asarray(fd_derivs[param], dtype=np.float64))
-            continue
-
-        value_native = _designmatrix_param_value(params, param)
-        value_fit = native_to_fit_value(param, value_native)
-        step_fit = fd_step_in_fit_units(param, value_fit)
-        plus_native = fit_to_native_value(param, value_fit + step_fit)
-        minus_native = fit_to_native_value(param, value_fit - step_fit)
-        plus_file = _write_param_variant(par_file, param, plus_native)
-        minus_file = _write_param_variant(par_file, param, minus_native)
-        try:
-            plus = compute_residuals_simple(plus_file, tim_file, verbose=False, compatibility=compatibility)
-            minus = compute_residuals_simple(minus_file, tim_file, verbose=False, compatibility=compatibility)
-            col = -((plus["residuals_us"] - minus["residuals_us"]) * 1e-6) / (2.0 * step_fit)
-            cols.append(np.asarray(col, dtype=np.float64))
-        finally:
-            Path(plus_file).unlink(missing_ok=True)
-            Path(minus_file).unlink(missing_ok=True)
-    matrix = np.column_stack(cols) if cols else np.empty((base["n_toas"], 0))
-    labels = list(fit_params)
+    matrix = _compute_designmatrix_from_setup(setup, labels)
     column_units = validate_column_units(labels)
+    residuals_sec, _, _, _ = _compute_full_model_residuals(dict(setup.params), setup)
     return DesignMatrixResult(
         matrix=matrix,
         labels=labels,
         column_units=column_units,
         unit_convention="pint-vela",
-        residuals_us=np.asarray(base["residuals_us"]),
-        errors_us=np.asarray(base["errors_us"]),
+        residuals_us=np.asarray(residuals_sec, dtype=np.float64) * 1.0e6,
+        errors_us=np.asarray(setup.errors_us, dtype=np.float64),
     )
 
 

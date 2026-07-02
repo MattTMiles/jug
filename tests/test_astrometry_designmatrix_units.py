@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -9,18 +10,18 @@ import pytest
 from astropy import units as u
 
 from jug.fitting.optimized_fitter import (
-    _designmatrix_param_value,
-    _write_param_variant,
+    _build_general_fit_setup_from_files,
     compute_designmatrix,
 )
-from jug.io.par_reader import parse_par_file
+from jug.fitting.derivatives_astrometry import compute_astrometry_derivatives
+from jug.io.par_reader import format_dec, format_ra, parse_dec, parse_par_file, parse_ra
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.utils.units import (
     ASTROMETRY_EXPORT_PARAMS,
     column_unit,
-    fd_step_in_fit_units,
     fit_to_native_value,
     fit_unit,
+    native_derivative_to_fit_column,
     native_to_fit_value,
     validate_column_units,
 )
@@ -46,6 +47,45 @@ def fixture():
 
 def _project_offset(column: np.ndarray) -> np.ndarray:
     return column - np.mean(column)
+
+
+def _designmatrix_param_value(params: dict, param: str) -> float:
+    value = params[param.upper()]
+    if param.upper() == "RAJ" and isinstance(value, str):
+        return float(parse_ra(value))
+    if param.upper() == "DECJ" and isinstance(value, str):
+        return float(parse_dec(value))
+    return float(value)
+
+
+def _format_designmatrix_param_value(param: str, value: float) -> str:
+    if param.upper() == "RAJ":
+        return format_ra(value)
+    if param.upper() == "DECJ":
+        return format_dec(value)
+    return f"{value:.17g}"
+
+
+def _write_param_variant(par_file: Path | str, param: str, value: float) -> str:
+    lines = Path(par_file).read_text().splitlines()
+    out_lines = []
+    replaced = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped.split()[0].upper() == param.upper():
+            parts = line.split()
+            parts[1] = _format_designmatrix_param_value(param, value)
+            out_lines.append(" ".join(parts))
+            replaced = True
+        else:
+            out_lines.append(line)
+    if not replaced:
+        raise ValueError(f"Parameter {param!r} not found in {par_file}")
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".par", delete=False)
+    with tmp:
+        tmp.write("\n".join(out_lines))
+        tmp.write("\n")
+    return tmp.name
 
 
 def _residual_change_for_fit_delta(
@@ -82,41 +122,6 @@ def _residual_change_for_fit_delta(
     return (plus["residuals_us"] - base["residuals_us"]) * 1.0e-6
 
 
-def _manual_fd_column_fit_units(
-    par_file: Path | str,
-    tim_file: Path | str,
-    param: str,
-    *,
-    compatibility: str,
-) -> np.ndarray:
-    """Recompute one FD column using the fit-unit step helpers."""
-    params = parse_par_file(par_file)
-    value_native = _designmatrix_param_value(params, param)
-    value_fit = native_to_fit_value(param, value_native)
-    step_fit = fd_step_in_fit_units(param, value_fit)
-    plus_native = fit_to_native_value(param, value_fit + step_fit)
-    minus_native = fit_to_native_value(param, value_fit - step_fit)
-    plus_file = _write_param_variant(par_file, param, plus_native)
-    minus_file = _write_param_variant(par_file, param, minus_native)
-    try:
-        plus = compute_residuals_simple(
-            plus_file,
-            tim_file,
-            verbose=False,
-            compatibility=compatibility,
-        )
-        minus = compute_residuals_simple(
-            minus_file,
-            tim_file,
-            verbose=False,
-            compatibility=compatibility,
-        )
-    finally:
-        Path(plus_file).unlink(missing_ok=True)
-        Path(minus_file).unlink(missing_ok=True)
-    return -((plus["residuals_us"] - minus["residuals_us"]) * 1.0e-6) / (2.0 * step_fit)
-
-
 @pytest.mark.parametrize("param", ASTROMETRY_EXPORT_PARAMS)
 def test_astrometry_column_units_match_fit_unit(param):
     expected = column_unit(param)
@@ -127,7 +132,9 @@ def test_astrometry_column_units_match_fit_unit(param):
 
 @pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
 @pytest.mark.parametrize("param", ASTROMETRY_FD_RECOMPUTE_PARAMS)
-def test_astrometry_fd_column_uses_fit_unit_step(fixture, compatibility, param):
+def test_astrometry_column_matches_analytic_fit_unit_derivative(
+    fixture, compatibility, param
+):
     par_file, tim_file = fixture
     dm = compute_designmatrix(
         par_file,
@@ -135,13 +142,22 @@ def test_astrometry_fd_column_uses_fit_unit_step(fixture, compatibility, param):
         [param],
         compatibility=compatibility,
     )
-    manual = _manual_fd_column_fit_units(
-        par_file,
-        tim_file,
-        param,
+    setup = _build_general_fit_setup_from_files(
+        Path(par_file),
+        Path(tim_file),
+        [param],
+        clock_dir=None,
+        verbose=False,
         compatibility=compatibility,
     )
-    np.testing.assert_allclose(dm.matrix[:, 0], manual, rtol=0.0, atol=1.0e-15)
+    deriv_native = compute_astrometry_derivatives(
+        setup.params,
+        setup.tdb_mjd,
+        setup.ssb_obs_pos_ls,
+        [param],
+    )[param]
+    expected = native_derivative_to_fit_column(param, np.asarray(deriv_native))
+    np.testing.assert_allclose(dm.matrix[:, 0], expected, rtol=0.0, atol=1.0e-15)
 
 
 @pytest.mark.parametrize("compatibility", ["pint", "tempo2"])

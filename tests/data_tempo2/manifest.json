@@ -189,7 +189,7 @@
       "EPHEM": "DE421",
       "COORDS": "equatorial",
       "NTOA": "1167",
-      "NOTES": "Full EPTA INCLUDE collection; ~2.9 s RMS vs libstempo (2026-07-03)"
+      "NOTES": "Full EPTA TIM; ~2.9 ms RMS vs libstempo (2026-07-03)"
     },
     "notes": "Notebook single_epta layout: par + all.tim + tims/ INCLUDE tree"
   }

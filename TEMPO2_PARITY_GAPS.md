@@ -220,7 +220,7 @@ mode for production tempo2 sessions.
 |----------|----------------------|---------------------|
 | NG5 J1600 Cases B/C | Yes | Green on raw residuals (narrow par) |
 | TCB Case A | Yes | Green |
-| IPTA DR2 EPTA J0613 `single_epta` (full INCLUDE) | **Yes (2026-07-03)** | **Documented gap:** ~2.9 s RMS vs libstempo; autodiff θ=0 green |
+| IPTA DR2 EPTA J0613 `single_epta` (full TIM) | **Yes (2026-07-03)** | **No parity:** ~2.9 ms RMS vs libstempo (gate 5 ns) |
 | IPTA DR2 EPTA J0613 single-backend excerpt | **Yes (2026-07-03)** | **Documented gap:** ~62 ns RMS vs libstempo |
 | IPTA DR2 multi-PTA `multi_consistent` (J0613) | **No** | **Green ad hoc** — zero-delta + NTM whitening pass; not CI-gated |
 | Composite (Borg) host strategy | **No** | θ=0 green; NTM whitening fails (Fisher not PD); G3 |
@@ -251,27 +251,29 @@ These are **honest residual-level debts** independent of the G1/G2 nonlinear fix
 
 ## Gap G7 — IPTA DR2 EPTA multi-backend raw residuals — **OPEN (documented 2026-07-03)**
 
-**Symptom:** MetaPulsar notebooks `nlt_ipta_dr2_compare.ipynb` (libstempo) vs
-`nlt_ipta_dr2_compare_jug.ipynb` (JUG tempo2) disagree on **`single_epta`** EPTA J0613-0200
-even though nonlinear/autodiff reference-state checks (G1/G2) pass.
+**Symptom:** On IPTA DR2 EPTA **J0613-0200** (`J0613-0200.par` + full TIM, 1369 TOAs),
+`JUG(compatibility="tempo2")` pre-fit residuals do **not** match libstempo/tempo2.
+This is the direct cause of MCMC differences when swapping libstempo → JUG(tempo2)
+on the same single-PTA dataset.
 
-**Measured on bundled fixtures** (`tests/data_tempo2/epta_j0613_t2_*`,
-`tests/test_tempo2_ipta_dr2_j0613_parity.py`):
+**Measured on bundled fixture** `epta_j0613_t2_ipta_all`
+(`tests/test_tempo2_ipta_dr2_j0613_parity.py`), same par+tim pair evaluated by both engines:
 
-| Fixture | Layout | JUG(tempo2) − libstempo | Autodiff `delta(0)` |
-|---------|--------|-------------------------|---------------------|
-| `epta_j0613_t2_ipta_all` | Notebook `J0613-0200_all.tim` + INCLUDE backends | **RMS ≈ 2.9×10⁶ ns (~2.9 s)** | ≲10⁻¹⁶ s |
-| `epta_j0613_t2_nrt1400` | Single-backend NRT.BON.1400 excerpt (120 TOAs) | **RMS ≈ 62 ns** | ≲10⁻¹⁶ s |
+| Quantity | Gate (green fixtures) | J0613 EPTA |
+|----------|----------------------|------------|
+| TOA count | JUG == libstempo | **1369 == 1369** |
+| RMS Δ | < 5 ns | **2.89×10⁶ ns (~2.9 ms)** |
+| p99 \|Δ\| | < 10 ns | **4.56×10⁶ ns** |
+| max \|Δ\| | < 25 ns | **4.88×10⁶ ns (~4.9 ms)** |
+| WRMS Δ | < 5 ns | **~3.0×10⁶ ns** |
 
-**Interpretation:** The O(second) mismatch is specific to the **multi-backend IPTA DR2
-EPTA TIM collection** with per-backend `JUMP -sys …` structure — not to T2/ELL1 autodiff
-reference state. Likely causes include JUG vs libstempo handling of multi-backend JUMPs,
-`-sys` flags, and/or equatorial T2 binary conventions on real IPTA parfiles. Clock
-extrapolation warnings (BIPM2011) are present but do not explain the second-scale offset
-(single-backend parity stays ~60 ns under the same clocks).
+**Verdict:** **No residual parity.** JUG(tempo2) is not a drop-in replacement for
+libstempo on this pulsar/dataset.
 
-**Tests:** `@pytest.mark.tempo2` documented-gap gates — do **not** expect strict 5 ns parity
-on these fixtures until the multi-backend residual path is fixed.
+**Tests:**
+- `test_tempo2_mode_epta_j0613_ipta_dr2_residual_parity` — standard
+  `_assert_residual_parity` gate (xfail strict)
+- `test_epta_j0613_ipta_dr2_parity_debt_is_large` — pins measured debt in CI
 
 ---
 

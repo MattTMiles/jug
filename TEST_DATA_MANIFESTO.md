@@ -98,9 +98,8 @@ fixtures and remove hard-coded local paths”).
 
 Pars are TDB-converted (`*_tdb.par`) except J0437.
 
-**Trim proposal (not yet implemented):** add e.g.
-`tests/data_mpta/j0613_ell1h/J0613-0200_trim300.tim` (~300 TOAs, every k-th valid TOA
-line) referenced from manifest as `j0613_ell1h_trim300` for autodiff/whitening tests.
+**Trimmed fixture now bundled:** `j0613_ell1h_trim300` at
+`tests/data_mpta/j0613_ell1h/J0613-0200_trim300.tim` (~300 TOAs, currently 307).
 
 ---
 
@@ -178,7 +177,7 @@ infrastructure (hashed in `data/manifest.json`).
    the default with full files via `JUG_TEST_*` env vars?
 2. Should **`data_tempo2` EPTA/PPTA excerpts** remain, or be regenerated from a single
    canonical trimmed set?
-3. Do we add **`tests/data_mpta/j0613_ell1h/J0613-0200_trim300.tim`** (par unchanged,
+3. Keep **`tests/data_mpta/j0613_ell1h/J0613-0200_trim300.tim`** (par unchanged,
    tim evenly subsampled) as the standard autodiff/whitening anchor?
 4. Document redistribution expectations per collaboration in `CONTRIBUTING.md` when we
    finalize the policy.

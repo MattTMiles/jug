@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
+from jug.fitting.binary_registry import compute_binary_delay
+from jug.fitting.forward_delay import compute_total_delay_change
 from jug.fitting.jax_residual_delta import (
     compute_autodiff_designmatrix_from_setup,
     make_residual_delta_jax_fn,
@@ -131,3 +135,167 @@ def test_autodiff_matches_mean_projected_analytic_spin_dm():
     analytic = analytic - (weights @ analytic) / weights.sum()
 
     np.testing.assert_allclose(autodiff, analytic, rtol=2.0e-8, atol=1.0e-13)
+
+
+BINARY_CASES = {
+    "ELL1": dict(BINARY="ELL1", A1=10.0, PB=5.0, TASC=55000.0, EPS1=1e-3, EPS2=-2e-3),
+    "T2_ELL1": dict(BINARY="T2", A1=10.0, PB=5.0, TASC=55000.0, EPS1=1e-3, EPS2=-2e-3),
+    "ELL1H": dict(
+        BINARY="ELL1H", A1=10.0, PB=5.0, TASC=55000.0, EPS1=1e-3, EPS2=-2e-3, H3=5e-8, STIG=0.7
+    ),
+    "DD": dict(BINARY="DD", A1=10.0, PB=5.0, T0=55000.0, ECC=0.1, OM=45.0),
+    "DDK": dict(
+        BINARY="DDK",
+        A1=10.0,
+        PB=5.0,
+        T0=55000.0,
+        ECC=0.1,
+        OM=45.0,
+        KIN=60.0,
+        KOM=30.0,
+        PX=1.0,
+        PMRA=5.0,
+        PMDEC=-3.0,
+        RAJ=1.0,
+        DECJ=-0.5,
+    ),
+    "DDK_PM": dict(
+        BINARY="DDK",
+        A1=10.0,
+        PB=5.0,
+        T0=55000.0,
+        ECC=0.1,
+        OM=45.0,
+        KIN=60.0,
+        KOM=30.0,
+        PX=1.0,
+        PMRA=5.0,
+        PMDEC=-3.0,
+        RAJ=1.0,
+        DECJ=-0.5,
+    ),
+    "DDK_ECL_PM": dict(
+        BINARY="DDK",
+        A1=10.0,
+        PB=5.0,
+        T0=55000.0,
+        ECC=0.1,
+        OM=45.0,
+        KIN=60.0,
+        KOM=30.0,
+        PX=1.0,
+        _ecliptic_coords=True,
+        _ecliptic_frame="IERS2010",
+        _ecliptic_lon_deg=120.0,
+        _ecliptic_lat_deg=-30.0,
+        PMELONG=5.0,
+        PMELAT=-3.0,
+    ),
+}
+BINARY_FIT = {
+    "ELL1": ["A1", "EPS1", "EPS2"],
+    "T2_ELL1": ["A1", "EPS1", "EPS2"],
+    "ELL1H": ["A1", "H3", "STIG"],
+    "DD": ["A1", "ECC", "OM"],
+    "DDK": ["A1", "KIN", "KOM"],
+    "DDK_PM": ["A1", "PMRA", "PMDEC"],
+    "DDK_ECL_PM": ["A1", "PMELONG", "PMELAT"],
+}
+
+
+def _binary_setup(case, method="autodiff"):
+    fit_params = list(BINARY_FIT[case])
+    base = _setup(["F0"], method=method)
+    n = len(base.tdb_mjd)
+    params = dict(base.params)
+    params.update(BINARY_CASES[case])
+    params.setdefault("PEPOCH", 55000.0)
+    prebinary = np.zeros(n, dtype=float)
+    obs_pos = 1e-3 * (1.0 + np.arange(3 * n, dtype=float)).reshape(n, 3)
+    toas_prebinary = base.tdb_mjd - prebinary / SECS_PER_DAY
+    init_binary = np.asarray(
+        compute_binary_delay(toas_prebinary, params, obs_pos_ls=obs_pos), dtype=float
+    )
+    return dataclasses.replace(
+        base,
+        params=params,
+        fit_param_list=fit_params,
+        param_values_start=[float(params.get(p, 0.0)) for p in fit_params],
+        binary_params=["A1"],
+        prebinary_delay_sec=prebinary,
+        initial_binary_delay=init_binary,
+        ssb_obs_pos_ls=obs_pos,
+        dm_params=[],
+        spin_params=[],
+        initial_dm_delay=None,
+        binary_plan=None,
+    ), fit_params
+
+
+@pytest.mark.parametrize("case", list(BINARY_CASES))
+def test_residual_delta_jax_zero_is_zero_binary(case):
+    setup, fit_params = _binary_setup(case)
+    fn = make_residual_delta_jax_fn(setup=setup, fit_params=fit_params)
+    delta = np.asarray(fn(jnp.zeros(len(fit_params))))
+    np.testing.assert_allclose(delta, 0.0, atol=1e-9, rtol=0.0)
+
+
+@pytest.mark.parametrize("case", list(BINARY_CASES))
+def test_np_vs_jax_delay_change_parity(case):
+    setup, fit_params = _binary_setup(case)
+    params = dict(setup.params)
+    for p in fit_params:
+        params[p] = float(params.get(p, 0.0)) + 1e-6
+    d_np = np.asarray(compute_total_delay_change(params, setup, xp=np))
+    d_jx = np.asarray(compute_total_delay_change(params, setup, xp=jnp))
+    np.testing.assert_allclose(d_jx, d_np, rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.parametrize("case", ["ELL1", "DD"])
+def test_autodiff_binary_column_matches_analytic(case):
+    setup, fit_params = _binary_setup(case, method="autodiff")
+    analytic = _compute_designmatrix_from_setup(_binary_setup(case, "analytic")[0], fit_params)
+    autodiff = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    w = np.asarray(setup.weights)
+    analytic = analytic - (w @ analytic) / w.sum()
+    np.testing.assert_allclose(autodiff, analytic, rtol=2e-2, atol=1e-9)
+
+
+def test_ddk_proper_motion_is_traceable():
+    setup, fit_params = _binary_setup("DDK_PM", method="autodiff")
+    mtx = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    for name in ("PMRA", "PMDEC"):
+        col = mtx[:, fit_params.index(name)]
+        assert np.linalg.norm(col) > 0.0, f"{name} column is all-zero -> PM not traced"
+
+
+def test_ddk_ecliptic_proper_motion_aliases_are_traceable():
+    setup, fit_params = _binary_setup("DDK_ECL_PM", method="autodiff")
+    mtx = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    for name in ("PMELONG", "PMELAT"):
+        col = mtx[:, fit_params.index(name)]
+        assert np.linalg.norm(col) > 0.0, f"{name} column is all-zero -> ecliptic PM alias not traced"
+
+
+def test_dd_orthometric_fit_is_rejected():
+    from jug.fitting.binary_delay_plan import resolve_binary_structure
+
+    ref = dict(
+        BINARY="DDH",
+        A1=10.0,
+        PB=5.0,
+        T0=55000.0,
+        ECC=0.1,
+        OM=45.0,
+        H3=5e-8,
+        STIG=0.7,
+    )
+    with pytest.raises(NotImplementedError):
+        resolve_binary_structure(ref, ["A1", "H3"])
+
+
+def test_epoch_in_fit_params_raises():
+    from jug.fitting.forward_delay import _assert_no_epoch_fit_params
+
+    with pytest.raises(ValueError, match="DMEPOCH"):
+        _assert_no_epoch_fit_params(["F0", "DMEPOCH"])

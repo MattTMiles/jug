@@ -209,6 +209,11 @@ def get_j0613_paths() -> Tuple[Optional[Path], Optional[Path]]:
     )
 
 
+def get_j0613_trim300_paths() -> Tuple[Optional[Path], Optional[Path]]:
+    """J0613-0200 MPTA DR2, ~300 TOAs."""
+    return get_mpta_fixture_paths("j0613_ell1h_trim300")
+
+
 def get_j0125_paths() -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
     """Get J0125-2327 pre-fit PAR, TIM, and optional post-fit PAR paths."""
     par, tim = _resolve_pulsar_paths(

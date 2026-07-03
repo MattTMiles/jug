@@ -370,6 +370,7 @@ class GeneralFitSetup:
     tzr_phase: Optional[float]
     # Noise configuration (Phase 3 integration)
     noise_config: object  # NoiseConfig or None
+    binary_plan: object = None  # BinaryDelayPlan (cached); built lazily if None
 
 
 # =============================================================================
@@ -467,35 +468,9 @@ def compute_dm_delay_fast(tdb_mjd: np.ndarray, freq_mhz: np.ndarray,
     dm_delay_sec : np.ndarray
         DM delay in seconds
     """
-    # Build DM polynomial coefficients
-    dm_coeffs = []
-    dm_factorials = []
-    for i in range(10):  # Support up to DM9
-        param = f'DM{i}' if i > 0 else 'DM'
-        if param in dm_params and dm_params[param] is not None:
-            dm_coeffs.append(dm_params[param])
-            dm_factorials.append(math.factorial(i))
-        elif param == 'DM':
-            dm_coeffs.append(0.0)
-            dm_factorials.append(1.0)
-        else:
-            break
+    from jug.fitting.forward_delay import _dm_delay
 
-    dm_coeffs = np.array(dm_coeffs)
-    dm_factorials = np.array(dm_factorials)
-
-    # Compute DM polynomial: DM(t) = sum(DM_i * (t-DMEPOCH)^i / i!)
-    # Note: PINT uses years, so convert MJD difference to years
-    dt_years = (tdb_mjd - dm_epoch) / 365.25
-
-    dm_eff = np.zeros_like(tdb_mjd)
-    for i, (coeff, factorial) in enumerate(zip(dm_coeffs, dm_factorials)):
-        dm_eff += coeff * (dt_years ** i) / factorial
-
-    # Compute DM delay: tau_DM = K_DM * DM(t) / freq^2
-    dm_delay_sec = K_DM_SEC * dm_eff / (freq_mhz ** 2)
-
-    return dm_delay_sec
+    return _dm_delay(np, tdb_mjd, freq_mhz, dm_params, dm_epoch)
 
 
 def _has_gpu():
@@ -1687,6 +1662,13 @@ def _build_setup_common(
         toas_prebinary = tdb_mjd - prebinary_delay_sec / SECS_PER_DAY
         initial_binary_delay = np.array(compute_binary_delay(
             toas_prebinary, params, obs_pos_ls=ssb_obs_pos_ls))
+    binary_plan = None
+    if binary_params:
+        from jug.fitting.binary_delay_plan import resolve_binary_structure
+
+        binary_plan = resolve_binary_structure(
+            params, fit_params, obs_pos_ls=ssb_obs_pos_ls
+        )
 
     # --- Astrometry delay setup --------------------------------------------
     initial_astrometric_delay = None
@@ -1795,6 +1777,7 @@ def _build_setup_common(
         jump_phase=jump_phase,
         tzr_phase=tzr_phase,
         noise_config=noise_config,
+        binary_plan=binary_plan,
     )
 
 
@@ -1815,6 +1798,9 @@ def _build_general_fit_setup_from_files(
     Parses files, computes residuals, then delegates to the shared
     ``_build_setup_common()`` builder for noise wiring and parameter setup.
     """
+    from jug.fitting.forward_delay import _assert_no_epoch_fit_params
+
+    _assert_no_epoch_fit_params(fit_params)
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
     # DMX_* are handled automatically via dmx_design_matrix; strip before validation
@@ -1920,79 +1906,16 @@ def _compute_full_model_residuals(
     # Get cached arrays -- use longdouble dt_sec for phase precision
     from jug.residuals.simple_calculator import compute_phase_residuals
     dt_sec_base = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)
-    tdb_mjd = setup.tdb_mjd
-    freq_mhz = setup.freq_mhz
     weights = setup.weights
     errors_sec = setup.errors_sec
 
     # Start with longdouble dt_sec (contains initial delays)
     dt_sec_np = dt_sec_base.copy()
-
-    # Apply DM delay correction (float64 corrections promoted to longdouble)
-    dm_params = setup.dm_params
-    if dm_params:
-        dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
-        current_dm_params = {p: params[p] for p in dm_params}
-        new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
-        dm_delay_change = new_dm_delay - setup.initial_dm_delay
-        dt_sec_np = dt_sec_np - dm_delay_change
-
-    # Apply DMX delay correction. DMX bins are deterministic timing
-    # parameters, so nonlinear residual checks must see updated bin values.
-    if setup.dmx_design_matrix is not None and setup.dmx_labels and setup.initial_dmx_delay is not None:
-        current_dmx_values = np.array([float(params.get(label, 0.0)) for label in setup.dmx_labels])
-        new_dmx_delay = np.asarray(setup.dmx_design_matrix @ current_dmx_values, dtype=np.float64)
-        dt_sec_np = dt_sec_np - (new_dmx_delay - setup.initial_dmx_delay)
-
-    # Apply binary delay correction (route to correct binary model)
-    binary_params = setup.binary_params
-    if binary_params and setup.initial_binary_delay is not None:
-        toas_prebinary = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
-        new_binary_delay = np.array(compute_binary_delay(
-            toas_prebinary, params, obs_pos_ls=setup.ssb_obs_pos_ls))
-        binary_delay_change = new_binary_delay - setup.initial_binary_delay
-        dt_sec_np = dt_sec_np - binary_delay_change
-
-    # Apply astrometric delay correction
-    astrometry_params = setup.astrometry_params
-    if astrometry_params and setup.initial_astrometric_delay is not None:
-        from jug.fitting.derivatives_astrometry import compute_astrometric_delay
-        new_astrometric_delay = np.array(compute_astrometric_delay(
-            params, tdb_mjd, setup.ssb_obs_pos_ls,
-            obs_sun_pos_ls=setup.obs_sun_pos_ls,
-            obs_planet_pos_ls=setup.obs_planet_pos_ls
-        ))
-        astrometric_delay_change = new_astrometric_delay - setup.initial_astrometric_delay
-        dt_sec_np = dt_sec_np - astrometric_delay_change
-
-    # Apply FD delay correction
-    fd_params = setup.fd_params
-    if fd_params and setup.initial_fd_delay is not None:
-        from jug.fitting.derivatives_fd import compute_fd_delay
-        current_fd_params = {p: params[p] for p in fd_params if p in params}
-        new_fd_delay = np.asarray(compute_fd_delay(freq_mhz, current_fd_params), dtype=np.float64)
-        fd_delay_change = new_fd_delay - setup.initial_fd_delay
-        dt_sec_np = dt_sec_np - fd_delay_change
-
-    # Apply FDJUMP delay correction
-    if setup.fdjump_params and setup.fdjump_masks:
-        from jug.fitting.derivatives_fdjump import compute_fdjump_delay
-        new_fdjump_delay = compute_fdjump_delay(
-            params, freq_mhz, setup.fdjump_params, setup.fdjump_masks
-        )
-        if setup.initial_fdjump_delay is not None:
-            fdjump_delay_change = new_fdjump_delay - setup.initial_fdjump_delay
-        else:
-            fdjump_delay_change = new_fdjump_delay
-        dt_sec_np = dt_sec_np - fdjump_delay_change
-
-    # Apply solar wind delay correction
-    sw_params = setup.sw_params
-    if sw_params and setup.initial_sw_delay is not None:
-        ne_sw_val = float(params.get('NE_SW', params.get('NE1AU', 0.0)))
-        new_sw_delay = K_DM_SEC * ne_sw_val * setup.sw_geometry_pc / (freq_mhz ** 2)
-        sw_delay_change = new_sw_delay - setup.initial_sw_delay
-        dt_sec_np = dt_sec_np - sw_delay_change
+    from jug.fitting.forward_delay import compute_total_delay_change
+    delay_change = compute_total_delay_change(
+        params, setup, xp=np, binary_plan=getattr(setup, "binary_plan", None)
+    )
+    dt_sec_np = dt_sec_np - np.asarray(delay_change, dtype=np.longdouble)
 
     # Update jump_phase for fitted JUMP parameters (JUMPs are phase offsets, not delays)
     current_jump_phase = setup.jump_phase
@@ -3364,6 +3287,9 @@ def _build_general_fit_setup_from_cache(
         Per-TOA noise realization (in seconds) to subtract from dt_sec_cached.
         If provided, toa_mask is applied before passing to _build_setup_common.
     """
+    from jug.fitting.forward_delay import _assert_no_epoch_fit_params
+
+    _assert_no_epoch_fit_params(fit_params)
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
     import re as _re

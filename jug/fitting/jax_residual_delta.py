@@ -17,10 +17,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jug.fitting.derivatives_astrometry import compute_astrometric_delay
-from jug.fitting.derivatives_dd import _compute_dd_binary_delay_jit
-from jug.fitting.derivatives_fd import compute_fd_delay
-from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.utils.units import native_derivative_to_fit_column
 
 if TYPE_CHECKING:
@@ -101,14 +97,6 @@ def _phase_residual_delta_jax(
     return residual_delta
 
 
-def _dm_delay_jax(tdb_mjd, freq_mhz, dm_values, dm_epoch: float):
-    dt_years = (tdb_mjd - dm_epoch) / 365.25
-    dm_eff = jnp.zeros_like(tdb_mjd)
-    for i, coeff in enumerate(dm_values):
-        dm_eff = dm_eff + coeff * (dt_years**i) / float(math.factorial(i))
-    return K_DM_SEC * dm_eff / (freq_mhz**2)
-
-
 def _reference_param_value(params: Mapping[str, object], param: str) -> float:
     """Return a fit parameter value in native numeric storage units."""
     param_upper = param.upper()
@@ -181,106 +169,24 @@ def _compute_residual_delta_jax(
     *,
     ref_f_terms: Sequence[float],
     phase_mean_mode: str,
+    binary_plan=None,
 ):
     """Residual delta (perturbed - reference) through JUG's JAX forward model."""
+    from jug.fitting.forward_delay import compute_total_delay_change
+
     dt_base_np = (
         setup.dt_sec_ld
         if setup.dt_sec_ld is not None
         else np.array(setup.dt_sec_cached, dtype=np.float64)
     )
     dt_base = jnp.asarray(np.asarray(dt_base_np, dtype=np.float64), dtype=jnp.float64)
-    tdb_mjd = jnp.asarray(setup.tdb_mjd, dtype=jnp.float64)
-    freq_mhz = jnp.asarray(setup.freq_mhz, dtype=jnp.float64)
     weights = jnp.asarray(setup.weights, dtype=jnp.float64)
-
-    delay_change = jnp.zeros_like(dt_base)
-
-    if setup.dm_params and setup.initial_dm_delay is not None:
-        dm_epoch = float(params.get("DMEPOCH", params.get("PEPOCH", 55000.0)))
-        dm_values = [
-            _param_scalar(params, p if p != "DM0" else "DM", 0.0)
-            for p in setup.dm_params
-        ]
-        new_dm = _dm_delay_jax(tdb_mjd, freq_mhz, dm_values, dm_epoch)
-        init_dm = jnp.asarray(setup.initial_dm_delay, dtype=jnp.float64)
-        delay_change = delay_change + (new_dm - init_dm)
-
-    if (
-        setup.dmx_design_matrix is not None
-        and setup.dmx_labels
-        and setup.initial_dmx_delay is not None
-    ):
-        current_dmx = jnp.array(
-            [_param_scalar(params, label, 0.0) for label in setup.dmx_labels],
-            dtype=jnp.float64,
-        )
-        matrix = jnp.asarray(setup.dmx_design_matrix, dtype=jnp.float64)
-        new_dmx = matrix @ current_dmx
-        init_dmx = jnp.asarray(setup.initial_dmx_delay, dtype=jnp.float64)
-        delay_change = delay_change + (new_dmx - init_dmx)
-
-    if setup.binary_params and setup.initial_binary_delay is not None:
-        if setup.prebinary_delay_sec is None:
-            raise ValueError("Binary autodiff residuals require prebinary_delay_sec.")
-        toas_prebinary = (
-            tdb_mjd
-            - jnp.asarray(setup.prebinary_delay_sec, dtype=jnp.float64) / SECS_PER_DAY
-        )
-        sini_raw = _param_scalar(params, "SINI", 0.0)
-        kin = _param_scalar(params, "KIN", 0.0)
-        sini = jax.lax.cond(
-            jnp.asarray(sini_raw) == 0.0,
-            lambda _: jnp.sin(jnp.deg2rad(kin)),
-            lambda _: jnp.asarray(sini_raw, dtype=jnp.float64),
-            None,
-        )
-        new_binary = _compute_dd_binary_delay_jit(
-            toas_prebinary,
-            _param_scalar(params, "A1"),
-            _param_scalar(params, "PB"),
-            _param_scalar(params, "T0"),
-            _param_scalar(params, "ECC"),
-            _param_scalar(params, "OM"),
-            _param_scalar(params, "OMDOT"),
-            _param_scalar(params, "PBDOT"),
-            _param_scalar(params, "GAMMA"),
-            sini,
-            _param_scalar(params, "M2"),
-            _param_scalar(params, "XDOT"),
-            _param_scalar(params, "EDOT"),
-        )
-        init_binary = jnp.asarray(setup.initial_binary_delay, dtype=jnp.float64)
-        delay_change = delay_change + (new_binary - init_binary)
-
-    if setup.astrometry_params and setup.initial_astrometric_delay is not None:
-        new_astro = compute_astrometric_delay(
-            params,
-            tdb_mjd,
-            jnp.asarray(setup.ssb_obs_pos_ls, dtype=jnp.float64),
-            obs_sun_pos_ls=(
-                None
-                if setup.obs_sun_pos_ls is None
-                else jnp.asarray(setup.obs_sun_pos_ls, dtype=jnp.float64)
-            ),
-            obs_planet_pos_ls=setup.obs_planet_pos_ls,
-        )
-        init_astro = jnp.asarray(setup.initial_astrometric_delay, dtype=jnp.float64)
-        delay_change = delay_change + (new_astro - init_astro)
-
-    if setup.fd_params and setup.initial_fd_delay is not None:
-        current_fd = {
-            p: _param_scalar(params, p) for p in setup.fd_params if p in params
-        }
-        new_fd = jnp.asarray(compute_fd_delay(freq_mhz, current_fd), dtype=jnp.float64)
-        init_fd = jnp.asarray(setup.initial_fd_delay, dtype=jnp.float64)
-        delay_change = delay_change + (new_fd - init_fd)
-
-    if setup.sw_params and setup.initial_sw_delay is not None:
-        ne_sw = _param_scalar(params, "NE_SW", _param_scalar(params, "NE1AU", 0.0))
-        sw_geom = jnp.asarray(setup.sw_geometry_pc, dtype=jnp.float64)
-        new_sw = K_DM_SEC * ne_sw * sw_geom / (freq_mhz**2)
-        init_sw = jnp.asarray(setup.initial_sw_delay, dtype=jnp.float64)
-        delay_change = delay_change + (new_sw - init_sw)
+    delay_change = compute_total_delay_change(
+        params,
+        setup,
+        xp=jnp,
+        binary_plan=binary_plan,
+    )
 
     f_terms = _spin_terms_from_params(params)
     return _phase_residual_delta_jax(
@@ -303,7 +209,11 @@ def make_residual_delta_jax_fn(
     phase_mean_mode: str | None = None,
 ):
     """Return ``f(delta_theta) -> residual_delta`` for a frozen fit setup."""
+    from jug.fitting.binary_delay_plan import resolve_binary_structure
+    from jug.fitting.forward_delay import _assert_no_epoch_fit_params
+
     fit_params = tuple(str(name).upper() for name in fit_params)
+    _assert_no_epoch_fit_params(fit_params)
     ref_params = _normalize_ref_params(ref_params or setup.params)
     if ref_theta is None:
         ref_theta = np.array(
@@ -317,6 +227,9 @@ def make_residual_delta_jax_fn(
 
     ref_f_terms = tuple(float(x) for x in _spin_terms_from_params(ref_params))
     phase_mean_mode = phase_mean_mode or _phase_mean_mode(setup.compatibility)
+    binary_plan = resolve_binary_structure(
+        ref_params, fit_params, obs_pos_ls=getattr(setup, "ssb_obs_pos_ls", None)
+    )
 
     @jax.jit
     def _fn(delta_theta):
@@ -326,6 +239,7 @@ def make_residual_delta_jax_fn(
             setup,
             ref_f_terms=ref_f_terms,
             phase_mean_mode=phase_mean_mode,
+            binary_plan=binary_plan,
         )
 
     return _fn

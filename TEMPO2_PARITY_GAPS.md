@@ -20,7 +20,7 @@ timing stack.
 | Raw pre-fit residuals vs libstempo | **Partially green** on curated fixtures (TCB Case A; NG5 TDB Cases B/C) |
 | Linear WLS / host `Mmat` from libstempo | **Usable** in MetaPulsar when timing package is tempo2 and JUG is not on the hot path |
 | NumPy `residual_delta` round-trip at θ=0 | **Closed (G1, 2026-07-03)** — MetaPulsar reads `HIGH_PRECISION_PARAMS` via `get_longdouble()` before `_update_param` |
-| JAX `residual_delta` / autodiff design matrix | **Not trustworthy** on ELL1/T2 binaries — forward model mismatch at O(1 s) at θ=0 |
+| JAX `residual_delta` / autodiff design matrix | **Closed for binary dispatch (G2, 2026-07-03)** — JAX and NumPy now share one delay-change forward model and binary dispatch |
 | Analytic design matrix in tempo2 mode | **Known broken** — do not use; see TODOs in `optimized_fitter.py` |
 | MetaPulsar Discovery NUTS + JUG(tempo2) | **Unsupported today** — do not assume notebook/demo parity |
 
@@ -94,11 +94,10 @@ authoritative; any caller that round-trips high-precision params through `float(
 
 ---
 
-## Gap G2 — JAX autodiff path: ELL1 binary model uses DD Keplerian JIT
+## Gap G2 — JAX autodiff path binary mismatch — **CLOSED (2026-07-03)**
 
-**Symptom:** `make_residual_delta_jax_fn(...)(0)` returns O(**1 s**) residuals on
-J0613-0200 (ELL1/T2 binary in IPTA DR2), while NumPy `residual_delta_np(0)` is **0** at
-machine precision after G1 closure (2026-07-03).
+**Historical symptom:** `make_residual_delta_jax_fn(...)(0)` returned O(**1 s**) residuals
+on J0613-0200 (ELL1/T2 binary in IPTA DR2), while NumPy `residual_delta_np(0)` was 0.
 
 **Mechanism:**
 
@@ -113,21 +112,20 @@ machine precision after G1 closure (2026-07-03).
 - Component breakdown at θ=0: DM and astrometry deltas ≈ 0; **binary
   `new − initial` ≈ 2.1 s** peak — matching the total JAX offset.
 
-**Impact:**
+**Closure (2026-07-03):**
 
-- `design_matrix_method="autodiff"` (`compute_autodiff_designmatrix_from_setup`) builds
-  columns from `jax.jacfwd` of this forward model — **columns are wrong** for ELL1
-  pulsars until the JAX binary path matches the setup’s binary family.
-- Discovery / NumPyro NUTS timing likelihoods that call `residual_delta_jax` inherit the
-  same error.
-- **MetaPulsar whitening symptom (observed 2026-07-03):** on IPTA DR2 J0613
-  `multi_consistent` with `engines={"tempo2": "jug", "pint": "jug"}` and
-  `design_matrix_method="autodiff"`, `NonLinearTimingModel.timing_param_keys()` fails
-  during Schur whitening setup with
-  `Sampled-block Schur Fisher is not numerically positive definite`. Backend build and
-  NumPy zero-delta validation succeed; the failure is downstream of wrong autodiff tangent
-  columns (ill-conditioned / inconsistent with the nonlinear model). Repro notebook:
-  `metapulsar/examples/notebooks-dev/nlt_ipta_dr2_compare_jug.ipynb`.
+- Added shared `compute_total_delay_change(..., xp=...)` used by both NumPy and JAX.
+- Added `BinaryDelayPlan`/`resolve_binary_structure` and routed builtin binary models
+  through one structural dispatcher for DD/ELL1/DDK/T2.
+- Removed JAX hardcoded DD binary delay path and wired FDJUMP + unified DM handling.
+- Added synthetic and trimmed-J0613 autodiff regressions to guard `delta(0)==0` and
+  NumPy/JAX delay parity across binary families.
+
+**Residual impact after closure:**
+
+- `design_matrix_method="autodiff"` now follows the same binary model family as the
+  residual path and is the recommended route for tempo2-mode binary columns.
+- Any remaining whitening/conditioning issues should be tracked separately from G2.
 
 **Scope note:** This gap is triggered on **ELL1/T2 IPTA binaries**, not only on
 `compatibility="tempo2"`. It blocks **MetaPulsar + JUG autodiff** broadly until the JAX

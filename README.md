@@ -151,6 +151,9 @@ do **not** mean tempo2 mode is ready for JAX-traced likelihoods or IPTA-scale
 workloads. See [`TEMPO2_PARITY_GAPS.md`](TEMPO2_PARITY_GAPS.md) for the current
 gap analysis and usage guidance.
 
+Test-data policy, provenance, and fixture-size guidance live in
+[`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md).
+
 ### Design-matrix unit convention
 
 `compute_designmatrix()` exports columns as `d(residual)/d(param)` in seconds

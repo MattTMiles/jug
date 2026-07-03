@@ -12,6 +12,10 @@ modules, and ``EngineConventionProfile`` for runtime conventions.
 **Next step:** Phase D/E (CI consolidation, design matrix/fit on TDB). Phase C TZR
 (mode-specific native path) is implemented. §3 decisions are locked.
 
+**Broader gaps (nonlinear timing, autodiff, IPTA):** fixture-green status here does
+**not** cover MetaPulsar `NonLinearTimingModel`, JAX autodiff design matrices, or
+ELL1 IPTA workloads. See [`TEMPO2_PARITY_GAPS.md`](TEMPO2_PARITY_GAPS.md).
+
 ---
 
 ## 1. Context

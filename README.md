@@ -146,6 +146,11 @@ For notebook diagnostics, weighted-mean-centered deltas are useful only for
 PINT-family-vs-PINT-family comparisons; tempo2-labeled comparisons should stay
 raw.
 
+**Nonlinear / autodiff / MetaPulsar:** green residual tests on curated fixtures
+do **not** mean tempo2 mode is ready for JAX-traced likelihoods or IPTA-scale
+workloads. See [`TEMPO2_PARITY_GAPS.md`](TEMPO2_PARITY_GAPS.md) for the current
+gap analysis and usage guidance.
+
 ### Design-matrix unit convention
 
 `compute_designmatrix()` exports columns as `d(residual)/d(param)` in seconds

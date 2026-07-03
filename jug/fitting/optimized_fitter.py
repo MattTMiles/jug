@@ -837,6 +837,10 @@ def _compute_designmatrix_from_setup(
             f"got {method!r}"
         )
 
+    # TODO: setup.compatibility="tempo2" + design_matrix_method="analytic" is
+    # currently broken: the hand-assembled analytic columns do not match the
+    # nonlinear tempo2 residual tangent. Use design_matrix_method="autodiff"
+    # instead (jax.jacfwd of the end-to-end JAX residual).
     from jug.fitting.derivatives_spin import compute_spin_derivatives
     from jug.fitting.derivatives_astrometry import compute_astrometry_derivatives
     from jug.fitting.derivatives_fdjump import compute_fdjump_derivatives
@@ -965,36 +969,10 @@ def _compute_designmatrix_autodiff_from_setup(
     setup: GeneralFitSetup,
     fit_params: List[str],
 ) -> np.ndarray:
-    """Compute a JUG-internal residual tangent for opt-in autodiff mode.
+    """Compute the public design matrix via JAX autodiff of residual deltas."""
+    from jug.fitting.jax_residual_delta import compute_autodiff_designmatrix_from_setup
 
-    The traced JAX residual path is shared with MetaPulsar and still has
-    component coverage gaps. Until every component is traceable, this falls back
-    to central differences through JUG's native forward residual evaluator
-    rather than any external design matrix.
-    """
-    from jug.utils.units import fd_step_in_fit_units
-
-    labels = list(fit_params)
-    base_params = dict(setup.params)
-    base_residuals, _, _, _ = _compute_full_model_residuals(base_params, setup)
-    n_toa = len(np.asarray(base_residuals))
-    cols = []
-    for param in labels:
-        value = float(base_params.get(param, 0.0))
-        step = float(fd_step_in_fit_units(param, value))
-        if step == 0.0:
-            step = 1.0e-8
-        plus = dict(base_params)
-        minus = dict(base_params)
-        _update_param(plus, param, value + step)
-        _update_param(minus, param, value - step)
-        res_plus, _, _, _ = _compute_full_model_residuals(plus, setup)
-        res_minus, _, _, _ = _compute_full_model_residuals(minus, setup)
-        cols.append(
-            (np.asarray(res_plus, dtype=np.float64) - np.asarray(res_minus, dtype=np.float64))
-            / (2.0 * step)
-        )
-    return np.column_stack(cols) if cols else np.empty((n_toa, 0), dtype=np.float64)
+    return compute_autodiff_designmatrix_from_setup(setup, fit_params)
 
 
 def compute_designmatrix(
@@ -1014,8 +992,14 @@ def compute_designmatrix(
     same analytic conventions as the WLS fitter (including ``fd_column_mode``).
     By default, columns are assembled in memory from the same analytic
     derivative blocks as the WLS fitter.  With
-    ``design_matrix_method="autodiff"``, columns are computed via central
-    differences through JUG's native forward residual evaluator.
+    ``design_matrix_method="autodiff"``, columns are computed as the Jacobian of
+    JUG's end-to-end JAX residual-delta function.
+
+    Note
+    ----
+    ``compatibility="tempo2"`` with ``design_matrix_method="analytic"`` is
+    currently known broken: the analytic columns do not match the nonlinear
+    tempo2 residual tangent. Use ``design_matrix_method="autodiff"`` instead.
     """
     labels = [canonicalize_param_name(p) for p in fit_params]
     setup = _build_general_fit_setup_from_files(

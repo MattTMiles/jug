@@ -1,6 +1,6 @@
 # Tempo2 parity — gap analysis
 
-**Status (2026-07-02):** `compatibility="tempo2"` is **not production-ready** for nonlinear
+**Status (2026-07-03):** `compatibility="tempo2"` is **not production-ready** for nonlinear
 timing, autodiff design matrices, or MetaPulsar `NonLinearTimingModel` integration on
 tempo2-backed datasets. Treat it as an **in-progress native port**, not as a drop-in
 libstempo replacement outside curated tests.
@@ -19,7 +19,7 @@ timing stack.
 |-------|----------------------|
 | Raw pre-fit residuals vs libstempo | **Partially green** on curated fixtures (TCB Case A; NG5 TDB Cases B/C) |
 | Linear WLS / host `Mmat` from libstempo | **Usable** in MetaPulsar when timing package is tempo2 and JUG is not on the hot path |
-| NumPy `residual_delta` round-trip at θ=0 | **Not closed** — reference vs perturbation paths disagree at ~10–30 ns on IPTA DR2 |
+| NumPy `residual_delta` round-trip at θ=0 | **Closed (G1, 2026-07-03)** — MetaPulsar reads `HIGH_PRECISION_PARAMS` via `get_longdouble()` before `_update_param` |
 | JAX `residual_delta` / autodiff design matrix | **Not trustworthy** on ELL1/T2 binaries — forward model mismatch at O(1 s) at θ=0 |
 | Analytic design matrix in tempo2 mode | **Known broken** — do not use; see TODOs in `optimized_fitter.py` |
 | MetaPulsar Discovery NUTS + JUG(tempo2) | **Unsupported today** — do not assume notebook/demo parity |
@@ -51,44 +51,54 @@ NANOGrav (PINT)**, **composite (Borg) host strategies**, or **IPTA DR2 parfiles*
 
 ---
 
-## Gap G1 — NumPy nonlinear round-trip: `residual_delta(0) ≠ 0`
+## Gap G1 — NumPy nonlinear round-trip: `residual_delta(0) ≠ 0` — **CLOSED (2026-07-03)**
 
-**Symptom:** MetaPulsar validates `backend.residual_delta(0) == 0` at `tol=1e-9` s
-(`metapulsar.timing.backends.base.validate_backend_zero_delta`). IPTA DR2 J0613-0200
-sessions fail at ~**2–3×10⁻⁸ s** (roughly 20–30 ns peak).
+**Symptom (historical):** MetaPulsar validates `backend.residual_delta(0) == 0` at
+`tol=1e-9` s (`metapulsar.timing.backends.base.validate_backend_zero_delta`). IPTA DR2
+J0613-0200 sessions failed at ~**2–3×10⁻⁸ s** (roughly 20–30 ns peak) on both
+`compatibility="tempo2"` and `compatibility="pint"`.
 
 **Mechanism (observed 2026-07-02 on EPTA/PPTA/ng9):**
 
 1. Reference residuals exported in `export_jax_timing_state` / `JaxTimingState` are
    computed from `ref_params` where spin parameters (`F0`, `F1`, …) may still be
-   **Python `float` / float64**.
-2. `residual_delta_np(0)` loops fit parameters and calls `_update_param(..., value + 0)`
-   even when the perturbation is zero (`jug/fitting/optimized_fitter.py`).
-3. For `HIGH_PRECISION_PARAMS`, `_update_param` **promotes** values to `np.longdouble`
-   and syncs `_high_precision` string cache — by design for multi-year F0 phase accuracy.
-4. Re-evaluating the full model after that promotion shifts phases by ~**27 ns** peak
-   on the EPTA baseline (F0 promotion alone reproduces the full mismatch).
+   **Python `float` / float64** in the slot, while the authoritative value lives in
+   `_high_precision`.
+2. `residual_delta_np(0)` used `current = float(params.get(...))` then
+   `_update_param(..., current + 0)` even when the perturbation is zero.
+3. For `HIGH_PRECISION_PARAMS`, `_update_param` **promotes** the float64-rounded value to
+   `np.longdouble` and rewrites `_high_precision` — degrading F0 by ~10⁻¹⁴ Hz.
+4. Re-evaluating the full model after that promotion shifted phases by ~**27 ns** peak
+   on the EPTA tempo2 baseline (F0 alone after astrometry normalization reproduced the
+   full mismatch).
 
-**Interpretation:** This is a **reference-state inconsistency** between “frozen reference”
-and “zero perturbation evaluation path”, not libstempo disagreement. It is still a
-**blocker for strict nonlinear invariants** MetaPulsar assumes.
+**Interpretation:** Reference-state inconsistency between “frozen reference” (which reads
+full precision via `get_longdouble()`) and “zero perturbation evaluation path” (which
+round-tripped through float64). Not libstempo disagreement.
 
-**Not yet characterized:** Whether promoting `ref_params` to longdouble at export closes
-the gap on all tempo2 fixtures, or whether additional term-by-term drift remains on TDB
-ELL1 datasets.
+**Closure (2026-07-03):** MetaPulsar `jug_jax_state.py` `residual_delta_np` now reads
+`HIGH_PRECISION_PARAMS` via `get_longdouble()` and applies perturbations in
+`np.longdouble` before `_update_param`. IPTA DR2 J0613 `multi_consistent` passes strict
+`validate_backend_zero_delta(tol=1e-9)` on epta, ppta, and ng9. Regression test:
+`metapulsar/tests/test_timing_jug_jax_backend.py` —
+`test_jax_timing_state_residual_delta_np_preserves_high_precision_f0`.
+
+**Residual note:** JUG core still accepts float64 slots when `_high_precision` is
+authoritative; any caller that round-trips high-precision params through `float()` before
+`_update_param` can reintroduce this class of bug. Prefer `get_longdouble()` on read.
 
 **Code touchpoints:**
 
+- MetaPulsar `jug_jax_state.py` — `residual_delta_np` (fix)
 - `jug/fitting/optimized_fitter.py` — `_update_param`, `HIGH_PRECISION_PARAMS`
-- MetaPulsar `jug_jax_state.py` — `residual_delta_np`, `export_jax_timing_state`
 
 ---
 
 ## Gap G2 — JAX autodiff path: ELL1 binary model uses DD Keplerian JIT
 
 **Symptom:** `make_residual_delta_jax_fn(...)(0)` returns O(**1 s**) residuals on
-J0613-0200 (ELL1/T2 binary in IPTA DR2), while NumPy `residual_delta_np(0)` stays at
-O(**10 ns**) from G1 alone.
+J0613-0200 (ELL1/T2 binary in IPTA DR2), while NumPy `residual_delta_np(0)` is **0** at
+machine precision after G1 closure (2026-07-03).
 
 **Mechanism:**
 
@@ -110,6 +120,14 @@ O(**10 ns**) from G1 alone.
   pulsars until the JAX binary path matches the setup’s binary family.
 - Discovery / NumPyro NUTS timing likelihoods that call `residual_delta_jax` inherit the
   same error.
+- **MetaPulsar whitening symptom (observed 2026-07-03):** on IPTA DR2 J0613
+  `multi_consistent` with `engines={"tempo2": "jug", "pint": "jug"}` and
+  `design_matrix_method="autodiff"`, `NonLinearTimingModel.timing_param_keys()` fails
+  during Schur whitening setup with
+  `Sampled-block Schur Fisher is not numerically positive definite`. Backend build and
+  NumPy zero-delta validation succeed; the failure is downstream of wrong autodiff tangent
+  columns (ill-conditioned / inconsistent with the nonlinear model). Repro notebook:
+  `metapulsar/examples/notebooks-dev/nlt_ipta_dr2_compare_jug.ipynb`.
 
 **Scope note:** This gap is triggered on **ELL1/T2 IPTA binaries**, not only on
 `compatibility="tempo2"`. It blocks **MetaPulsar + JUG autodiff** broadly until the JAX
@@ -160,14 +178,16 @@ Existing green design-matrix tests (`tests/test_tempo2_designmatrix_parity.py`) 
 |----------|----------------------|-------------|
 | NG5 J1600 Cases B/C | Yes | Green on raw residuals (narrow par) |
 | TCB Case A | Yes | Green |
-| IPTA DR2 multi-PTA (EPTA+PPTA+ng9) | **No** | G1 validation failure; G2 on ELL1 |
+| IPTA DR2 multi-PTA (EPTA+PPTA+ng9) | **No** | G2 JAX/autodiff + whitening Schur Fisher not PD on ELL1 |
 | Composite (Borg) host strategy | **No** | Suffixed param names (G3) |
 | ELL1/T2 binaries (J0613, etc.) | **Partial** | `ppta_j1741_ell1` documented ~5–8 ns residual gap in project brief §5; G2 at JAX layer |
 | Ecliptic ng9 GLS (`LAMBDA`/`BETA`) | **No** | Analytic path broken; autodiff untested to parity |
 | `DM_SERIES` and other ignored keywords | Warn-only | Documented in project brief |
 
-MetaPulsar notebooks such as `nlt_ipta_dr2_compare.ipynb` sit **squarely in the “No” column**
-when they route tempo2 PTAs through JUG nonlinear/autodiff paths.
+MetaPulsar notebooks such as `nlt_ipta_dr2_compare_jug.ipynb` (all-JUG + autodiff) sit
+**squarely in the “No” column** for end-to-end nonlinear inference on ELL1 binaries.
+Mixed-engine `nlt_ipta_dr2_compare.ipynb` (libstempo tempo2 + JUG pint, analytic) avoids
+G2 but is a different integration path.
 
 ---
 
@@ -186,7 +206,7 @@ These are **honest residual-level debts** on top of the nonlinear/JAX gaps above
 
 ## MetaPulsar integration — practical guidance
 
-Until gaps G1–G3 are closed and covered by tests:
+Until gaps G2–G3 are closed and covered by tests:
 
 1. **`compatibility="pint"`** — preferred JUG mode for MetaPulsar nonlinear timing,
    autodiff, and Discovery NUTS on PINT-backed sessions.
@@ -197,9 +217,10 @@ Until gaps G1–G3 are closed and covered by tests:
    fixed; do **not** use **`analytic`** on tempo2 sessions (G4).
 4. **Enterprise / libstempo linear timing** on tempo2 PTAs remains the reliable path when
    the host timing package is tempo2 — JUG is not required for that workflow.
-5. **Strict `residual_delta(0)` checks at 1 ns** are ahead of current tempo2-compatible
-   numerical closure; failing them is **expected** today, not a signal to tune tolerances
-   without fixing reference-state parity (G1).
+5. **Strict NumPy `residual_delta(0)` checks** pass on IPTA DR2 J0613 after G1 closure
+   (MetaPulsar `jug_jax_state.py`). Failing them on JUG-backed backends likely indicates a
+   new float64 round-trip regression, not a tempo2-parity debt. JAX `residual_delta_jax(0)`
+   remains broken on ELL1 binaries until G2 is fixed.
 
 ---
 
@@ -207,19 +228,24 @@ Until gaps G1–G3 are closed and covered by tests:
 
 Ordered by blocker severity for MetaPulsar nonlinear + autodiff:
 
-1. **Binary JAX forward model:** wire `jax_residual_delta` to the same binary family as
+1. **Binary JAX forward model (G2):** wire `jax_residual_delta` to the same binary family as
    `GeneralFitSetup` (ELL1/T2/DD via `binary_registry` / tempo2 dispatch), not DD-only JIT.
-2. **Reference-state closure (G1):** ensure θ=0 JAX and NumPy paths use identical param
-   storage (longdouble promotion, ecliptic sync) as reference residual export.
-3. **Param mapping in JAX builder (G3):** map host/composite fit names → backend JUG names.
-4. **Acceptance tests beyond Case A/B/C:** IPTA-representative ELL1 TDB fixtures with
-   raw residual gates **and** `residual_delta(0)` / autodiff-vs-libstempo-column checks.
-5. **Documentation sync:** keep this gap list updated when fixtures move from “No” to “Yes”;
+2. **Param mapping in JAX builder (G3):** map host/composite fit names → backend JUG names.
+3. **Acceptance tests beyond Case A/B/C:** IPTA-representative ELL1 TDB fixtures with
+   raw residual gates, `residual_delta_jax(0)` checks, autodiff-vs-libstempo-column checks,
+   and MetaPulsar whitening / Schur-Fisher PD gates.
+4. **Documentation sync:** keep this gap list updated when fixtures move from “No” to “Yes”;
    avoid implying Phase E completion on TDB ELL1 until tests exist.
+
+**Closed (2026-07-03):** G1 reference-state closure for NumPy `residual_delta_np` — see G1
+section. JAX θ=0 path still needs G2; ecliptic `_update_param` sync was not a separate
+blocker on the J0613 workloads investigated.
 
 ---
 
-## Investigation log (2026-07-02)
+## Investigation log
+
+### 2026-07-02
 
 Informal MetaPulsar dev investigation (scripts under `/tmp/metapulsar_rd0_investigation/`,
 not part of this repo) on IPTA DR2 J0613-0200 reproduced G1 and G2 on:
@@ -229,6 +255,17 @@ not part of this repo) on IPTA DR2 J0613-0200 reproduced G1 and G2 on:
 
 Findings are summarized above; raw JSON summary: `summary.json` in that temp directory
 when the investigation was run in the MetaPulsar devcontainer.
+
+### 2026-07-03
+
+- **G1 closed:** MetaPulsar `jug_jax_state.residual_delta_np` uses `get_longdouble()` for
+  `HIGH_PRECISION_PARAMS`. Old float64 path reproduced ~27 ns on EPTA tempo2; fixed path
+  is machine zero. Strict `validate_backend_zero_delta(tol=1e-9)` passes on all three
+  sessions in `multi_consistent`.
+- **G2 confirmed as notebook blocker:** `residual_delta_jax(0)` ≈ 2.1–2.2 s on epta,
+  ppta, ng9. `nlt_ipta_dr2_compare_jug.ipynb` config fails at
+  `NonLinearTimingModel.timing_param_keys()` with Schur Fisher not PD (whitening symptom
+  documented under G2).
 
 ---
 

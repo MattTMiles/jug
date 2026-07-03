@@ -168,7 +168,9 @@
       "EPHEM": "DE421",
       "COORDS": "equatorial",
       "NTOA": "1167",
-      "NOTES": "Single-backend NRT.BON.1400 excerpt; ~62 ns RMS vs libstempo (2026-07-03)"
+      "TRACK": "-2",
+      "PULSE_NUMBERS": "tempo2 add_pulseNumber plugin (2026-07-03)",
+      "NOTES": "Single-backend NRT.BON.1400 excerpt; ~62 ns RMS vs libstempo (unchanged with TRACK -2)"
     },
     "notes": "Trimmed single-backend IPTA DR2 excerpt for narrow tempo2 parity probes"
   },
@@ -189,8 +191,10 @@
       "EPHEM": "DE421",
       "COORDS": "equatorial",
       "NTOA": "1167",
-      "NOTES": "Full EPTA TIM; ~2.9 ms RMS vs libstempo (2026-07-03)"
+      "TRACK": "-2",
+      "PULSE_NUMBERS": "tempo2 add_pulseNumber plugin (2026-07-03)",
+      "NOTES": "Full EPTA TIM flat with -pn; ~2 µs RMS vs libstempo with TRACK -2 (2026-07-03)"
     },
-    "notes": "Notebook single_epta layout: par + all.tim + tims/ INCLUDE tree"
+    "notes": "Notebook single_epta layout: par + flat pn-expanded tim (1369 TOAs). Legacy INCLUDE tree kept under tims/ for provenance."
   }
 ]

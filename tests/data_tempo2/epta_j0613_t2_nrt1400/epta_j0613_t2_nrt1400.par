@@ -26,6 +26,7 @@ EPHEM          DE421
 NITS           1
 NTOA           1167
 CHI2R          1.2679 1140
+TRACK -2
 
 JUMP -sys EFF.EBPP.1360 0.0 1
 JUMP -sys EFF.EBPP.1410 0.0 1

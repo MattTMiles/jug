@@ -419,9 +419,32 @@ def _resolve_ephemeris(name: str) -> str:
         return _DEFAULT_EPHEMERIS
 
 
+def _fortran_mod(value, period):
+    """Fractional part using tempo2's Fortran-style modulo (tempo2Util.C)."""
+    x = np.asarray(value, dtype=np.longdouble)
+    p = np.longdouble(period)
+    return x - np.trunc(x / p) * p
+
+
+def _fortran_nlong(value):
+    """Nearest integer with ties away from zero (tempo2Util.C fortran_nlong)."""
+    x = np.asarray(value, dtype=np.float64)
+    scalar = x.ndim == 0
+    if scalar:
+        x = x.reshape(1)
+    out = np.empty(len(x), dtype=np.int64)
+    pos = x > 0.0
+    out[pos] = np.trunc(x[pos] + 0.5).astype(np.int64)
+    out[~pos] = np.trunc(x[~pos] - 0.5).astype(np.int64)
+    return out[0] if scalar else out
+
+
 def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
                             tzr_phase=None, tdb_sec_ld=None, jump_phase=None,
                             external_pulse_numbers=None,
+                            track_val=None,
+                            external_pn_add=None,
+                            addsat_sec=None,
                             mean_mode: str = "weighted"):
     """Compute phase residuals from emission-time offsets (canonical implementation).
 
@@ -451,8 +474,19 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         If None, glitch contributions are not computed.
     external_pulse_numbers : np.ndarray (longdouble), optional
         Externally provided pulse numbers (from -pn flags in tim file).
-        When provided (Tempo2 TRACK -2 mode), these are used directly
-        instead of computing pulse numbers internally.
+        With ``track_val=-2``, these are offsets from obsn[0] and are used
+        with tempo2's ``pnAdd`` / ``addPhase`` logic in ``formResiduals.C``.
+        Without TRACK -2, -pn flags are ignored.
+    track_val : int, optional
+        Tempo2 TRACK parameter value. When -2, enables pulse-number tracking.
+    external_pn_add : np.ndarray (int64), optional
+        Per-TOA cumulative ``-pnadd`` flag values (tim order). Tempo2
+        initialises ``pnAdd`` to -1 before accumulating ``-pnadd`` flags.
+    addsat_sec : np.ndarray (float64), optional
+        Per-TOA integer-second shifts from ``-addsat`` tim flags (already
+        applied to site MJD at read). Tempo2's ``fortran_nlong`` rounding of
+        the induced spin-phase jump can differ from the Taylor phase shift
+        by a fractional turn; this array enables that correction.
 
     Returns
     -------
@@ -525,31 +559,54 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     if tzr_phase is not None:
         phase = phase - np.longdouble(tzr_phase)
 
-    # Phase-connected wrapping (Tempo2 TRACK -2 algorithm):
-    # Sort TOAs by time, then track the integer pulse number from one TOA
-    # to the next, ensuring each residual is within ±0.5 turns of the
-    # model-predicted value. This avoids ambiguities when the absolute
-    # phase drifts by more than ±0.5 turns over the data span.
-    if external_pulse_numbers is not None:
-        # Use externally provided pulse numbers (from -pn flags in tim file,
-        # activated by TRACK -2 in par file). The external values are added
-        # to the nearest-integer phase of the first TOA so they are on the
-        # same absolute scale as the model phase.
-        sort_idx = np.argsort(dt)
-        base_pn = np.round(phase[sort_idx[0]])
-        pulse_number = base_pn + np.asarray(external_pulse_numbers, dtype=np.longdouble)
+    # Phase wrapping (Tempo2 formResiduals.C for TRACK -2; sequential connection otherwise).
+    has_track_minus2_pn = (
+        track_val is not None
+        and int(track_val) == -2
+        and external_pulse_numbers is not None
+    )
+
+    if has_track_minus2_pn:
+        # TRACK -2 (formResiduals.C ~L2255): phas1 + fortran_nlong base residual,
+        # tim -pn offsets, and pnAdd bookkeeping.  Full pnNew/addPhase from bbat
+        # is not implemented; pnAdd offset (+1 by default) cancels in mean removal.
+        phas1 = _fortran_mod(phase[0], np.longdouble(1.0))
+        phase5 = np.asarray(phase, dtype=np.longdouble) - phas1
+        nphase = np.longdouble(_fortran_nlong(np.asarray(phase5, dtype=np.float64)))
+
+        if external_pn_add is not None:
+            pn_add_arr = np.asarray(external_pn_add, dtype=np.int64)
+        else:
+            pn_add_arr = np.full(len(phase5), -1, dtype=np.int64)
+
+        pn_tim = np.asarray(external_pulse_numbers, dtype=np.int64)
+        pn0 = np.int64(nphase[0]) + pn_add_arr[0]
+        pulse_number = np.asarray(pn0 + pn_tim, dtype=np.longdouble)
+
+        add_phase = -pn_add_arr.astype(np.float64)
+        frac_phase = phase5 - nphase + add_phase
     else:
+        # Phase-connected wrapping: anchor at earliest emission time (dt order).
         sort_idx = np.argsort(dt)
         pulse_number = np.zeros(len(phase), dtype=np.longdouble)
-        # First TOA: use nearest integer
         pulse_number[sort_idx[0]] = np.round(phase[sort_idx[0]])
         for k in range(1, len(sort_idx)):
             i = sort_idx[k]
             i_prev = sort_idx[k - 1]
-            # Predict pulse number from previous TOA's residual
             predicted_n = phase[i] - (phase[i_prev] - pulse_number[i_prev])
             pulse_number[i] = np.round(predicted_n)
-    frac_phase = phase - pulse_number
+        frac_phase = phase - pulse_number
+
+    # -addsat shifts site MJD by integer seconds before phase evaluation.
+    # fortran_nlong rounds F0*addsat to the nearest turn, which can disagree
+    # with the Taylor phase increment by a fractional turn (~0.4 here).
+    if addsat_sec is not None:
+        addsat_arr = np.asarray(addsat_sec, dtype=np.float64)
+        if np.any(addsat_arr != 0.0):
+            f0_f64 = float(F0)
+            addsat_turns = f0_f64 * addsat_arr
+            addsat_int = _fortran_nlong(addsat_turns).astype(np.float64)
+            frac_phase = frac_phase + (addsat_turns - addsat_int)
 
     # Convert to float64 seconds
     residuals_sec = np.asarray(frac_phase / F0, dtype=np.float64)
@@ -1720,18 +1777,39 @@ def compute_residuals_simple(
     # Check for TRACK -2 with -pn flags (Tempo2 pulse numbering convention)
     track_val = params.get('TRACK', None)
     external_pn = None
+    external_pn_add = None
+    addsat_sec = None
     if track_val is not None and int(track_val) == -2:
         pn_flags = [toa.flags.get('pn') for toa in toas]
         if all(pn is not None for pn in pn_flags):
             external_pn = np.array([int(pn) for pn in pn_flags], dtype=np.longdouble)
+            pn_add_running = np.int64(-1)
+            pn_add_cumulative = np.empty(len(toas), dtype=np.int64)
+            addsat_sec = np.zeros(len(toas), dtype=np.float64)
+            for i, toa in enumerate(toas):
+                pn_add_cumulative[i] = pn_add_running
+                pnadd_val = toa.flags.get('pnadd')
+                if pnadd_val is not None:
+                    pn_add_running += np.int64(int(pnadd_val))
+                addsat_val = toa.flags.get('addsat')
+                if addsat_val is not None:
+                    addsat_sec[i] = float(addsat_val)
+            external_pn_add = pn_add_cumulative
             if verbose:
-                print(f"   TRACK -2: using -pn pulse numbers from tim file")
+                n_addsat = int(np.count_nonzero(addsat_sec))
+                print(
+                    f"   TRACK -2: -pn pulse numbers ({len(toas)} TOAs"
+                    f"{f', {n_addsat} -addsat' if n_addsat else ''})"
+                )
 
     residuals_us, _, pulse_number = compute_phase_residuals(
         dt_sec, params, weights_scaled, subtract_mean=True,
         tzr_phase=tzr_phase if subtract_tzr else None,
         jump_phase=jump_phase,
         external_pulse_numbers=external_pn,
+        track_val=int(track_val) if track_val is not None else None,
+        external_pn_add=external_pn_add,
+        addsat_sec=addsat_sec,
         mean_mode=delay_provider.phase_mean_mode,
     )
 

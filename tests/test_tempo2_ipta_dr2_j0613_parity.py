@@ -22,17 +22,17 @@ from test_tempo2_residual_parity import (
 # IPTA DR2 EPTA single-PTA dataset (J0613-0200.par + J0613-0200_all.tim).
 FIXTURE_ID = "epta_j0613_t2_ipta_all"
 
-# Measured 2026-07-03: JUG(tempo2) - libstempo on all 1369 TOAs.
-MEASURED_RMS_NS = 2.892594e6
-MEASURED_MAX_NS = 4.875855e6
+# Measured 2026-07-03 after TRACK -2 phas1 + per-TOA fortran_nlong + -addsat fix.
+MEASURED_RMS_NS = 2.0548339193e3
+MEASURED_MAX_NS = 6.7705871917e4
 
 
 @pytest.mark.tempo2
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "IPTA DR2 EPTA J0613: JUG(tempo2) lacks raw residual parity with libstempo "
-        f"(RMS ~{MEASURED_RMS_NS / 1e6:.2f} ms vs {FINAL_RMS_DELTA_NS} ns gate)"
+        "IPTA DR2 EPTA J0613: TRACK -2 + -addsat fixed (~2 µs RMS); "
+        f"remaining bulk gap vs {FINAL_RMS_DELTA_NS} ns gate"
     ),
 )
 def test_tempo2_mode_epta_j0613_ipta_dr2_residual_parity():
@@ -49,8 +49,8 @@ def test_tempo2_mode_epta_j0613_ipta_dr2_residual_parity():
 
 
 @pytest.mark.tempo2
-def test_epta_j0613_ipta_dr2_parity_debt_is_large():
-    """Pin the known residual debt so regressions are visible in CI."""
+def test_epta_j0613_ipta_dr2_track_minus2_debt_reduced():
+    """Guard TRACK -2 fix: RMS must stay well below the old ~47 ms debt."""
     fixture = get_tempo2_fixture(FIXTURE_ID)
     jug = compute_residuals_simple(
         fixture["par_path"],
@@ -63,11 +63,40 @@ def test_epta_j0613_ipta_dr2_parity_debt_is_large():
     assert jug["n_toas"] == ref.ntoa == 1369
     stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
 
-    assert stats["rms"] > FINAL_RMS_DELTA_NS
-    assert stats["rms"] > 1.0e6  # >> 1 ms
-    assert stats["max_abs"] > FINAL_MAX_DELTA_NS
-    assert stats["p99_abs"] > FINAL_P99_DELTA_NS
+    assert stats["rms"] < 1.0e4  # < 10 µs (was ~47 ms)
+    assert stats["rms"] > FINAL_RMS_DELTA_NS  # still above sub-µs gate
 
-    # Guard against silent drift while the parity gap remains open.
     np.testing.assert_allclose(stats["rms"], MEASURED_RMS_NS, rtol=0.05)
     np.testing.assert_allclose(stats["max_abs"], MEASURED_MAX_NS, rtol=0.05)
+
+
+@pytest.mark.tempo2
+def test_epta_j0613_track_minus2_pulse_numbers_match_libstempo():
+    """TRACK -2 must report pulse numbers consistent with libstempo -pn offsets."""
+    from jug.testing.sandbox_tempo2 import tempopulsar
+
+    fixture = get_tempo2_fixture(FIXTURE_ID)
+    jug = compute_residuals_simple(
+        fixture["par_path"],
+        fixture["tim_path"],
+        verbose=False,
+        compatibility="tempo2",
+    )
+    psr = tempopulsar(
+        parfile=str(fixture["par_path"]),
+        timfile=str(fixture["tim_path"]),
+        dofit=False,
+    )
+    lib_pn = np.array(psr.pulsenumbers(), dtype=np.int64)
+    jug_pn = np.array(jug["pulse_number"], dtype=np.int64)
+    np.testing.assert_array_equal(jug_pn, lib_pn)
+
+    addsat_idx = [
+        i for i, flags in enumerate(jug["toa_flags"]) if "addsat" in flags
+    ]
+    assert addsat_idx == [247, 256, 561]
+
+    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
+    delta_us = np.asarray(jug["residuals_us"], dtype=np.float64) - ref.residuals_us
+    for i in addsat_idx:
+        assert abs(delta_us[i]) < 100.0, f"addsat TOA {i} delta {delta_us[i]:.3f} µs"

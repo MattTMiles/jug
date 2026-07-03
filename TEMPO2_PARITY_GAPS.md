@@ -32,7 +32,7 @@ workloads.
 | MetaPulsar NTM whitening, composite (Borg) strategy | **Open (G3/G5)** — Schur Fisher not PD on J0613 composite host |
 | MetaPulsar Discovery NUTS + JUG(tempo2) | **Experimental** — `multi_consistent` path unblocked at reference point; full NUTS not CI-gated |
 
-**Gap scorecard:** **2 closed** (G1, G2 primary), **4 with open items** (G3, G4, G5, G6).
+**Gap scorecard:** **2 closed** (G1, G2 primary), **5 with open items** (G3, G4, G5, G6, G7).
 
 ---
 
@@ -220,6 +220,8 @@ mode for production tempo2 sessions.
 |----------|----------------------|---------------------|
 | NG5 J1600 Cases B/C | Yes | Green on raw residuals (narrow par) |
 | TCB Case A | Yes | Green |
+| IPTA DR2 EPTA J0613 `single_epta` (full INCLUDE) | **Yes (2026-07-03)** | **Documented gap:** ~2.9 s RMS vs libstempo; autodiff θ=0 green |
+| IPTA DR2 EPTA J0613 single-backend excerpt | **Yes (2026-07-03)** | **Documented gap:** ~62 ns RMS vs libstempo |
 | IPTA DR2 multi-PTA `multi_consistent` (J0613) | **No** | **Green ad hoc** — zero-delta + NTM whitening pass; not CI-gated |
 | Composite (Borg) host strategy | **No** | θ=0 green; NTM whitening fails (Fisher not PD); G3 |
 | ELL1/T2 binaries (J0613, etc.) | **Partial** | JUG autodiff + trimmed J0613 green; `ppta_j1741_ell1` residual debt (G6) |
@@ -244,6 +246,32 @@ gaps, including:
 - **`DM_SERIES`:** ignored by JUG on several fixtures (warn-only; observed on ng9 J0613).
 
 These are **honest residual-level debts** independent of the G1/G2 nonlinear fixes.
+
+---
+
+## Gap G7 — IPTA DR2 EPTA multi-backend raw residuals — **OPEN (documented 2026-07-03)**
+
+**Symptom:** MetaPulsar notebooks `nlt_ipta_dr2_compare.ipynb` (libstempo) vs
+`nlt_ipta_dr2_compare_jug.ipynb` (JUG tempo2) disagree on **`single_epta`** EPTA J0613-0200
+even though nonlinear/autodiff reference-state checks (G1/G2) pass.
+
+**Measured on bundled fixtures** (`tests/data_tempo2/epta_j0613_t2_*`,
+`tests/test_tempo2_ipta_dr2_j0613_parity.py`):
+
+| Fixture | Layout | JUG(tempo2) − libstempo | Autodiff `delta(0)` |
+|---------|--------|-------------------------|---------------------|
+| `epta_j0613_t2_ipta_all` | Notebook `J0613-0200_all.tim` + INCLUDE backends | **RMS ≈ 2.9×10⁶ ns (~2.9 s)** | ≲10⁻¹⁶ s |
+| `epta_j0613_t2_nrt1400` | Single-backend NRT.BON.1400 excerpt (120 TOAs) | **RMS ≈ 62 ns** | ≲10⁻¹⁶ s |
+
+**Interpretation:** The O(second) mismatch is specific to the **multi-backend IPTA DR2
+EPTA TIM collection** with per-backend `JUMP -sys …` structure — not to T2/ELL1 autodiff
+reference state. Likely causes include JUG vs libstempo handling of multi-backend JUMPs,
+`-sys` flags, and/or equatorial T2 binary conventions on real IPTA parfiles. Clock
+extrapolation warnings (BIPM2011) are present but do not explain the second-scale offset
+(single-backend parity stays ~60 ns under the same clocks).
+
+**Tests:** `@pytest.mark.tempo2` documented-gap gates — do **not** expect strict 5 ns parity
+on these fixtures until the multi-backend residual path is fixed.
 
 ---
 

@@ -120,6 +120,12 @@ NG5 Case B/C.
 | `ppta_j1902_ell1h` | PPTA DR3 | ELL1H | **120** |
 | `ng5_j1600_tdb_equatorial` | NANOGrav dfg+12 Case B | DD | **625** |
 | `ng5_j1600_tdb_ecliptic_cross_engine` | NANOGrav dfg+12 Case C | DD | **625** |
+| **`epta_j0613_t2_nrt1400`** | **IPTA DR2 EPTA J0613 (NRT.BON.1400 excerpt)** | **T2** | **120** |
+| **`epta_j0613_t2_ipta_all`** | **IPTA DR2 EPTA J0613 (full INCLUDE collection)** | **T2** | **1369** |
+
+**IPTA DR2 EPTA J0613 (added 2026-07-03):** mirrors MetaPulsar notebook
+`single_epta` (`nlt_ipta_dr2_compare*.ipynb`). The full INCLUDE fixture reproduces the
+notebook's multi-backend TIM layout; single-backend excerpt is for narrow parity probes.
 
 Manifest `source_*` fields point at EPTA_DR2 / PPTA_DR3 / MetaPulsar notebook paths;
 the repo holds **reduced TIM copies**, not full collaboration releases.
@@ -148,6 +154,7 @@ infrastructure (hashed in `data/manifest.json`).
 | 2026-05-29 | Rutger van Haasteren | `data_tempo2` (EPTA/PPTA excerpts), tempo2 parity infra |
 | 2026-05-29 | Rutger | `data_mpta` (full MPTA DR2 bundles) |
 | 2026-06-02 | Rutger | NG5 Case B/C in `data_tempo2` |
+| 2026-07-03 | Parity investigation | IPTA DR2 EPTA J0613 fixtures + `test_tempo2_ipta_dr2_j0613_parity.py` |
 
 ---
 
@@ -155,7 +162,8 @@ infrastructure (hashed in `data/manifest.json`).
 
 - **Full IPTA DR2 multi-PTA composite** sessions (EPTA+PPTA+ng9 on one host) — used in
   MetaPulsar notebooks but not bundled in JUG.
-- **Full** EPTA/PPTA release TOA sets — only tiny excerpts in `data_tempo2`.
+- **Full** EPTA/PPTA release TOA sets — only excerpts in `data_tempo2` (including the
+  bundled J0613 EPTA INCLUDE tree under `epta_j0613_t2_ipta_all/`).
 
 ---
 

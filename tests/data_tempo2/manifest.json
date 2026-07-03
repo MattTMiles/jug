@@ -150,5 +150,47 @@
       "COORDS": "ecliptic"
     },
     "notes": "Case C: ecliptic cross-engine harmonized par for MetaPulsar notebook"
+  },
+  {
+    "id": "epta_j0613_t2_nrt1400",
+    "par": "epta_j0613_t2_nrt1400/epta_j0613_t2_nrt1400.par",
+    "tim": "epta_j0613_t2_nrt1400/epta_j0613_t2_nrt1400.tim",
+    "source_par": "data/ipta-dr2/EPTA_v2.2/J0613-0200/J0613-0200.par",
+    "source_tim": "data/ipta-dr2/EPTA_v2.2/J0613-0200/tims/NRT.BON.1400.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2",
+    "toa_count": 120,
+    "parity_status": "documented_gap",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "BINARY": "T2",
+      "CLK": "TT(BIPM2011)",
+      "EPHEM": "DE421",
+      "COORDS": "equatorial",
+      "NTOA": "1167",
+      "NOTES": "Single-backend NRT.BON.1400 excerpt; ~62 ns RMS vs libstempo (2026-07-03)"
+    },
+    "notes": "Trimmed single-backend IPTA DR2 excerpt for narrow tempo2 parity probes"
+  },
+  {
+    "id": "epta_j0613_t2_ipta_all",
+    "par": "epta_j0613_t2_ipta_all/epta_j0613_t2_ipta_all.par",
+    "tim": "epta_j0613_t2_ipta_all/epta_j0613_t2_ipta_all.tim",
+    "source_par": "data/ipta-dr2/EPTA_v2.2/J0613-0200/J0613-0200.par",
+    "source_tim": "data/ipta-dr2/EPTA_v2.2/J0613-0200/J0613-0200_all.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2",
+    "toa_count": 1369,
+    "parity_status": "documented_gap",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "BINARY": "T2",
+      "CLK": "TT(BIPM2011)",
+      "EPHEM": "DE421",
+      "COORDS": "equatorial",
+      "NTOA": "1167",
+      "NOTES": "Full EPTA INCLUDE collection; ~2.9 s RMS vs libstempo (2026-07-03)"
+    },
+    "notes": "Notebook single_epta layout: par + all.tim + tims/ INCLUDE tree"
   }
 ]

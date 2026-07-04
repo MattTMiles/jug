@@ -1,10 +1,9 @@
 # Tempo2 parity — gap analysis
 
-**Status (2026-07-03, verified):** `compatibility="tempo2"` remains **experimental** for
-production nonlinear inference, but the **G1/G2 blockers that stopped IPTA DR2 J0613
-autodiff notebooks are closed.** JUG autodiff + MetaPulsar `NonLinearTimingModel`
-whitening works on the **`multi_consistent`** IPTA DR2 workload (EPTA + PPTA tempo2 +
-NANOGrav 9y pint) when `design_matrix_method="autodiff"`.
+**Status (2026-07-04, verified):** `compatibility="tempo2"` remains **experimental**
+outside curated par+tim tests. **Residual parity vs libstempo/tempo2 (JUG scope):** native
+PPTA IPTA DR2 ~**1.4 ns** RMS; alternate PPTA export par/tim ~**16 ns**; EPTA full
+fixture ~**608 ns** RMS (G7; `-addsat` TOAs sub-µs).
 
 Treat tempo2 mode as an **in-progress native port**, not a drop-in libstempo replacement
 outside curated tests. Do not use **`design_matrix_method="analytic"`** on tempo2
@@ -13,8 +12,18 @@ sessions (G4).
 This document complements [`TEMPO2_COMPATIBILITY_PROJECT.md`](TEMPO2_COMPATIBILITY_PROJECT.md).
 That brief tracks **narrow, fixture-gated parity** (raw pre-fit residuals and selected
 design-matrix tests on Cases A/B/C). **Green pytest fixtures do not imply end-to-end
-parity** for every IPTA host strategy, θ≠0 NumPy/JAX agreement, or composite (Borg)
-workloads.
+parity** for every par/tim pair, or θ≠0 NumPy/JAX agreement on real IPTA workloads.
+
+### Scope — what JUG parity is (and is not)
+
+**JUG parity** means: given a `.par` file and a `.tim` file, pre-fit residuals (and,
+where gated, design-matrix columns) from `JUG(compatibility="tempo2")` match
+libstempo/tempo2 on **the same inputs**. Nothing else participates in that definition.
+
+**MetaPulsar has nothing to do with JUG parity.** When a notebook or export path is named
+in this document, that is **dataset provenance only** — a way to identify or obtain a
+particular par+tim pair. It does **not** imply that any downstream orchestration affects
+JUG↔libstempo residual parity.
 
 ---
 
@@ -22,17 +31,13 @@ workloads.
 
 | Layer | Tempo2 parity status |
 |-------|----------------------|
-| Raw pre-fit residuals vs libstempo | **Partially green** on curated fixtures (TCB Case A; NG5 TDB Cases B/C) |
-| Linear WLS / host `Mmat` from libstempo | **Usable** in MetaPulsar when timing package is tempo2 and JUG is not on the hot path |
-| NumPy `residual_delta` round-trip at θ=0 | **Closed (G1, 2026-07-03)** — MetaPulsar reads `HIGH_PRECISION_PARAMS` via `get_longdouble()` before `_update_param` |
-| JAX `residual_delta` at θ=0 / autodiff binary dispatch | **Closed (G2, 2026-07-03)** — shared `compute_total_delay_change` + `BinaryDelayPlan`; θ=0 peak ≲10⁻¹³ s on IPTA DR2 J0613 |
+| Raw pre-fit residuals vs libstempo | **Partially green** on curated par+tim fixtures (TCB Case A; NG5 TDB Cases B/C) |
+| NumPy `residual_delta` round-trip at θ=0 (G1) | **Closed (2026-07-03)** — reference-state float64 vs `longdouble` |
+| JAX `residual_delta` at θ=0 / autodiff binary dispatch (G2) | **Closed (2026-07-03)** — shared `compute_total_delay_change` + `BinaryDelayPlan`; θ=0 peak ≲10⁻¹³ s on IPTA DR2 J0613 par+tim |
 | NumPy vs JAX at θ≠0 on real IPTA workloads | **Open (G2 residual)** — ms-level mismatch on binary/astrometry perturbations; not gated by CI |
 | Analytic design matrix in tempo2 mode | **Known broken (G4)** — do not use; see TODOs in `optimized_fitter.py` |
-| MetaPulsar NTM whitening, IPTA DR2 `multi_consistent` | **Green ad hoc (2026-07-03)** — not yet a pytest gate in either repo |
-| MetaPulsar NTM whitening, composite (Borg) strategy | **Open (G3/G5)** — Schur Fisher not PD on J0613 composite host |
-| MetaPulsar Discovery NUTS + JUG(tempo2) | **Experimental** — `multi_consistent` path unblocked at reference point; full NUTS not CI-gated |
 
-**Gap scorecard:** **2 closed** (G1, G2 primary), **5 with open items** (G3, G4, G5, G6, G7).
+**Gap scorecard:** **2 closed** (G1, G2 primary), **4 with open items** (G4, G5, G6, G7).
 
 ---
 
@@ -49,25 +54,6 @@ workloads.
   (`@pytest.mark.tempo2`) — Cases A/B/C residual and design-matrix gates; 17 passed,
   1 intentional xfail, 2 deselected (2026-07-03 run).
 
-### MetaPulsar pytest
-
-- **`tests/test_timing_jug_jax_backend.py`** — G1 regression, pint/tempo2 JAX vs NumPy
-  on toy linear model (5/5 passed).
-
-### IPTA DR2 J0613 ad hoc integration (MetaPulsar devcontainer, 2026-07-03)
-
-Configuration mirrors `examples/notebooks-dev/nlt_ipta_dr2_compare_jug.ipynb`:
-`ENGINES={"tempo2":"jug","pint":"jug"}`, `design_matrix_method="autodiff"`.
-
-| Scenario | `residual_delta(0)` | `residual_delta_jax(0)` | `validate_backend_zero_delta` | NTM whitening |
-|----------|---------------------|-------------------------|--------------------------------|---------------|
-| `single_epta` | 0 | ≲6×10⁻¹⁴ s | pass | pass |
-| **`multi_consistent`** | 0 | ≲6×10⁻¹⁴ s | pass | **pass** |
-| `multi_composite` | 0 | ≲6×10⁻¹⁴ s | pass | fail (Fisher not PD) |
-
-Per-PTA on `multi_consistent`: epta, ppta (tempo2), ng9 (pint) all pass zero-delta at
-machine precision.
-
 ### Narrow fixture envelope (unchanged)
 
 - **Case A (TCB):** equatorial TCB fixtures with IF99 / DILATEFREQ / explicit tempo2 keywords.
@@ -79,17 +65,15 @@ machine precision.
 
 ## Gap G1 — NumPy nonlinear round-trip: `residual_delta(0) ≠ 0` — **CLOSED (2026-07-03)**
 
-**Symptom (historical):** MetaPulsar validates `backend.residual_delta(0) == 0` at
-`tol=1e-9` s (`metapulsar.timing.backends.base.validate_backend_zero_delta`). IPTA DR2
-J0613-0200 sessions failed at ~**2–3×10⁻⁸ s** (roughly 20–30 ns peak) on both
-`compatibility="tempo2"` and `compatibility="pint"`.
+**Symptom (historical):** Zero-perturbation `residual_delta(0)` was non-zero at ~**2–3×10⁻⁸ s**
+(roughly 20–30 ns peak) on IPTA DR2 J0613-0200 par+tim for both `compatibility="tempo2"`
+and `compatibility="pint"`.
 
 **Mechanism (observed 2026-07-02 on EPTA/PPTA/ng9):**
 
-1. Reference residuals exported in `export_jax_timing_state` / `JaxTimingState` are
-   computed from `ref_params` where spin parameters (`F0`, `F1`, …) may still be
-   **Python `float` / float64** in the slot, while the authoritative value lives in
-   `_high_precision`.
+1. Reference residuals in exported timing state may use `ref_params` where spin parameters
+   (`F0`, `F1`, …) are still **Python `float` / float64** in the slot, while the
+   authoritative value lives in `_high_precision`.
 2. `residual_delta_np(0)` used `current = float(params.get(...))` then
    `_update_param(..., current + 0)` even when the perturbation is zero.
 3. For `HIGH_PRECISION_PARAMS`, `_update_param` **promotes** the float64-rounded value to
@@ -102,14 +86,11 @@ J0613-0200 sessions failed at ~**2–3×10⁻⁸ s** (roughly 20–30 ns peak) o
 full precision via `get_longdouble()`) and “zero perturbation evaluation path” (which
 round-tripped through float64). Not libstempo disagreement.
 
-**Closure (2026-07-03):** MetaPulsar `jug_jax_state.py` `residual_delta_np` now reads
-`HIGH_PRECISION_PARAMS` via `get_longdouble()` and applies perturbations in
-`np.longdouble` before `_update_param`. IPTA DR2 J0613 `multi_consistent` passes strict
-`validate_backend_zero_delta(tol=1e-9)` on epta, ppta, and ng9. Regression test:
-`metapulsar/tests/test_timing_jug_jax_backend.py` —
-`test_jax_timing_state_residual_delta_np_preserves_high_precision_f0`.
+**Closure (2026-07-03):** Callers must read `HIGH_PRECISION_PARAMS` via `get_longdouble()`
+and apply perturbations in `np.longdouble` before `_update_param`. IPTA DR2 J0613 epta,
+ppta, and ng9 par+tim pairs pass strict zero-delta checks at `tol=1e-9` s.
 
-**Verified 2026-07-03:** Still closed on all three J0613 scenarios above.
+**Verified 2026-07-03:** Closed on IPTA DR2 J0613 par+tim workloads tested at the time.
 
 **Residual note:** JUG core still accepts float64 slots when `_high_precision` is
 authoritative; any caller that round-trips high-precision params through `float()` before
@@ -117,7 +98,6 @@ authoritative; any caller that round-trips high-precision params through `float(
 
 **Code touchpoints:**
 
-- MetaPulsar `jug_jax_state.py` — `residual_delta_np` (fix)
 - `jug/fitting/optimized_fitter.py` — `_update_param`, `HIGH_PRECISION_PARAMS`
 
 ---
@@ -126,8 +106,6 @@ authoritative; any caller that round-trips high-precision params through `float(
 
 **Historical symptom:** `make_residual_delta_jax_fn(...)(0)` returned O(**1 s**) residuals
 on J0613-0200 (ELL1/T2 binary in IPTA DR2), while NumPy `residual_delta_np(0)` was 0.
-This blocked `nlt_ipta_dr2_compare_jug.ipynb` at `NonLinearTimingModel.timing_param_keys()`
-(Schur Fisher not PD — a whitening symptom of the θ=0 offset).
 
 **Mechanism:**
 
@@ -152,16 +130,13 @@ This blocked `nlt_ipta_dr2_compare_jug.ipynb` at `NonLinearTimingModel.timing_pa
 
 - JUG: 25/25 autodiff tests pass (`test_designmatrix_autodiff.py`,
   `test_autodiff_j0613_mpta.py`).
-- MetaPulsar IPTA DR2 J0613: `residual_delta_jax(0)` peak ≲6×10⁻¹⁴ s on all PTAs and
-  composite backends (was ≈2.1 s).
-- **`multi_consistent` NTM whitening passes** — notebook blocker resolved.
+- IPTA DR2 J0613 par+tim: `residual_delta_jax(0)` peak ≲6×10⁻¹⁴ s (was ≈2.1 s).
 
-**G2 residual (open, not separately numbered):** On real IPTA DR2 J0613 with a 1e-8
-perturbation on binary/astrometry fitpars, NumPy vs JAX `residual_delta` disagree by
-**~3–8 ms** peak (both `multi_consistent` and per-session engines). Synthetic JUG fixtures
-still show tight NumPy/JAX parity. Likely MetaPulsar integration / float64-vs-longdouble
-at θ≠0; **not gated by CI.** Autodiff design matrices inherit this forward-model mismatch
-at nonzero θ but are correct at θ=0 where whitening is assembled.
+**G2 residual (open, not separately numbered):** On real IPTA DR2 J0613 par+tim with a
+1e-8 perturbation on binary/astrometry fitpars, NumPy vs JAX `residual_delta` disagree by
+**~3–8 ms** peak. Synthetic JUG fixtures still show tight NumPy/JAX parity. Likely
+float64-vs-longdouble at θ≠0; **not gated by CI.** Autodiff design matrices inherit this
+forward-model mismatch at nonzero θ but are correct at θ=0.
 
 **Code touchpoints:**
 
@@ -169,32 +144,6 @@ at nonzero θ but are correct at θ=0 where whitening is assembled.
 - `jug/fitting/forward_delay.py` — `compute_total_delay_change`
 - `jug/fitting/binary_delay_plan.py` — `resolve_binary_structure`
 - `jug/fitting/binary_registry.py` — native binary dispatch (now wired into JAX delta)
-
----
-
-## Gap G3 — JAX delta builder param keys vs backend names — **OPEN (composite); partially mitigated**
-
-**Symptom:** `_build_params_from_delta` writes perturbed values under **fit-parameter
-names** passed to `make_residual_delta_jax_fn`. MetaPulsar `export_jax_timing_state`
-maps canonical host names to backend JUG names (`F0_epta` → `F0`) before building the JAX
-fn, and `JaxTimingState.residual_delta_np` uses `param_mapping` on the NumPy path.
-
-**Impact at θ=0:** Resolved — G2 closure; suffixed names do not cause O(1 s) offsets when
-MetaPulsar supplies the mapping.
-
-**Impact at θ≠0:** Composite (Borg) hosts with suffixed fitpars still show ms-level NumPy/JAX
-mismatch on spin/binary perturbations (e.g. `F0_epta`, `A1_epta`). The same mismatch also
-appears on **`multi_consistent`** (unsuffixed names), so G3 alone does not explain all
-θ≠0 divergence — see G2 residual.
-
-**Impact on NTM:** `multi_composite` J0613 fails Schur whitening (Fisher not PD) even though
-θ=0 checks pass. Treat composite + all-JUG autodiff as **unsupported** until gated.
-
-**Needed:**
-
-1. Close θ≠0 NumPy/JAX parity on real IPTA sessions (may span G2 residual + mapping).
-2. Add MetaPulsar integration tests for composite host perturbations.
-3. Promote `multi_consistent` IPTA DR2 checks from ad hoc runs to pytest gates.
 
 ---
 
@@ -220,18 +169,13 @@ mode for production tempo2 sessions.
 |----------|----------------------|---------------------|
 | NG5 J1600 Cases B/C | Yes | Green on raw residuals (narrow par) |
 | TCB Case A | Yes | Green |
-| IPTA DR2 EPTA J0613 `single_epta` (full TIM) | **Yes (2026-07-03)** | **Partial:** ~2 µs RMS vs libstempo (was ~46.8 ms; gate 5 ns) |
+| IPTA DR2 EPTA J0613 full TIM | **Yes (2026-07-03)** | **Partial:** ~608 ns RMS vs libstempo (was ~46.8 ms; gate 5 ns) |
 | IPTA DR2 EPTA J0613 single-backend excerpt | **Yes (2026-07-03)** | **Documented gap:** ~62 ns RMS vs libstempo (TRACK -2/-pn; unchanged) |
-| IPTA DR2 multi-PTA `multi_consistent` (J0613) | **No** | **Green ad hoc** — zero-delta + NTM whitening pass; not CI-gated |
-| Composite (Borg) host strategy | **No** | θ=0 green; NTM whitening fails (Fisher not PD); G3 |
+| IPTA DR2 PPTA J0613 native (`PPTA_dr1dr2` par/tim) | **No (2026-07-04)** | **Green ad hoc:** ~1.4 ns RMS vs libstempo (410 TOAs; no `-pn` in native tim) |
+| IPTA DR2 PPTA J0613 alternate export par/tim | **No (2026-07-04)** | **Partial:** ~16 ns RMS vs libstempo (`TRACK -2`, `-pn` tim; see 2026-07-04 section) |
 | ELL1/T2 binaries (J0613, etc.) | **Partial** | JUG autodiff + trimmed J0613 green; `ppta_j1741_ell1` residual debt (G6) |
 | Ecliptic ng9 GLS (`LAMBDA`/`BETA`) | **Partial** | Raw residual parity green (Case C); tempo2 autodiff not IPTA-gated |
 | `DM_SERIES` and other ignored keywords | Warn-only | Documented in project brief (G6) |
-
-`nlt_ipta_dr2_compare_jug.ipynb` with **`multi_consistent`** is **no longer blocked** at
-NTM binding / whitening by G2. **`multi_composite`** and full Discovery NUTS runs remain
-experimental. Mixed-engine `nlt_ipta_dr2_compare.ipynb` (libstempo tempo2 + JUG pint,
-analytic) is a separate integration path.
 
 ---
 
@@ -285,7 +229,7 @@ shared hybrid algorithm happens to agree with PINT `nearest`, tempo2 default, an
   anchored to TZRMJD; residual = model phase − stored integer per TOA.
 - `compute_pulse_numbers()`: independent `int(model.phase(abs))` per TOA (not sequential).
 
-**tempo2** (`formResiduals.C`, `add_pulseNumber` plugin):
+**tempo2** (`ref-packages/tempo2`: `formResiduals.C`, `add_pulseNumber` plugin):
 
 - Default: `phas1` = fractional phase of first **active** TOA in **tim-file index order**.
 - `TRACK -2`: `pnNew[i] = nint(phase[i]) + (bbat[i]−bbat[0])` compared to `-pn` flags.
@@ -324,31 +268,33 @@ confounded by ambiguous default wrapping:
 | `epta_j0613_t2_ipta_all` | `TRACK -2` in par; flat tim with `-pn` on all 1369 TOAs | `tempo2 -output add_pulseNumber` |
 | `epta_j0613_t2_nrt1400` | same | same |
 
-Provenance matches MetaPulsar `use_pulse_numbers="yes"` (tempo2 backend):
-`temporary_pn_tim_from_par_tim_tempo2` / `par_text_with_track_minus_2` in
-`metapulsar/pint_helpers.py`. Legacy per-backend files under `tims/` are retained for
-provenance; the manifest `tim` path now points at the flat pn-expanded file.
+Provenance: fixtures use tempo2 `add_pulseNumber` for `-pn` flags and `TRACK -2` in par.
+The same par/tim shape appears in some IPTA DR2 notebook exports (file source only).
+Legacy per-backend files under `tims/` are retained for provenance; the manifest `tim`
+path now points at the flat pn-expanded file.
 
 **Effect on measured debt (JUG(tempo2) − libstempo):**
 
-| Fixture | Before (`TRACK` unset, no `-pn`) | After `TRACK -2` + `-pn` (pre-fix) | After TRACK -2 fix (2026-07-03) |
-|---------|----------------------------------|-----------------------------------|--------------------------------|
-| `epta_j0613_t2_ipta_all` | RMS ~2.9 ms | RMS **~46.8 ms** (wrong anchor) | RMS **~2 µs** (TRACK -2 + `-addsat` fix) |
-| `epta_j0613_t2_nrt1400` | RMS ~62 ns | RMS **~62 ns** (unchanged; single backend) | **~62 ns** (unchanged) |
+| Fixture | Before (`TRACK` unset, no `-pn`) | After `TRACK -2` + `-pn` (pre-fix) | After TRACK -2 (2026-07-03) | After per-TOA `-addsat` (2026-07-04) |
+|---------|----------------------------------|-----------------------------------|---------------------------|-------------------------------------|
+| `epta_j0613_t2_ipta_all` | RMS ~2.9 ms | RMS **~46.8 ms** (wrong anchor) | RMS **~2 µs** (scalar `-addsat`) | RMS **~608 ns**; max **~4.5 µs** |
+| `epta_j0613_t2_nrt1400` | RMS ~62 ns | RMS **~62 ns** (unchanged; single backend) | **~62 ns** | **~62 ns** (unchanged) |
 
 libstempo and tempo2 agree on `-pn` semantics. **Fixed (2026-07-03):** JUG no longer
 anchors at `argsort(dt)[0]` + `base_pn + (-pn)`; it uses tempo2-style `phas1` at tim
-index 0 and per-TOA `fortran_nlong`. `-addsat` fractional correction closes the
-remaining ~0.4-turn outliers on three EFF TOAs. Remaining ~2 µs RMS is bulk fractional
-offset (not sub-ns gate).
+index 0 and per-TOA `fortran_nlong`. **Fixed (2026-07-04):** per-TOA `-addsat` turn
+delta with `int(F0)` vs `float(F0)` pnNew coupling closes the ~68 µs outliers on three
+EFF TOAs (idx 247/256/561; CI gate **< 1 µs**). Remaining ~608 ns RMS is bulk
+fractional offset across the full mix (not sub-ns gate).
 
 ---
 
-## Gap G7 — IPTA DR2 EPTA multi-backend raw residuals — **OPEN (improved 2026-07-03)**
+## Gap G7 — IPTA DR2 EPTA multi-backend raw residuals — **OPEN (improved 2026-07-04)**
 
 **Symptom:** On IPTA DR2 EPTA **J0613-0200** (`J0613-0200.par` + full TIM, 1369 TOAs),
 `JUG(compatibility="tempo2")` pre-fit residuals do **not** match libstempo/tempo2 at the
-sub-ns gate. Integer-turn debt on EFF backends was **fixed**; ~2 µs RMS remains.
+sub-ns gate. Integer-turn and `-addsat` TOA debt is **fixed**; ~608 ns RMS bulk offset
+remains.
 
 Fixtures include **`TRACK -2`** and tempo2-derived **`-pn`** flags on every TOA (see
 **Pulse phase / pulse-number semantics** above). Detailed EFF investigation:
@@ -358,13 +304,14 @@ Fixtures include **`TRACK -2`** and tempo2-derived **`-pn`** flags on every TOA 
 (`tests/test_tempo2_ipta_dr2_j0613_parity.py`), same par+tim pair evaluated by both engines
 with `TRACK -2` and `-pn`:
 
-| Quantity | Gate (green fixtures) | J0613 EPTA (post-fix) |
-|----------|----------------------|------------------------|
+| Quantity | Gate (green fixtures) | J0613 EPTA (2026-07-04) |
+|----------|----------------------|---------------------------|
 | TOA count | JUG == libstempo | **1369 == 1369** |
-| RMS Δ | < 5 ns | **≈ 2.05×10³ ns (~2 µs)** |
-| p99 \|Δ\| | < 10 ns | **≈ 4×10⁴ ns** |
-| max \|Δ\| | < 25 ns | **≈ 6.77×10⁴ ns (~68 µs)** |
-| WRMS Δ | < 5 ns | **~2 µs** |
+| RMS Δ | < 5 ns | **≈ 608 ns** |
+| p99 \|Δ\| | < 10 ns | **≈ 4 µs** |
+| max \|Δ\| | < 25 ns | **≈ 4.5 µs** |
+| WRMS Δ | < 5 ns | **~608 ns** |
+| `-addsat` TOAs (idx 247/256/561) | — | **< 1 µs** each (CI gate) |
 
 (Pre-fix with wrong TRACK -2 anchor: RMS **~46.8 ms**. Historical without pulse numbers:
 RMS ~2.9 ms.)
@@ -379,98 +326,192 @@ is closer to libstempo on this dataset; not yet a drop-in for strict 5 ns gates.
 
 ---
 
-## MetaPulsar integration — practical guidance
+## IPTA DR2 J0613 — per-PTA residual parity and component focus (2026-07-04)
 
-1. **`design_matrix_method="autodiff"`** — **recommended** for JUG nonlinear timing on
-   binary IPTA workloads. G2 θ=0 closure makes this viable for **`multi_consistent`**
-   IPTA DR2 hosts. Do **not** use **`analytic`** on tempo2 sessions (G4).
-2. **`compatibility="pint"`** — preferred JUG mode for PINT-native sessions; unchanged.
-3. **`compatibility="tempo2"`** — acceptable for raw-residual experiments vs libstempo on
-   harmonized fixtures and for **`multi_consistent`** IPTA DR2 autodiff at the reference
-   point. Not signed off for production tempo2 inference on every par/tim combination.
-4. **Composite (Borg) host strategy** — avoid all-JUG autodiff until G3/G5 composite
-   whitening is green and CI-gated.
-5. **Enterprise / libstempo linear timing** on tempo2 PTAs remains the reliable path when
-   JUG is not on the hot path.
-6. **Zero-delta checks:** failing `validate_backend_zero_delta` on JUG backends likely
-   indicates a float64 round-trip regression (G1 class), not libstempo disagreement.
-   θ=0 JAX checks pass on IPTA DR2 J0613 after G2 closure.
-7. **θ≠0 NumPy/JAX agreement** — not yet a release gate; ms-level gaps remain on real IPTA
-   binary perturbations (G2 residual).
-8. **G7 pulse numbers:** J0613 tempo2 fixtures ship `TRACK -2` + `-pn`; evaluate-only
-   TRACK -2 path is fixed (~2 µs RMS). Fitter path still lacks TRACK -2 wiring.
+Ad hoc JUG↔libstempo measurements on IPTA DR2 J0613 par+tim pairs. The alternate PPTA
+export par/tim was copied from a notebook run for convenience (`/tmp/`); **only the
+files matter for parity**, not how they were produced.
+
+### Comparison convention
+
+All measurements evaluate **the same par and tim files** with JUG
+(`compatibility="tempo2"`, `$TEMPO2/clock`) and libstempo (`tempo2_reference`).
+Any RMS gap is **JUG implementation debt vs libstempo on that par+tim pair**. Different
+rows in the table below are **different par+tim inputs** to the same parity test — not
+different orchestration layers.
+
+### Measured pre-fit residual gaps (JUG − libstempo)
+
+| Dataset (par + tim) | n TOAs | RMS Δ | max \|Δ\| | p99 \|Δ\| | Notes |
+|---------------------|--------|-------|-----------|-----------|-------|
+| **PPTA native** (`PPTA_dr1dr2/J0613-0200_dr1dr2.{par,tim}`) | 410 | **1.43 ns** | 5.17 ns | 4.31 ns | IPTA DR2 as-shipped; no `-pn` in tim |
+| PPTA native par + `TRACK -2` + `add_pulseNumber` `-pn` tim | 410 | **1.43 ns** | 5.17 ns | 4.31 ns | Overlay on native par; debt unchanged |
+| **PPTA alternate export** (IPTA DR2 export par/tim) | 410 | **15.96 ns** | 33.34 ns | 31.41 ns | See par contents below; `-pn` on all TOAs |
+| **EPTA fixture** (`epta_j0613_t2_ipta_all`) | 1369 | **608 ns** | 4.5 µs | ~4 µs | G7; see [`EPTA_J0613_EFF_PARITY.md`](EPTA_J0613_EFF_PARITY.md) |
+
+**PPTA alternate export par/tim** (dataset description only — how the files were obtained
+is irrelevant to parity): 410 PPTA TOAs; par includes `TRACK -2`, `UNITS TDB`,
+`CLK TT(BIPM2011)`, T2 binary parameters (`TASC`, `EPS1`, `EPS2`, …) and astrometry/DM
+values copied from the IPTA DR2 EPTA reference timing solution (not the native PPTA
+`PPTA_dr1dr2` numbers); tim carries tempo2 `add_pulseNumber` `-pn` flags on every TOA.
+
+### Ablation: what changes native PPTA off ~1.4 ns?
+
+Using the alternate export `-pn` tim throughout:
+
+| Perturbation (start from native par) | RMS Δ |
+|--------------------------------------|-------|
+| Native par + native tim | **1.43 ns** |
+| Native par + alternate `-pn` tim | **1.43 ns** |
+| Native + `TRACK -2` only + alternate tim | **1.43 ns** |
+| Individual par field → alternate-export value (`PMRA`, `CLK`, `DM`, …) one at a time | **~1.43 ns** each |
+| **Full alternate-export par** + alternate tim | **15.96 ns** |
+
+`TRACK -2`, `-pn` tim, and single-field par edits do **not** reproduce the ~16 ns gap.
+The debt appears only when the **full alternate-export par** is used together with its
+tim (TDB `UNITS`, EPTA-reference T2/`TASC`/`EPS1`/`EPS2`, EPTA-reference
+astrometry/DM/spindown on PPTA TOAs and site context). Patching individual T2 fields
+onto the native ECC/`T0`/`OM` par in isolation breaks parity catastrophically (expected
+— incompatible binary parameterizations without a coherent full par).
+
+### Structure of the alternate PPTA ~16 ns gap
+
+On the alternate-export par/tim (same files for both engines):
+
+- **Not integer-turn scatter:** folded RMS within one pulse period equals raw RMS (~16 ns).
+- **Zero mean:** scattered fractional error, not a single global offset.
+- **Moderate correlation** with JUG `roemer_shapiro_sec` (r ≈ −0.29); weaker with DM (r ≈ −0.18)
+  and binary delay (r ≈ 0.05).
+- JUG `pint` vs `tempo2` on the same par/tim diverges by **~14 ms** RMS
+  (geometry/mean-removal split, not a libstempo comparison).
+
+### Three parity budgets — what to focus on for ~1 ns accuracy
+
+IPTA DR2 J0613 exposes **three separate par+tim parity budgets**. Closing one does not
+automatically close the others.
+
+#### 1. EPTA full multi-backend (~608 ns) — **dominant; fix first**
+
+Documented in G7 and [`EPTA_J0613_EFF_PARITY.md`](EPTA_J0613_EFF_PARITY.md). Integer-turn
+and per-TOA `-addsat` debt is **closed** (2026-07-04); the remaining ~608 ns is **bulk
+pulse-phase / spin bookkeeping** across the multi-backend mix, not Roemer, DM, or binary
+delay kernels.
+
+**Focus:**
+
+- `phas1` / fractional phase anchor (bulk fractional offset on many TOAs in full mix)
+- Optional full `bbat` / `pnNew` path (may polish sub-µs structure; not the 608 ns driver alone)
+- Fitter path: `optimized_fitter.py` still lacks `TRACK -2` / `-addsat` wiring
+
+#### 2. Alternate PPTA export par/tim (~16 ns) — **close to target**
+
+Native `PPTA_dr1dr2` is already at ~1.4 ns. The alternate-export pair (~16 ns) needs
+refinement in JUG's tempo2 model on **that par content** (TDB, EPTA-reference parameters
+on PPTA data), not in pulse-number file format alone.
+
+**Focus:**
+
+- `Tempo2DelayProvider` **TDB geometry** (par has `UNITS TDB`; Roemer+Shapiro shows the
+  strongest correlation with Δ)
+- **TZR / phase reference** on PPTA site (`TZRSITE pks`, `TZRMJD` in par)
+- **T2 binary delay** at `TASC` / `EPS1` / `EPS2` in par (secondary at 16 ns scale)
+
+#### 3. Native PPTA (~1.4 ns) — **essentially done**
+
+No further JUG work required for parity on native `PPTA_dr1dr2` par/tim.
+
+### Ruled out for these par+tim tests
+
+- **Pulse-number file format alone** as the ~16 ns driver (`TRACK -2` / `-pn` overlay on
+  native par leaves RMS at ~1.4 ns)
+- DM and frequency conventions at ms scale on EPTA (G7 investigation)
+- Different par/tim per engine (both sides always use identical paths)
+
+### Suggested next experiments
+
+1. Phase A term dump on alternate PPTA export par/tim with oracle Roemer/Shapiro/frequency
+   terms ranked.
+2. θ≠0 perturbation probes (PMRA, `TASC`, `EPS1`) on native vs alternate PPTA par/tim —
+   compare JUG autodiff columns to libstempo `Mmat` on each pair.
+3. Promote native PPTA (~1.4 ns) and alternate export (~16 ns) to pytest debt pins with
+   checked-in or generated par/tim fixtures.
 
 ---
 
 ## Forward work themes (gap-closing)
 
-Ordered by blocker severity for MetaPulsar nonlinear + autodiff:
+Ordered by severity for **~1 ns residual targets** (see **IPTA DR2 J0613 — per-PTA
+residual parity and component focus** above):
 
-1. **G7 sub-µs polish:** optional `bbat`/`pnNew` path and fitter TRACK -2 wiring; bulk
-   ~2 µs RMS on `epta_j0613_t2_ipta_all` is acceptable for evaluate-only use.
-2. **θ≠0 NumPy/JAX parity (G2 residual):** diagnose ms-level mismatch on IPTA DR2 J0613
-   binary/astrometry perturbations; add MetaPulsar integration pytest gates.
-3. **Composite / Borg hosts (G3/G5):** fix suffixed-param JAX path and Schur Fisher PD for
-   `multi_composite`; add CI fixtures.
-4. **Acceptance tests beyond Case A/B/C:** promote IPTA DR2 `multi_consistent` checks
-   (zero-delta, `residual_delta_jax(0)`, NTM whitening) to pytest in MetaPulsar.
-5. **Analytic tempo2 columns (G4):** either repair or permanently deprecate; autodiff is
+1. **G7 pulse-phase / spin path (EPTA ~608 ns):** `phas1` fractional anchor, optional
+   `bbat`/`pnNew` polish, fitter `TRACK -2` wiring. Per-TOA `-addsat` int(F0) coupling
+   **closed (2026-07-04)**. Dominant lever for the EPTA full-TIM fixture.
+2. **Tempo2 TDB geometry + TZR (alternate PPTA export ~16 ns):** `Tempo2DelayProvider`
+   Roemer+Shapiro under `UNITS TDB` on that par+tim pair; TZR phase reference with PPTA
+   site clocks.
+3. **T2 binary fine detail (alternate PPTA export par/tim):** `TASC`/`EPS1`/`EPS2` in
+   par — secondary at 16 ns residual scale.
+4. **θ≠0 NumPy/JAX parity (G2 residual):** diagnose ms-level mismatch on IPTA DR2 J0613
+   binary/astrometry perturbations on par+tim workloads.
+5. **Par+tim pytest debt pins:** native PPTA (~1.4 ns), alternate PPTA export (~16 ns),
+   EPTA fixture (~608 ns).
+6. **Analytic tempo2 columns (G4):** either repair or permanently deprecate; autodiff is
    the supported path.
-6. **Residual debts (G6):** narrow `ppta_j1741_ell1` gap; implement or explicitly reject
+7. **Residual debts (G6):** narrow `ppta_j1741_ell1` gap; implement or explicitly reject
    `DM_SERIES`.
-7. **Documentation sync:** keep this gap list aligned with pytest gates — do not mark
-   items closed from ad hoc notebook runs alone without tests.
+8. **Documentation sync:** keep this gap list aligned with pytest gates — do not mark
+   items closed from ad hoc runs alone without tests.
 
 **Closed (2026-07-03):** G1 (NumPy reference-state). G2 primary symptom (JAX θ=0 binary
-dispatch, notebook whitening blocker on `multi_consistent`).
+dispatch on par+tim workloads).
 
 ---
 
 ## Investigation log
 
-### 2026-07-02
-
-Informal MetaPulsar dev investigation (scripts under `/tmp/metapulsar_rd0_investigation/`,
-not part of this repo) on IPTA DR2 J0613-0200 reproduced G1 and G2 on:
-
-- `single_epta` (EPTA tempo2),
-- `multi_consistent` (EPTA + PPTA tempo2 + ng9 pint).
-
-Findings are summarized above; raw JSON summary: `summary.json` in that temp directory
-when the investigation was run in the MetaPulsar devcontainer.
-
 ### 2026-07-03 (morning)
 
-- **G1 closed:** MetaPulsar `jug_jax_state.residual_delta_np` uses `get_longdouble()` for
-  `HIGH_PRECISION_PARAMS`. Old float64 path reproduced ~27 ns on EPTA tempo2; fixed path
-  is machine zero. Strict `validate_backend_zero_delta(tol=1e-9)` passes on all three
-  sessions in `multi_consistent`.
+- **G1 closed:** `get_longdouble()` for `HIGH_PRECISION_PARAMS` before zero perturbation.
+  Old float64 path reproduced ~27 ns on EPTA tempo2; fixed path is machine zero.
 - **G2 code landed:** unified binary dispatch in JAX forward model; JUG autodiff test
   suite added.
 
 ### 2026-07-03 (afternoon — verification pass)
 
-Re-ran pytest and IPTA DR2 J0613 integration checks:
-
 - JUG autodiff: **25/25 passed**; tempo2 parity: **17 passed**, 1 intentional xfail.
-- MetaPulsar `test_timing_jug_jax_backend.py`: **5/5 passed**.
-- IPTA DR2 J0613: **`residual_delta_jax(0)` ≲6×10⁻¹⁴ s** (was ≈2.1 s); **`multi_consistent`
-  NTM whitening passes**; `multi_composite` whitening still fails (Fisher not PD).
+- IPTA DR2 J0613: **`residual_delta_jax(0)` ≲6×10⁻¹⁴ s** (was ≈2.1 s).
 - θ≠0 probe (1e-8 perturbation): ms-level NumPy/JAX mismatch on binary/astrometry params
-  on real IPTA data — tracked as G2 residual, not CI-gated.
-
-**Correction:** The morning log entry “G2 confirmed as notebook blocker” is **superseded**
-by the afternoon verification — G2 θ=0 is closed and the `multi_consistent` notebook
-path is unblocked at NTM binding.
+  on real IPTA par+tim — tracked as G2 residual, not CI-gated.
 
 ### 2026-07-03 (evening — pulse numbers + phase semantics)
 
 - Documented PINT vs tempo2 vs JUG pulse-phase paths in **Pulse phase / pulse-number
   semantics** (shared JUG phase path; G7 dominated by turn assignment).
 - Updated J0613 fixtures `epta_j0613_t2_ipta_all` and `epta_j0613_t2_nrt1400` with
-  `TRACK -2` and tempo2 `add_pulseNumber` `-pn` flags (MetaPulsar-compatible).
+  `TRACK -2` and tempo2 `add_pulseNumber` `-pn` flags.
 - Re-measured G7 after TRACK -2 + `-addsat` fixes: full dataset RMS **~2 µs** (was ~46.8 ms
   pre-fix); single-backend nrt1400 unchanged at ~62 ns.
+
+### 2026-07-04 (per-PTA residual audit — PPTA par+tim pairs)
+
+JUG↔libstempo pre-fit residual measurements on IPTA DR2 J0613 par+tim pairs. Alternate
+PPTA export files were obtained from an IPTA DR2 export for convenience (`/tmp/`).
+
+- **Native PPTA** (`PPTA_dr1dr2`, 410 TOAs): RMS **~1.4 ns**.
+- **Alternate PPTA export** par/tim (EPTA-reference parameters, `TRACK -2`, `-pn`, TDB):
+  RMS **~16 ns** — JUG debt on that par content, not pulse-number format alone.
+- **EPTA fixture** at **~608 ns** RMS after per-TOA `-addsat` fix (was ~2 µs with scalar
+  spin correction; ~68 µs max at idx 247 before int(F0) coupling).
+- ~1 ns roadmap: (1) EPTA bulk fractional phase anchor, (2) TDB Roemer+Shapiro/TZR on
+  alternate PPTA par, (3) T2 binary fine detail.
+
+### 2026-07-04 (evening — per-TOA `-addsat` int(F0) coupling)
+
+- **`_track2_addsat_turn_delta`** in `simple_calculator.py`: per-TOA `phase5` wrap after
+  `-addsat`, including `int(F0)` vs `float(F0)` pnNew coupling at local fractional phase.
+- EPTA fixture `epta_j0613_t2_ipta_all`: RMS **~608 ns** (was ~2055 ns); max **~4.5 µs**
+  (was ~68 µs at idx 247); `-addsat` TOAs **< 1 µs** each (pytest gate).
+- Commit: `fix(tempo2): per-TOA TRACK -2 -addsat int(F0) coupling for J0613 EPTA`.
 
 ---
 
@@ -480,8 +521,7 @@ path is unblocked at NTM binding.
 |----------|------|
 | [`TEMPO2_COMPATIBILITY_PROJECT.md`](TEMPO2_COMPATIBILITY_PROJECT.md) | Implementation brief, locked decisions, Cases A/B/C work plan |
 | [`README.md`](README.md) | Install, compatibility modes, pytest entry points |
-| MetaPulsar `examples/notebooks-dev/NONLINREFACTOR-SPEC.md` | Nonlinear timing architecture (consumer side) |
 
 **When updating parity status:** if a gap closes, add a fixture + pytest gate **first**,
-then remove or downgrade the row here. Ad hoc integration runs (as above) document status
-between gates but do not substitute for CI.
+then remove or downgrade the row here. Ad hoc runs document status between gates but do
+not substitute for CI.

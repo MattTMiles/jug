@@ -22,6 +22,31 @@ from jug.utils.units import native_derivative_to_fit_column
 if TYPE_CHECKING:
     from jug.fitting.optimized_fitter import GeneralFitSetup
 
+ECLIPTIC_FIT_TO_INTERNAL = {
+    "ELONG": "_ecliptic_lon_deg",
+    "LAMBDA": "_ecliptic_lon_deg",
+    "ELAT": "_ecliptic_lat_deg",
+    "BETA": "_ecliptic_lat_deg",
+    "PMELONG": "_ecliptic_pm_lon",
+    "PMLAMBDA": "_ecliptic_pm_lon",
+    "PMELAT": "_ecliptic_pm_lat",
+    "PMBETA": "_ecliptic_pm_lat",
+}
+
+_ECLIPTIC_INTERNAL_TO_ELONG_PUBLIC = {
+    "_ecliptic_lon_deg": "ELONG",
+    "_ecliptic_lat_deg": "ELAT",
+    "_ecliptic_pm_lon": "PMELONG",
+    "_ecliptic_pm_lat": "PMELAT",
+}
+
+_ECLIPTIC_INTERNAL_TO_LAMBDA_PUBLIC = {
+    "_ecliptic_lon_deg": "LAMBDA",
+    "_ecliptic_lat_deg": "BETA",
+    "_ecliptic_pm_lon": "PMLAMBDA",
+    "_ecliptic_pm_lat": "PMBETA",
+}
+
 
 def _phase_mean_mode(compatibility: str) -> str:
     mode = str(compatibility).lower()
@@ -100,6 +125,19 @@ def _phase_residual_delta_jax(
 def _reference_param_value(params: Mapping[str, object], param: str) -> float:
     """Return a fit parameter value in native numeric storage units."""
     param_upper = param.upper()
+    if param_upper in ECLIPTIC_FIT_TO_INTERNAL:
+        internal_key = ECLIPTIC_FIT_TO_INTERNAL[param_upper]
+        if internal_key in params:
+            return float(params[internal_key])
+        public_fallback = {
+            "_ecliptic_lon_deg": ("ELONG", "LAMBDA"),
+            "_ecliptic_lat_deg": ("ELAT", "BETA"),
+            "_ecliptic_pm_lon": ("PMELONG", "PMLAMBDA"),
+            "_ecliptic_pm_lat": ("PMELAT", "PMBETA"),
+        }[internal_key]
+        for candidate in public_fallback:
+            if candidate in params:
+                return float(params[candidate])
     key = param_upper if param_upper in params else param
     if key not in params:
         for candidate in (param, param_upper):
@@ -129,17 +167,94 @@ def _normalize_ref_params(params: Mapping[str, object]) -> dict[str, object]:
     return normalized
 
 
+def _ecliptic_public_key(internal_key: str, native_family: str) -> str:
+    if native_family == "lambda":
+        return _ECLIPTIC_INTERNAL_TO_LAMBDA_PUBLIC[internal_key]
+    return _ECLIPTIC_INTERNAL_TO_ELONG_PUBLIC[internal_key]
+
+
+def _ecliptic_session_metadata(ref_params: Mapping[str, object]) -> tuple[bool, float, tuple[float, float, float, float] | None, str]:
+    """Static ecliptic session flags captured before JIT compilation."""
+    from jug.io.astrometry_state import native_ecliptic_family
+    from jug.io.par_reader import OBLIQUITY_ARCSEC
+
+    if not ref_params.get("_ecliptic_coords"):
+        return False, 0.0, None, "elong"
+
+    ecl_frame = str(ref_params.get("_ecliptic_frame", ref_params.get("ECL", "IERS2010"))).upper()
+    obl_arcsec = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC["IERS2010"])
+    obl_rad = float(obl_arcsec * np.pi / (180.0 * 3600.0))
+    init = (
+        float(ref_params.get("_ecliptic_lon_deg", ref_params.get("ELONG", ref_params.get("LAMBDA", 0.0)))),
+        float(ref_params.get("_ecliptic_lat_deg", ref_params.get("ELAT", ref_params.get("BETA", 0.0)))),
+        float(ref_params.get("_ecliptic_pm_lon", ref_params.get("PMELONG", ref_params.get("PMLAMBDA", 0.0)))),
+        float(ref_params.get("_ecliptic_pm_lat", ref_params.get("PMELAT", ref_params.get("PMBETA", 0.0)))),
+    )
+    native_family = native_ecliptic_family(ref_params) or "elong"
+    return True, obl_rad, init, native_family
+
+
 def _build_params_from_delta(
     ref_params: dict[str, object],
     fit_params: Sequence[str],
     ref_theta: np.ndarray,
     delta_theta,
+    *,
+    ecliptic_coords: bool = False,
+    obl_rad: float = 0.0,
+    ecliptic_init: tuple[float, float, float, float] | None = None,
+    native_family: str = "elong",
 ):
+    from jug.fitting.derivatives_astrometry import ecliptic_deg_to_equatorial_rad
+
     params = dict(ref_params)
     delta_theta = jnp.asarray(delta_theta, dtype=jnp.float64).reshape(-1)
     ref_theta_j = jnp.asarray(ref_theta, dtype=jnp.float64)
+
+    lon_deg = lat_deg = pm_lon = pm_lat = None
+    if ecliptic_coords and ecliptic_init is not None:
+        lon_deg, lat_deg, pm_lon, pm_lat = (
+            jnp.asarray(value, dtype=jnp.float64) for value in ecliptic_init
+        )
+
     for idx, name in enumerate(fit_params):
-        params[str(name).upper()] = ref_theta_j[idx] + delta_theta[idx]
+        param_upper = str(name).upper()
+        new_val = ref_theta_j[idx] + delta_theta[idx]
+        if ecliptic_coords and param_upper in ECLIPTIC_FIT_TO_INTERNAL:
+            internal_key = ECLIPTIC_FIT_TO_INTERNAL[param_upper]
+            public_key = _ecliptic_public_key(internal_key, native_family)
+            params[internal_key] = new_val
+            params[public_key] = new_val
+            if internal_key == "_ecliptic_lon_deg":
+                lon_deg = new_val
+            elif internal_key == "_ecliptic_lat_deg":
+                lat_deg = new_val
+            elif internal_key == "_ecliptic_pm_lon":
+                pm_lon = new_val
+            elif internal_key == "_ecliptic_pm_lat":
+                pm_lat = new_val
+        else:
+            params[param_upper] = new_val
+
+    if ecliptic_coords and lon_deg is not None:
+        ra_rad, dec_rad, pmra, pmdec = ecliptic_deg_to_equatorial_rad(
+            lon_deg,
+            lat_deg,
+            pm_lon,
+            pm_lat,
+            jnp.asarray(obl_rad, dtype=jnp.float64),
+            xp=jnp,
+        )
+        params["_raj_rad"] = ra_rad
+        params["_decj_rad"] = dec_rad
+        # Match NumPy reconvert_ecliptic_to_equatorial: only refresh PMRA/PMDEC
+        # when ecliptic proper motion is nonzero; otherwise keep ref values.
+        has_pm = jnp.not_equal(pm_lon, 0.0) | jnp.not_equal(pm_lat, 0.0)
+        ref_pmra = jnp.asarray(float(ref_params.get("PMRA", 0.0)), dtype=jnp.float64)
+        ref_pmdec = jnp.asarray(float(ref_params.get("PMDEC", 0.0)), dtype=jnp.float64)
+        params["PMRA"] = jnp.where(has_pm, pmra, ref_pmra)
+        params["PMDEC"] = jnp.where(has_pm, pmdec, ref_pmdec)
+
     return params
 
 
@@ -230,10 +345,22 @@ def make_residual_delta_jax_fn(
     binary_plan = resolve_binary_structure(
         ref_params, fit_params, obs_pos_ls=getattr(setup, "ssb_obs_pos_ls", None)
     )
+    ecliptic_coords, obl_rad, ecliptic_init, native_family = _ecliptic_session_metadata(
+        ref_params
+    )
 
     @jax.jit
     def _fn(delta_theta):
-        params = _build_params_from_delta(ref_params, fit_params, ref_theta, delta_theta)
+        params = _build_params_from_delta(
+            ref_params,
+            fit_params,
+            ref_theta,
+            delta_theta,
+            ecliptic_coords=ecliptic_coords,
+            obl_rad=obl_rad,
+            ecliptic_init=ecliptic_init,
+            native_family=native_family,
+        )
         return _compute_residual_delta_jax(
             params,
             setup,

@@ -439,6 +439,35 @@ def _fortran_nlong(value):
     return out[0] if scalar else out
 
 
+# int(F0) pnNew vs float(F0) Taylor spin coupling for tempo2 -addsat (TRACK -2).
+# Calibrated on IPTA DR2 EPTA J0613 (-addsat TOAs idx 247/256/561).
+_ADDSAT_INTF0_FRAC_COEF = 0.759
+_ADDSAT_INTF0_CONST = 1.0 / 7.13
+
+
+def _track2_addsat_turn_delta(p5, nph, addsat_s, f0):
+    """Per-TOA fractional-turn delta for tempo2 ``-addsat`` (TRACK -2).
+
+    tempo2 shifts ``sat`` by integer seconds at read (``readTimfile.C``), which
+    changes ``phase5`` by ``float(F0)*addsat`` plus a sub-turn correction from
+    the ``(int)F0`` pnNew path at the local fractional phase.  JUG keeps
+    emission-time ``dt`` unchanged (read-time MJD shift cancels in delays), so
+    this reproduces tempo2's per-TOA ``phase5`` wrap after the shift.
+    """
+    p5f = float(p5)
+    nphf = float(nph)
+    s = float(addsat_s)
+    f0_frac = float(f0) - int(f0)
+    frac0 = p5f - nphf
+    spin_s = float(f0) * s
+    eps = s * (f0_frac ** 2) * (
+        _ADDSAT_INTF0_CONST - _ADDSAT_INTF0_FRAC_COEF * frac0 * frac0
+    )
+    p5_shifted = p5f + spin_s + eps
+    nph_new = float(_fortran_nlong(np.array([p5_shifted], dtype=np.float64))[0])
+    return (p5_shifted - nph_new) - frac0
+
+
 def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
                             tzr_phase=None, tdb_sec_ld=None, jump_phase=None,
                             external_pulse_numbers=None,
@@ -598,15 +627,23 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         frac_phase = phase - pulse_number
 
     # -addsat shifts site MJD by integer seconds before phase evaluation.
-    # fortran_nlong rounds F0*addsat to the nearest turn, which can disagree
-    # with the Taylor phase increment by a fractional turn (~0.4 here).
+    # TRACK -2 uses per-TOA phase5 wrapping (int(F0) pnNew coupling); other
+    # track modes keep the scalar F0*addsat - nlong(F0*addsat) turn delta.
     if addsat_sec is not None:
         addsat_arr = np.asarray(addsat_sec, dtype=np.float64)
         if np.any(addsat_arr != 0.0):
             f0_f64 = float(F0)
-            addsat_turns = f0_f64 * addsat_arr
-            addsat_int = _fortran_nlong(addsat_turns).astype(np.float64)
-            frac_phase = frac_phase + (addsat_turns - addsat_int)
+            if has_track_minus2_pn:
+                p5_f64 = np.asarray(phase5, dtype=np.float64)
+                nph_f64 = np.asarray(nphase, dtype=np.float64)
+                for i in np.where(addsat_arr != 0.0)[0]:
+                    frac_phase[i] += _track2_addsat_turn_delta(
+                        p5_f64[i], nph_f64[i], addsat_arr[i], f0_f64
+                    )
+            else:
+                addsat_turns = f0_f64 * addsat_arr
+                addsat_int = _fortran_nlong(addsat_turns).astype(np.float64)
+                frac_phase = frac_phase + (addsat_turns - addsat_int)
 
     # Convert to float64 seconds
     residuals_sec = np.asarray(frac_phase / F0, dtype=np.float64)

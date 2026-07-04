@@ -22,16 +22,17 @@ from test_tempo2_residual_parity import (
 # IPTA DR2 EPTA single-PTA dataset (J0613-0200.par + J0613-0200_all.tim).
 FIXTURE_ID = "epta_j0613_t2_ipta_all"
 
-# Measured 2026-07-03 after TRACK -2 phas1 + per-TOA fortran_nlong + -addsat fix.
-MEASURED_RMS_NS = 2.0548339193e3
-MEASURED_MAX_NS = 6.7705871917e4
+# Measured 2026-07-04 after per-TOA -addsat int(F0) pnNew coupling fix.
+MEASURED_RMS_NS = 6.083258e2
+MEASURED_MAX_NS = 4.514432e3
+ADDSAT_MAX_DELTA_US = 1.0
 
 
 @pytest.mark.tempo2
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "IPTA DR2 EPTA J0613: TRACK -2 + -addsat fixed (~2 µs RMS); "
+        "IPTA DR2 EPTA J0613: TRACK -2 + -addsat fixed (~608 ns RMS); "
         f"remaining bulk gap vs {FINAL_RMS_DELTA_NS} ns gate"
     ),
 )
@@ -99,4 +100,6 @@ def test_epta_j0613_track_minus2_pulse_numbers_match_libstempo():
     ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
     delta_us = np.asarray(jug["residuals_us"], dtype=np.float64) - ref.residuals_us
     for i in addsat_idx:
-        assert abs(delta_us[i]) < 100.0, f"addsat TOA {i} delta {delta_us[i]:.3f} µs"
+        assert abs(delta_us[i]) < ADDSAT_MAX_DELTA_US, (
+            f"addsat TOA {i} delta {delta_us[i]:.3f} µs"
+        )

@@ -1,7 +1,9 @@
 """Test-only tempo2 term diagnostics for Phase A comparisons.
 
-Uses libstempo properties as the primary oracle.  Does not participate in
-the runtime ``compatibility="tempo2"`` code path.
+Uses libstempo properties only. Does not participate in the runtime
+``compatibility="tempo2"`` code path.
+
+See ``jug/testing/DEV_ORACLE.md`` — delete oracle backends when JUG is standalone.
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from typing import Any
 import numpy as np
 
 from jug.residuals.diagnostic_conventions import DiagnosticConventions
-from jug.testing.sandbox_tempo2 import Policy, tempopulsar
 
 
 @dataclass
@@ -28,6 +29,11 @@ class Tempo2TermDiagnostics:
     bat_corrs_sec: np.ndarray | None = None
     stoas_mjd: np.ndarray | None = None
     toas_mjd: np.ndarray | None = None
+    bbat_mjd: np.ndarray | None = None
+    phase_turns: np.ndarray | None = None
+    nphase: np.ndarray | None = None
+    phase_offset_turns: np.ndarray | None = None
+    pulse_number: np.ndarray | None = None
     term_status: dict[str, str] = field(default_factory=dict)
     conventions: DiagnosticConventions | None = None
 
@@ -55,10 +61,13 @@ def tempo2_term_diagnostics(
     tim: str | Path,
     *,
     conventions: DiagnosticConventions | None = None,
-    policy: Policy | None = None,
+    policy: Any | None = None,
 ) -> Tempo2TermDiagnostics:
-    """Collect libstempo per-term diagnostics for Phase A oracle comparisons."""
+    """Collect per-term diagnostics for Phase A oracle comparisons via libstempo."""
+    from jug.testing.sandbox_tempo2 import Policy, tempopulsar
+
     conv = conventions or DiagnosticConventions()
+
     psr = tempopulsar(
         parfile=str(par),
         timfile=str(tim),
@@ -96,6 +105,11 @@ def tempo2_term_diagnostics(
         "bat_corrs_sec": st_bat,
         "stoas_mjd": st_stoas,
         "toas_mjd": st_toas,
+        "bbat_mjd": "libstempo_toas_only",
+        "phase_turns": "unavailable",
+        "nphase": "unavailable",
+        "phase_offset_turns": "unavailable",
+        "pulse_number": "unavailable",
     }
 
     if conv.oracle_terms == "tempo2_general2_plugin":

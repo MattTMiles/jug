@@ -41,6 +41,7 @@ from jug.residuals.compatibility_providers import DelayProvider, get_delay_provi
 from jug.residuals.diagnostic_conventions import (
     DiagnosticConventions,
     default_conventions,
+    resolve_ne_sw_cm3,
     resolve_planet_shapiro_enabled,
 )
 from jug.residuals.engine_conventions import (
@@ -439,40 +440,14 @@ def _fortran_nlong(value):
     return out[0] if scalar else out
 
 
-# int(F0) pnNew vs float(F0) Taylor spin coupling for tempo2 -addsat (TRACK -2).
-# Calibrated on IPTA DR2 EPTA J0613 (-addsat TOAs idx 247/256/561).
-_ADDSAT_INTF0_FRAC_COEF = 0.759
-_ADDSAT_INTF0_CONST = 1.0 / 7.13
-
-
-def _track2_addsat_turn_delta(p5, nph, addsat_s, f0):
-    """Per-TOA fractional-turn delta for tempo2 ``-addsat`` (TRACK -2).
-
-    tempo2 shifts ``sat`` by integer seconds at read (``readTimfile.C``), which
-    changes ``phase5`` by ``float(F0)*addsat`` plus a sub-turn correction from
-    the ``(int)F0`` pnNew path at the local fractional phase.  JUG keeps
-    emission-time ``dt`` unchanged (read-time MJD shift cancels in delays), so
-    this reproduces tempo2's per-TOA ``phase5`` wrap after the shift.
-    """
-    p5f = float(p5)
-    nphf = float(nph)
-    s = float(addsat_s)
-    f0_frac = float(f0) - int(f0)
-    frac0 = p5f - nphf
-    spin_s = float(f0) * s
-    eps = s * (f0_frac ** 2) * (
-        _ADDSAT_INTF0_CONST - _ADDSAT_INTF0_FRAC_COEF * frac0 * frac0
-    )
-    p5_shifted = p5f + spin_s + eps
-    nph_new = float(_fortran_nlong(np.array([p5_shifted], dtype=np.float64))[0])
-    return (p5_shifted - nph_new) - frac0
-
-
 def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
                             tzr_phase=None, tdb_sec_ld=None, jump_phase=None,
                             external_pulse_numbers=None,
                             track_val=None,
                             external_pn_add=None,
+                            bbat_mjd=None,
+                            torb_sec=None,
+                            tempo2_spin=False,
                             addsat_sec=None,
                             mean_mode: str = "weighted"):
     """Compute phase residuals from emission-time offsets (canonical implementation).
@@ -511,11 +486,17 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     external_pn_add : np.ndarray (int64), optional
         Per-TOA cumulative ``-pnadd`` flag values (tim order). Tempo2
         initialises ``pnAdd`` to -1 before accumulating ``-pnadd`` flags.
+    bbat_mjd : np.ndarray (float64), optional
+        Barycentric arrival MJDs for tempo2 spin phase (``formResiduals.C``).
+    torb_sec : np.ndarray (float64), optional
+        Binary delay (seconds) included in tempo2 ``deltaT`` / ``ftpd``.
+    tempo2_spin : bool
+        When True, evaluate spin phase at ``bbat`` via tempo2 ``phase2+phase3``
+        instead of emission-time Taylor series.
     addsat_sec : np.ndarray (float64), optional
-        Per-TOA integer-second shifts from ``-addsat`` tim flags (already
-        applied to site MJD at read). Tempo2's ``fortran_nlong`` rounding of
-        the induced spin-phase jump can differ from the Taylor phase shift
-        by a fractional turn; this array enables that correction.
+        Per-TOA integer-second ``-addsat`` shifts (already applied to site MJD at
+        read). On TRACK -2, applies ``addsat_track2_turn_delta`` from
+        ``jug.residuals.tempo2_spin`` (see ``TEMPO2_PARITY.md``).
 
     Returns
     -------
@@ -527,66 +508,85 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         Integer pulse numbers used for phase wrapping.
     """
     F0 = get_longdouble(params, 'F0')
-
-    # Collect all spin frequency derivatives F0, F1, F2, ... FN
-    f_coeffs = [F0]
-    k = 1
-    while f'F{k}' in params:
-        f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
-        k += 1
-
+    PEPOCH = get_longdouble(params, 'PEPOCH')
     dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
 
-    # Phase via Taylor series: phase = sum(F_k * dt^(k+1) / (k+1)!)
-    # Horner form with math.factorial (same factorial pattern as FB computation).
-    n_coeffs = len(f_coeffs)
-    phase = np.longdouble(0.0)
-    for i in range(n_coeffs - 1, -1, -1):
-        phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
+    use_tempo2_spin = (
+        tempo2_spin
+        and bbat_mjd is not None
+        and torb_sec is not None
+    )
 
-    # Glitch contributions
-    # Glitch phase is computed at TDB (not emission time) following PINT/Tempo2 convention.
-    PEPOCH = get_longdouble(params, 'PEPOCH')
-    glitch_idx = 1
-    while f'GLEP_{glitch_idx}' in params:
-        glep = get_longdouble(params, f'GLEP_{glitch_idx}')
-        glph = get_longdouble(params, f'GLPH_{glitch_idx}', default=0.0)
-        glf0 = get_longdouble(params, f'GLF0_{glitch_idx}', default=0.0)
-        glf1 = get_longdouble(params, f'GLF1_{glitch_idx}', default=0.0)
-        glf0d = get_longdouble(params, f'GLF0D_{glitch_idx}', default=0.0)
-        gltd = get_longdouble(params, f'GLTD_{glitch_idx}', default=0.0)
+    if use_tempo2_spin:
+        from jug.residuals.tempo2_spin import compute_tempo2_phase5
 
-        # dt_glitch is time since PEPOCH (matching PINT's convention)
-        # The glitch activates for t > GLEP.
-        # Subtract MJDs first in longdouble before scaling to seconds
-        # (see dt_sec note in compute_residuals_simple) to avoid losing
-        # precision when each operand is ~O(10^9) s.
-        dt_glitch = dt  # emission time relative to PEPOCH
-        glep_dt = (glep - PEPOCH) * np.longdouble(SECS_PER_DAY)  # GLEP offset from PEPOCH
-        active = dt_glitch > glep_dt
-        dt_since_glep = np.where(active, dt_glitch - glep_dt, np.longdouble(0.0))
+        jump_arr = None
+        if jump_phase is not None:
+            jump_arr = np.asarray(jump_phase, dtype=np.float64)
+        phase = compute_tempo2_phase5(
+            bbat_mjd,
+            torb_sec,
+            params,
+            jump_phase=jump_arr,
+            tzr_phase=tzr_phase,
+        )
+    else:
+        # Collect all spin frequency derivatives F0, F1, F2, ... FN
+        f_coeffs = [F0]
+        k = 1
+        while f'F{k}' in params:
+            f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
+            k += 1
 
-        glitch_phase = (glph
-                       + glf0 * dt_since_glep
-                       + np.longdouble(0.5) * glf1 * dt_since_glep**2)
+        if bbat_mjd is not None and torb_sec is not None:
+            from jug.residuals.tempo2_spin import spin_delta_sec_tempo2_jug
 
-        # Exponential recovery term
-        if gltd != 0.0 and glf0d != 0.0:
-            gltd_sec = gltd * np.longdouble(SECS_PER_DAY)
-            glitch_phase += glf0d * gltd_sec * (
-                np.longdouble(1.0) - np.exp(-dt_since_glep / gltd_sec)
-            )
+            spin_dt_f64 = spin_delta_sec_tempo2_jug(bbat_mjd, torb_sec, float(PEPOCH))
+            dt = np.asarray(spin_dt_f64, dtype=np.longdouble)
+        else:
+            dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
 
-        phase += np.where(active, glitch_phase, np.longdouble(0.0))
-        glitch_idx += 1
+        # Phase via Taylor series: phase = sum(F_k * dt^(k+1) / (k+1)!)
+        n_coeffs = len(f_coeffs)
+        phase = np.longdouble(0.0)
+        for i in range(n_coeffs - 1, -1, -1):
+            phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
 
-    # Add JUMP phase offsets (applied as phase shifts, not delay subtractions)
-    if jump_phase is not None:
-        phase = phase + np.asarray(jump_phase, dtype=np.longdouble)
+        # Glitch contributions at emission time (PINT convention).
+        glitch_idx = 1
+        while f'GLEP_{glitch_idx}' in params:
+            glep = get_longdouble(params, f'GLEP_{glitch_idx}')
+            glph = get_longdouble(params, f'GLPH_{glitch_idx}', default=0.0)
+            glf0 = get_longdouble(params, f'GLF0_{glitch_idx}', default=0.0)
+            glf1 = get_longdouble(params, f'GLF1_{glitch_idx}', default=0.0)
+            glf0d = get_longdouble(params, f'GLF0D_{glitch_idx}', default=0.0)
+            gltd = get_longdouble(params, f'GLTD_{glitch_idx}', default=0.0)
 
-    # Subtract TZR phase before wrapping for correct pulse numbering
-    if tzr_phase is not None:
-        phase = phase - np.longdouble(tzr_phase)
+            dt_glitch = dt
+            glep_dt = (glep - PEPOCH) * np.longdouble(SECS_PER_DAY)
+            active = dt_glitch > glep_dt
+            dt_since_glep = np.where(active, dt_glitch - glep_dt, np.longdouble(0.0))
+
+            glitch_phase = (glph
+                           + glf0 * dt_since_glep
+                           + np.longdouble(0.5) * glf1 * dt_since_glep**2)
+
+            if gltd != 0.0 and glf0d != 0.0:
+                gltd_sec = gltd * np.longdouble(SECS_PER_DAY)
+                glitch_phase += glf0d * gltd_sec * (
+                    np.longdouble(1.0) - np.exp(-dt_since_glep / gltd_sec)
+                )
+
+            phase += np.where(active, glitch_phase, np.longdouble(0.0))
+            glitch_idx += 1
+
+        if jump_phase is not None:
+            phase = phase + np.asarray(jump_phase, dtype=np.longdouble)
+
+        if tzr_phase is not None:
+            phase = phase - np.longdouble(tzr_phase)
+
+        phase = np.asarray(phase, dtype=np.float64)
 
     # Phase wrapping (Tempo2 formResiduals.C for TRACK -2; sequential connection otherwise).
     has_track_minus2_pn = (
@@ -595,10 +595,25 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         and external_pulse_numbers is not None
     )
 
-    if has_track_minus2_pn:
-        # TRACK -2 (formResiduals.C ~L2255): phas1 + fortran_nlong base residual,
-        # tim -pn offsets, and pnAdd bookkeeping.  Full pnNew/addPhase from bbat
-        # is not implemented; pnAdd offset (+1 by default) cancels in mean removal.
+    if has_track_minus2_pn and use_tempo2_spin:
+        from jug.residuals.tempo2_spin import track_minus2_frac_phase
+
+        if external_pn_add is not None:
+            pn_add_arr = np.asarray(external_pn_add, dtype=np.int64)
+        else:
+            pn_add_arr = np.full(len(phase), -1, dtype=np.int64)
+
+        pn_tim = np.asarray(external_pulse_numbers, dtype=np.int64)
+        frac_phase, pulse_number = track_minus2_frac_phase(
+            np.asarray(phase, dtype=np.float64),
+            np.asarray(bbat_mjd, dtype=np.float64),
+            float(F0),
+            pn_tim,
+            pn_add_arr,
+        )
+        pulse_number = np.asarray(pulse_number, dtype=np.longdouble)
+    elif has_track_minus2_pn:
+        # Legacy TRACK -2 on emission-time Taylor phase (PINT / partial tempo2).
         phas1 = _fortran_mod(phase[0], np.longdouble(1.0))
         phase5 = np.asarray(phase, dtype=np.longdouble) - phas1
         nphase = np.longdouble(_fortran_nlong(np.asarray(phase5, dtype=np.float64)))
@@ -626,19 +641,26 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
             pulse_number[i] = np.round(predicted_n)
         frac_phase = phase - pulse_number
 
-    # -addsat shifts site MJD by integer seconds before phase evaluation.
-    # TRACK -2 uses per-TOA phase5 wrapping (int(F0) pnNew coupling); other
-    # track modes keep the scalar F0*addsat - nlong(F0*addsat) turn delta.
+    # -addsat shifts site MJD by integer seconds before phase evaluation
+    # (readTimfile.C).  TRACK -2 uses per-TOA phase5 wrapping; other track
+    # modes keep the scalar F0*addsat - nlong(F0*addsat) turn delta.
     if addsat_sec is not None:
         addsat_arr = np.asarray(addsat_sec, dtype=np.float64)
         if np.any(addsat_arr != 0.0):
             f0_f64 = float(F0)
             if has_track_minus2_pn:
-                p5_f64 = np.asarray(phase5, dtype=np.float64)
-                nph_f64 = np.asarray(nphase, dtype=np.float64)
+                from jug.residuals.tempo2_spin import addsat_track2_turn_delta
+
+                if use_tempo2_spin:
+                    phas1_addsat = _fortran_mod(phase[0], np.longdouble(1.0))
+                    p5_f64 = np.asarray(phase, dtype=np.float64) - float(phas1_addsat)
+                    nph_f64 = _fortran_nlong(p5_f64)
+                else:
+                    p5_f64 = np.asarray(phase5, dtype=np.float64)
+                    nph_f64 = np.asarray(nphase, dtype=np.float64)
                 for i in np.where(addsat_arr != 0.0)[0]:
-                    frac_phase[i] += _track2_addsat_turn_delta(
-                        p5_f64[i], nph_f64[i], addsat_arr[i], f0_f64
+                    frac_phase[i] += addsat_track2_turn_delta(
+                        p5_f64[i], float(nph_f64[i]), addsat_arr[i], f0_f64
                     )
             else:
                 addsat_turns = f0_f64 * addsat_arr
@@ -1143,7 +1165,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
         tzr_dm_delay = K_DM_SEC * dm_eff / (tzr_freq_bary ** 2)
 
-        ne_sw = float(params.get('NE_SW', 0.0))
+        ne_sw = resolve_ne_sw_cm3(params, engine_profile)
         if ne_sw != 0:
             tzr_obs_sun = np.asarray(tzr_obs_sun_delay, dtype=np.float64).reshape(1, 3)
             r_km = np.sqrt(np.sum(tzr_obs_sun**2))
@@ -1499,7 +1521,7 @@ def compute_residuals_simple(
         fd_idx += 1
     fd_coeffs_jax = jnp.array(fd_coeffs, dtype=jnp.float64) if fd_coeffs else jnp.array([0.0], dtype=jnp.float64)
     has_fd_jax = jnp.array(len(fd_coeffs) > 0)
-    ne_sw_jax = jnp.array(float(params.get('NE_SW', 0.0)))
+    ne_sw_jax = jnp.array(resolve_ne_sw_cm3(params, engine_profile))
 
     # Bundle DM/FD JAX arrays for kernel calls
     dm_jax = {
@@ -1729,7 +1751,7 @@ def compute_residuals_simple(
     # it is only used as design-matrix columns in the fitter.
 
     # Solar wind geometry (always computed for caching; cost is negligible)
-    ne_sw = float(params.get('NE_SW', 0.0))
+    ne_sw = resolve_ne_sw_cm3(params, engine_profile)
     obs_sun_for_sw_km = obs_sun_pos_delay_km if use_native_ecliptic else obs_sun_pos_km
     r_km = np.sqrt(np.sum(obs_sun_for_sw_km**2, axis=1))
     r_au = r_km / AU_KM
@@ -1744,6 +1766,11 @@ def compute_residuals_simple(
         sw_delay_sec = K_DM_SEC * dm_sw / (freq_bary_mhz ** 2)
     else:
         sw_delay_sec = np.zeros(len(tdb_mjd))
+
+    prebinary_delay_sec = (
+        roemer_shapiro + dm_delay_sec + dmx_delay_sec
+        + sw_delay_sec + tropo_delay_sec
+    )
 
     # Compute residuals
     if verbose: print(f"\n7. Computing phase residuals...")
@@ -1816,6 +1843,21 @@ def compute_residuals_simple(
     external_pn = None
     external_pn_add = None
     addsat_sec = None
+    is_tempo2_compat = str(compatibility_mode).lower() in (
+        "tempo2", "tempo2-compatible", "tempo2_compatible"
+    )
+    bbat_mjd = None
+    torb_sec = None
+    if is_tempo2_compat:
+        from jug.residuals.tempo2_spin import compute_bbat_mjd
+
+        bbat_mjd = compute_bbat_mjd(model_mjd, prebinary_delay_sec)
+        if has_binary:
+            torb_sec = np.asarray(
+                total_delay_sec - prebinary_delay_sec, dtype=np.float64
+            )
+        else:
+            torb_sec = np.zeros(len(toas), dtype=np.float64)
     if track_val is not None and int(track_val) == -2:
         pn_flags = [toa.flags.get('pn') for toa in toas]
         if all(pn is not None for pn in pn_flags):
@@ -1846,6 +1888,9 @@ def compute_residuals_simple(
         external_pulse_numbers=external_pn,
         track_val=int(track_val) if track_val is not None else None,
         external_pn_add=external_pn_add,
+        bbat_mjd=bbat_mjd,
+        torb_sec=torb_sec,
+        tempo2_spin=False,
         addsat_sec=addsat_sec,
         mean_mode=delay_provider.phase_mean_mode,
     )
@@ -1995,6 +2040,8 @@ def compute_residuals_simple(
         'dt_sec': np.array(dt_sec, dtype=np.float64),
         # Roemer+Shapiro delay for computing barycentric times (legacy, for backward compat)
         'roemer_shapiro_sec': np.array(roemer_shapiro, dtype=np.float64),
+        'bbat_mjd': np.array(bbat_mjd, dtype=np.float64) if bbat_mjd is not None else None,
+        'torb_sec': np.array(torb_sec, dtype=np.float64) if torb_sec is not None else None,
         'roemer_sec': np.asarray(roemer_sec, dtype=np.float64),
         'sun_shapiro_sec': np.asarray(sun_shapiro_sec, dtype=np.float64),
         'planet_shapiro_sec': np.asarray(planet_shapiro_sec, dtype=np.float64),

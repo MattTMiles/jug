@@ -103,6 +103,23 @@ def resolve_planet_shapiro_enabled(
     return profile.planet_shapiro
 
 
+def resolve_ne_sw_cm3(
+    params: dict[str, Any],
+    profile: EngineConventionProfile,
+) -> float:
+    """Resolve solar-wind electron density (cm^-3) for dispersion delays.
+
+    Tempo2 ``initialise.C`` sets ``NE_SW_DEFAULT = 4`` even when the par file
+    omits ``NE_SW``.  That default enters ``tdis2`` in ``formBats`` and must be
+    included in pre-binary delay for tempo2 spin ``bbat`` parity.
+    """
+    if "NE_SW" in params:
+        return float(params["NE_SW"])
+    if profile.is_tempo2 and profile.implicit_tempo2_defaults:
+        return 4.0
+    return 0.0
+
+
 def default_conventions(compatibility: str = "tempo2") -> DiagnosticConventions:
     """Return default diagnostic conventions for a compatibility mode."""
     mode = str(compatibility).lower()

@@ -86,6 +86,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "tempo2: marks tests requiring libstempo/Tempo2 sandbox support",
+    "dev_oracle: external libstempo/tempo2/pytempo oracle tests — delete when JUG is standalone",
 ]
 
 [tool.ruff]

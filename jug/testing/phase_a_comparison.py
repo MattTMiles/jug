@@ -229,6 +229,12 @@ def compare_fixture_phase_a(
         ("sun_shapiro_sec", "shapiro_sun_sec", oracle.shapiro_sun_sec),
         ("freq_bary_mhz", "ssbfreqs_mhz", oracle.ssbfreqs_mhz),
     ]
+    if oracle.bbat_mjd is not None:
+        term_pairs.append(("bbat_mjd", "bbat_mjd", oracle.bbat_mjd))
+    if oracle.pulse_number is not None:
+        term_pairs.append(("pulse_number", "pulse_number", oracle.pulse_number))
+    if oracle.phase_offset_turns is not None and np.any(oracle.phase_offset_turns):
+        term_pairs.append(("jump_phase", "phase_offset_turns", oracle.phase_offset_turns))
     if conv.term_set == "extended":
         term_pairs.append(("tzr_phase", "tzr_phase", None))
 
@@ -242,6 +248,9 @@ def compare_fixture_phase_a(
         if jug_vals is None:
             report.notes.append(f"{jug_key}: unavailable in JUG")
             continue
+        if jug_key == "jump_phase":
+            jug_vals = np.asarray(jug_vals, dtype=np.float64)
+            oracle_vals = np.asarray(oracle_vals, dtype=np.float64)
         if jug_key == "freq_bary_mhz":
             oracle_vals = np.asarray(oracle_vals, dtype=np.float64) / 1.0e6
         stats = _apply_metric(

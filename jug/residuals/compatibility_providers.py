@@ -530,20 +530,37 @@ def _compute_tempo2_tdb_geometry_terms(
         ephem_path=ephem_path,
     )
 
-    L_hat, _pos_pulsar, _vel_pulsar = build_pulsar_direction(
+    L_hat, _pos_pulsar, vel_pulsar = build_pulsar_direction(
         params,
         model_mjd,
         use_native_ecliptic=use_native_ecliptic,
     )
 
+    # Tempo2 ``calculate_bclt.C`` keeps ``posPulsar`` fixed at POSEPOCH and applies
+    # PM via explicit ``dt_pm`` / ``dt_pmtt`` terms.  Evolving ``L_hat`` to each
+    # TOA and omitting those terms skews ``bbat`` by ~1 µs RMS on binary IPTA data,
+    # which maps to ~1 µs prefit residual scatter after TRACK −2 mean removal.
+    posepoch = float(params.get("POSEPOCH", params["PEPOCH"]))
+    model_mjd_f64 = np.asarray(model_mjd, dtype=np.float64)
+    L_hat_posepoch, _, vel_pulsar = build_pulsar_direction(
+        params,
+        np.array([posepoch], dtype=np.longdouble),
+        use_native_ecliptic=use_native_ecliptic,
+    )
+    L_hat_roemer = np.repeat(L_hat_posepoch, len(model_mjd_f64), axis=0)
+    delt_centuries = (model_mjd_f64 - posepoch) / 36525.0
+    pmrv_rad_century = 0.0
+    if "PMRV" in params:
+        pmrv_rad_century = float(params["PMRV"]) * (2.0 * np.pi / 360.0) / 36000.0
+
     ssb_obs_delay_ls = ssb_obs_light_seconds(ssb_obs_pos_delay_km)
     roemer_sec = compute_tempo2_roemer_sec(
         ssb_obs_delay_ls,
-        L_hat,
+        L_hat_roemer,
         parallax_mas=parallax_mas,
-        pmrv_rad_century=0.0,
-        vel_pulsar=None,
-        delt_centuries=None,
+        pmrv_rad_century=pmrv_rad_century,
+        vel_pulsar=vel_pulsar,
+        delt_centuries=delt_centuries,
     )
 
     obs_sun_ls = eph_state.obs_sun_ls

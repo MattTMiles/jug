@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
 from jug.residuals.engine_conventions import (
     EngineConventionProfile,
     resolve_engine_profile,
@@ -60,6 +61,24 @@ def test_resolve_engine_profile_rejects_mixed_mode():
     tempo2_profile = EngineConventionProfile.from_params(params, "tempo2")
     with pytest.raises(ValueError, match="does not match compatibility"):
         resolve_engine_profile(params, "pint", engine_conventions=tempo2_profile)
+
+
+def test_resolve_ne_sw_tempo2_implicit_default():
+    params = {"UNITS": "TDB"}
+    profile = EngineConventionProfile.from_params(params, "tempo2")
+    assert resolve_ne_sw_cm3(params, profile) == 4.0
+
+
+def test_resolve_ne_sw_explicit_zero_overrides_implicit():
+    params = {"UNITS": "TDB", "NE_SW": 0.0}
+    profile = EngineConventionProfile.from_params(params, "tempo2")
+    assert resolve_ne_sw_cm3(params, profile) == 0.0
+
+
+def test_resolve_ne_sw_pint_mode_defaults_to_zero():
+    params = {"UNITS": "TDB"}
+    profile = EngineConventionProfile.from_params(params, "pint")
+    assert resolve_ne_sw_cm3(params, profile) == 0.0
 
 
 def test_binary_t2_kin_kom_conversion_is_mode_specific():

@@ -11,6 +11,29 @@ decisions, oracle policy, fixture matrix, acceptance metrics, and delivered arch
 
 ---
 
+## Runtime dependencies vs test oracles
+
+**JUG must not depend on libstempo, tempo2, or pytempo.** The shipped package
+(`jug-timing` in `pyproject.toml`) has no runtime dependency on any of them.
+`compatibility="tempo2"` is implemented **natively inside JUG** (jplephem, native
+delay kernels, native phase bookkeeping).
+
+| Package | Runtime JUG | Test / debug only |
+|---------|-------------|-------------------|
+| **libstempo** + tempo2 | **Must not** | pytest acceptance oracle today (`jug/testing/tempo2_reference.py`, vendored `jug/testing/sandbox_tempo2.py`) |
+| **pytempo** | **Must not** | Planned per-TOA diagnostic oracle (`ref-packages/pytempo`, external repo) |
+
+**Known mistake to correct:** parity work currently routes through libstempo inside
+`jug/testing/` (including a vendored libstempo sandbox). That is **test harness
+coupling**, not an architectural choice. JUG must not grow a hard dependency on
+libstempo; the oracle layer should remain optional, isolated under tests/tools, and
+replaceable (e.g. golden vectors, external harness, or pytempo in a separate process).
+
+Parity is **defined** by matching tempo2/libstempo on identical par+tim inputs, but
+**implemented** without calling them at runtime. See §2 and §3.
+
+---
+
 ## 1. Scope
 
 ### What JUG parity is
@@ -39,8 +62,9 @@ use outside curated tests.
 | Parity metric for tempo2 mode | **Raw pre-fit residuals** vs libstempo — same gate as `tests/test_tempo2_residual_parity.py` (RMS, p99, max, WRMS on uncentered δ). **Do not** subtract a weighted (or any other) mean for tempo2 acceptance. |
 | Phase / mean subtraction | tempo2 uses an **unweighted** phase offset; pint mode uses **weighted**. JUG(tempo2) applies tempo2 phase semantics internally; parity compares residuals **as returned**. |
 | Implementation strategy | **Native only.** Reimplement tempo2-equivalent physics inside JUG. **Do not** wrap tempo2, libstempo, or tempo2 plugins at runtime or as a fallback. |
-| Test oracle — acceptance | **libstempo** via `jug/testing/tempo2_reference.py` for scalar residual gates (pytest). Oracle use does not permit wrapping tempo2 in the JUG(tempo2) code path. |
-| Test oracle — diagnostics | **pytempo** (`ref-packages/pytempo`) is the **primary per-TOA diagnostic oracle** for term-by-term parity debugging. See §3. |
+| Runtime dependencies | **No libstempo, tempo2, or pytempo.** Not in `pyproject.toml` dependencies; not importable from `jug/` production modules. Current libstempo use under `jug/testing/` is test-only coupling to remove over time. |
+| Test oracle — acceptance | **libstempo** via `jug/testing/tempo2_reference.py` for scalar residual gates (pytest only, optional extra). Oracle use does not permit wrapping tempo2 in the JUG(tempo2) code path. |
+| Test oracle — diagnostics | **pytempo** (`ref-packages/pytempo`, separate repo) is the **intended** per-TOA diagnostic oracle. Not a JUG dependency. See §3 — several pytempo fields are not yet reliable on IPTA workloads. |
 | Shared PINT-family stack in tempo2 mode | On TDB, tempo2 mode must **not** rely on the pint-mode delay pipeline for terms tempo2 implements differently. |
 | Ephemeris / Roemer / Shapiro | tempo2-equivalent native table integration and delay geometry. Matching the `EPHEM` keyword alone is insufficient. |
 | Omitted par keywords on TDB | Follow **tempo2 implicit defaults** (IF99, DILATEFREQ, etc.) when par omits them — not PINT defaults. |
@@ -54,15 +78,16 @@ use outside curated tests.
 
 ## 3. Oracle policy
 
-Parity work uses **two oracles** with distinct roles. Neither may be called from the JUG
-runtime `compatibility="tempo2"` code path.
+Parity work may use **external oracles** for pytest and debugging. **None** of them are
+JUG runtime dependencies, and none may be called from the `compatibility="tempo2"` code
+path (`jug/residuals/`, `jug/delays/`, fitters, GUI, etc.).
 
-| Layer | Tool | Role |
-|-------|------|------|
-| **Primary (diagnostics)** | [`pytempo.sandbox.tempopulsar`](../../pytempo) → `toa_diagnostics()` / `phase_diagnostics()` | Per-TOA tempo2 ground truth after `updateBats` / `formResiduals`: delays, epochs, phase bookkeeping, `-padd` via `phase_offset_turns`, `nphase`, residuals |
-| **Acceptance (scalar gates)** | `jug.testing.tempo2_reference` (libstempo sandbox) | Raw pre-fit residual RMS / p99 / max for pytest debt pins |
-| **Legacy (thin)** | `jug.testing.tempo2_diagnostics` (libstempo properties) | Superseded by pytempo for term dumps; retained until Phase A is rewired |
-| **Runtime JUG** | `compute_residuals_simple(..., compatibility="tempo2")` | Native port under test |
+| Layer | Tool | JUG dependency? | Role |
+|-------|------|-----------------|------|
+| **Runtime JUG** | `compute_residuals_simple(..., compatibility="tempo2")` | — | Native port under test |
+| **Acceptance (scalar gates)** | `jug.testing.tempo2_reference` (libstempo sandbox) | **No** (test-only today) | Raw pre-fit residual RMS / p99 / max for pytest debt pins |
+| **Diagnostics (intended)** | [`pytempo`](../../pytempo) → `toa_diagnostics()` / `phase_diagnostics()` | **No** (external repo) | Per-TOA tempo2 term dumps — **partially working**; see pytempo bug list in parity investigations |
+| **Legacy (thin)** | `jug.testing.tempo2_diagnostics` (libstempo properties) | **No** (test-only) | Superseded by pytempo when its diagnostic fields are fixed |
 
 ### pytempo package
 
@@ -89,8 +114,8 @@ Key `toa_diagnostics()` fields for parity work:
 | `roemer_sec`, `sun_shapiro_sec`, `torb_sec` | seconds | Delay terms |
 | `freq_ssb_hz` | Hz | Barycentric frequency |
 | `phase_turns`, `nphase` | turns | TRACK −2 / wrapping |
-| `phase_offset_turns` | turns | tempo2 `-padd` / `phaseOffset` |
-| `residual_sec`, `prefit_residual_sec` | seconds | Residual acceptance cross-check |
+| `phase_offset_turns` | turns | Intended for `-padd`; **currently broken on IPTA** (reads unused `phaseOffset`) |
+| `residual_sec`, `prefit_residual_sec` | seconds | **Not** drop-in acceptance oracles on TRACK −2 workloads — use `psr.residuals()` for scalar checks |
 | `pulse_number` | integer | Raw `obsn[].pulseN` |
 
 ### Comparison conventions
@@ -196,6 +221,7 @@ handling, binary param normalization, and mean subtraction (weighted vs unweight
 - Closing the PINT vs tempo2 cross-engine floor **inside PINT**.
 - Making `compatibility="pint"` match tempo2.
 - Wrapping tempo2 or libstempo inside the JUG(tempo2) runtime path.
+- Adding libstempo, tempo2, or pytempo as JUG runtime or `pyproject.toml` dependencies.
 - Using weighted-mean-centered residuals for tempo2 acceptance.
 
 ---
@@ -212,7 +238,14 @@ A: **libstempo** raw residuals via `tempo2_reference()` — unchanged acceptance
 A: **No.** Compare raw residuals as returned.
 
 **Q: Can we call libstempo or tempo2 inside `compatibility="tempo2"`?**  
-A: **No** at runtime. Test oracles only.
+A: **No** at runtime. External oracles for pytest/debug only.
+
+**Q: Is libstempo a JUG dependency?**  
+A: **No.** It is used in the test harness today (`jug/testing/`). That coupling is a
+mistake to unwind — JUG must remain installable and runnable without libstempo.
+
+**Q: Is pytempo a JUG dependency?**  
+A: **No.** It lives in `ref-packages/pytempo` as an optional external diagnostic tool.
 
 **Q: Why do TCB tests pass but IPTA full-TIM does not?**  
 A: Case A activates IFTE, TCB epoch mapping, and unweighted phase mean. IPTA multi-backend

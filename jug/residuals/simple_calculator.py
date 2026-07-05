@@ -106,6 +106,10 @@ _OBS_CLOCK_SCALE = {
 # on every call — the graph is built once per unique clock directory.
 _clock_graph_cache: dict[str, 'ClockGraph'] = {}
 
+# WIP: tempo2 ``phase5`` + ``track_minus2_frac_phase`` at native ``bbat``.
+# Off in production until pulse-number coupling is fixed (see TEMPO2_NATIVE_CLOCK_STATUS.md).
+USE_NATIVE_BBAT_PHASE5 = False
+
 
 def _get_clock_graph(clock_dir) -> 'ClockGraph':
     key = str(Path(clock_dir).resolve())
@@ -440,6 +444,25 @@ def _fortran_nlong(value):
     return out[0] if scalar else out
 
 
+def _tempo2_tt2tb_geometry(
+    tdb_mjd: np.ndarray,
+    toas: list,
+    all_obs_codes: list[str],
+    default_obs_itrf_km: np.ndarray,
+    ephem: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Observatory ITRF positions and Earth barycentric velocity for ``tt2tb``."""
+    times = Time(np.asarray(tdb_mjd, dtype=np.float64), format="mjd", scale="tdb")
+    obs_km = np.zeros((len(toas), 3), dtype=np.float64)
+    for obs_code in all_obs_codes:
+        idxs = [i for i, t in enumerate(toas) if t.observatory.lower() == obs_code]
+        loc = OBSERVATORIES.get(obs_code, default_obs_itrf_km)
+        obs_km[idxs] = loc
+    with solar_system_ephemeris.set(ephem):
+        earth_vel = get_body_barycentric_posvel("earth", times)[1].xyz.to(u.km / u.s).value.T
+    return obs_km, earth_vel
+
+
 def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
                             tzr_phase=None, tdb_sec_ld=None, jump_phase=None,
                             external_pulse_numbers=None,
@@ -448,6 +471,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
                             bbat_mjd=None,
                             torb_sec=None,
                             tempo2_spin=False,
+                            use_native_bbat_phase5: bool = False,
                             addsat_sec=None,
                             mean_mode: str = "weighted"):
     """Compute phase residuals from emission-time offsets (canonical implementation).
@@ -493,6 +517,9 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     tempo2_spin : bool
         When True, evaluate spin phase at ``bbat`` via tempo2 ``phase2+phase3``
         instead of emission-time Taylor series.
+    use_native_bbat_phase5 : bool
+        When True (and TRACK −2 + ``-pn``), use tempo2 ``phase5`` at ``bbat``
+        with ``track_minus2_frac_phase``. WIP; see ``USE_NATIVE_BBAT_PHASE5``.
     addsat_sec : np.ndarray (float64), optional
         Per-TOA integer-second ``-addsat`` shifts (already applied to site MJD at
         read). On TRACK -2, applies ``addsat_track2_turn_delta`` from
@@ -517,15 +544,33 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         and torb_sec is not None
     )
 
-    if use_tempo2_spin:
+    has_track_minus2_pn = (
+        track_val is not None
+        and int(track_val) == -2
+        and external_pulse_numbers is not None
+    )
+    use_tempo2_bbat_phase5 = (
+        use_native_bbat_phase5
+        and bbat_mjd is not None
+        and torb_sec is not None
+        and has_track_minus2_pn
+        and not use_tempo2_spin
+    )
+    use_tempo2_phase5 = use_tempo2_spin or use_tempo2_bbat_phase5
+
+    if use_tempo2_phase5:
         from jug.residuals.tempo2_spin import compute_tempo2_phase5
 
         jump_arr = None
         if jump_phase is not None:
             jump_arr = np.asarray(jump_phase, dtype=np.float64)
+        if use_tempo2_bbat_phase5:
+            torb_for_phase5 = -np.asarray(torb_sec, dtype=np.float64)
+        else:
+            torb_for_phase5 = np.asarray(torb_sec, dtype=np.float64)
         phase = compute_tempo2_phase5(
             bbat_mjd,
-            torb_sec,
+            torb_for_phase5,
             params,
             jump_phase=jump_arr,
             tzr_phase=tzr_phase,
@@ -538,13 +583,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
             f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
             k += 1
 
-        if bbat_mjd is not None and torb_sec is not None:
-            from jug.residuals.tempo2_spin import spin_delta_sec_tempo2_jug
-
-            spin_dt_f64 = spin_delta_sec_tempo2_jug(bbat_mjd, torb_sec, float(PEPOCH))
-            dt = np.asarray(spin_dt_f64, dtype=np.longdouble)
-        else:
-            dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
+        dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
 
         # Phase via Taylor series: phase = sum(F_k * dt^(k+1) / (k+1)!)
         n_coeffs = len(f_coeffs)
@@ -589,13 +628,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         phase = np.asarray(phase, dtype=np.float64)
 
     # Phase wrapping (Tempo2 formResiduals.C for TRACK -2; sequential connection otherwise).
-    has_track_minus2_pn = (
-        track_val is not None
-        and int(track_val) == -2
-        and external_pulse_numbers is not None
-    )
-
-    if has_track_minus2_pn and use_tempo2_spin:
+    if has_track_minus2_pn and use_tempo2_phase5:
         from jug.residuals.tempo2_spin import track_minus2_frac_phase
 
         if external_pn_add is not None:
@@ -651,7 +684,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
             if has_track_minus2_pn:
                 from jug.residuals.tempo2_spin import addsat_track2_turn_delta
 
-                if use_tempo2_spin:
+                if use_tempo2_phase5:
                     phas1_addsat = _fortran_mod(phase[0], np.longdouble(1.0))
                     p5_f64 = np.asarray(phase, dtype=np.float64) - float(phas1_addsat)
                     nph_f64 = _fortran_nlong(p5_f64)
@@ -1848,16 +1881,43 @@ def compute_residuals_simple(
     )
     bbat_mjd = None
     torb_sec = None
+    tempo2_clock_terms = None
     if is_tempo2_compat:
-        from jug.residuals.tempo2_spin import compute_bbat_mjd
+        from jug.residuals.tempo2_clock import (
+            compute_site_clock_corrections_sec,
+            compute_tempo2_clock_terms,
+        )
 
-        bbat_mjd = compute_bbat_mjd(model_mjd, prebinary_delay_sec)
+        correction_tt = compute_site_clock_corrections_sec(
+            mjd_utc,
+            obs_clocks=obs_clocks,
+            bipm_clock=bipm_clock,
+            toas=toas,
+            all_obs_codes=all_obs_codes,
+            obs_clock_default=obs_clock,
+            time_offsets=time_offsets,
+        )
+        obs_earth_km, earth_vel_km_s = _tempo2_tt2tb_geometry(
+            tdb_mjd, toas, all_obs_codes, obs_itrf_km, ephem
+        )
+        tempo2_clock_terms = compute_tempo2_clock_terms(
+            sat_mjd=mjd_utc,
+            correction_tt_sec=correction_tt,
+            observatory_earth_km=obs_earth_km,
+            earth_ssb_vel_km_s=earth_vel_km_s,
+            prebinary_delay_sec=prebinary_delay_sec,
+            params=params,
+        )
+        bbat_mjd = tempo2_clock_terms.bbat_mjd
+        model_mjd = tempo2_clock_terms.model_clock_mjd
         if has_binary:
             torb_sec = np.asarray(
                 total_delay_sec - prebinary_delay_sec, dtype=np.float64
             )
         else:
             torb_sec = np.zeros(len(toas), dtype=np.float64)
+    phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
+    phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None
     if track_val is not None and int(track_val) == -2:
         pn_flags = [toa.flags.get('pn') for toa in toas]
         if all(pn is not None for pn in pn_flags):
@@ -1888,9 +1948,10 @@ def compute_residuals_simple(
         external_pulse_numbers=external_pn,
         track_val=int(track_val) if track_val is not None else None,
         external_pn_add=external_pn_add,
-        bbat_mjd=bbat_mjd,
-        torb_sec=torb_sec,
+        bbat_mjd=phase_bbat_mjd,
+        torb_sec=phase_torb_sec,
         tempo2_spin=False,
+        use_native_bbat_phase5=USE_NATIVE_BBAT_PHASE5,
         addsat_sec=addsat_sec,
         mean_mode=delay_provider.phase_mean_mode,
     )
@@ -1998,6 +2059,23 @@ def compute_residuals_simple(
         "binary_status": binary_status,
         "metadata": term_metadata.as_dict(),
     }
+    if tempo2_clock_terms is not None:
+        term_diagnostics.update(
+            {
+                "sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64),
+                "correction_tt_sec": np.asarray(
+                    tempo2_clock_terms.correction_tt_sec, dtype=np.float64
+                ),
+                "correction_tt_tb_sec": np.asarray(
+                    tempo2_clock_terms.correction_tt_tb_sec, dtype=np.float64
+                ),
+                "bat_mjd": np.asarray(tempo2_clock_terms.bat_mjd, dtype=np.float64),
+                "bbat_mjd": np.asarray(tempo2_clock_terms.bbat_mjd, dtype=np.float64),
+                "shklovskii_sec": np.asarray(
+                    tempo2_clock_terms.shklovskii_sec, dtype=np.float64
+                ),
+            }
+        )
 
     return {
         'compatibility': compatibility_mode,

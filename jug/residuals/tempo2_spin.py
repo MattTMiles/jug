@@ -43,48 +43,12 @@ def spin_delta_sec_at_bbat(
     torb_sec: np.ndarray,
     pepoch: float,
 ) -> np.ndarray:
-    """Tempo2 spin argument ``deltaT = (bbat - PEPOCH)*86400 + torb`` (formResiduals.C).
-
-    Used for tempo2-compatible Taylor spin when ``bbat_mjd`` and ``torb_sec`` are
-    available.  Emission-time ``(model_mjd - PEPOCH)*86400 - delays`` differs by
-    ~1 µs RMS on binary IPTA data, which maps to ~1 µs prefit residual scatter
-    after TRACK −2 mean removal.
-    """
+    """Tempo2 spin argument ``deltaT = (bbat - PEPOCH)*86400 + torb`` (formResiduals.C)."""
     from jug.utils.constants import SECS_PER_DAY
 
     bbat = np.asarray(bbat_mjd, dtype=np.float64)
     torb = np.asarray(torb_sec, dtype=np.float64)
     return (bbat - float(pepoch)) * SECS_PER_DAY + torb
-
-
-def compute_bbat_mjd(
-    model_mjd: np.ndarray,
-    prebinary_delay_sec: np.ndarray,
-) -> np.ndarray:
-    """Barycentric arrival epoch used for tempo2 spin phase.
-
-    Tempo2 ``bbat`` is the site arrival corrected through pre-binary delays
-    (Roemer, Shapiro, DM, troposphere, etc.), not Roemer+Shapiro alone.
-    Matches libstempo ``bbat`` to ~60 ns RMS on IPTA DR2 wsrt167 when
-    ``prebinary_delay_sec`` uses JUG's tempo2 delay provider output.
-    """
-    model = np.asarray(model_mjd, dtype=np.float64)
-    prebinary = np.asarray(prebinary_delay_sec, dtype=np.float64)
-    return model - prebinary / 86400.0
-
-
-def spin_delta_sec_tempo2_jug(
-    bbat_mjd: np.ndarray,
-    torb_sec: np.ndarray,
-    pepoch: float,
-) -> np.ndarray:
-    """Tempo2 spin argument using JUG binary delay sign.
-
-    Tempo2 stores ``obsn[i].torb`` with the opposite sign to JUG's
-    ``total_delay - prebinary``.  With JUG ``torb_sec``, use
-    ``(bbat - PEPOCH)*86400 - torb``.
-    """
-    return spin_delta_sec_at_bbat(bbat_mjd, -np.asarray(torb_sec, dtype=np.float64), pepoch)
 
 
 def spin_delta_sec_tempo2(

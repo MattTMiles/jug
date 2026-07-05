@@ -212,7 +212,7 @@
       "BINARY": "T2",
       "TRACK": "-2",
       "FILTER": "WSRT sys, freq < 1000 MHz from epta_j0613_t2_ipta_all",
-      "NOTES": "Isolated TRACK -2 phase unit test; ~1056 ns RMS vs libstempo (2026-07-05)"
+      "NOTES": "Isolated TRACK -2 phase unit test; ~16 ns RMS vs libstempo post IFTE/formBats (2026-07-05); strict 5 ns gate not met"
     },
     "notes": "WSRT low-band subset for TRACK -2 phase debugging (328/382 MHz bands)"
   }

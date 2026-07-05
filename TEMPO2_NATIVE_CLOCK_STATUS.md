@@ -1,10 +1,18 @@
 # Tempo2 native clock / spin parity — not done
 
 **Status:** work in progress. **Not at parity** with tempo2/libstempo under the
-project’s strict ns-level gate (5 / 25 / 10 ns).
+project’s strict ns-level gate (5 / 25 / 10 ns) on **wsrt167** (~16 ns production).
 
 Policy and architecture: [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md).
 Broader parity tracker: [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md).
+
+**Where we are (2026-07-05):**
+
+| Fix | Fixture | Status |
+|-----|---------|--------|
+| **#1 Phase C — TZR** | `epta_j0030_isolated` | **Done** — 15.9 → **~4.7 ns RMS** |
+| **#2 Phase D Step 1 — pnNew** | `wsrt167` | **Done** — relative ``-pn`` convention; tests added |
+| **#2 Phase D Step 2 — bbat spin** | `wsrt167` | **Open** — production still ~16 ns |
 
 ---
 
@@ -16,17 +24,18 @@ clock/spin stack.**
 
 ### Executive summary
 
-The ~16 ns residual floor on failing fixtures (`wsrt167`, `epta_j0030_isolated`) is
-**not** closed by the native clock/spin work. Binary models, Roemer, and site clocks
-already match libstempo at the ns level on most fixtures. The remaining gap is a
-**small number of outlier TOAs** whose cause is **not Roemer or site-clock mismatch**.
+The ~16 ns residual floor on **wsrt167** is **not** closed by toggling the quarantined
+native stack. Binary models, Roemer, and site clocks match libstempo at the ns level on
+most fixtures. **epta_j0030_isolated** is largely closed by Phase C TZR (~4.7 ns RMS).
 
 | Action | Verdict |
 |--------|---------|
 | Longdouble pass (`tempo2_clock.py`, `tempo2_spin.py`) | **Reverted** — bit-identical RMS (35.74 ns native; 16.43 ns production) |
-| Native ``phase5`` + ``track_minus2_frac_phase`` | **Quarantined** — worse than production (~36 ns vs ~16 ns on wsrt167) |
-| IFTE + formBats in `tempo2_clock.py` | **Diagnostic-only** — production spin uses geometry `model_mjd`, not formBats `model_clock` |
-| Next parity work | Clock/Roemer harness + astrometry/TZR at early epochs (see below) |
+| Native ``phase5`` + formBats ``bbat`` | **Quarantined** — ~36 ns; formBats ``bbat`` **~65 s** off pytempo |
+| IFTE + formBats in `tempo2_clock.py` | **Diagnostic-only** — production spin uses geometry `model_mjd` |
+| Phase C TZR (`tzr_geometry.py`) | **Done** — J0030 passes strict RMS gate |
+| Phase D Step 1 pnNew | **Done** — ``pnAct = (pn[i]−pn[0]) + pnAdd``; oracle tests |
+| Next parity work | Phase D Step 2: oracle ``bbat`` for production spin on wsrt167 |
 
 ### Measured fixture survey (production path, 2026-07-05)
 
@@ -38,12 +47,12 @@ already match libstempo at the ns level on most fixtures. The remaining gap is a
 | ng5_j1600 (both) | 625 | **4.1 ns** | 10 ns | DD | pass |
 | ppta_j1741_ell1 | 111 | 5.8 ns | 12.7 ns | ELL1 | close |
 | epta_j0613_t2_nrt1400 | 120 | 5.9 ns | 17.2 ns | T2 | close |
-| **epta_j0030_isolated** | 10 | **15.9 ns** | 38 ns | none | **fail** (2 outlier TOAs) |
+| **epta_j0030_isolated** | 10 | **~4.7 ns** | ~11 ns | none | **pass RMS** (Phase C) |
 | **wsrt167** | 167 | **16.4 ns** | 110 ns | T2 | **fail** |
 | epta_j0613_t2_ipta_all | 1369 | 36 ns | 720 ns | T2 | fail (clock-file extrapolation) |
 
 **Binary models are fine.** T2, DD, DDH, ELL1H all sit at 2–4 ns. Do not chase binary
-kernels for the ~16 ns floor.
+kernels for the wsrt167 ~16 ns floor.
 
 ### Longdouble pass — not necessary
 
@@ -55,98 +64,108 @@ NATIVE (float64 clock)    RMS: 35.73983864859414 ns   ← bit-identical
 PRODUCTION                RMS: 16.426632571201743 ns
 ```
 
-Tempo2’s own ``phase5`` uses ``(int)F0`` / fractional-day decomposition in **double**
-by design. Clock corrections are milliseconds; float64 is already sub-ps. The longdouble
-pass added complexity with zero measurable benefit and has been **reverted**.
+The longdouble pass has been **reverted**.
 
 ### Native phase5 stack — quarantined
 
-Production (`USE_NATIVE_BBAT_PHASE5 = False` in
-`jug/residuals/tempo2_native_quarantine.py`):
+Production (`USE_NATIVE_BBAT_PHASE5 = False`):
 
-- Spin: emission-time Taylor at geometry **`model_mjd`** (TCB epoch map)
-- TRACK −2: legacy `-pn_add` wrapping
+- Spin: emission-time Taylor at geometry **`model_mjd`**
+- TRACK −2: legacy ``−pnAdd`` wrap (equivalent to fixed pnNew on wsrt167)
 
-Quarantined native path (`USE_NATIVE_BBAT_PHASE5 = True`):
+Quarantined path (`USE_NATIVE_BBAT_PHASE5 = True` + formBats ``bbat``):
 
-- Spin: ``compute_tempo2_phase5`` at formBats ``bbat`` + ``track_minus2_frac_phase``
 - **~36 ns RMS** on wsrt167 — **2× worse** than production
 
-The old ~710 ms failure was wrong ``torb`` (`total − prebinary` with sign flip). With
-``compute_tempo2_torb_sec`` the native path is functional but **not the route to <5 ns**.
+With **pytempo ``bbat``** + fixed pnNew + ``compute_tempo2_phase5``: **~17 ns RMS**
+(validated; not wired to production). **Do not enable the quarantine flag.**
 
-**Do not enable the quarantined path for parity gates.**
+### Where the remaining gap lives
 
-### Where the ~16 ns actually lives
+#### epta_j0030_isolated — Phase C TZR (done)
 
-#### epta_j0030_isolated — two outlier TOAs, not Roemer/clock
+| Metric | Before | After Phase C |
+|--------|--------|---------------|
+| RMS Δ | **15.9 ns** | **~4.7 ns** |
+| max \|Δ\| | ~38 ns | **~11 ns** (2×1999 TOAs) |
 
-| Metric | All 10 TOAs | Drop 2 worst TOAs |
-|--------|-------------|-------------------|
-| RMS Δ | **15.9 ns** | **1.97 ns** |
+Roemer and site clock ruled out pre-fix. Remaining ~11 ns on two 1999 TOAs may be
+early-epoch astrometry (separate from wsrt167).
 
-Outliers: indices 0–1, MJD **51275–51276 (1999)**; remaining 8 TOAs are 2008–2009,
-same backend (`EFF.EBPP.1410`), ~1400 MHz. Solar elongation ~174° (anti-solar) — **not**
-solar-wind/conjunction.
+#### wsrt167 — TRACK −2 / spin at bbat (Phase D)
 
-Per-TOA harness (`jug/testing/tempo2_outlier_diff.py`):
-
-| Term | Outlier TOAs | Good TOAs |
-|------|--------------|-----------|
-| Roemer diff (JUG + libstempo) | ~8–10 ns | ~5–10 ns |
-| Site arrival (sat vs stoas) | **0 ns** | **0 ns** |
-| Residual diff | **±32–38 ns** | **<6 ns** |
-
-**Conclusion:** outliers are **not** Roemer or site-clock dominated. Likely astrometry /
-TZR / early-epoch clock-chain edge (1999 vs 2008–2009 span), not formBats or phase5.
-
-#### wsrt167 — low-band scatter + a few large outliers
-
-- 324–382 MHz; `BINARY T2`; RMS **16.4 ns**, max **110 ns**
-- Weak correlation with `1/f²` (DM band); not a flat clock offset
+- 324–382 MHz; `BINARY T2`; `TRACK -2`; ``-pn`` on all 167 TOAs
+- Production RMS **16.4 ns**, max **110 ns** (TOA 85)
 - Roemer matches libstempo to **~0.8 ns RMS** (harness)
-- Dropping 3 worst TOAs → **13.4 ns RMS**
+- Phase D Step 1: pnNew convention fixed; ``phase5@pytempo bbat`` validates ``nphase``
+- Phase D Step 2: wire oracle ``bbat`` into production — **not started**
 
-### formBats diagnostic gap (does not drive production residuals)
+### formBats diagnostic gap
 
-JUG formBats ``bat_mjd`` differs from libstempo ``stoas + batCorrs`` by **~64 s**
-(~10¹⁰ ns if reported naïvely). Production **does not use** formBats ``bat``/``bbat``
-for spin — it uses geometry ``model_mjd``. This gap is real for the diagnostic path but
-**off the production critical path**.
+JUG formBats ``bbat_mjd`` differs from pytempo/libstempo by **~65 s RMS** on wsrt167.
+Production **does not use** formBats ``bbat`` for spin. Do not enable
+``USE_NATIVE_BBAT_PHASE5`` until this gap is closed.
 
-### Recommended path to <5 ns
+---
 
-**Priority 1 — early-epoch / astrometry (J0030 outliers)**
+## Phase C — TZR (fix #1, done)
 
-1. Run harness on 1999 TOAs vs 2008–2009 cohort:
-   ```bash
-   cd ref-packages/jug
-   PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
-     /opt/venvs/pta/bin/python tools/run_tempo2_outlier_clock_roemer_diff.py \
-     tests/data_tempo2/epta_j0030_isolated/epta_j0030_isolated.par \
-     tests/data_tempo2/epta_j0030_isolated/epta_j0030_isolated.tim \
-     --fixture-id epta_j0030_isolated
-   ```
-2. Diff Roemer delay decomposition at MJD ≈ 51275: proper motion at POSEPOCH,
-   parallax, equatorial vs ecliptic PM, TZR phase at `TZRMJD`.
-3. Compare JUG geometric delay vs libstempo per TOA (not just scalar Roemer property).
+See [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) § "Phase C — TZR reference phase".
 
-**Priority 2 — wsrt167 outliers**
+- Module: ``jug/residuals/tzr_geometry.py``
+- Tests: ``tests/test_tempo2_tzr_parity.py``
 
-1. Same harness; identify TOAs with \|Δ\| > 30 ns.
-2. Check DM / FD / `-padd` / TRACK −2 on low-band (324 MHz) TOAs.
-3. Do **not** spend cycles on native phase5 or longdouble.
+---
+
+## Phase D — wsrt167 TRACK −2 (fix #2)
+
+**Why:** After Phase C, wsrt167 remains at **~16 ns RMS** / **~110 ns max**.
+
+**Step 1 (done): pnNew / tim ``-pn`` convention**
+
+| Issue | Resolution |
+|-------|------------|
+| ``track_minus2_frac_phase`` ``addPhase ~ 10¹⁰`` turns | ``pnAct = (pn[i]−pn[0]) + pnAdd`` |
+| Identity | ``pn[i] − pn[0] == pnNew`` (exact on wsrt167) |
+| Fixed pnNew + ``phase5@pytempo bbat`` | **~17 ns** RMS — not <5 ns yet |
+| Production Taylor + legacy | **~16 ns** — still best until Step 2 |
+
+**Step 2 (open): production spin at correct ``bbat``**
+
+1. Port or substitute **oracle-correct ``bbat``** (keep delays at ``model_mjd``).
+2. Wire TRACK −2 + all ``-pn`` to ``phase5`` + fixed ``track_minus2_frac_phase``.
+3. Re-run ``tests/test_dev_oracle_wsrt167_parity.py`` toward <5 ns.
+
+**Tests / harness**
+
+```bash
+PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
+  /opt/venvs/pta/bin/python -m pytest tests/test_tempo2_track2_pnnew.py -q
+```
+
+---
+
+## Recommended path to <5 ns (updated)
+
+**Priority 1 — wsrt167 (Phase D Step 2)**
+
+1. Close formBats / ``bbat`` gap vs pytempo (~65 s) or bypass with validated clock chain.
+2. Wire ``phase5`` + fixed ``track_minus2_frac_phase`` for TRACK −2 in production.
+3. Do **not** enable ``USE_NATIVE_BBAT_PHASE5`` wholesale.
+
+**Priority 2 — J0030 polish**
+
+- Two 1999 TOAs still ~11 ns after Phase C; investigate early-epoch astrometry if p99
+  gate matters.
 
 **Priority 3 — data coverage**
 
-- `epta_j0613_t2_ipta_all`: **clock-file extrapolation** (BIPM ends MJD 56289, data to
-  56795). Update clock files — not an algorithm bug.
+- `epta_j0613_t2_ipta_all`: clock-file extrapolation — update BIPM data, not algorithm.
 
 **Defer**
 
-- Native ``phase5`` / formBats production switch
-- tt2tb `observatory_earth` Earth-rotation frame (static ITRF vs tempo2 SSB equatorial
-  per-TOA vector) — secondary until outlier TOAs are closed
+- Native ``phase5`` / formBats production switch until ``bbat`` matches oracle
+- tt2tb Earth-rotation frame refinement — secondary
 
 ---
 
@@ -154,10 +173,12 @@ for spin — it uses geometry ``model_mjd``. This gap is real for the diagnostic
 
 | Module | Role |
 |--------|------|
-| `jug/residuals/tempo2_clock.py` | IFTE + formBats — **diagnostics only** (`term_diagnostics`) |
-| `jug/residuals/tempo2_spin.py` | Quarantined ``phase5`` / TRACK −2 helpers |
+| `jug/residuals/tempo2_clock.py` | IFTE + formBats — **diagnostics only** |
+| `jug/residuals/tzr_geometry.py` | TZR apply modes (Phase C) |
+| `jug/residuals/tempo2_spin.py` | ``phase5`` / TRACK −2; pnAct relative to obsn[0] (Phase D) |
 | `jug/residuals/tempo2_native_quarantine.py` | `USE_NATIVE_BBAT_PHASE5 = False` |
 | `jug/testing/tempo2_outlier_diff.py` | Per-TOA clock + Roemer diff harness |
+| `jug/testing/tempo2_track2_oracle.py` | TRACK −2 pnNew oracle (Phase D) |
 | `tools/run_tempo2_outlier_clock_roemer_diff.py` | CLI for harness |
 
 ---
@@ -167,19 +188,25 @@ for spin — it uses geometry ``model_mjd``. This gap is real for the diagnostic
 ```bash
 cd ref-packages/jug
 
-# Strict parity gates (expected fail on wsrt167 / j0030 until outliers fixed)
+# Strict parity gates
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
   /opt/venvs/pta/bin/python -m pytest tests/test_tempo2_residual_parity.py -q
 
-# Outlier clock / Roemer harness (dev oracle)
+# Phase C — TZR
+PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
+  /opt/venvs/pta/bin/python -m pytest tests/test_tempo2_tzr_parity.py -q
+
+# Phase D Step 1 — TRACK −2 pnNew
+PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
+  /opt/venvs/pta/bin/python -m pytest tests/test_tempo2_track2_pnnew.py -q
+
+# Outlier clock / Roemer harness
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
   /opt/venvs/pta/bin/python -m pytest tests/test_tempo2_outlier_clock_roemer_diff.py -m dev_oracle -q
 
-# CLI report
+# wsrt167 acceptance (still failing strict gate)
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
-  /opt/venvs/pta/bin/python tools/run_tempo2_outlier_clock_roemer_diff.py \
-  tests/data_tempo2/wsrt167/wsrt167.par tests/data_tempo2/wsrt167/wsrt167.tim \
-  --fixture-id wsrt167 --outlier-threshold-ns 25
+  /opt/venvs/pta/bin/python -m pytest tests/test_dev_oracle_wsrt167_parity.py -m dev_oracle -q
 ```
 
-Strict gates should fail until outlier TOAs are closed (~16 ns → <5 ns).
+Strict gates on wsrt167 should fail until Phase D Step 2 closes ~16 ns → <5 ns.

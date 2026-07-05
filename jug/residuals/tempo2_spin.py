@@ -197,6 +197,11 @@ def track_minus2_frac_phase(
     bbat = np.asarray(bbat_mjd, dtype=np.float64)
     pn_tim = np.asarray(external_pulse_numbers, dtype=np.int64)
     pn_add_arr = np.asarray(external_pn_add, dtype=np.int64)
+    # IPTA tim files store ``-pn`` as an absolute-looking offset whose *delta from
+    # obsn[0]* equals tempo2 ``pnNew`` (after ``pn0`` anchoring).  Using raw ``-pn``
+    # in ``pnAct`` blows up ``addPhase`` on wsrt167 (~10¹⁰ turns); see
+    # ``TEMPO2_PARITY.md`` § "Phase D — TRACK −2 pnNew".
+    pn_tim_base = int(pn_tim[0])
 
     nf0 = int(f0)
     phas1 = float(_fortran_mod(p5[0], 1.0))
@@ -219,7 +224,7 @@ def track_minus2_frac_phase(
             pn_new = 0
         else:
             pn_new -= pn0
-        pn_act = int(pn_tim[i]) + int(pn_add_arr[i])
+        pn_act = int(pn_tim[i]) - pn_tim_base + int(pn_add_arr[i])
         add_phase = pn_new - pn_act
         frac[i] = (p5[i] - float(nphase[i])) + add_phase
         ntrk = add_phase

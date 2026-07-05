@@ -151,6 +151,11 @@ do **not** mean tempo2 mode is ready for JAX-traced likelihoods or IPTA-scale
 workloads. See [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md) for policy and
 [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) for gap analysis, pytempo workflow, and usage guidance.
 
+**Tempo2 parity status (2026-07-05):** Phase C TZR closed J0030 to **~4.7 ns RMS**.
+wsrt167 remains **~16 ns** — Phase D Step 1 (pnNew convention) is done; Step 2
+(oracle ``bbat`` spin wiring) is next. Details:
+[`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md).
+
 Test-data policy, provenance, and fixture-size guidance live in
 [`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md).
 

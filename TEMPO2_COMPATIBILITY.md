@@ -7,11 +7,8 @@ decisions, oracle policy, fixture matrix, acceptance metrics, and delivered arch
 (~1–2 ns vs libstempo). IPTA DR2 workloads are **partially green** — see measured debt in
 [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md).
 
-**Measured gaps, active work queue, investigation log:**
-[`TEMPO2_PARITY.md`](TEMPO2_PARITY.md)
-
-**Parity review (longdouble, native phase5, outlier diagnosis):**
-[`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md) § "Parity review".
+**Recent fixes:** Phase C TZR (J0030 **15.9 → ~4.7 ns RMS**); Phase D Step 1 pnNew
+(relative tim ``-pn``; wsrt167 production still **~16 ns** until Step 2).
 
 ---
 
@@ -118,9 +115,9 @@ Key `toa_diagnostics()` fields for parity work:
 | `roemer_sec`, `sun_shapiro_sec`, `torb_sec` | seconds | Delay terms |
 | `freq_ssb_hz` | Hz | Barycentric frequency |
 | `phase_turns`, `nphase` | turns | TRACK −2 / wrapping |
-| `phase_offset_turns` | turns | Intended for `-padd`; **currently broken on IPTA** (reads unused `phaseOffset`) |
-| `residual_sec`, `prefit_residual_sec` | seconds | **Not** drop-in acceptance oracles on TRACK −2 workloads — use `psr.residuals()` for scalar checks |
-| `pulse_number` | integer | Raw `obsn[].pulseN` |
+| `phase_offset_turns` | turns | tim ``-padd`` exposure; **not** the same as tempo2 ``addPhase`` from ``pnNew`` |
+| `pulse_number` | integer | tim ``-pn`` (use **``pn[i]−pn[0]``** for ``pnAct`` on TRACK −2) |
+| `acceptance_residual_sec` | seconds | Tier-1 acceptance oracle (TRACK −2) |
 
 ### Comparison conventions
 
@@ -133,9 +130,10 @@ Key `toa_diagnostics()` fields for parity work:
    (and `TZRSITE`). Compare TZR-sensitive terms with JUG `subtract_tzr=True`. Separates
    delay physics from pulse-wrapping ambiguity on alternate PPTA export par/tim (~16 ns
    budget).
-4. **Subset tim pitfall** — `-pn` flags are relative to **full-tim** `obsn[0]`. Running
-   pytempo on an isolated sub-tim changes index-0 semantics; prefer full-tim oracle pull
-   + mask when comparing phase fields on filtered subsets.
+4. **Subset tim pitfall** — tim ``-pn`` values are offsets relative to **full-tim**
+   ``obsn[0]`` (``pn[i]−pn[0]`` equals tempo2 ``pnNew``). Using raw ``-pn`` in ``pnAct``
+   breaks TRACK −2 on IPTA exports. Prefer full-tim oracle pull + mask on filtered
+   subsets. See Phase D in [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md).
 
 Diagnostic workflow (step-by-step): [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) §0.
 
@@ -205,11 +203,12 @@ and design-matrix/fit parity on Cases B/C.
 | Pint geometry | `PintDelayProvider` | Astropy JPL + PINT-family Roemer/Shapiro |
 | Tempo2 TDB geometry | `Tempo2DelayProvider` → `_compute_tempo2_tdb_geometry_terms` | jplephem SPK + tempo2 delay kernels |
 | Tempo2 TCB geometry | `Tempo2DelayProvider` → `_compute_tempo2_tcb_geometry_terms` | IFTE + epoch map (Case A) |
-| TZR dispatch | `jug/residuals/tzr_geometry.py` | `compute_tzr_astrometry_tempo2` / `_pint`; `resolve_tzrmjd_epochs` |
+| TZR dispatch | `jug/residuals/tzr_geometry.py` | Phase C TZR apply modes; `resolve_tempo2_tzr_apply_mode()` |
 | Ephemeris | `jug/delays/tempo2_ephemeris.py` | jplephem DE405 SPK state vectors |
 | Tempo2 helpers | `jug/delays/tempo2_geometry.py` | Ecliptic / Roemer-Shapiro helpers |
-| Phase / TRACK −2 | `compute_phase_residuals()` in `simple_calculator.py` | Shared between pint and tempo2 modes; `mean_mode` differs |
-| Tempo2 spin scaffolding | `jug/residuals/tempo2_spin.py` | `bbat_mjd`, `addsat_track2_turn_delta`; `tempo2_spin=True` not production |
+| Phase / TRACK −2 | `compute_phase_residuals()` in `simple_calculator.py` | Shared; production Taylor + legacy wrap |
+| Tempo2 spin scaffolding | `jug/residuals/tempo2_spin.py` | ``phase5``, ``track_minus2_frac_phase`` (Phase D) |
+| TRACK −2 oracle | `jug/testing/tempo2_track2_oracle.py` | pnNew / ``phase5@bbat`` harness |
 | libstempo acceptance oracle | `jug/testing/tempo2_reference.py` | Scalar residual gates |
 | Phase A (legacy oracle) | `jug/testing/tempo2_diagnostics.py`, `phase_a_comparison.py` | libstempo properties — target: pytempo |
 | **pytempo diagnostic oracle** | `ref-packages/pytempo` | Per-TOA term dumps — **primary for new debugging** |

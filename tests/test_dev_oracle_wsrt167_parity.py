@@ -1,7 +1,8 @@
 """DEV ORACLE — TRACK -2 wsrt167 parity (delete with oracle harness).
 
 Requires libstempo + tempo2 runtime. Not part of standalone JUG CI.
-See ``jug/testing/DEV_ORACLE.md`` and ``TEMPO2_NATIVE_CLOCK_STATUS.md``.
+See ``jug/testing/DEV_ORACLE.md``, ``TEMPO2_NATIVE_CLOCK_STATUS.md`` § Phase D,
+and ``tests/test_tempo2_track2_pnnew.py`` (pnNew step 1).
 """
 
 from __future__ import annotations

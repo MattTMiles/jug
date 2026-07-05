@@ -1,8 +1,11 @@
-"""Tempo2-native spin phase and TRACK -2 residual path (formResiduals.C).
+"""Tempo2-native spin phase and TRACK -2 helpers (formResiduals.C).
 
-Ports tempo2's ``phase2`` + ``phase3`` spin evaluation at barycentric arrival
-``bbat`` and the ``TRACK=-2`` ``pnNew`` / ``addPhase`` logic.  Used only when
-``compatibility='tempo2'``; PINT mode keeps emission-time Taylor spin.
+Quarantined experimental path: ``compute_tempo2_phase5`` and
+``track_minus2_frac_phase`` are **not** on the production parity route.
+Production uses emission-time Taylor spin + legacy TRACK −2.
+
+See ``jug.residuals.tempo2_native_quarantine`` and
+``TEMPO2_NATIVE_CLOCK_STATUS.md``.
 """
 
 from __future__ import annotations
@@ -16,8 +19,8 @@ from jug.io.par_reader import get_longdouble
 
 
 def _fortran_mod(value, period):
-    x = np.asarray(value, dtype=np.longdouble)
-    p = np.longdouble(period)
+    x = np.asarray(value, dtype=np.float64)
+    p = np.float64(period)
     return x - np.trunc(x / p) * p
 
 
@@ -38,6 +41,24 @@ def _c_int_truncate(values: np.ndarray) -> np.ndarray:
     return np.trunc(np.asarray(values, dtype=np.float64))
 
 
+def compute_tempo2_torb_sec(
+    bbat_mjd: np.ndarray,
+    dt_sec: np.ndarray,
+    pepoch,
+) -> np.ndarray:
+    """Tempo2 ``obsn[i].torb`` for ``phase5`` (formResiduals.C).
+
+    Matches ``deltaT = (bbat - PEPOCH)*86400 + torb`` with emission-time ``dt_sec``:
+    ``torb = dt - (bbat - PEPOCH)*86400``.  This is **not** JUG ``total - prebinary``.
+    """
+    from jug.utils.constants import SECS_PER_DAY
+
+    bbat = np.asarray(bbat_mjd, dtype=np.float64)
+    dt = np.asarray(dt_sec, dtype=np.float64)
+    pep = np.float64(pepoch)
+    return dt - (bbat - pep) * np.float64(SECS_PER_DAY)
+
+
 def spin_delta_sec_at_bbat(
     bbat_mjd: np.ndarray,
     torb_sec: np.ndarray,
@@ -48,7 +69,7 @@ def spin_delta_sec_at_bbat(
 
     bbat = np.asarray(bbat_mjd, dtype=np.float64)
     torb = np.asarray(torb_sec, dtype=np.float64)
-    return (bbat - float(pepoch)) * SECS_PER_DAY + torb
+    return (bbat - np.float64(pepoch)) * np.float64(SECS_PER_DAY) + torb
 
 
 def spin_delta_sec_tempo2(
@@ -78,8 +99,8 @@ def _collect_f_coeffs(params) -> list[float]:
 def _tempo2_phase3_vectorized(delta_t_sec: np.ndarray, f_coeffs: list[float]) -> np.ndarray:
     dt = np.asarray(delta_t_sec, dtype=np.float64)
     if len(f_coeffs) <= 1:
-        return np.zeros_like(dt)
-    phase3 = np.zeros_like(dt)
+        return np.zeros_like(dt, dtype=np.float64)
+    phase3 = np.zeros_like(dt, dtype=np.float64)
     arg = dt * dt
     for k, coeff in enumerate(f_coeffs[1:], start=1):
         phase3 += coeff * arg / math.factorial(k + 1)
@@ -127,23 +148,25 @@ def compute_tempo2_phase5(
 
     Implements ``formResiduals.C`` ~L507-536 plus glitch / jump / TZR offsets.
     """
+    from jug.utils.constants import SECS_PER_DAY
+
     f_coeffs = _collect_f_coeffs(params)
     f0 = f_coeffs[0]
     nf0 = int(f0)
-    ff0 = f0 - nf0
+    ff0 = np.float64(f0 - nf0)
     pepoch = float(get_longdouble(params, "PEPOCH"))
 
     bbat = np.asarray(bbat_mjd, dtype=np.float64)
     torb = np.asarray(torb_sec, dtype=np.float64)
-    c_bbat = _c_int_truncate(bbat)
-    c_pep = _c_int_truncate(np.full_like(bbat, pepoch))
+    c_bbat = np.trunc(bbat)
+    c_pep = np.trunc(np.full_like(bbat, pepoch, dtype=np.float64))
 
     ntpd = c_bbat - c_pep
     fct = (bbat - c_bbat) - (pepoch - c_pep)
-    ftpd = fct + torb / 86400.0
-    phase2 = (nf0 * ftpd + ntpd * ff0 + ftpd * ff0) * 86400.0
+    ftpd = fct + torb / np.float64(SECS_PER_DAY)
+    phase2 = (np.float64(nf0) * ftpd + ntpd * ff0 + ftpd * ff0) * np.float64(SECS_PER_DAY)
 
-    delta_t = (bbat - pepoch) * 86400.0 + torb
+    delta_t = (bbat - pepoch) * np.float64(SECS_PER_DAY) + torb
     phase3 = _tempo2_phase3_vectorized(delta_t, f_coeffs)
 
     phase5 = phase2 + phase3 + _glitch_phase_bbat(bbat, params)
@@ -151,9 +174,9 @@ def compute_tempo2_phase5(
     if jump_phase is not None:
         phase5 = phase5 + np.asarray(jump_phase, dtype=np.float64)
     if tzr_phase is not None:
-        phase5 = phase5 - float(tzr_phase)
+        phase5 = phase5 - np.float64(tzr_phase)
 
-    return phase5
+    return np.asarray(phase5, dtype=np.float64)
 
 
 def track_minus2_frac_phase(

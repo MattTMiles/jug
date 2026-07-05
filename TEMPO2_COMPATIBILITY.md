@@ -7,7 +7,11 @@ decisions, oracle policy, fixture matrix, acceptance metrics, and delivered arch
 (~1–2 ns vs libstempo). IPTA DR2 workloads are **partially green** — see measured debt in
 [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md).
 
-**Measured gaps, active work queue, investigation log:** [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md)
+**Measured gaps, active work queue, investigation log:**
+[`TEMPO2_PARITY.md`](TEMPO2_PARITY.md)
+
+**Parity review (longdouble, native phase5, outlier diagnosis):**
+[`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md) § "Parity review".
 
 ---
 

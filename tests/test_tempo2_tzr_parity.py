@@ -179,3 +179,34 @@ def test_subtract_tzr_changes_residuals_when_tzrmjd_present():
     )
     delta = np.asarray(with_tzr["residuals_us"]) - np.asarray(without_tzr["residuals_us"])
     assert float(np.std(delta)) > 0.0
+
+
+def test_tempo2_tzr_apply_mode_skips_prewrap_when_far_from_tzrmjd():
+    """J0030 isolated: far epochs must not use pre-wrap TZR (tempo2 REFPHS MEAN)."""
+    fixture = get_tempo2_fixture("epta_j0030_isolated")
+    jug = compute_residuals_simple(
+        fixture["par_path"],
+        fixture["tim_path"],
+        verbose=False,
+        compatibility="tempo2",
+        subtract_tzr=True,
+    )
+    assert jug["tzr_apply_mode"] == "none"
+    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
+    stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
+    assert stats["rms"] < 5.0, f"j0030 rms={stats['rms']:.3f} ns"
+
+
+def test_tempo2_tzr_apply_mode_uses_prewrap_near_tzrmjd():
+    fixture = get_tempo2_fixture("ng5_j1600_tdb_equatorial")
+    jug = compute_residuals_simple(
+        fixture["par_path"],
+        fixture["tim_path"],
+        verbose=False,
+        compatibility="tempo2",
+        subtract_tzr=True,
+    )
+    assert jug["tzr_apply_mode"] == "pre_wrap"
+    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
+    stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
+    assert stats["rms"] < 5.0

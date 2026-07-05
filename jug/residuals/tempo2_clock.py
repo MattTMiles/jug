@@ -2,6 +2,9 @@
 
 Implements ``getCorrectionTT`` + ``correctionTT_TB`` (``tt2tdb.C``) and
 ``formBats.C`` bat/bbat construction for ``compatibility='tempo2'``.
+
+Diagnostic-only: production spin uses geometry ``model_mjd``, not
+``model_clock`` from this module. See ``TEMPO2_NATIVE_CLOCK_STATUS.md``.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from jug.utils.timescales import IFTE_K, IFTE_KM1, parse_timescale
 
 @dataclass
 class Tempo2ClockTerms:
-    """Per-TOA tempo2 clock / arrival-time split."""
+    """Per-TOA tempo2 clock / arrival-time split (float64 MJD / seconds)."""
 
     sat_mjd: np.ndarray
     correction_tt_sec: np.ndarray
@@ -74,7 +77,8 @@ def compute_shklovskii_sec(
     dshk = float(params.get("DSHK", 0.0))
     pmra = float(params.get("PMRA", 0.0))
     pmdec = float(params.get("PMDEC", 0.0))
-    t0 = (np.asarray(bat_mjd, dtype=np.float64) - posepoch) * SECS_PER_DAY
+    bat = np.asarray(bat_mjd, dtype=np.float64)
+    t0 = (bat - posepoch) * SECS_PER_DAY
     pm2 = (pmra * pmra + pmdec * pmdec) * mas_yr2rad_s * mas_yr2rad_s
     return (t0 * t0 / (2.0 * C_KM_S)) * (dshk * kpc2m) * pm2
 
@@ -88,23 +92,25 @@ def compute_correction_tt_tb_sec(
 ) -> np.ndarray:
     """``tt2tb.C`` ``correctionTT_TB`` for TCB (or TDB) par units."""
     mjd = np.asarray(mjd_tt, dtype=np.float64)
-    delta_t = ifte_delta_t_mjd(mjd)
-    obs_term = np.sum(observatory_earth_km * earth_ssb_vel_km_s, axis=1) / (C_KM_S ** 2)
+    delta_t = np.asarray(ifte_delta_t_mjd(mjd), dtype=np.float64)
+    obs_km = np.asarray(observatory_earth_km, dtype=np.float64)
+    earth_vel = np.asarray(earth_ssb_vel_km_s, dtype=np.float64)
+    obs_term = np.sum(obs_km * earth_vel, axis=1) / (C_KM_S ** 2)
     obs_term = obs_term / (1.0 - IFTE_LC)
 
     units = parse_timescale(params)
     if units == "SI_UNITS":
-        obs_term = obs_term / float(IFTE_K * IFTE_K)
+        obs_term = obs_term / (IFTE_K * IFTE_K)
     else:
-        obs_term = obs_term / float(IFTE_K)
+        obs_term = obs_term / IFTE_K
 
     correction_teph = IFTE_TEPH0_SEC + obs_term + delta_t / (1.0 - IFTE_LC)
 
     if units == "TDB":
-        return correction_teph - 0.0
+        return correction_teph
 
-    linear = float(IFTE_KM1) * (mjd - IFTE_MJD0) * SECS_PER_DAY
-    return linear + float(IFTE_K) * (correction_teph - IFTE_TEPH0_SEC)
+    linear = IFTE_KM1 * (mjd - IFTE_MJD0) * SECS_PER_DAY
+    return linear + IFTE_K * (correction_teph - IFTE_TEPH0_SEC)
 
 
 def compute_formbats_arrival(
@@ -123,8 +129,6 @@ def compute_formbats_arrival(
     clock_sec = tt + tt_tb
     model_clock = sat + clock_sec / SECS_PER_DAY
 
-    # formBats: bat = sat + TT + (TT_TB - delays) with tempo2 delay signs.
-    # JUG ``prebinary`` uses +roemer +shap +tdis +tropo; tempo2 subtracts them.
     bat = sat + (clock_sec - prebinary) / SECS_PER_DAY
     shk = compute_shklovskii_sec(bat, params)
     bbat = bat - shk / SECS_PER_DAY
@@ -150,7 +154,9 @@ def compute_tempo2_clock_terms(
     params: dict[str, Any],
 ) -> Tempo2ClockTerms:
     """Full native tempo2 clock split + ``formBats`` for one TOA batch."""
-    mjd_tt = np.asarray(sat_mjd, dtype=np.float64) + np.asarray(correction_tt_sec) / SECS_PER_DAY
+    sat = np.asarray(sat_mjd, dtype=np.float64)
+    tt = np.asarray(correction_tt_sec, dtype=np.float64)
+    mjd_tt = sat + tt / SECS_PER_DAY
     tt_tb = compute_correction_tt_tb_sec(
         mjd_tt,
         observatory_earth_km=observatory_earth_km,
@@ -158,8 +164,8 @@ def compute_tempo2_clock_terms(
         params=params,
     )
     return compute_formbats_arrival(
-        sat_mjd,
-        correction_tt_sec,
+        sat,
+        tt,
         tt_tb,
         prebinary_delay_sec,
         params,

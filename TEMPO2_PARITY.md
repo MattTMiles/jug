@@ -6,8 +6,9 @@ active work queue, and investigation log.
 **Policy and architecture:** [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md)
 
 **Status (2026-07-05):** Cases A/B/C green (~1–2 ns). IPTA DR2 workloads **partially
-green**. Native IFTE/formBats clock work is **not done** (~16 ns on wsrt167; strict
-gate < 5 ns). See [`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md).
+green**. Native IFTE/formBats clock work is **not the parity route** (~16 ns on wsrt167;
+strict gate < 5 ns). **Primary report:**
+[`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md) § "Parity review".
 
 ---
 
@@ -35,6 +36,11 @@ PYTHONPATH=. pytest tests/test_dev_oracle_wsrt167_parity.py -m dev_oracle -q
 4. Optional ad-hoc oracle: [`ref-packages/pytempo`](../../pytempo) `toa_diagnostics()`
    for per-TOA tempo2 `obsn[]` fields libstempo does not expose. **Not** a JUG
    dependency; **not** wired into jug test infrastructure.
+
+   **In-repo harness (preferred for outlier work):**
+   `jug/testing/tempo2_outlier_diff.py` — per-TOA clock + Roemer diff vs libstempo;
+   CLI: `tools/run_tempo2_outlier_clock_roemer_diff.py`; test:
+   `tests/test_tempo2_outlier_clock_roemer_diff.py`.
 
    ```bash
    pip install -e ref-packages/pytempo   # requires $TEMPO2 runtime; ad-hoc only
@@ -76,9 +82,10 @@ Phase A term oracle: `jug/testing/tempo2_diagnostics.py` (libstempo properties o
 | `-addsat` regression (idx 247/256/561) | **Fixed** — each **< 1 µs** vs libstempo |
 | Implicit `NE_SW = 4` cm⁻³ when par omits keyword | **Fixed (2026-07-05)** — `resolve_ne_sw_cm3()` |
 | Roemer PM at POSEPOCH (not evolving `L_hat` only) | **Fixed (2026-07-05)** — `compatibility_providers.py` |
-| IFTE + `formBats` clock (`tempo2_clock.py`) | **Partial** — ~16 ns RMS on wsrt167; strict gate not met |
-| Taylor spin at emission `model_mjd` (production) | **In use** — formBats-corrected `model_mjd` |
-| Native `phase5` at `bbat` (`USE_NATIVE_BBAT_PHASE5`) | **Disabled WIP** — ~710 ms when enabled; kept for next dev |
+| IFTE + `formBats` clock (`tempo2_clock.py`) | **Diagnostic-only** — ~64 s formBats bat gap vs libstempo; production spin uses geometry `model_mjd` |
+| Taylor spin at emission `model_mjd` (production) | **In use** — ~16 ns on wsrt167; ~2 ns on J0030 after dropping 2 outlier TOAs |
+| Native `phase5` at `bbat` (`USE_NATIVE_BBAT_PHASE5`) | **Quarantined** — ~36 ns (worse than production); see `tempo2_native_quarantine.py` |
+| Longdouble clock/spin pass | **Reverted (2026-07-05)** — zero measurable benefit |
 | Raw `phase5(bbat)−phase5(bbat−addsat)` wrap on legacy TRACK −2 | **Wrong** — ~67 µs at idx 247; do not use |
 | `addsat_track2_turn_delta` int(F0) closure | **In use** — calibrated constants; not yet derived from `ff0` alone |
 | `bbat_mjd` / `torb_sec` in JUG output | **Done** |
@@ -161,14 +168,14 @@ Tests: `test_tempo2_mode_epta_j0613_ipta_dr2_residual_parity` (xfail strict);
 
 | Priority | Task | Oracle / fields | Status |
 |----------|------|-----------------|--------|
-| **1** | Close **wsrt167** debt (~263 ns → sub-100 ns, target 5 ns gate) | libstempo acceptance; JUG `bbat_mjd`, `prebinary_delay_sec`, SW terms | **In progress** — fixture + debt pin done (`32dd71a`) |
-| **2** | `-padd` placement vs TRACK −2 | tempo2 order: spin → `-padd` → `phas1` → `nlong` | **Open** — after wsrt167 bulk debt drops |
-| **3** | 328 vs 382 MHz band split | group-wise phase terms | **Open** — ad-hoc ~0.4 ns split observed pre-fix |
-| **4** | Full-mix mean anchor (+1.29 ns on same TOAs) | full 1369-TOA mix vs isolated sub-tim | **Open** — re-measure post `32dd71a` |
-| **5** | Validate on `epta_j0613_t2_nrt1400` (~62 ns) | libstempo + term diagnostics | **Open** — after wsrt167 |
+| **1** | Close **outlier TOAs** on `epta_j0030_isolated` (1999 epochs) | `tempo2_outlier_diff` harness; astrometry/TZR at early MJD | **In progress** — Roemer/clock ruled out |
+| **2** | Close **wsrt167** outlier TOAs (max ~110 ns) | Same harness; low-band DM/FD/`-padd` | **Open** — bulk Roemer ~0.8 ns RMS |
+| **3** | Update BIPM clock files for `epta_j0613_t2_ipta_all` | clock-file coverage to MJD 56795 | **Open** — data, not algorithm |
+| **4** | `-padd` placement vs TRACK −2 | tempo2 order: spin → `-padd` → `phas1` → `nlong` | **Open** |
+| **5** | Validate on `epta_j0613_t2_nrt1400` (~6 ns) | libstempo + term diagnostics | **Open** |
 | **6** | Alternate PPTA ~16 ns | Roemer/Shapiro + TZR at `TZRMJD` | **Open** |
-| **7** | Fitter TRACK −2 / `-addsat` wiring | after wsrt167 green | **Open** |
-| **Defer** | `tempo2_spin=True` / full `pnNew` | until subset gates pass | — |
+| **7** | Fitter TRACK −2 / `-addsat` wiring | after subset gates pass | **Open** |
+| **Defer** | Native `phase5` / formBats production switch | quarantined — worse than Taylor | — |
 
 ### WSRT167 (2026-07-05)
 
@@ -286,10 +293,13 @@ Single-field par edits do not reproduce the ~16 ns gap.
 `jump_phase` (includes `-padd`/`-radd`) → `phas1@tim[0]` → `fortran_nlong` per TOA →
 legacy `add_phase = −pn_add` (not full tempo2 `pnNew`).
 
-**Disabled WIP:** native `phase5` at **`bbat`** (`USE_NATIVE_BBAT_PHASE5=False`) —
-`compute_tempo2_phase5` + `track_minus2_frac_phase`; not production-ready.
+**Disabled / quarantined:** native `phase5` at **`bbat`**
+(``jug/residuals/tempo2_native_quarantine.USE_NATIVE_BBAT_PHASE5 = False``) —
+``compute_tempo2_phase5`` + ``track_minus2_frac_phase``; **not** production-ready
+(~36 ns vs ~16 ns Taylor on wsrt167).
 
-Key touchpoints: `jug/residuals/tempo2_spin.py`, `jug/residuals/simple_calculator.py`.
+Key touchpoints: `jug/residuals/tempo2_spin.py`,
+`jug/residuals/tempo2_native_quarantine.py`, `jug/residuals/simple_calculator.py`.
 
 ### Subset pitfall
 
@@ -379,6 +389,7 @@ when EFF 1360/2639 present — cross-backend `phas1`/anchor coupling (historical
 | 2026-07-04 | `tempo2_spin=True` attempt wrong for legacy stack; production restored via `addsat_track2_turn_delta` |
 | 2026-07-05 | Doc consolidation: three parity markdown files merged into this doc + [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md) |
 | 2026-07-05 | **wsrt167 promoted:** fixture under `tests/data_tempo2/wsrt167/`; dev-oracle debt pin; implicit **NE_SW=4**, Roemer PM at POSEPOCH, spin at **bbat** — **~1056 ns → ~263 ns RMS** (`32dd71a`) |
+| 2026-07-05 | **Parity review:** longdouble reverted (zero benefit); native phase5 quarantined (~36 ns > ~16 ns Taylor); outlier harness added; J0030 2 TOAs (1999) dominate 15.9 ns RMS — Roemer/clock ruled out |
 | 2026-07-05 | wsrt167 diagnostic session: ~263 ns is intra-backend scatter (not band means); `bbat`/`pets` timing gap ~370 ns → oracle ~222 ns; Taylor=`phase5` with legacy TRACK −2; `torb` sign closed |
 
 **When updating parity status:** add a fixture + pytest gate **first**, then update this log.
@@ -394,6 +405,10 @@ cd ref-packages/jug
 
 # wsrt167 debt pin (dev oracle — requires libstempo + $TEMPO2)
 PYTHONPATH=. pytest tests/test_dev_oracle_wsrt167_parity.py -m dev_oracle -q
+
+# Outlier clock / Roemer harness
+PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
+  pytest tests/test_tempo2_outlier_clock_roemer_diff.py -m dev_oracle -q
 
 # All tempo2 oracle tests
 JUG_TEST_TEMPO2=1 PYTHONPATH=. pytest tests/test_tempo2_*.py -m dev_oracle -q
@@ -419,6 +434,7 @@ Key modules:
 | `jug/residuals/tempo2_spin.py` | bbat, spin at bbat, TRACK −2 helpers |
 | `jug/residuals/diagnostic_conventions.py` | `resolve_ne_sw_cm3()`, conventions |
 | `jug/residuals/compatibility_providers.py` | Tempo2 TDB delay provider |
+| `jug/testing/tempo2_outlier_diff.py` | Per-TOA clock + Roemer diff vs libstempo (outlier work) |
 | `jug/testing/tempo2_reference.py` | libstempo acceptance oracle |
 | `jug/testing/tempo2_diagnostics.py` | Phase A term oracle (libstempo properties) |
 | `jug/testing/phase_a_comparison.py` | Phase A ranking |

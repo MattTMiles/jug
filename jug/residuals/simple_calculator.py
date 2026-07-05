@@ -52,8 +52,10 @@ from jug.residuals.tzr_geometry import (
     TzrEpochs,
     compute_tzr_astrometry_pint,
     compute_tzr_astrometry_tempo2,
+    resolve_tempo2_tzr_apply_mode,
     resolve_tzrmjd_epochs,
 )
+from jug.residuals.tempo2_native_quarantine import USE_NATIVE_BBAT_PHASE5
 from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
@@ -105,10 +107,6 @@ _OBS_CLOCK_SCALE = {
 # Module-level ClockGraph cache (keyed on clock_dir str) to avoid re-scanning
 # on every call — the graph is built once per unique clock directory.
 _clock_graph_cache: dict[str, 'ClockGraph'] = {}
-
-# WIP: tempo2 ``phase5`` + ``track_minus2_frac_phase`` at native ``bbat``.
-# Off in production until pulse-number coupling is fixed (see TEMPO2_NATIVE_CLOCK_STATUS.md).
-USE_NATIVE_BBAT_PHASE5 = False
 
 
 def _get_clock_graph(clock_dir) -> 'ClockGraph':
@@ -444,6 +442,41 @@ def _fortran_nlong(value):
     return out[0] if scalar else out
 
 
+def compute_tempo2_tzr_wrapped_residual_sec(
+    tzr_spin_phase,
+    anchor_phase_with_jump,
+    f0,
+    *,
+    tzr_jump_phase=0.0,
+) -> float:
+    """Wrapped TZR residual in seconds (tempo2 ``REFPHS TZR`` / ``formResiduals.C``).
+
+    Uses the same ``phas1`` anchor as the first TOA (tim index 0) and the same
+    ``phase5 - fortran_nlong(phase5)`` fractional convention as tempo2.
+    """
+    f0_ld = np.longdouble(f0)
+    phas1 = _fortran_mod(anchor_phase_with_jump, np.longdouble(1.0))
+    tzr_total = np.longdouble(tzr_spin_phase) + np.longdouble(tzr_jump_phase)
+    tzr_phase5 = float(tzr_total - phas1)
+    tzr_frac = tzr_phase5 - float(_fortran_nlong(np.asarray([tzr_phase5], dtype=np.float64))[0])
+    return float(tzr_frac / f0_ld)
+
+
+def _spin_taylor_phase(dt_sec, f_coeffs) -> np.ndarray:
+    """Spin Taylor phase at emission-time offsets (longdouble)."""
+    dt = np.asarray(dt_sec, dtype=np.longdouble)
+    n_coeffs = len(f_coeffs)
+    if dt.ndim == 0:
+        phase = np.longdouble(0.0)
+        for i in range(n_coeffs - 1, -1, -1):
+            phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
+        return phase
+    phase = np.longdouble(0.0)
+    for i in range(n_coeffs - 1, -1, -1):
+        phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
+    return phase
+
+
 def _tempo2_tt2tb_geometry(
     tdb_mjd: np.ndarray,
     toas: list,
@@ -518,8 +551,9 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         When True, evaluate spin phase at ``bbat`` via tempo2 ``phase2+phase3``
         instead of emission-time Taylor series.
     use_native_bbat_phase5 : bool
-        When True (and TRACK −2 + ``-pn``), use tempo2 ``phase5`` at ``bbat``
-        with ``track_minus2_frac_phase``. WIP; see ``USE_NATIVE_BBAT_PHASE5``.
+        When True (and TRACK −2 + ``-pn``), use quarantined tempo2 ``phase5`` at
+        ``bbat`` with ``track_minus2_frac_phase``. See
+        ``jug.residuals.tempo2_native_quarantine.USE_NATIVE_BBAT_PHASE5``.
     addsat_sec : np.ndarray (float64), optional
         Per-TOA integer-second ``-addsat`` shifts (already applied to site MJD at
         read). On TRACK -2, applies ``addsat_track2_turn_delta`` from
@@ -564,10 +598,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         jump_arr = None
         if jump_phase is not None:
             jump_arr = np.asarray(jump_phase, dtype=np.float64)
-        if use_tempo2_bbat_phase5:
-            torb_for_phase5 = -np.asarray(torb_sec, dtype=np.float64)
-        else:
-            torb_for_phase5 = np.asarray(torb_sec, dtype=np.float64)
+        torb_for_phase5 = np.asarray(torb_sec, dtype=np.float64)
         phase = compute_tempo2_phase5(
             bbat_mjd,
             torb_for_phase5,
@@ -628,7 +659,9 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         phase = np.asarray(phase, dtype=np.float64)
 
     # Phase wrapping (Tempo2 formResiduals.C for TRACK -2; sequential connection otherwise).
-    if has_track_minus2_pn and use_tempo2_phase5:
+    # Native ``track_minus2_frac_phase`` (tempo2 pnNew) is used with ``phase5`` when
+    # ``use_tempo2_bbat_phase5``; legacy ``-pn_add`` wrapping remains for Taylor spin.
+    if has_track_minus2_pn and use_tempo2_bbat_phase5:
         from jug.residuals.tempo2_spin import track_minus2_frac_phase
 
         if external_pn_add is not None:
@@ -1819,14 +1852,58 @@ def compute_residuals_simple(
     PEPOCH = get_longdouble(params, 'PEPOCH')
     PEPOCH_sec = PEPOCH * np.longdouble(SECS_PER_DAY)
 
-    # Time at emission (TDB - all delays) -- longdouble for phase precision.
-    # Subtract MJDs FIRST while values are O(10^4) days (longdouble ULP ~2e-17 d
-    # ~ 1.7 ps after *86400), THEN scale to seconds. Computing
-    # tdb_sec - PEPOCH_sec inflates each operand to O(10^9) s (longdouble ULP
-    # ~5e-10 s ~ 500 ps), bleeding ~130 ps RMS into the prefit residual
-    # versus PINT's MJD-first convention.
-    model_mjd_ld = np.array(model_mjd, dtype=np.longdouble)
-    dt_sec = (model_mjd_ld - PEPOCH) * np.longdouble(SECS_PER_DAY) - delay_sec
+    # Emission spin uses geometry ``model_mjd`` (TCB epoch map / TDB grid), not formBats
+    # ``model_clock``.  formBats ``bbat`` + tempo2 ``torb`` feed the quarantined
+    # native ``phase5`` path only (``USE_NATIVE_BBAT_PHASE5``).
+    spin_model_mjd_ld = np.asarray(model_mjd, dtype=np.longdouble)
+    dt_sec = (spin_model_mjd_ld - PEPOCH) * np.longdouble(SECS_PER_DAY) - delay_sec
+
+    is_tempo2_compat = str(compatibility_mode).lower() in (
+        "tempo2", "tempo2-compatible", "tempo2_compatible"
+    )
+    bbat_mjd = None
+    torb_sec = None
+    tempo2_clock_terms = None
+    if is_tempo2_compat:
+        from jug.residuals.tempo2_clock import (
+            compute_site_clock_corrections_sec,
+            compute_tempo2_clock_terms,
+        )
+
+        correction_tt = compute_site_clock_corrections_sec(
+            mjd_utc,
+            obs_clocks=obs_clocks,
+            bipm_clock=bipm_clock,
+            toas=toas,
+            all_obs_codes=all_obs_codes,
+            obs_clock_default=obs_clock,
+            time_offsets=time_offsets,
+        )
+        obs_earth_km = np.zeros((len(toas), 3), dtype=np.float64)
+        for obs_code in all_obs_codes:
+            idxs = [i for i, t in enumerate(toas) if t.observatory.lower() == obs_code]
+            loc = OBSERVATORIES.get(obs_code, obs_itrf_km)
+            obs_earth_km[idxs] = loc
+        tt2tb_vel_km_s = ssb_obs_vel_km_s
+        if str(model_timescale).upper() == "TCB":
+            tt2tb_vel_km_s = ssb_obs_vel_delay_km_s
+        tempo2_clock_terms = compute_tempo2_clock_terms(
+            sat_mjd=mjd_utc,
+            correction_tt_sec=correction_tt,
+            observatory_earth_km=obs_earth_km,
+            earth_ssb_vel_km_s=tt2tb_vel_km_s,
+            prebinary_delay_sec=prebinary_delay_sec,
+            params=params,
+        )
+        if USE_NATIVE_BBAT_PHASE5:
+            from jug.residuals.tempo2_spin import compute_tempo2_torb_sec
+
+            bbat_mjd = tempo2_clock_terms.bbat_mjd
+            model_mjd = tempo2_clock_terms.model_clock_mjd
+            torb_sec = compute_tempo2_torb_sec(bbat_mjd, dt_sec, PEPOCH)
+
+    phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
+    phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None
 
     # Phase computation is done by the shared function below (after TZR block)
 
@@ -1876,48 +1953,6 @@ def compute_residuals_simple(
     external_pn = None
     external_pn_add = None
     addsat_sec = None
-    is_tempo2_compat = str(compatibility_mode).lower() in (
-        "tempo2", "tempo2-compatible", "tempo2_compatible"
-    )
-    bbat_mjd = None
-    torb_sec = None
-    tempo2_clock_terms = None
-    if is_tempo2_compat:
-        from jug.residuals.tempo2_clock import (
-            compute_site_clock_corrections_sec,
-            compute_tempo2_clock_terms,
-        )
-
-        correction_tt = compute_site_clock_corrections_sec(
-            mjd_utc,
-            obs_clocks=obs_clocks,
-            bipm_clock=bipm_clock,
-            toas=toas,
-            all_obs_codes=all_obs_codes,
-            obs_clock_default=obs_clock,
-            time_offsets=time_offsets,
-        )
-        obs_earth_km, earth_vel_km_s = _tempo2_tt2tb_geometry(
-            tdb_mjd, toas, all_obs_codes, obs_itrf_km, ephem
-        )
-        tempo2_clock_terms = compute_tempo2_clock_terms(
-            sat_mjd=mjd_utc,
-            correction_tt_sec=correction_tt,
-            observatory_earth_km=obs_earth_km,
-            earth_ssb_vel_km_s=earth_vel_km_s,
-            prebinary_delay_sec=prebinary_delay_sec,
-            params=params,
-        )
-        bbat_mjd = tempo2_clock_terms.bbat_mjd
-        model_mjd = tempo2_clock_terms.model_clock_mjd
-        if has_binary:
-            torb_sec = np.asarray(
-                total_delay_sec - prebinary_delay_sec, dtype=np.float64
-            )
-        else:
-            torb_sec = np.zeros(len(toas), dtype=np.float64)
-    phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
-    phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None
     if track_val is not None and int(track_val) == -2:
         pn_flags = [toa.flags.get('pn') for toa in toas]
         if all(pn is not None for pn in pn_flags):
@@ -1941,9 +1976,23 @@ def compute_residuals_simple(
                     f"{f', {n_addsat} -addsat' if n_addsat else ''})"
                 )
 
-    residuals_us, _, pulse_number = compute_phase_residuals(
-        dt_sec, params, weights_scaled, subtract_mean=True,
-        tzr_phase=tzr_phase if subtract_tzr else None,
+    if is_tempo2_compat:
+        tzr_apply_mode = resolve_tempo2_tzr_apply_mode(
+            params, np.asarray(model_mjd, dtype=np.float64), subtract_tzr=subtract_tzr
+        )
+    else:
+        tzr_apply_mode = "pre_wrap" if subtract_tzr else "none"
+
+    if tzr_apply_mode == "pre_wrap":
+        tzr_phase_for_residuals = tzr_phase
+    else:
+        tzr_phase_for_residuals = None
+
+    subtract_mean_in_phase = tzr_apply_mode != "post_wrap"
+
+    residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
+        dt_sec, params, weights_scaled, subtract_mean=subtract_mean_in_phase,
+        tzr_phase=tzr_phase_for_residuals,
         jump_phase=jump_phase,
         external_pulse_numbers=external_pn,
         track_val=int(track_val) if track_val is not None else None,
@@ -1955,6 +2004,21 @@ def compute_residuals_simple(
         addsat_sec=addsat_sec,
         mean_mode=delay_provider.phase_mean_mode,
     )
+
+    if tzr_apply_mode == "post_wrap":
+        anchor_phase = _spin_taylor_phase(dt_sec[0], f_coeffs) + jump_phase[0]
+        tzr_residual_sec = compute_tempo2_tzr_wrapped_residual_sec(
+            tzr_phase, anchor_phase, F0,
+        )
+        residuals_sec = residuals_sec - tzr_residual_sec
+        residuals_us = residuals_sec * 1e6
+        if verbose:
+            print(
+                f"   TZR post-wrap shift: {tzr_residual_sec * 1e6:.3f} mus "
+                f"(REFPHS TZR)"
+            )
+    elif verbose and tzr_apply_mode == "none" and subtract_tzr and "TZRMJD" in params:
+        print("   TZR pre-wrap skipped (TOAs far from TZRMJD; tempo2 REFPHS MEAN path)")
 
     # Compute weighted RMS using raw errors
     weighted_rms = np.sqrt(np.sum(weights * residuals_us**2) / np.sum(weights))
@@ -2110,6 +2174,9 @@ def compute_residuals_simple(
         'total_delay_sec': np.array(total_delay_sec, dtype=np.float64),
         'freq_bary_mhz': np.array(freq_bary_mhz, dtype=np.float64),
         'tzr_phase': np.longdouble(tzr_phase),
+        'tzr_apply_mode': tzr_apply_mode if is_tempo2_compat else (
+            'pre_wrap' if subtract_tzr else 'none'
+        ),
         # JUMP phase offsets (longdouble, for fitter to use)
         'jump_phase': np.array(jump_phase, dtype=np.longdouble),
         # Emission time offset from PEPOCH (longdouble for phase precision)

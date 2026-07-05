@@ -43,6 +43,38 @@ from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.utils.constants import C_KM_S, SECS_PER_DAY, T_PLANET, T_SUN_SEC
 from jug.io.par_reader import get_longdouble
 
+# Pre-wrap ``tzr_phase`` subtraction is only valid when every TOA sits near
+# ``TZRMJD`` in epoch space.  Beyond this span, integer pulse wraps diverge
+# from tempo2 ``REFPHS MEAN`` behaviour (see ``epta_j0030_isolated`` outliers).
+TZRMJD_PREWRAP_MAX_DAYS = 2000.0
+
+
+def resolve_tempo2_tzr_apply_mode(
+    params: dict[str, Any],
+    model_mjd: np.ndarray,
+    *,
+    subtract_tzr: bool,
+) -> str:
+    """Choose how tempo2 mode applies TZR when ``subtract_tzr=True``.
+
+    Returns one of:
+
+    - ``"none"`` — no TZR shift (tempo2 default ``REFPHS MEAN`` / far epochs)
+    - ``"pre_wrap"`` — legacy PINT-style ``tzr_phase`` before wrapping (near TZRMJD)
+    - ``"post_wrap"`` — tempo2 ``REFPHS TZR``: wrapped TZR residual after phase5
+    """
+    if not subtract_tzr or "TZRMJD" not in params:
+        return "none"
+    refphs = str(params.get("REFPHS", "MEAN")).upper().strip()
+    if refphs == "TZR":
+        return "post_wrap"
+    tzr_mjd = float(params["TZRMJD"])
+    mjds = np.asarray(model_mjd, dtype=np.float64)
+    max_delta_days = float(np.max(np.abs(mjds - tzr_mjd)))
+    if max_delta_days > TZRMJD_PREWRAP_MAX_DAYS:
+        return "none"
+    return "pre_wrap"
+
 
 @dataclass
 class TzrEpochs:

@@ -148,8 +148,8 @@ raw.
 
 **Nonlinear / autodiff / MetaPulsar:** green residual tests on curated fixtures
 do **not** mean tempo2 mode is ready for JAX-traced likelihoods or IPTA-scale
-workloads. See [`TEMPO2_PARITY_GAPS.md`](TEMPO2_PARITY_GAPS.md) for the current
-gap analysis and usage guidance.
+workloads. See [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md) for policy and
+[`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) for gap analysis, pytempo workflow, and usage guidance.
 
 Test-data policy, provenance, and fixture-size guidance live in
 [`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md).

@@ -194,7 +194,7 @@ infrastructure (hashed in `data/manifest.json`).
 
 ## Related docs
 
-- Tempo2 parity gaps: `TEMPO2_PARITY_GAPS.md`
-- Tempo2 project brief: `TEMPO2_COMPATIBILITY_PROJECT.md`
+- Tempo2 compatibility policy: `TEMPO2_COMPATIBILITY.md`
+- Tempo2 parity status and gaps: `TEMPO2_PARITY.md`
 - MPTA loader: `tests/test_paths.py`
 - Tempo2 fixtures: `tests/tempo2_fixtures.py`

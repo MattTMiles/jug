@@ -73,12 +73,14 @@ def load_track2_oracle_context(
     pytempo_diag = None
     if use_pytempo:
         try:
-            from pytempo.sandbox import tempopulsar
+            from jug.testing.tempo2_pytempo_oracle import load_pytempo_native_oracle
 
-            psr = tempopulsar(
-                parfile=str(par_path), timfile=str(tim_path), dofit=False
-            )
-            pytempo_diag = psr.toa_diagnostics(removemean=False)
+            oracle = load_pytempo_native_oracle(par_path, tim_path)
+            pytempo_diag = dict(oracle.fields)
+            if "residual_sec_reliable" in oracle.fields:
+                pytempo_diag["residual_sec_reliable"] = oracle.fields.get(
+                    "residual_sec_reliable"
+                )
         except Exception:
             pytempo_diag = None
 

@@ -22,6 +22,7 @@ class Tempo2Reference:
     params: dict[str, Any]
     designmatrix: np.ndarray | None = None
     designmatrix_labels: list[str] | None = None
+    bat_corr_days: np.ndarray | None = None
 
 
 def _weighted_rms(values_us: np.ndarray, errors_us: np.ndarray) -> float:
@@ -55,6 +56,7 @@ def tempo2_reference(
     dofit: bool = False,
     fit_params: list[str] | None = None,
     include_designmatrix: bool = False,
+    include_batcorr: bool = False,
     policy: Policy | None = None,
 ) -> Tempo2Reference:
     """Run libstempo through the sandbox and normalize units for tests.
@@ -85,6 +87,10 @@ def tempo2_reference(
 
     residuals_us = np.asarray(psr.residuals(), dtype=np.float64) * 1.0e6
     errors_us = np.asarray(psr.toaerrs, dtype=np.float64)
+    bat_corr_days = None
+    if include_batcorr and hasattr(psr, "batCorrs"):
+        bat = getattr(psr, "batCorrs")
+        bat_corr_days = np.asarray(bat() if callable(bat) else bat, dtype=np.float64)
     designmatrix = None
     designmatrix_labels = None
     if include_designmatrix:
@@ -102,4 +108,5 @@ def tempo2_reference(
         params=_param_snapshot(psr),
         designmatrix=designmatrix,
         designmatrix_labels=designmatrix_labels,
+        bat_corr_days=bat_corr_days,
     )

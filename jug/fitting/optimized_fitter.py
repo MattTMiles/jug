@@ -55,6 +55,7 @@ import warnings
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
+from jug.residuals.tempo2_native_quarantine import USE_JAX_TEMPO2_NATIVE_CHAIN
 from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.io.par_reader import parse_par_file, _parse_float
 from jug.io.tim_reader import parse_tim_file_mjds
@@ -371,6 +372,13 @@ class GeneralFitSetup:
     # Noise configuration (Phase 3 integration)
     noise_config: object  # NoiseConfig or None
     binary_plan: object = None  # BinaryDelayPlan (cached); built lazily if None
+    # Tempo2-native JAX chain cache (Phase 5b)
+    native_tempo2_terms: object | None = None
+    native_chain_static: dict | None = None
+    native_bbat_mjd: np.ndarray | None = None
+    native_torb_sec: np.ndarray | None = None
+    native_dt_emission_sec: np.ndarray | None = None
+    use_jax_tempo2_native_chain: bool = False
 
 
 # =============================================================================
@@ -1778,6 +1786,9 @@ def _build_setup_common(
         tzr_phase=tzr_phase,
         noise_config=noise_config,
         binary_plan=binary_plan,
+        use_jax_tempo2_native_chain=(
+            str(compatibility).lower().startswith("tempo2") and USE_JAX_TEMPO2_NATIVE_CHAIN
+        ),
     )
 
 

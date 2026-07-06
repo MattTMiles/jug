@@ -474,7 +474,7 @@ def compute_tzr_astrometry_tempo2(
             obs_sun_ls = tempo2_equ2ecl(obs_sun_ls)
         tzr_obs_sun_delay = obs_sun_ls * C_KM_S
         tzr_sun_shapiro = (
-            float(compute_tempo2_shapiro_sec(obs_sun_ls, L_hat, T_SUN_SEC)[0])
+            float(compute_tempo2_shapiro_sec(-obs_sun_ls, L_hat, T_SUN_SEC)[0])
             if engine_profile.solar_shapiro
             else 0.0
         )

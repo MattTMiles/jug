@@ -3,7 +3,7 @@
 Requires libstempo + tempo2 runtime. Not part of standalone JUG CI.
 See ``jug/testing/DEV_ORACLE.md``, ``TEMPO2_NATIVE_CLOCK_STATUS.md`` § Phase D,
 and ``tests/test_tempo2_track2_pnnew.py`` (Step 1 done; Step 2 ``phase5@bbat`` ruled out).
-Next: WSRT ``-padd`` / ``jump_phase``; outlier idx 85 (+110 ns).
+Next: Step 14 torb/bbat oracle (~330 ns); Step 13 batCorr temp prototype done.
 """
 
 from __future__ import annotations

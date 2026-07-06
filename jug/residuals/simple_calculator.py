@@ -55,7 +55,10 @@ from jug.residuals.tzr_geometry import (
     resolve_tempo2_tzr_apply_mode,
     resolve_tzrmjd_epochs,
 )
-from jug.residuals.tempo2_native_quarantine import USE_NATIVE_BBAT_PHASE5
+from jug.residuals.tempo2_native_quarantine import (
+    USE_JAX_TEMPO2_NATIVE_CHAIN,
+    USE_NATIVE_BBAT_PHASE5,
+)
 from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
@@ -1852,8 +1855,11 @@ def compute_residuals_simple(
     bbat_mjd = None
     torb_sec = None
     tempo2_clock_terms = None
+    formbats_correction_tt = None
+    earth_ssb_vel_km_s = None
     if is_tempo2_compat:
         from jug.residuals.tempo2_clock import (
+            compute_get_correction_tt_sec,
             compute_site_clock_corrections_sec,
             compute_tempo2_clock_terms,
         )
@@ -1867,14 +1873,27 @@ def compute_residuals_simple(
             obs_clock_default=obs_clock,
             time_offsets=time_offsets,
         )
+        formbats_correction_tt = compute_get_correction_tt_sec(
+            toas,
+            obs_clocks=obs_clocks,
+            obs_clock_default=obs_clock,
+            bipm_clock=bipm_clock,
+            all_obs_codes=all_obs_codes,
+            time_offsets=time_offsets,
+        )
         obs_earth_km = np.zeros((len(toas), 3), dtype=np.float64)
         for obs_code in all_obs_codes:
             idxs = [i for i, t in enumerate(toas) if t.observatory.lower() == obs_code]
             loc = OBSERVATORIES.get(obs_code, obs_itrf_km)
             obs_earth_km[idxs] = loc
-        tt2tb_vel_km_s = ssb_obs_vel_km_s
-        if str(model_timescale).upper() == "TCB":
-            tt2tb_vel_km_s = ssb_obs_vel_delay_km_s
+        _, earth_ssb_vel_km_s = _tempo2_tt2tb_geometry(
+            model_mjd,
+            toas,
+            all_obs_codes,
+            obs_itrf_km,
+            ephem,
+        )
+        tt2tb_vel_km_s = earth_ssb_vel_km_s
         tempo2_clock_terms = compute_tempo2_clock_terms(
             sat_mjd=mjd_utc,
             correction_tt_sec=correction_tt,
@@ -1978,19 +1997,71 @@ def compute_residuals_simple(
 
     subtract_mean_in_phase = tzr_apply_mode != "post_wrap"
 
-    residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
-        dt_sec, params, weights_scaled, subtract_mean=subtract_mean_in_phase,
-        tzr_phase=tzr_phase_for_residuals,
-        jump_phase=jump_phase,
-        external_pulse_numbers=external_pn,
-        track_val=int(track_val) if track_val is not None else None,
-        external_pn_add=external_pn_add,
-        bbat_mjd=phase_bbat_mjd,
-        torb_sec=phase_torb_sec,
-        use_native_bbat_phase5=USE_NATIVE_BBAT_PHASE5,
-        addsat_sec=addsat_sec,
-        mean_mode=delay_provider.phase_mean_mode,
-    )
+    native_terms_export = None
+    if is_tempo2_compat and USE_JAX_TEMPO2_NATIVE_CHAIN:
+        from jug.delays.tempo2_ephemeris import resolve_tempo2_ephemeris_path
+        from jug.residuals.tempo2_native.chain_jax import (
+            compute_tempo2_native_residuals_jax,
+            compute_tempo2_native_terms_jax,
+        )
+
+        tdis1_arr = np.asarray(dm_delay_sec, dtype=np.float64) + np.asarray(
+            dmx_delay_sec, dtype=np.float64
+        )
+        utc_to_tdb_native_sec = (
+            np.asarray(tdb_mjd, dtype=np.float64) - np.asarray(mjd_utc, dtype=np.float64)
+        ) * SECS_PER_DAY
+        native = compute_tempo2_native_terms_jax(
+            sat_mjd=jnp.asarray(mjd_utc, dtype=jnp.float64),
+            correction_tt_sec=jnp.asarray(correction_tt, dtype=jnp.float64),
+            params=params,
+            toas=toas,
+            observatory_earth_km=jnp.asarray(obs_earth_km, dtype=jnp.float64),
+            earth_ssb_km=jnp.asarray(ssb_obs_pos_km, dtype=jnp.float64),
+            earth_ssb_vel_km_s=jnp.asarray(tt2tb_vel_km_s, dtype=jnp.float64),
+            ephem_path=resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405")),
+            freq_mhz=jnp.asarray(freq_bary_mhz, dtype=jnp.float64),
+            tdis1_sec=jnp.asarray(tdis1_arr, dtype=jnp.float64),
+            tdis2_sec=jnp.asarray(sw_delay_sec, dtype=jnp.float64),
+            tropospheric_sec=jnp.asarray(tropo_delay_sec, dtype=jnp.float64),
+            dt_emission_sec=jnp.asarray(np.asarray(dt_sec, dtype=np.float64), dtype=jnp.float64),
+            use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
+            utc_to_tdb_sec=jnp.asarray(utc_to_tdb_native_sec, dtype=jnp.float64),
+            use_model_epoch_batcorr=False,
+            planet_shapiro_enabled=planet_shapiro_enabled,
+        )
+        jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
+        tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)
+        residuals_sec_jax, pulse_number_jax, native = compute_tempo2_native_residuals_jax(
+            native_terms=native,
+            params=params,
+            weights=jnp.asarray(weights_scaled, dtype=jnp.float64),
+            pulse_numbers=external_pn,
+            pn_add=external_pn_add,
+            jump_phase=jump_j,
+            tzr_phase=tzr_j,
+            subtract_mean=subtract_mean_in_phase,
+            mean_mode=delay_provider.phase_mean_mode,
+            track_val=int(track_val) if track_val is not None else -2,
+        )
+        residuals_sec = np.asarray(jax.device_get(residuals_sec_jax), dtype=np.float64)
+        pulse_number = np.asarray(jax.device_get(pulse_number_jax), dtype=np.longdouble)
+        residuals_us = residuals_sec * 1e6
+        native_terms_export = native
+    else:
+        residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
+            dt_sec, params, weights_scaled, subtract_mean=subtract_mean_in_phase,
+            tzr_phase=tzr_phase_for_residuals,
+            jump_phase=jump_phase,
+            external_pulse_numbers=external_pn,
+            track_val=int(track_val) if track_val is not None else None,
+            external_pn_add=external_pn_add,
+            bbat_mjd=phase_bbat_mjd,
+            torb_sec=phase_torb_sec,
+            use_native_bbat_phase5=USE_NATIVE_BBAT_PHASE5,
+            addsat_sec=addsat_sec,
+            mean_mode=delay_provider.phase_mean_mode,
+        )
 
     if tzr_apply_mode == "post_wrap":
         anchor_phase = _spin_taylor_phase(dt_sec[0], f_coeffs) + jump_phase[0]
@@ -2125,6 +2196,9 @@ def compute_residuals_simple(
                 "shklovskii_sec": np.asarray(
                     tempo2_clock_terms.shklovskii_sec, dtype=np.float64
                 ),
+                "formbats_correction_tt_sec": np.asarray(
+                    formbats_correction_tt, dtype=np.float64
+                ),
             }
         )
 
@@ -2187,6 +2261,14 @@ def compute_residuals_simple(
         'tropo_delay_sec': np.array(tropo_delay_sec, dtype=np.float64),
         # SSB to observatory position in light-seconds (needed for astrometry derivatives)
         'ssb_obs_pos_ls': np.array(ssb_obs_pos_ls, dtype=np.float64),
+        'ssb_obs_pos_km': np.array(ssb_obs_pos_km, dtype=np.float64),
+        'ssb_obs_vel_km_s': np.array(ssb_obs_vel_km_s, dtype=np.float64),
+        'ssb_obs_vel_delay_km_s': np.array(ssb_obs_vel_delay_km_s, dtype=np.float64),
+        'earth_ssb_vel_km_s': (
+            np.array(earth_ssb_vel_km_s, dtype=np.float64)
+            if earth_ssb_vel_km_s is not None
+            else np.array(ssb_obs_vel_km_s, dtype=np.float64)
+        ),
         # Sun position relative to observer in light-seconds (for Shapiro recomputation)
         'obs_sun_pos_ls': np.array(obs_sun_pos_ls, dtype=np.float64),
         # Planet positions relative to observer in light-seconds (for planet Shapiro recomputation)

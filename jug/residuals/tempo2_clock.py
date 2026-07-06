@@ -32,6 +32,48 @@ class Tempo2ClockTerms:
     shklovskii_sec: np.ndarray
 
 
+def compute_get_correction_tt_sec(
+    toas: list[Any],
+    *,
+    obs_clocks: dict[str, dict],
+    obs_clock_default: dict,
+    bipm_clock: dict,
+    all_obs_codes: list[str],
+    time_offsets: np.ndarray | None = None,
+) -> np.ndarray:
+    """Tempo2 ``getCorrectionTT`` for ``formBats.C`` (seconds, per TOA)."""
+    from astropy import units as u
+    from astropy.coordinates import EarthLocation
+
+    from jug.io.tim_reader import compute_tt_correction_sec_vectorized
+    from jug.utils.constants import OBSERVATORIES
+
+    n = len(toas)
+    out = np.zeros(n, dtype=np.float64)
+    for obs_code in all_obs_codes:
+        idxs = [i for i, t in enumerate(toas) if t.observatory.lower() == obs_code]
+        if not idxs:
+            continue
+        chain = obs_clocks.get(obs_code, obs_clock_default)
+        loc_km = OBSERVATORIES.get(obs_code)
+        if loc_km is None:
+            continue
+        loc = EarthLocation.from_geocentric(
+            loc_km[0] * u.km, loc_km[1] * u.km, loc_km[2] * u.km
+        )
+        offsets = None if time_offsets is None else time_offsets[idxs]
+        out[idxs] = compute_tt_correction_sec_vectorized(
+            [toas[i].mjd_int for i in idxs],
+            [toas[i].mjd_frac for i in idxs],
+            chain,
+            bipm_clock,
+            loc,
+            time_offsets=offsets,
+            mjd_strings=[toas[i].mjd_str for i in idxs],
+        )
+    return out
+
+
 def compute_site_clock_corrections_sec(
     mjd_utc: np.ndarray,
     *,

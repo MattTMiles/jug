@@ -163,7 +163,18 @@ def compute_tempo2_phase5(
     """Full tempo2 ``phase5`` spin phase at ``bbat`` (phase2 + phase3 + extras).
 
     Implements ``formResiduals.C`` ~L507-536 plus glitch / jump / TZR offsets.
+
+    .. deprecated::
+        Dev/oracle wrapper only. Production tempo2 spin uses emission-time Taylor;
+        JAX counterpart is ``compute_tempo2_phase5_jax`` in ``tempo2_native.spin_jax``.
     """
+    import warnings
+
+    warnings.warn(
+        "compute_tempo2_phase5 is deprecated; use tempo2_native.spin_jax for JAX production.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from jug.utils.constants import SECS_PER_DAY
 
     f_coeffs = _collect_f_coeffs(params)

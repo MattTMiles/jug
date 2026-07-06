@@ -569,7 +569,7 @@ def _compute_tempo2_tdb_geometry_terms(
     obs_sun_pos_delay_km = obs_sun_ls * C_KM_S
 
     sun_shapiro_sec = (
-        compute_tempo2_shapiro_sec(obs_sun_ls, L_hat, T_SUN_SEC)
+        compute_tempo2_shapiro_sec(-obs_sun_ls, L_hat, T_SUN_SEC)
         if provider.profile.solar_shapiro
         else np.zeros(len(tdb_mjd), dtype=np.float64)
     )

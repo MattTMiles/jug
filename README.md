@@ -152,8 +152,7 @@ workloads. See [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md) for policy a
 [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) for gap analysis, pytempo workflow, and usage guidance.
 
 **Tempo2 parity status (2026-07-06):** Phase C TZR closed J0030 to **~4.7 ns RMS**.
-wsrt167 remains **~16.4 ns** — Phase D Step 1 (pnNew) done; Step 2 ``phase5@bbat``
-**ruled out**; next: WSRT ``-padd`` / ``jump_phase`` and outlier idx 85 (+110 ns).
+wsrt167 remains **~16.4 ns RMS** (max **~110 ns** at idx 85 — spin-error tail). Phase D Steps 1–3 done/ruled out; Step 4 ruled out Taylor vs tempo2 ``phase2+phase3`` (0.02 ns fractional). Next: clock / ``model_mjd`` vs ``updateBatsAll``.
 Details: [`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md).
 
 Test-data policy, provenance, and fixture-size guidance live in

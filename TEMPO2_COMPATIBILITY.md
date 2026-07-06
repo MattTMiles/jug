@@ -8,8 +8,8 @@ decisions, oracle policy, fixture matrix, acceptance metrics, and delivered arch
 [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md).
 
 **Recent fixes:** Phase C TZR (J0030 **15.9 → ~4.7 ns RMS**); Phase D Step 1 pnNew
-(relative tim ``-pn``); Phase D Step 2 ``phase5@bbat`` wiring **ruled out** (wsrt167
-production **~16.4 ns** still best; next: WSRT ``-padd`` / idx 85 outlier).
+(relative tim ``-pn``); Phase D Step 2 ``phase5@bbat`` wiring **ruled out**; Phase D Step 3
+``-padd`` / ``jump_phase`` **ruled out** (wsrt167 production **~16.4 ns** — next: Taylor spin).
 
 ---
 

@@ -11,9 +11,25 @@ marked pytest modules.
 | **C** | TZR apply modes (`tzr_geometry.py`) | `tests/test_tempo2_tzr_parity.py` | **Done** — J0030 ~4.7 ns RMS |
 | **D Step 1** | tim ``-pn`` relative to obsn[0] | `tests/test_tempo2_track2_pnnew.py` | **Done** — pnNew oracle |
 | **D Step 2** | ``phase5@bbat`` production wiring | — | **Ruled out** — ~17.5 ns vs ~16.4 ns production |
-| **Next** | WSRT ``-padd`` / ``jump_phase``; idx 85 outlier | `tests/test_dev_oracle_wsrt167_parity.py` | **Open** |
+| **D Step 3** | ``-padd`` / ``jump_phase`` | pytempo ``phase_offset_turns`` | **Ruled out** — exact match |
+| **D Step 4** | Taylor vs tempo2 ``phase2+phase3`` | ``/tmp/wsrt_taylor_spin_probe.py`` | **Ruled out** — 0.02 ns fractional |
+| **D Step 5** | Per-TOA term diff | ``/tmp/wsrt_term_diff_probe.py`` | **Done** — ~330 ns ``bbat`` gap |
+| **D Step 6** | ``model_mjd`` vs ``pet``/``torb`` | ``/tmp/wsrt_model_pet_torb_probe.py`` | **Done** |
+| **D Step 7** | ``dt_sec`` precision + ``deltaT(pt)`` counterfactual | ``/tmp/wsrt_dt_spin_counterfactual_probe.py`` | **Done** — float64 inputs; swap worsens |
+| **Next** | ``model_mjd`` vs tempo2 ``calculate_bclt`` epoch | read-only trace | **Open** |
 
 Docs: [`TEMPO2_PARITY.md`](../TEMPO2_PARITY.md), [`TEMPO2_NATIVE_CLOCK_STATUS.md`](../TEMPO2_NATIVE_CLOCK_STATUS.md).
+
+## Current parity work (2026-07-06)
+
+| Phase | Fix | Tests | Status |
+|-------|-----|-------|--------|
+| **Native chain** | JAX `tempo2_native/` module | `tests/test_tempo2_native_*.py` | **In progress** — strict formBats path wired |
+| **Granular closure** | pytempo delay-chain diagnostics | `tests/test_tempo2_native_formbats_closure.py` | **Added** — component ranking |
+| **Oracle** | pytempo Tier-1 via `tempo2_pytempo_oracle.py` | dev_oracle gates | **Added** |
+
+libstempo remains the **acceptance residual** oracle; pytempo provides **per-TOA term** gates
+(`bbat_mjd`, `torb_sec`, `roemer_sec`, `pulse_number`). See `TEMPO2_PARITY.md` §0 cheat sheet.
 
 ## Delete checklist
 
@@ -24,6 +40,8 @@ When JUG no longer needs tempo2 cross-checks:
    - `jug/testing/tempo2_reference.py`
    - `jug/testing/tempo2_diagnostics.py` (or strip oracle backends, keep JUG-only helpers)
    - `jug/testing/tempo2_track2_oracle.py`
+   - `jug/testing/tempo2_pytempo_oracle.py`
+   - `jug/testing/tempo2_native_probes.py`
 2. Remove pytest modules matching:
    - `tests/test_dev_oracle_*.py`
    - `tests/test_tempo2_*.py`

@@ -278,6 +278,50 @@ def _spin_terms_from_params(params: dict) -> list:
     return terms
 
 
+def _native_tempo2_residual_delta_jax(
+    params: dict,
+    setup: "GeneralFitSetup",
+    *,
+    ref_f_terms: Sequence[float],
+    phase_mean_mode: str,
+    binary_plan=None,
+):
+    """Native-chain residual delta hook (Phase 5b).
+
+    Recomputes perturbed minus reference residuals through ``chain_jax`` when the
+    fit setup carries cached native terms. Until full autodiff wiring lands, fall
+    back to the legacy ``dt_base + delay_change`` delta path.
+    """
+    if getattr(setup, "native_tempo2_terms", None) is None:
+        return None
+
+    from jug.fitting.forward_delay import compute_total_delay_change
+
+    dt_base_np = (
+        setup.dt_sec_ld
+        if setup.dt_sec_ld is not None
+        else np.array(setup.dt_sec_cached, dtype=np.float64)
+    )
+    dt_base = jnp.asarray(np.asarray(dt_base_np, dtype=np.float64), dtype=jnp.float64)
+    weights = jnp.asarray(setup.weights, dtype=jnp.float64)
+    delay_change = compute_total_delay_change(
+        params,
+        setup,
+        xp=jnp,
+        binary_plan=binary_plan,
+    )
+    f_terms = _spin_terms_from_params(params)
+    return _phase_residual_delta_jax(
+        dt_base,
+        delay_change,
+        ref_f_terms,
+        f_terms,
+        weights,
+        mean_mode=phase_mean_mode,
+        f0=_param_scalar(params, "F0", f_terms[0]),
+    )
+
+
 def _compute_residual_delta_jax(
     params: dict,
     setup: "GeneralFitSetup",
@@ -287,6 +331,20 @@ def _compute_residual_delta_jax(
     binary_plan=None,
 ):
     """Residual delta (perturbed - reference) through JUG's JAX forward model."""
+    if (
+        str(getattr(setup, "compatibility", "")).lower().startswith("tempo2")
+        and getattr(setup, "use_jax_tempo2_native_chain", False)
+    ):
+        native_delta = _native_tempo2_residual_delta_jax(
+            params,
+            setup,
+            ref_f_terms=ref_f_terms,
+            phase_mean_mode=phase_mean_mode,
+            binary_plan=binary_plan,
+        )
+        if native_delta is not None:
+            return native_delta
+
     from jug.fitting.forward_delay import compute_total_delay_change
 
     dt_base_np = (

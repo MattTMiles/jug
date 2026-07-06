@@ -117,6 +117,21 @@ def tempo2_term_diagnostics(
             "general2_plugin not wired in Phase A; libstempo properties only"
         )
 
+    bbat_mjd = None
+    pulse_number = None
+    try:
+        from jug.testing.tempo2_pytempo_oracle import load_pytempo_native_oracle
+
+        pt = load_pytempo_native_oracle(par, tim)
+        if "bbat_mjd" in pt.fields:
+            bbat_mjd = pt.fields["bbat_mjd"]
+            term_status["bbat_mjd"] = "pytempo_tier1"
+        if "pulse_number" in pt.fields:
+            pulse_number = pt.fields["pulse_number"]
+            term_status["pulse_number"] = "pytempo_tier1"
+    except Exception:
+        pass
+
     return Tempo2TermDiagnostics(
         residuals_us=residuals_us,
         errors_us=errors_us,
@@ -126,6 +141,8 @@ def tempo2_term_diagnostics(
         bat_corrs_sec=bat_corrs,
         stoas_mjd=stoas,
         toas_mjd=toas,
+        bbat_mjd=bbat_mjd,
+        pulse_number=pulse_number,
         term_status=term_status,
         conventions=conv,
     )

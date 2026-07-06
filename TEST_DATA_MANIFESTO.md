@@ -114,7 +114,7 @@ NG5 Case B/C.
 | Fixture ID | Provenance | Binary | Bundled TOAs |
 |------------|------------|--------|--------------|
 | `epta_j0030_isolated` | EPTA DR2 (J0030) | isolated | **10** | Phase C TZR: **~4.7 ns RMS** |
-| `wsrt167` | IPTA DR2 J0613 WSRT low-band excerpt | T2 | **167** | Phase D open: **~16 ns RMS** |
+| `wsrt167` | IPTA DR2 J0613 WSRT low-band excerpt | T2 | **167** | Phase D: **~16.4 ns RMS**; idx 85 outlier +110 ns |
 | `epta_j1909_t2` | EPTA DR2 (J1909) | T2 | **49** |
 | `epta_j1918_ddh` | EPTA DR2 (J1918) | DDH | **12** |
 | `ppta_j1741_ell1` | PPTA DR3 UWL | ELL1 | **111** |

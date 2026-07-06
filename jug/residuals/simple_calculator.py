@@ -503,7 +503,6 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
                             external_pn_add=None,
                             bbat_mjd=None,
                             torb_sec=None,
-                            tempo2_spin=False,
                             use_native_bbat_phase5: bool = False,
                             addsat_sec=None,
                             mean_mode: str = "weighted"):
@@ -547,9 +546,6 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         Barycentric arrival MJDs for tempo2 spin phase (``formResiduals.C``).
     torb_sec : np.ndarray (float64), optional
         Binary delay (seconds) included in tempo2 ``deltaT`` / ``ftpd``.
-    tempo2_spin : bool
-        When True, evaluate spin phase at ``bbat`` via tempo2 ``phase2+phase3``
-        instead of emission-time Taylor series.
     use_native_bbat_phase5 : bool
         When True (and TRACK −2 + ``-pn``), use quarantined tempo2 ``phase5`` at
         ``bbat`` with ``track_minus2_frac_phase``. See
@@ -572,12 +568,6 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     PEPOCH = get_longdouble(params, 'PEPOCH')
     dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
 
-    use_tempo2_spin = (
-        tempo2_spin
-        and bbat_mjd is not None
-        and torb_sec is not None
-    )
-
     has_track_minus2_pn = (
         track_val is not None
         and int(track_val) == -2
@@ -588,11 +578,9 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         and bbat_mjd is not None
         and torb_sec is not None
         and has_track_minus2_pn
-        and not use_tempo2_spin
     )
-    use_tempo2_phase5 = use_tempo2_spin or use_tempo2_bbat_phase5
 
-    if use_tempo2_phase5:
+    if use_tempo2_bbat_phase5:
         from jug.residuals.tempo2_spin import compute_tempo2_phase5
 
         jump_arr = None
@@ -717,7 +705,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
             if has_track_minus2_pn:
                 from jug.residuals.tempo2_spin import addsat_track2_turn_delta
 
-                if use_tempo2_phase5:
+                if use_tempo2_bbat_phase5:
                     phas1_addsat = _fortran_mod(phase[0], np.longdouble(1.0))
                     p5_f64 = np.asarray(phase, dtype=np.float64) - float(phas1_addsat)
                     nph_f64 = _fortran_nlong(p5_f64)
@@ -1999,7 +1987,6 @@ def compute_residuals_simple(
         external_pn_add=external_pn_add,
         bbat_mjd=phase_bbat_mjd,
         torb_sec=phase_torb_sec,
-        tempo2_spin=False,
         use_native_bbat_phase5=USE_NATIVE_BBAT_PHASE5,
         addsat_sec=addsat_sec,
         mean_mode=delay_provider.phase_mean_mode,

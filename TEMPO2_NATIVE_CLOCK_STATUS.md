@@ -6,13 +6,14 @@ project’s strict ns-level gate (5 / 25 / 10 ns) on **wsrt167** (~16 ns product
 Policy and architecture: [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md).
 Broader parity tracker: [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md).
 
-**Where we are (2026-07-05):**
+**Where we are (2026-07-06):**
 
 | Fix | Fixture | Status |
 |-----|---------|--------|
 | **#1 Phase C — TZR** | `epta_j0030_isolated` | **Done** — 15.9 → **~4.7 ns RMS** |
 | **#2 Phase D Step 1 — pnNew** | `wsrt167` | **Done** — relative ``-pn`` convention; tests added |
-| **#2 Phase D Step 2 — bbat spin** | `wsrt167` | **Open** — production still ~16 ns |
+| **#2 Phase D Step 2 — wire ``phase5@bbat``** | `wsrt167` | **Ruled out** — ~17.5 ns vs production ~16.4 ns |
+| **Next** | `wsrt167` | WSRT ``-padd`` / ``jump_phase``; outlier idx 85 |
 
 ---
 
@@ -35,7 +36,8 @@ most fixtures. **epta_j0030_isolated** is largely closed by Phase C TZR (~4.7 ns
 | IFTE + formBats in `tempo2_clock.py` | **Diagnostic-only** — production spin uses geometry `model_mjd` |
 | Phase C TZR (`tzr_geometry.py`) | **Done** — J0030 passes strict RMS gate |
 | Phase D Step 1 pnNew | **Done** — ``pnAct = (pn[i]−pn[0]) + pnAdd``; oracle tests |
-| Next parity work | Phase D Step 2: oracle ``bbat`` for production spin on wsrt167 |
+| Phase D Step 2 ``phase5@bbat`` wiring | **Ruled out** — ~17.5 ns vs production ~16.4 ns |
+| Next parity work | WSRT ``-padd`` / ``jump_phase`` per backend; idx 85 outlier |
 
 ### Measured fixture survey (production path, 2026-07-05)
 
@@ -77,10 +79,13 @@ Quarantined path (`USE_NATIVE_BBAT_PHASE5 = True` + formBats ``bbat``):
 
 - **~36 ns RMS** on wsrt167 — **2× worse** than production
 
-With **pytempo ``bbat``** + fixed pnNew + ``compute_tempo2_phase5``: **~17 ns RMS**
-(validated; not wired to production). **Do not enable the quarantine flag.**
+With **pytempo ``bbat``** + fixed pnNew + ``compute_tempo2_phase5``: **~17.5 ns RMS**
+(validated; **worse than production**). **Do not enable the quarantine flag** or wire
+``phase5@bbat`` to production for wsrt167.
 
-### Where the remaining gap lives
+**Oracle ``bbat`` from JUG geometry:** ``compute_tempo2_bbat_mjd(model_mjd, prebinary)``
+= ``model_mjd − prebinary/86400`` — matches libstempo/pytempo to 0 s. formBats diagnostic
+``bbat_mjd`` remains **~65 s wrong**.
 
 #### epta_j0030_isolated — Phase C TZR (done)
 
@@ -92,19 +97,20 @@ With **pytempo ``bbat``** + fixed pnNew + ``compute_tempo2_phase5``: **~17 ns RM
 Roemer and site clock ruled out pre-fix. Remaining ~11 ns on two 1999 TOAs may be
 early-epoch astrometry (separate from wsrt167).
 
-#### wsrt167 — TRACK −2 / spin at bbat (Phase D)
+#### wsrt167 — TRACK −2 / spin (Phase D)
 
 - 324–382 MHz; `BINARY T2`; `TRACK -2`; ``-pn`` on all 167 TOAs
-- Production RMS **16.4 ns**, max **110 ns** (TOA 85)
+- Production RMS **16.4 ns**, max **110 ns** (TOA idx 85)
 - Roemer matches libstempo to **~0.8 ns RMS** (harness)
-- Phase D Step 1: pnNew convention fixed; ``phase5@pytempo bbat`` validates ``nphase``
-- Phase D Step 2: wire oracle ``bbat`` into production — **not started**
+- Phase D Step 1: pnNew convention fixed
+- Phase D Step 2: ``phase5@oracle bbat`` **ruled out** (~17.5 ns — worse than production)
+- **Open:** WSRT ``-padd`` / ``jump_phase`` per ``-sys`` (~10 ns mean spread); idx 85 wrap ladder
 
 ### formBats diagnostic gap
 
 JUG formBats ``bbat_mjd`` differs from pytempo/libstempo by **~65 s RMS** on wsrt167.
-Production **does not use** formBats ``bbat`` for spin. Do not enable
-``USE_NATIVE_BBAT_PHASE5`` until this gap is closed.
+Production **does not use** formBats ``bbat`` for spin. Oracle spin work uses
+``compute_tempo2_bbat_mjd(model_mjd, prebinary)`` instead.
 
 ---
 
@@ -127,14 +133,18 @@ See [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) § "Phase C — TZR reference phase".
 |-------|------------|
 | ``track_minus2_frac_phase`` ``addPhase ~ 10¹⁰`` turns | ``pnAct = (pn[i]−pn[0]) + pnAdd`` |
 | Identity | ``pn[i] − pn[0] == pnNew`` (exact on wsrt167) |
-| Fixed pnNew + ``phase5@pytempo bbat`` | **~17 ns** RMS — not <5 ns yet |
-| Production Taylor + legacy | **~16 ns** — still best until Step 2 |
+| Fixed pnNew + ``phase5@oracle bbat`` | **~17.5 ns** RMS — worse than production |
+| Production Taylor + legacy | **~16.4 ns** — best JUG-composed path |
 
-**Step 2 (open): production spin at correct ``bbat``**
+**Step 2 (ruled out, 2026-07-06): wire ``phase5@bbat`` to production**
 
-1. Port or substitute **oracle-correct ``bbat``** (keep delays at ``model_mjd``).
-2. Wire TRACK −2 + all ``-pn`` to ``phase5`` + fixed ``track_minus2_frac_phase``.
-3. Re-run ``tests/test_dev_oracle_wsrt167_parity.py`` toward <5 ns.
+Temp-only path ranking: production Taylor beats oracle ``phase5`` (~17.5 ns). Do **not**
+enable ``USE_NATIVE_BBAT_PHASE5`` for parity gates.
+
+**Next (open):**
+
+1. WSRT ``-padd`` / ``jump_phase`` per ``-sys`` backend (~10 ns mean spread).
+2. Outlier idx 85 (+110 ns) — ``nphase`` wrap ladder vs tempo2 at large ``|pn|``.
 
 **Tests / harness**
 
@@ -145,13 +155,13 @@ PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
 
 ---
 
-## Recommended path to <5 ns (updated)
+## Recommended path to <5 ns (updated 2026-07-06)
 
-**Priority 1 — wsrt167 (Phase D Step 2)**
+**Priority 1 — wsrt167 (Phase D continued)**
 
-1. Close formBats / ``bbat`` gap vs pytempo (~65 s) or bypass with validated clock chain.
-2. Wire ``phase5`` + fixed ``track_minus2_frac_phase`` for TRACK −2 in production.
-3. Do **not** enable ``USE_NATIVE_BBAT_PHASE5`` wholesale.
+1. Investigate WSRT ``-padd`` / ``jump_phase`` per ``-sys`` backend.
+2. Investigate outlier idx 85 ``nphase`` wrap ladder vs tempo2.
+3. Do **not** wire ``phase5@bbat`` to production — ruled out.
 
 **Priority 2 — J0030 polish**
 
@@ -175,7 +185,7 @@ PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
 |--------|------|
 | `jug/residuals/tempo2_clock.py` | IFTE + formBats — **diagnostics only** |
 | `jug/residuals/tzr_geometry.py` | TZR apply modes (Phase C) |
-| `jug/residuals/tempo2_spin.py` | ``phase5`` / TRACK −2; pnAct relative to obsn[0] (Phase D) |
+| `jug/residuals/tempo2_spin.py` | ``compute_tempo2_bbat_mjd``; ``phase5`` / TRACK −2 |
 | `jug/residuals/tempo2_native_quarantine.py` | `USE_NATIVE_BBAT_PHASE5 = False` |
 | `jug/testing/tempo2_outlier_diff.py` | Per-TOA clock + Roemer diff harness |
 | `jug/testing/tempo2_track2_oracle.py` | TRACK −2 pnNew oracle (Phase D) |
@@ -209,4 +219,4 @@ PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
   /opt/venvs/pta/bin/python -m pytest tests/test_dev_oracle_wsrt167_parity.py -m dev_oracle -q
 ```
 
-Strict gates on wsrt167 should fail until Phase D Step 2 closes ~16 ns → <5 ns.
+Strict gates on wsrt167 should fail until WSRT padd/wrap work closes ~16 ns → <5 ns.

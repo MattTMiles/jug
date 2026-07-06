@@ -19,6 +19,7 @@ from jug.residuals.tempo2_spin import (
     _c_int_truncate,
     _fortran_mod,
     _fortran_nlong,
+    compute_tempo2_bbat_mjd,
     compute_tempo2_phase5,
     compute_tempo2_torb_sec,
     track_minus2_frac_phase,
@@ -84,7 +85,9 @@ def load_track2_oracle_context(
     if pytempo_diag is not None:
         bbat_mjd = np.asarray(pytempo_diag["bbat_mjd"], dtype=np.float64)
     else:
-        bbat_mjd = np.asarray(base["term_diagnostics"]["bbat_mjd"], dtype=np.float64)
+        bbat_mjd = compute_tempo2_bbat_mjd(
+            base["model_mjd"], base["term_diagnostics"]["prebinary_delay_sec"]
+        )
 
     return Track2OracleContext(
         par_path=par_path,

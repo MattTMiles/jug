@@ -2,7 +2,8 @@
 
 Requires libstempo + tempo2 runtime. Not part of standalone JUG CI.
 See ``jug/testing/DEV_ORACLE.md``, ``TEMPO2_NATIVE_CLOCK_STATUS.md`` § Phase D,
-and ``tests/test_tempo2_track2_pnnew.py`` (pnNew step 1).
+and ``tests/test_tempo2_track2_pnnew.py`` (Step 1 done; Step 2 ``phase5@bbat`` ruled out).
+Next: WSRT ``-padd`` / ``jump_phase``; outlier idx 85 (+110 ns).
 """
 
 from __future__ import annotations

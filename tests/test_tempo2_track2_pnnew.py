@@ -1,10 +1,8 @@
 """TRACK −2 ``pnNew`` / ``addPhase`` oracle tests (Phase D, wsrt167).
 
-Step 1 of fix #2: validate tim ``-pn`` convention and ``track_minus2_frac_phase``
-before wiring production spin at oracle ``bbat``.
-
-See ``TEMPO2_PARITY.md`` § "Phase D — TRACK −2 pnNew" and
-``TEMPO2_NATIVE_CLOCK_STATUS.md`` § "Phase D — wsrt167 TRACK −2".
+Step 1: validate tim ``-pn`` convention and ``track_minus2_frac_phase``.
+Step 2 (2026-07-06): wiring ``phase5@bbat`` to production **ruled out** — oracle
+path ~17.5 ns vs production ~16.4 ns. See ``TEMPO2_PARITY.md`` § Phase D Step 2.
 """
 
 from __future__ import annotations
@@ -109,7 +107,7 @@ def test_track2_phase5_spin_matches_pytempo_nphase_wsrt167():
 @pytest.mark.dev_oracle
 @pytest.mark.tempo2
 def test_track2_pnnew_residual_floor_documented_wsrt167():
-    """Documented floor: phase5@oracle ``bbat`` + fixed pnNew still ~17 ns vs libstempo."""
+    """Oracle ``phase5@bbat`` + fixed pnNew ~17.5 ns — not better than production ~16.4 ns."""
     ctx = load_track2_oracle_context(
         _WSRT167["par_path"], _WSRT167["tim_path"], use_pytempo=True
     )
@@ -118,5 +116,5 @@ def test_track2_pnnew_residual_floor_documented_wsrt167():
     ref = tempo2_reference(ctx.par_path, ctx.tim_path)
     delta_ns = (res_us - ref.residuals_us) * 1000.0
     rms = float(np.sqrt(np.mean(np.square(delta_ns))))
-    assert rms < 25.0, f"phase5+pnNew rms={rms:.2f} ns (target <5 ns after bbat port)"
-    assert rms > 5.0, "unexpected pass before spin/bbat production wiring"
+    assert rms < 25.0, f"phase5+pnNew rms={rms:.2f} ns (production ~16.4 ns is better)"
+    assert rms > 5.0, "unexpected pass before WSRT padd / wrap fixes"

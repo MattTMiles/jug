@@ -18,6 +18,22 @@ import numpy as np
 from jug.io.par_reader import get_longdouble
 
 
+def compute_tempo2_bbat_mjd(
+    model_mjd: np.ndarray,
+    prebinary_delay_sec: np.ndarray,
+) -> np.ndarray:
+    """Tempo2 ``obsn.bbat`` from JUG delay geometry (matches libstempo/pytempo).
+
+    ``bbat = model_mjd − prebinary_delay_sec / 86400``.  This is **not** the formBats
+    diagnostic ``term_diagnostics['bbat_mjd']`` (~65 s wrong on wsrt167).
+    """
+    from jug.utils.constants import SECS_PER_DAY
+
+    model = np.asarray(model_mjd, dtype=np.float64)
+    prebin = np.asarray(prebinary_delay_sec, dtype=np.float64)
+    return model - prebin / np.float64(SECS_PER_DAY)
+
+
 def _fortran_mod(value, period):
     x = np.asarray(value, dtype=np.float64)
     p = np.float64(period)

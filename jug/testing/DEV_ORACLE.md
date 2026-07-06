@@ -10,7 +10,8 @@ marked pytest modules.
 |-------|-----|-------|--------|
 | **C** | TZR apply modes (`tzr_geometry.py`) | `tests/test_tempo2_tzr_parity.py` | **Done** — J0030 ~4.7 ns RMS |
 | **D Step 1** | tim ``-pn`` relative to obsn[0] | `tests/test_tempo2_track2_pnnew.py` | **Done** — pnNew oracle |
-| **D Step 2** | Production spin at oracle ``bbat`` | `tests/test_dev_oracle_wsrt167_parity.py` | **Open** — ~16 ns |
+| **D Step 2** | ``phase5@bbat`` production wiring | — | **Ruled out** — ~17.5 ns vs ~16.4 ns production |
+| **Next** | WSRT ``-padd`` / ``jump_phase``; idx 85 outlier | `tests/test_dev_oracle_wsrt167_parity.py` | **Open** |
 
 Docs: [`TEMPO2_PARITY.md`](../TEMPO2_PARITY.md), [`TEMPO2_NATIVE_CLOCK_STATUS.md`](../TEMPO2_NATIVE_CLOCK_STATUS.md).
 

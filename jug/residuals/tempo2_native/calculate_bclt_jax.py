@@ -94,6 +94,7 @@ def compute_bclt_terms_numpy(
     earth_ssb_vel_km_s: np.ndarray,
     ne_sw: float = 0.0,
     einstein_rate: np.ndarray | None = None,
+    site_vel_km_s: np.ndarray | None = None,
     max_iter: int = 100,
     tol: float = 1.0e-10,
 ) -> BcltTerms:
@@ -109,6 +110,11 @@ def compute_bclt_terms_numpy(
     ssb_obs_ls = np.asarray(ssb_obs_ls_fixed, dtype=np.float64)
     obs_sun_ls = np.asarray(obs_sun_ls_fixed, dtype=np.float64)
     earth_vel = np.asarray(earth_ssb_vel_km_s, dtype=np.float64)
+    site_vel = (
+        np.zeros_like(earth_vel)
+        if site_vel_km_s is None
+        else np.asarray(site_vel_km_s, dtype=np.float64)
+    )
     freq = np.asarray(freq_mhz, dtype=np.float64)
     planets = obs_planets_ls_fixed or {}
     einstein = (
@@ -190,6 +196,7 @@ def compute_bclt_terms_numpy(
                 ne_sw=float(ne_sw),
                 dilate_freq=dilate_freq,
                 einstein_rate=float(einstein[i]),
+                site_vel_km_s=site_vel[i],
             )
             dt = update_dt_ssb(
                 roemer_i,
@@ -224,9 +231,184 @@ def compute_bclt_terms_numpy(
     )
 
 
+def _dm_vals_numpy(sat_mjd: np.ndarray, params: dict) -> np.ndarray:
+    n = len(sat_mjd)
+    out = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = _dm_val_at_sat(float(sat_mjd[i]), params)
+    return out
+
+
 def bclt_terms_to_jax(terms: BcltTerms) -> dict[str, jnp.ndarray]:
     """Convert host BCLT terms to JAX arrays."""
     return {
         name: jnp.asarray(getattr(terms, name))
         for name in BcltTerms.__dataclass_fields__
     }
+
+
+# --- JAX production BCLT (vmap + while_loop) ---
+
+GM_C3_JAX = 4.925490947e-6
+GMJ_C3_JAX = 4.70255e-9
+PX_CONV_JAX = 1.74532925199432958e-2 / 3600.0e3
+AULTSC_JAX = 499.00478364
+K_DM_SEC_JAX = 2.410331125007655e-4
+
+
+def _bclt_delt_jax(sat, posepoch, tt, tt_tb, dt):
+    clock_day = (tt + tt_tb + dt) / SECS_PER_DAY
+    return (sat - posepoch + clock_day) / 36525.0
+
+
+def _psr_pos_jax(pos, vel, delt):
+    p = pos + delt * vel
+    return p / jnp.maximum(jnp.linalg.norm(p), 1e-30)
+
+
+def _roemer_ls_jax(rca, pos, vel, acc, delt, parallax_mas, pmrv):
+    rcos1 = jnp.dot(pos, rca)
+    rr = jnp.dot(rca, rca)
+    pmtrans_rcos2 = jnp.dot(vel, rca)
+    pmtrans = jnp.linalg.norm(vel)
+    dt_pm = delt * pmtrans_rcos2
+    dt_pmtt = -0.5 * pmtrans * pmtrans * delt * delt * rcos1
+    dt_acctrans = 0.5 * delt * delt * jnp.dot(acc, rca)
+    dt_px = jnp.where(
+        parallax_mas != 0.0,
+        -0.5 * parallax_mas * PX_CONV_JAX * (rr - rcos1 * rcos1) / AULTSC_JAX,
+        0.0,
+    )
+    dt_pmtr = -delt * delt * pmrv * pmtrans_rcos2
+    return rcos1 + dt_pm + dt_pmtt + dt_px + dt_pmtr + dt_acctrans
+
+
+def _shapiro_jax(rsa, psr_pos, gm_c3):
+    r = jnp.linalg.norm(rsa)
+    ctheta = jnp.dot(psr_pos, rsa) / jnp.maximum(r, 1e-30)
+    return -2.0 * gm_c3 * jnp.log(jnp.maximum(r / AULTSC_JAX * (1.0 + ctheta), 1e-30))
+
+
+def _dm_jax(freq_mhz, dm_val, psr_pos, obs_sun_ls, earth_vel, site_vel, einstein, dilate_freq, ne_sw):
+    rsa = -obs_sun_ls
+    vobs = earth_vel / 299792.458 + site_vel / 299792.458
+    r = jnp.linalg.norm(rsa)
+    ctheta = jnp.dot(psr_pos, rsa) / jnp.maximum(r, 1e-30)
+    voverc = jnp.dot(psr_pos, vobs)
+    freqf = freq_mhz * 1.0e6 * (1.0 - voverc)
+    freqf = jnp.where(dilate_freq & (einstein != 0.0), freqf / einstein, freqf)
+    tdis1 = jnp.where(freqf > 1.0, dm_val * K_DM_SEC_JAX / ((freqf / 1.0e6) ** 2), 0.0)
+    tdis2 = jnp.where(
+        (ne_sw != 0.0) & (freqf > 1.0) & (r > 0.0),
+        ne_sw
+        * 1.0e6
+        * 1.49598e11
+        * 1.49598e11
+        / 299792458.0
+        / 7.436e6
+        * jnp.arccos(jnp.clip(ctheta, -1.0, 1.0))
+        / jnp.maximum(jnp.sqrt(jnp.maximum(1.0 - ctheta * ctheta, 0.0)), 1e-30)
+        / r
+        / freqf
+        / freqf,
+        0.0,
+    )
+    return tdis1, tdis2
+
+
+def compute_bclt_terms_jax(
+    *,
+    sat_mjd: jnp.ndarray,
+    correction_tt_sec: jnp.ndarray,
+    correction_tt_tb_sec: jnp.ndarray,
+    ssb_obs_ls: jnp.ndarray,
+    obs_sun_ls: jnp.ndarray,
+    freq_mhz: jnp.ndarray,
+    earth_ssb_vel_km_s: jnp.ndarray,
+    site_vel_km_s: jnp.ndarray,
+    dm_vals: jnp.ndarray,
+    pos_pulsar: jnp.ndarray,
+    vel_pulsar: jnp.ndarray,
+    acc_pulsar: jnp.ndarray,
+    posepoch_mjd: float,
+    parallax_mas: float = 0.0,
+    pmrv_rad_century: float = 0.0,
+    ne_sw: float = 0.0,
+    einstein_rate: jnp.ndarray | None = None,
+    dilate_freq: bool = False,
+    planet_shapiro_enabled: bool = True,
+    obs_jupiter_ls: jnp.ndarray | None = None,
+    max_iter: int = 100,
+    tol: float = 1.0e-10,
+) -> BcltTerms:
+    """JAX BCLT iteration: ``vmap`` over TOAs with ``lax.while_loop``."""
+    n = sat_mjd.shape[0]
+    einstein = jnp.ones(n, dtype=jnp.float64) if einstein_rate is None else einstein_rate
+    jup = (
+        jnp.zeros((n, 3), dtype=jnp.float64)
+        if obs_jupiter_ls is None
+        else obs_jupiter_ls
+    )
+
+    def single_bclt(sat, tt, tt_tb, rca, osun, jup_ls, freq, earth_vel, site_vel, dm_val, einstein_i):
+        def cond(state):
+            dt_old, dt, it, *_ = state
+            return (jnp.abs(dt - dt_old) > tol) & (it < max_iter)
+
+        def body(state):
+            dt_old, dt, it, roemer, tdis1, tdis2, shap_sun, shap_jup, shap_planets = state
+            delt = _bclt_delt_jax(sat, posepoch_mjd, tt, tt_tb, dt)
+            psr_pos = _psr_pos_jax(pos_pulsar, vel_pulsar, delt)
+            roemer_ls = _roemer_ls_jax(
+                rca, pos_pulsar, vel_pulsar, acc_pulsar, delt, parallax_mas, pmrv_rad_century
+            )
+            shap_sun = _shapiro_jax(-osun, psr_pos, GM_C3_JAX)
+            shap_jup = _shapiro_jax(-jup_ls, psr_pos, GMJ_C3_JAX)
+            tdis1_i, tdis2_i = _dm_jax(
+                freq, dm_val, psr_pos, osun, earth_vel, site_vel, einstein_i, dilate_freq, ne_sw
+            )
+            shap_planets = jnp.where(planet_shapiro_enabled, shap_jup, 0.0)
+            new_dt = roemer_ls - (tdis1_i + tdis2_i) - (shap_sun + shap_planets)
+            return (dt, new_dt, it + 1, roemer_ls, tdis1_i, tdis2_i, shap_sun, shap_jup, shap_planets)
+
+        init = (
+            jnp.inf,
+            jnp.array(0.0, dtype=jnp.float64),
+            jnp.array(0, dtype=jnp.int32),
+            jnp.array(0.0, dtype=jnp.float64),
+            jnp.array(0.0, dtype=jnp.float64),
+            jnp.array(0.0, dtype=jnp.float64),
+            jnp.array(0.0, dtype=jnp.float64),
+            jnp.array(0.0, dtype=jnp.float64),
+            jnp.array(0.0, dtype=jnp.float64),
+        )
+        final = jax.lax.while_loop(cond, body, init)
+        dt_old, dt, it, roemer, tdis1, tdis2, shap_sun, shap_jup, shap_planets = final
+        converged = jnp.abs(dt - dt_old) <= tol
+        return roemer, tdis1, tdis2, shap_sun, shap_jup, shap_planets, dt, it, converged
+
+    outs = jax.vmap(single_bclt)(
+        sat_mjd,
+        correction_tt_sec,
+        correction_tt_tb_sec,
+        ssb_obs_ls,
+        obs_sun_ls,
+        jup,
+        freq_mhz,
+        earth_ssb_vel_km_s,
+        site_vel_km_s,
+        dm_vals,
+        einstein,
+    )
+    roemer, tdis1, tdis2, shap_sun, shap_jup, shap_planets, dt_ssb, iters, converged = outs
+    return BcltTerms(
+        roemer_sec=roemer,
+        tdis1_sec=tdis1,
+        tdis2_sec=tdis2,
+        shapiro_sun_sec=shap_sun,
+        shapiro_jupiter_sec=shap_jup,
+        shapiro_planets_sec=shap_planets,
+        dt_ssb_sec=dt_ssb,
+        bclt_iterations=iters.astype(jnp.int32),
+        converged=converged,
+    )

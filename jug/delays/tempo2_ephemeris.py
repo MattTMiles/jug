@@ -16,7 +16,8 @@ from functools import lru_cache
 
 import numpy as np
 
-from jug.utils.constants import C_KM_S
+from jug.utils.constants import C_KM_S, SECS_PER_DAY
+from jug.delays.tempo2_geometry import Tempo2ObservatoryState
 
 # JPL ``jpl_pleph`` numbering (tempo2 ``readEphemeris.C``)
 _JPL_MERCURY = 1
@@ -83,9 +84,16 @@ def _segment_pair(kernel, center: int, target: int):
 
 
 def _pos_vel_km(kernel, center: int, target: int, jd: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return SPK position (km) and velocity (km/s).
+
+    ``jplephem`` ``compute_and_differentiate`` returns velocity in km/day; tempo2
+    ``readEphemeris.C`` stores km/s in ``obsn[].earth_ssb[3:6]``.
+    """
     segment = _segment_pair(kernel, center, target)
     pos, vel = segment.compute_and_differentiate(jd)
-    return np.asarray(pos[:3], dtype=np.float64), np.asarray(vel[:3], dtype=np.float64)
+    pos_km = np.asarray(pos[:3], dtype=np.float64)
+    vel_km_s = np.asarray(vel[:3], dtype=np.float64) / SECS_PER_DAY
+    return pos_km, vel_km_s
 
 
 def earth_geocenter_from_ssb_km(kernel, jd: float) -> tuple[np.ndarray, np.ndarray]:
@@ -174,3 +182,75 @@ def compute_tempo2_ephemeris_state(
 def close_ephemeris_cache() -> None:
     """Clear cached SPK handles (test hygiene)."""
     _open_spk.cache_clear()
+
+
+def compute_tempo2_observatory_state(
+    tdb_mjd: np.ndarray,
+    obs_itrf_km: np.ndarray,
+    *,
+    ephem_path: str,
+    planet_names: tuple[str, ...] = (
+        "mercury",
+        "venus",
+        "mars",
+        "jupiter",
+        "saturn",
+        "uranus",
+        "neptune",
+    ),
+) -> Tempo2ObservatoryState:
+    """Compute Tempo2-style ``obsn[]`` vectors using JPL SPK + site GCRS motion.
+
+    ``rca`` for BCLT is ``earth_ssb[:3] + observatory_earth[:3]`` (km), matching
+    ``calculate_bclt.C`` L108–110.
+    """
+    from astropy import units as u
+    from astropy.coordinates import EarthLocation
+    from astropy.time import Time
+
+    n = len(tdb_mjd)
+    kernel = _open_spk(ephem_path)
+    jd_arr = mjd_to_jd(tdb_mjd)
+
+    earth_ssb = np.zeros((n, 6), dtype=np.float64)
+    sun_ssb = np.zeros((n, 6), dtype=np.float64)
+    planet_ssb: dict[str, np.ndarray] = {}
+
+    for i, jd in enumerate(jd_arr):
+        pos, vel = earth_geocenter_from_ssb_km(kernel, float(jd))
+        earth_ssb[i, :3], earth_ssb[i, 3:] = pos, vel
+        spos, svel = sun_from_ssb_km(kernel, float(jd))
+        sun_ssb[i, :3], sun_ssb[i, 3:] = spos, svel
+
+    for planet in planet_names:
+        if planet not in _PLANET_BARY:
+            continue
+        arr = np.zeros((n, 6), dtype=np.float64)
+        bary = _PLANET_BARY[planet]
+        for i, jd in enumerate(jd_arr):
+            pos, vel = _pos_vel_km(kernel, _SSB, bary, float(jd))
+            arr[i, :3], arr[i, 3:] = pos, vel
+        planet_ssb[planet] = arr
+
+    obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
+    times = Time(np.asarray(tdb_mjd, dtype=np.float64), format="mjd", scale="tdb")
+    obs_loc = EarthLocation.from_geocentric(
+        obs_itrf[0] * u.km, obs_itrf[1] * u.km, obs_itrf[2] * u.km
+    )
+    gcrs_pos, gcrs_vel = obs_loc.get_gcrs_posvel(obstime=times)
+    observatory_earth = np.zeros((n, 6), dtype=np.float64)
+    observatory_earth[:, 0] = gcrs_pos.x.to(u.km).value
+    observatory_earth[:, 1] = gcrs_pos.y.to(u.km).value
+    observatory_earth[:, 2] = gcrs_pos.z.to(u.km).value
+    observatory_earth[:, 3] = gcrs_vel.x.to(u.km / u.s).value
+    observatory_earth[:, 4] = gcrs_vel.y.to(u.km / u.s).value
+    observatory_earth[:, 5] = gcrs_vel.z.to(u.km / u.s).value
+    site_vel = observatory_earth[:, 3:6].copy()
+
+    return Tempo2ObservatoryState(
+        earth_ssb_km=earth_ssb,
+        observatory_earth_km=observatory_earth,
+        sun_ssb_km=sun_ssb,
+        planet_ssb_km=planet_ssb,
+        site_vel_km_s=site_vel,
+    )

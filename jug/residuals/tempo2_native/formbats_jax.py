@@ -5,7 +5,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 from jug.residuals.tempo2_native.compensated import assemble_mjd_from_day_sec, two_sum
-from jug.utils.constants import SECS_PER_DAY
+from jug.utils.constants import C_KM_S, SECS_PER_DAY
 
 
 def compute_formbats_jax(
@@ -37,12 +37,43 @@ def compute_formbats_jax(
 
 def compute_shklovskii_sec_jax(bat_mjd, params):
     """JAX Shklovskii delay; host params dict with float values."""
-    import numpy as np
+    bat = jnp.asarray(bat_mjd, dtype=jnp.float64)
+    if "DSHK" not in params:
+        return jnp.zeros_like(bat)
+    if "PMRA" not in params and "PMDEC" not in params:
+        return jnp.zeros_like(bat)
 
-    bat = np.asarray(bat_mjd)
-    from jug.residuals.tempo2_clock import compute_shklovskii_sec
+    kpc2m = 3.08568025e19
+    mas_yr2rad_s = 1.536281850e-16
+    posepoch = float(params.get("POSEPOCH", params["PEPOCH"]))
+    dshk = float(params.get("DSHK", 0.0))
+    pmra = float(params.get("PMRA", 0.0))
+    pmdec = float(params.get("PMDEC", 0.0))
+    t0 = (bat - posepoch) * SECS_PER_DAY
+    pm2 = (pmra * pmra + pmdec * pmdec) * mas_yr2rad_s * mas_yr2rad_s
+    return (t0 * t0 / (2.0 * C_KM_S)) * (dshk * kpc2m) * pm2
 
-    return jnp.asarray(compute_shklovskii_sec(bat, params), dtype=jnp.float64)
+
+def compute_shklovskii_sec_jax_pure(
+    bat_mjd,
+    pepoch_mjd,
+    f_terms,
+    *,
+    dshk: float = 0.0,
+    pmra: float = 0.0,
+    pmdec: float = 0.0,
+    posepoch_mjd: float | None = None,
+) -> jnp.ndarray:
+    """Pure JAX Shklovskii without host dict lookup."""
+    if dshk == 0.0:
+        return jnp.zeros_like(jnp.asarray(bat_mjd, dtype=jnp.float64))
+    bat = jnp.asarray(bat_mjd, dtype=jnp.float64)
+    kpc2m = 3.08568025e19
+    mas_yr2rad_s = 1.536281850e-16
+    pep = float(posepoch_mjd if posepoch_mjd is not None else pepoch_mjd)
+    t0 = (bat - pep) * SECS_PER_DAY
+    pm2 = (pmra * pmra + pmdec * pmdec) * mas_yr2rad_s * mas_yr2rad_s
+    return (t0 * t0 / (2.0 * C_KM_S)) * (dshk * kpc2m) * pm2
 
 
 def compute_torb_closure_jax(bbat_mjd, dt_emission_sec, pepoch_mjd):

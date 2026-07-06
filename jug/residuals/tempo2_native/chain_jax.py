@@ -8,11 +8,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jug.delays.barycentric import compute_einstein_rate
 from jug.delays.tempo2_ephemeris import resolve_tempo2_ephemeris_path
-from jug.residuals.tempo2_clock import compute_correction_tt_tb_sec
-from jug.utils.timescales import parse_timescale
-from jug.residuals.tempo2_native.calculate_bclt_jax import compute_bclt_terms_numpy
+from jug.delays.tempo2_geometry import (
+    build_tempo2_pulsar_vectors,
+    pmrv_rad_per_century,
+)
+from jug.residuals.tempo2_native.calculate_bclt_jax import (
+    _dm_vals_numpy as bclt_dm_vals_numpy,
+    compute_bclt_terms_jax,
+)
+from jug.residuals.tempo2_native.clock_jax import compute_tempo2_correction_tt_tb_jax
 from jug.residuals.tempo2_native.formbats_jax import (
     compute_formbats_jax,
     compute_shklovskii_sec_jax,
@@ -28,6 +33,7 @@ from jug.residuals.tempo2_native.spin_jax import (
     track_minus2_frac_phase_jax,
 )
 from jug.residuals.tempo2_native.types import Tempo2NativeTerms
+from jug.utils.timescales import parse_timescale
 
 
 def _build_pn_add(toas: list[Any]) -> np.ndarray:
@@ -74,164 +80,136 @@ def compute_tempo2_native_terms_jax(
     jump_phase=None,
     tzr_phase=None,
     addsat_sec=None,
+    site_vel_km_s=None,
+    tdb_mjd=None,
 ) -> Tempo2NativeTerms:
-    """Compute tempo2-native BCLT, formBats, bbat, torb in JAX.
-
-    BCLT iteration runs on host with fixed IFTE geometry; formBats/spin export as JAX.
-    """
-    del pulse_numbers, pn_add, jump_phase, tzr_phase, addsat_sec, toas, ephem_path, earth_ssb_km
-    del tdis1_sec, tdis2_sec
+    """Compute tempo2-native BCLT, formBats, bbat, torb entirely in JAX."""
+    del pulse_numbers, pn_add, jump_phase, tzr_phase, addsat_sec, toas, tdis1_sec, tdis2_sec
+    del utc_to_tdb_sec, prebinary_override_sec, model_mjd, use_model_epoch_batcorr
 
     if use_native_ecliptic is None:
         use_native_ecliptic = bool(params.get("_ecliptic_coords", False))
 
-    sat_np = np.asarray(jax.device_get(sat_mjd), dtype=np.float64)
-    tt_np = np.asarray(jax.device_get(correction_tt_sec), dtype=np.float64)
-    tt_tb_np = np.asarray(jax.device_get(correction_tt_tb_sec), dtype=np.float64)
-    tropo_np = np.asarray(jax.device_get(tropospheric_sec), dtype=np.float64)
-    dt_emit_np = np.asarray(jax.device_get(dt_emission_sec), dtype=np.float64)
-    obs_earth_np = np.asarray(jax.device_get(observatory_earth_km), dtype=np.float64)
-    vel_np = np.asarray(jax.device_get(earth_ssb_vel_km_s), dtype=np.float64)
-    utc_to_tdb_np = None
-    if utc_to_tdb_sec is not None:
-        utc_to_tdb_np = np.asarray(jax.device_get(utc_to_tdb_sec), dtype=np.float64)
-    formbats_tt_np = None
-    if formbats_tt_sec is not None:
-        formbats_tt_np = np.asarray(jax.device_get(formbats_tt_sec), dtype=np.float64)
-
-    formbats_tt_for_chain = formbats_correction_tt_sec(
-        tt_np,
-        utc_to_tdb_sec=utc_to_tdb_np,
-        formbats_tt_sec=formbats_tt_np,
+    sat_j = jnp.asarray(sat_mjd, dtype=jnp.float64)
+    tt_j = jnp.asarray(
+        formbats_correction_tt_sec(
+            np.asarray(correction_tt_sec, dtype=np.float64),
+            formbats_tt_sec=(
+                None
+                if formbats_tt_sec is None
+                else np.asarray(formbats_tt_sec, dtype=np.float64)
+            ),
+        ),
+        dtype=jnp.float64,
     )
-    mjd_tt = sat_np + formbats_tt_for_chain / 86400.0
-    tt_tb_np = compute_correction_tt_tb_sec(
-        mjd_tt,
-        observatory_earth_km=obs_earth_np,
-        earth_ssb_vel_km_s=vel_np,
-        params=params,
-    )
-
+    tropo_j = jnp.asarray(tropospheric_sec, dtype=jnp.float64)
+    dt_emit_j = jnp.asarray(dt_emission_sec, dtype=jnp.float64)
+    obs_earth_j = jnp.asarray(observatory_earth_km, dtype=jnp.float64)
+    earth_ssb_j = jnp.asarray(earth_ssb_km, dtype=jnp.float64)
     if ssb_obs_ls_fixed is None or obs_sun_ls_fixed is None:
         raise ValueError("tempo2-native BCLT requires fixed IFTE geometry arrays")
-    ssb_obs_ls = np.asarray(jax.device_get(ssb_obs_ls_fixed), dtype=np.float64)
-    obs_sun_ls = np.asarray(jax.device_get(obs_sun_ls_fixed), dtype=np.float64)
-    planets_fixed = None
-    if obs_planets_ls_fixed is not None:
-        planets_fixed = {
-            name: np.asarray(jax.device_get(arr), dtype=np.float64)
-            for name, arr in obs_planets_ls_fixed.items()
-        }
-    if freq_mhz_topocentric is not None:
-        freq_topo = np.asarray(jax.device_get(freq_mhz_topocentric), dtype=np.float64)
+    ssb_obs_ls = jnp.asarray(ssb_obs_ls_fixed, dtype=jnp.float64)
+    obs_sun_ls = jnp.asarray(obs_sun_ls_fixed, dtype=jnp.float64)
+    site_vel_j = (
+        jnp.zeros((ssb_obs_ls.shape[0], 3), dtype=jnp.float64)
+        if site_vel_km_s is None
+        else jnp.asarray(site_vel_km_s, dtype=jnp.float64)
+    )
+    if earth_ssb_j.ndim == 2 and earth_ssb_j.shape[1] == 3:
+        earth_vel_j = jnp.asarray(earth_ssb_vel_km_s, dtype=jnp.float64)
     else:
-        freq_topo = np.asarray(jax.device_get(freq_mhz), dtype=np.float64)
+        earth_vel_j = jnp.asarray(earth_ssb_vel_km_s, dtype=jnp.float64)
 
-    dilate_freq = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
-    einstein_np = np.ones_like(sat_np, dtype=np.float64)
-    if dilate_freq:
-        units = parse_timescale(params)
-        scale = "TCB" if units == "SI_UNITS" else "TDB"
-        einstein_np = np.asarray(
-            compute_einstein_rate(mjd_tt, units=scale), dtype=np.float64
-        )
+    if freq_mhz_topocentric is not None:
+        freq_j = jnp.asarray(freq_mhz_topocentric, dtype=jnp.float64)
+    else:
+        freq_j = jnp.asarray(freq_mhz, dtype=jnp.float64)
 
-    bclt = compute_bclt_terms_numpy(
-        sat_mjd=sat_np,
-        correction_tt_sec=formbats_tt_for_chain,
-        correction_tt_tb_sec=tt_tb_np,
-        observatory_earth_km=obs_earth_np,
-        params=params,
-        use_native_ecliptic=use_native_ecliptic,
-        planet_shapiro_enabled=planet_shapiro_enabled,
-        ssb_obs_ls_fixed=ssb_obs_ls,
-        obs_sun_ls_fixed=obs_sun_ls,
-        obs_planets_ls_fixed=planets_fixed,
-        freq_mhz=freq_topo,
-        earth_ssb_vel_km_s=vel_np,
-        ne_sw=float(ne_sw),
-        einstein_rate=einstein_np,
+    units = parse_timescale(params)
+    mjd_tt = sat_j + tt_j / 86400.0
+    tt_tb_j = compute_tempo2_correction_tt_tb_jax(
+        mjd_tt,
+        obs_earth_j,
+        earth_vel_j,
+        units_tdb=units == "TDB",
+        si_units=units == "SI_UNITS",
     )
 
-    tdis1_np = bclt.tdis1_sec
-    tdis2_np = bclt.tdis2_sec
-    prebinary_np = (
-        -bclt.roemer_sec + tdis1_np + tdis2_np
-        + bclt.shapiro_sun_sec + bclt.shapiro_planets_sec + tropo_np
+    pos, vel, acc = build_tempo2_pulsar_vectors(
+        params, use_native_ecliptic=use_native_ecliptic
+    )
+    dm_vals = bclt_dm_vals_numpy(np.asarray(sat_mjd, dtype=np.float64), params)
+    dilate_freq = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
+    jup = None
+    if obs_planets_ls_fixed and "jupiter" in obs_planets_ls_fixed:
+        jup = jnp.asarray(obs_planets_ls_fixed["jupiter"], dtype=jnp.float64)
+
+    bclt = compute_bclt_terms_jax(
+        sat_mjd=sat_j,
+        correction_tt_sec=tt_j,
+        correction_tt_tb_sec=tt_tb_j,
+        ssb_obs_ls=ssb_obs_ls,
+        obs_sun_ls=obs_sun_ls,
+        freq_mhz=freq_j,
+        earth_ssb_vel_km_s=earth_vel_j,
+        site_vel_km_s=site_vel_j,
+        dm_vals=jnp.asarray(dm_vals, dtype=jnp.float64),
+        pos_pulsar=jnp.asarray(pos, dtype=jnp.float64),
+        vel_pulsar=jnp.asarray(vel, dtype=jnp.float64),
+        acc_pulsar=jnp.asarray(acc, dtype=jnp.float64),
+        posepoch_mjd=float(params.get("POSEPOCH", params["PEPOCH"])),
+        parallax_mas=float(params.get("PX", 0.0)),
+        pmrv_rad_century=pmrv_rad_per_century(float(params.get("PMRV", 0.0))),
+        ne_sw=float(ne_sw),
+        dilate_freq=dilate_freq,
+        planet_shapiro_enabled=planet_shapiro_enabled,
+        obs_jupiter_ls=jup,
     )
 
     planet_shapiro = 1.0 if planet_shapiro_enabled else 0.0
-    formbats_tt_j = jnp.asarray(formbats_tt_for_chain, dtype=jnp.float64)
-    shap_delay_np = compute_formbats_effective_shapiro_sec(
-        bclt.shapiro_sun_sec,
-        bclt.shapiro_planets_sec,
-        planet_shapiro=planet_shapiro,
+    shap_delay_j = (
+        bclt.shapiro_sun_sec + planet_shapiro * bclt.shapiro_planets_sec
     )
 
-    sat_j = jnp.asarray(sat_np, dtype=jnp.float64)
-    tt_j = formbats_tt_j
-    tt_tb_j = jnp.asarray(tt_tb_np, dtype=jnp.float64)
-    roemer_j = jnp.asarray(bclt.roemer_sec, dtype=jnp.float64)
-    tdis1_j = jnp.asarray(tdis1_np, dtype=jnp.float64)
-    tdis2_j = jnp.asarray(tdis2_np, dtype=np.float64)
-    shap_delay_j = jnp.asarray(shap_delay_np, dtype=jnp.float64)
-    tropo_j = jnp.asarray(tropo_np, dtype=jnp.float64)
-
-    if use_model_epoch_batcorr and model_mjd is not None:
-        model_np = np.asarray(jax.device_get(model_mjd), dtype=np.float64)
-        if prebinary_override_sec is not None:
-            prebin_for_bat = np.asarray(jax.device_get(prebinary_override_sec), dtype=np.float64)
-        else:
-            prebin_for_bat = prebinary_np
-        bat_corr_day_np = (model_np - sat_np) - prebin_for_bat / 86400.0
-        bat_corr_day = jnp.asarray(bat_corr_day_np, dtype=jnp.float64)
-        bat_corr_resid = jnp.zeros_like(bat_corr_day)
-        bat_mjd = sat_j + bat_corr_day
-        shk_j = compute_shklovskii_sec_jax(bat_mjd, params)
-        bbat_mjd = bat_mjd - shk_j / jnp.asarray(86400.0, dtype=jnp.float64)
-    else:
-        bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
-            sat_j,
-            tt_j,
-            tt_tb_j,
-            tropo_j,
-            roemer_j,
-            shap_delay_j,
-            tdis1_j,
-            tdis2_j,
-            jnp.zeros_like(sat_j),
-        )
-        shk_j = compute_shklovskii_sec_jax(bat_mjd, params)
-        _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
-            sat_j,
-            tt_j,
-            tt_tb_j,
-            tropo_j,
-            roemer_j,
-            shap_delay_j,
-            tdis1_j,
-            tdis2_j,
-            shk_j,
-        )
+    bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
+        sat_j,
+        tt_j,
+        tt_tb_j,
+        tropo_j,
+        bclt.roemer_sec,
+        shap_delay_j,
+        bclt.tdis1_sec,
+        bclt.tdis2_sec,
+        jnp.zeros_like(sat_j),
+    )
+    shk_j = compute_shklovskii_sec_jax(bat_mjd, params)
+    _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
+        sat_j,
+        tt_j,
+        tt_tb_j,
+        tropo_j,
+        bclt.roemer_sec,
+        shap_delay_j,
+        bclt.tdis1_sec,
+        bclt.tdis2_sec,
+        shk_j,
+    )
 
     pepoch = float(params["PEPOCH"])
-    dt_emit_j = jnp.asarray(dt_emit_np, dtype=jnp.float64)
-    torb_j = compute_torb_closure_jax(
-        bbat_mjd, dt_emit_j, jnp.asarray(pepoch, dtype=jnp.float64)
-    )
+    torb_j = compute_torb_closure_jax(bbat_mjd, dt_emit_j, jnp.asarray(pepoch, dtype=jnp.float64))
 
     return Tempo2NativeTerms(
         sat_mjd=sat_j,
-        correction_tt_sec=formbats_tt_j,
+        correction_tt_sec=tt_j,
         correction_tt_tb_sec=tt_tb_j,
-        roemer_sec=roemer_j,
-        tdis1_sec=tdis1_j,
-        tdis2_sec=tdis2_j,
-        shapiro_sun_sec=jnp.asarray(bclt.shapiro_sun_sec, dtype=jnp.float64),
-        shapiro_planets_sec=jnp.asarray(bclt.shapiro_planets_sec, dtype=jnp.float64),
+        roemer_sec=bclt.roemer_sec,
+        tdis1_sec=bclt.tdis1_sec,
+        tdis2_sec=bclt.tdis2_sec,
+        shapiro_sun_sec=bclt.shapiro_sun_sec,
+        shapiro_planets_sec=bclt.shapiro_planets_sec,
         shapiro_delay_sec=shap_delay_j,
         tropospheric_sec=tropo_j,
-        prebinary_sec=jnp.asarray(prebinary_np, dtype=jnp.float64),
+        prebinary_sec=jnp.zeros_like(sat_j),
         bat_corr_day=bat_corr_day,
         bat_corr_day_residual=bat_corr_resid,
         bat_mjd=bat_mjd,
@@ -239,9 +217,9 @@ def compute_tempo2_native_terms_jax(
         shklovskii_sec=shk_j,
         torb_sec=torb_j,
         dt_emission_sec=dt_emit_j,
-        dt_ssb_sec=jnp.asarray(bclt.dt_ssb_sec, dtype=jnp.float64),
-        bclt_iterations=jnp.asarray(bclt.bclt_iterations, dtype=jnp.int32),
-        converged=jnp.asarray(bclt.converged),
+        dt_ssb_sec=bclt.dt_ssb_sec,
+        bclt_iterations=bclt.bclt_iterations,
+        converged=bclt.converged,
     )
 
 
@@ -293,13 +271,15 @@ def prepare_native_chain_from_simple_result(
     params: dict,
     toas: list[Any],
     *,
-    observatory_earth_km: np.ndarray,
-    earth_ssb_km: np.ndarray,
-    earth_ssb_vel_km_s: np.ndarray,
+    observatory_earth_km: np.ndarray | None = None,
+    earth_ssb_km: np.ndarray | None = None,
+    earth_ssb_vel_km_s: np.ndarray | None = None,
     ephem_path: str | None = None,
     use_model_epoch_batcorr: bool = False,
 ) -> Tempo2NativeTerms:
     """Build native terms from ``compute_residuals_simple`` geometry exports."""
+    from jug.delays.tempo2_geometry import Tempo2ObservatoryState, tempo2_observatory_chain_vectors
+
     td = jug_result["term_diagnostics"]
     tdis1 = np.asarray(td["dm_delay_sec"], dtype=np.float64) + np.asarray(
         td.get("dmx_delay_sec", 0.0), dtype=np.float64
@@ -312,10 +292,56 @@ def prepare_native_chain_from_simple_result(
     ne_sw = resolve_ne_sw_cm3(params, profile)
     freq_topo = np.array([t.freq_mhz for t in toas], dtype=np.float64)
     planets = jug_result.get("obs_planet_pos_ls")
-    formbats_tt = td.get("formbats_correction_tt_sec")
+    formbats_tt = td.get("formbats_correction_tt_sec", td.get("correction_tt_sec"))
+    obs_state = td.get("tempo2_obs_state")
+    site_vel = None
+    ssb_obs_ls = jug_result.get("ssb_obs_pos_ls")
+    obs_sun_ls = jug_result.get("obs_sun_pos_ls")
+    if obs_state is not None:
+        site_vel = obs_state.get("site_vel_km_s")
+        if observatory_earth_km is None:
+            observatory_earth_km = np.asarray(
+                obs_state["observatory_earth_km"], dtype=np.float64
+            )[:, :3]
+        earth_ssb_arr = np.asarray(obs_state["earth_ssb_km"], dtype=np.float64)
+        if earth_ssb_km is None:
+            earth_ssb_km = earth_ssb_arr[:, :3]
+        if earth_ssb_vel_km_s is None:
+            earth_ssb_vel_km_s = earth_ssb_arr[:, 3:6]
+        sun_ssb = obs_state.get("sun_ssb_km")
+        planet_ssb = obs_state.get("planet_ssb_km", {})
+        if sun_ssb is None:
+            sun_ssb = np.zeros((len(toas), 6), dtype=np.float64)
+        else:
+            sun_ssb = np.asarray(sun_ssb, dtype=np.float64)
+        if isinstance(planet_ssb, dict):
+            planet_ssb = {
+                name: np.asarray(arr, dtype=np.float64) for name, arr in planet_ssb.items()
+            }
+        else:
+            planet_ssb = {}
+        state = Tempo2ObservatoryState(
+            earth_ssb_km=earth_ssb_arr,
+            observatory_earth_km=np.asarray(
+                obs_state["observatory_earth_km"], dtype=np.float64
+            ),
+            sun_ssb_km=sun_ssb,
+            planet_ssb_km=planet_ssb,
+            site_vel_km_s=np.asarray(site_vel, dtype=np.float64),
+        )
+        _, ssb_obs_ls, obs_sun_ls, planets_from_state = tempo2_observatory_chain_vectors(
+            state
+        )
+        if planets is None:
+            planets = planets_from_state
+    if observatory_earth_km is None or earth_ssb_km is None or earth_ssb_vel_km_s is None:
+        raise ValueError(
+            "prepare_native_chain_from_simple_result requires tempo2_obs_state "
+            "or explicit observatory_earth_km / earth_ssb_km / earth_ssb_vel_km_s"
+        )
     return compute_tempo2_native_terms_jax(
         sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
-        correction_tt_sec=jnp.asarray(td["correction_tt_sec"], dtype=jnp.float64),
+        correction_tt_sec=jnp.asarray(formbats_tt, dtype=jnp.float64),
         correction_tt_tb_sec=jnp.asarray(td["correction_tt_tb_sec"], dtype=jnp.float64),
         params=params,
         toas=toas,
@@ -326,19 +352,78 @@ def prepare_native_chain_from_simple_result(
         freq_mhz=jnp.asarray(jug_result.get("freq_bary_mhz", td.get("freq_bary_mhz", [])), dtype=jnp.float64),
         tdis1_sec=jnp.asarray(tdis1, dtype=jnp.float64),
         tdis2_sec=jnp.asarray(td["sw_delay_sec"], dtype=np.float64),
-        tropospheric_sec=jnp.asarray(td["tropo_delay_sec"], dtype=np.float64),
-        dt_emission_sec=jnp.asarray(jug_result["dt_sec"], dtype=np.float64),
+        tropospheric_sec=jnp.asarray(td["tropo_delay_sec"], dtype=jnp.float64),
+        dt_emission_sec=jnp.asarray(
+            np.asarray(jug_result["dt_sec"], dtype=np.float64), dtype=jnp.float64
+        ),
         use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
         utc_to_tdb_sec=jnp.asarray(td.get("utc_to_tdb_sec", 0.0), dtype=jnp.float64),
-        formbats_tt_sec=(
-            jnp.asarray(formbats_tt, dtype=jnp.float64) if formbats_tt is not None else None
-        ),
-        ssb_obs_ls_fixed=jnp.asarray(jug_result["ssb_obs_pos_ls"], dtype=jnp.float64),
-        obs_sun_ls_fixed=jnp.asarray(jug_result["obs_sun_pos_ls"], dtype=jnp.float64),
+        formbats_tt_sec=jnp.asarray(formbats_tt, dtype=jnp.float64),
+        ssb_obs_ls_fixed=jnp.asarray(ssb_obs_ls, dtype=jnp.float64),
+        obs_sun_ls_fixed=jnp.asarray(obs_sun_ls, dtype=jnp.float64),
         obs_planets_ls_fixed=planets,
         freq_mhz_topocentric=jnp.asarray(freq_topo, dtype=jnp.float64),
         ne_sw=ne_sw,
         use_model_epoch_batcorr=use_model_epoch_batcorr,
         model_mjd=jnp.asarray(jug_result["model_mjd"], dtype=jnp.float64),
         prebinary_override_sec=jnp.asarray(prebinary_jug, dtype=jnp.float64),
+        site_vel_km_s=None if site_vel is None else jnp.asarray(site_vel, dtype=jnp.float64),
     )
+
+
+def compute_native_tempo2_residual_sec(
+    params: dict,
+    *,
+    static: dict,
+    weights,
+    jump_phase=None,
+    tzr_phase=None,
+    subtract_mean: bool = True,
+    track_val: int = -2,
+    pulse_numbers=None,
+    pn_add=None,
+) -> jnp.ndarray:
+    """Recompute tempo2-native residuals through the JAX chain for one param dict."""
+    td = static["term_diagnostics"]
+    jug_result = {
+        "term_diagnostics": td,
+        "dt_sec": static["dt_sec"],
+        "freq_bary_mhz": static["freq_bary_mhz"],
+        "model_mjd": td.get("sat_mjd", static.get("model_mjd")),
+        "ssb_obs_pos_ls": static.get("ssb_obs_pos_ls"),
+        "obs_sun_pos_ls": static.get("obs_sun_pos_ls"),
+        "obs_planet_pos_ls": static.get("obs_planet_pos_ls"),
+        "compatibility": "tempo2",
+    }
+    toas = static.get("toas") or []
+    if not toas:
+        n = len(np.asarray(td["sat_mjd"]))
+        from jug.io.tim_reader import SimpleTOA
+
+        toas = [
+            SimpleTOA(
+                mjd_int=int(np.floor(float(td["sat_mjd"][i]))),
+                mjd_frac=float(td["sat_mjd"][i]) - int(np.floor(float(td["sat_mjd"][i]))),
+                mjd_str=str(td["sat_mjd"][i]),
+                freq_mhz=float(static["freq_bary_mhz"][i]),
+                error_us=1.0,
+                observatory="wsrt",
+                flags={},
+            )
+            for i in range(n)
+        ]
+    native = prepare_native_chain_from_simple_result(jug_result, params, toas)
+    jump_j = None if jump_phase is None else jnp.asarray(jump_phase, dtype=jnp.float64)
+    tzr_j = None if tzr_phase is None else jnp.asarray(tzr_phase, dtype=jnp.float64)
+    residual_sec, _, _ = compute_tempo2_native_residuals_jax(
+        native_terms=native,
+        params=params,
+        weights=jnp.asarray(weights, dtype=jnp.float64),
+        pulse_numbers=pulse_numbers,
+        pn_add=pn_add,
+        jump_phase=jump_j,
+        tzr_phase=tzr_j,
+        subtract_mean=subtract_mean,
+        track_val=track_val,
+    )
+    return residual_sec

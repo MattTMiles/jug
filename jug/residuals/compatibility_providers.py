@@ -30,6 +30,7 @@ from jug.delays.barycentric import (
 )
 from jug.delays.tempo2_ephemeris import (
     compute_tempo2_ephemeris_state,
+    compute_tempo2_observatory_state,
     resolve_tempo2_ephemeris_path,
 )
 from jug.delays.tempo2_geometry import (
@@ -40,6 +41,7 @@ from jug.delays.tempo2_geometry import (
     planet_shapiro_sec,
     ssb_obs_light_seconds,
     tempo2_equ2ecl,
+    tempo2_observatory_chain_vectors,
 )
 from jug.io.par_reader import parse_dec, parse_ra
 from jug.residuals.diagnostic_conventions import DiagnosticConventions, TermDiagnosticMetadata
@@ -505,9 +507,19 @@ def _compute_tempo2_tdb_geometry_terms(
     obl_rad = ecliptic_obliquity_rad(params, use_native_ecliptic)
     parallax_mas = float(params.get("PX", 0.0))
 
-    ssb_obs_pos_km, ssb_obs_vel_km_s, _, _ = _compute_ssb_obs_for_toas(
-        tdb_mjd, toas, obs_itrf_km, all_obs_codes, ephem, geometry_cache, geo_hit
+    ephem_path = resolve_tempo2_ephemeris_path(provider.profile.ephem or ephem)
+    if verbose:
+        print(f"   Tempo2-native ephemeris: {ephem_path}")
+
+    obs_state = compute_tempo2_observatory_state(
+        np.asarray(tdb_mjd, dtype=np.float64),
+        np.asarray(obs_itrf_km, dtype=np.float64).reshape(3),
+        ephem_path=ephem_path,
     )
+    ssb_obs_pos_km, _, obs_sun_ls_raw, planets_obs_raw = tempo2_observatory_chain_vectors(
+        obs_state
+    )
+    ssb_obs_vel_km_s = obs_state.earth_ssb_km[:, 3:6] + obs_state.site_vel_km_s
 
     ssb_obs_pos_delay_km = (
         rotate_equatorial_to_ecliptic(ssb_obs_pos_km, obl_rad)
@@ -518,16 +530,6 @@ def _compute_tempo2_tdb_geometry_terms(
         rotate_equatorial_to_ecliptic(ssb_obs_vel_km_s, obl_rad)
         if use_native_ecliptic
         else ssb_obs_vel_km_s
-    )
-
-    ephem_path = resolve_tempo2_ephemeris_path(provider.profile.ephem or ephem)
-    if verbose:
-        print(f"   Tempo2-native ephemeris: {ephem_path}")
-
-    eph_state = compute_tempo2_ephemeris_state(
-        tdb_mjd,
-        ssb_obs_pos_km,
-        ephem_path=ephem_path,
     )
 
     L_hat, _pos_pulsar, vel_pulsar = build_pulsar_direction(
@@ -563,7 +565,7 @@ def _compute_tempo2_tdb_geometry_terms(
         delt_centuries=delt_centuries,
     )
 
-    obs_sun_ls = eph_state.obs_sun_ls
+    obs_sun_ls = obs_sun_ls_raw
     if use_native_ecliptic:
         obs_sun_ls = tempo2_equ2ecl(obs_sun_ls)
     obs_sun_pos_delay_km = obs_sun_ls * C_KM_S
@@ -574,7 +576,7 @@ def _compute_tempo2_tdb_geometry_terms(
         else np.zeros(len(tdb_mjd), dtype=np.float64)
     )
 
-    planets_obs = dict(eph_state.planets_obs_ls)
+    planets_obs = dict(planets_obs_raw)
     if use_native_ecliptic:
         planets_obs = {k: tempo2_equ2ecl(v) for k, v in planets_obs.items()}
 

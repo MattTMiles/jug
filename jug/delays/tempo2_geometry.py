@@ -7,6 +7,7 @@ seconds with the same sign convention as ``jug.delays.barycentric``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -44,6 +45,30 @@ _PLANET_GM = {
     "neptune": GMN_C3,
     "venus": GMV_C3,
 }
+
+
+@dataclass(frozen=True)
+class Tempo2ObservatoryState:
+    """Tempo2 ``obsn[]`` geometry in km / km/s (pos[:3], vel[3:6])."""
+
+    earth_ssb_km: np.ndarray  # (N, 6)
+    observatory_earth_km: np.ndarray  # (N, 6)
+    sun_ssb_km: np.ndarray  # (N, 6)
+    planet_ssb_km: dict[str, np.ndarray]  # name -> (N, 6)
+    site_vel_km_s: np.ndarray  # (N, 3)
+
+
+def tempo2_observatory_chain_vectors(
+    state: Tempo2ObservatoryState,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Derive ``rca``, observatory→Sun, and planet rsa vectors in light-seconds."""
+    ssb_obs_km = state.earth_ssb_km[:, :3] + state.observatory_earth_km[:, :3]
+    ssb_obs_ls = ssb_obs_km / C_KM_S
+    obs_sun_ls = (state.sun_ssb_km[:, :3] - ssb_obs_km) / C_KM_S
+    planets_obs_ls = {
+        name: (pv[:, :3] - ssb_obs_km) / C_KM_S for name, pv in state.planet_ssb_km.items()
+    }
+    return ssb_obs_km, ssb_obs_ls, obs_sun_ls, planets_obs_ls
 
 
 def tempo2_equ2ecl(

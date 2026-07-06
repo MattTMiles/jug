@@ -1,0 +1,68 @@
+"""DEV ORACLE — native residual_delta uses full JAX chain, not Taylor fallback."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+pytest.importorskip("pytempo")
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
+
+import jax
+import jax.numpy as jnp
+
+from jug.fitting.jax_residual_delta import make_residual_delta_jax_fn
+from jug.fitting.optimized_fitter import _build_general_fit_setup_from_files
+from tempo2_native_test_helpers import load_wsrt167_fixture
+
+
+def test_native_residual_delta_uses_full_chain_not_taylor(monkeypatch):
+    fixture = load_wsrt167_fixture()
+    setup = _build_general_fit_setup_from_files(
+        fixture["par_path"],
+        fixture["tim_path"],
+        fit_params=["F0"],
+        clock_dir=str(fixture.get("clock_dir", "")),
+        verbose=False,
+        compatibility="tempo2",
+        design_matrix_method="autodiff",
+    )
+    if setup.native_chain_static is None:
+        pytest.skip("native_chain_static unavailable (USE_JAX_TEMPO2_NATIVE_CHAIN off?)")
+
+    calls = {"taylor": 0}
+
+    def _taylor(*args, **kwargs):
+        calls["taylor"] += 1
+        raise AssertionError("_phase_residual_delta_jax must not run in native mode")
+
+    monkeypatch.setattr(
+        "jug.fitting.jax_residual_delta._phase_residual_delta_jax",
+        _taylor,
+    )
+    fn = make_residual_delta_jax_fn(setup=setup, fit_params=["F0"])
+    delta = fn(jnp.zeros(1, dtype=jnp.float64))
+    assert delta.shape[0] == setup.toas_mjd.shape[0]
+    assert calls["taylor"] == 0
+
+
+def test_native_f0_jacfwd_finite_difference_spot_check():
+    fixture = load_wsrt167_fixture()
+    setup = _build_general_fit_setup_from_files(
+        fixture["par_path"],
+        fixture["tim_path"],
+        fit_params=["F0"],
+        clock_dir=str(fixture.get("clock_dir", "")),
+        verbose=False,
+        compatibility="tempo2",
+        design_matrix_method="autodiff",
+    )
+    if setup.native_chain_static is None:
+        pytest.skip("native_chain_static unavailable")
+    fn = make_residual_delta_jax_fn(setup=setup, fit_params=["F0"])
+    jac = np.asarray(jax.jacfwd(fn)(jnp.zeros(1, dtype=jnp.float64)), dtype=np.float64).reshape(-1)
+    eps = 1e-8
+    fd = (np.asarray(fn(jnp.asarray([eps]))) - np.asarray(fn(jnp.asarray([-eps])))) / (2 * eps)
+    fd = fd.reshape(-1)
+    scale = max(float(np.max(np.abs(fd))), 1.0)
+    assert float(np.max(np.abs(jac - fd))) / scale < 0.05

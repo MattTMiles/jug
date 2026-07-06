@@ -48,7 +48,7 @@ def test_wsrt167_component_ranking_documents_tt_blocker():
         fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
     )
     assert report.swap_one_rms_ns["tt"] < 1.0
-    assert report.swap_one_rms_ns["roemer"] < 5.0
+    assert report.swap_one_rms_ns["roemer"] < 1.0
     assert report.swap_one_rms_ns["tdis2"] < 1.0
     assert report.component_rms_ns["tt"] < 1.0
 
@@ -58,12 +58,12 @@ def test_wsrt167_per_component_gates():
     report = compare_formbats_components(
         fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
     )
-    assert report.component_rms_ns["roemer"] < 5.0
+    assert report.component_rms_ns["roemer"] < 1.0
     assert report.component_rms_ns["tdis2"] < 1.0
-    assert report.component_rms_ns["tdis1"] < 100.0
-    assert report.component_rms_ns["tt_tb"] < 100.0
-    assert report.component_rms_ns["tropo"] < 100.0
-    assert report.component_rms_ns["shap"] < 100.0
+    assert report.component_rms_ns["tdis1"] < 1.0
+    assert report.component_rms_ns["tt_tb"] < 1.0
+    assert report.component_rms_ns["tropo"] < 1.0
+    assert report.component_rms_ns["shap"] < 1.0
 
 
 def test_native_strict_formbats_batcorr_wsrt167():
@@ -86,7 +86,7 @@ def test_native_bclt_roemer_interim_wsrt167():
     )
     roemer = np.asarray(jax.device_get(native.roemer_sec), dtype=np.float64)
     delta = delta_ns(roemer, oracle.fields["roemer_sec"])
-    assert np.sqrt(np.mean(delta**2)) < 5.0
+    assert np.sqrt(np.mean(delta**2)) < 1.0
 
 
 def test_native_dt_ssb_interim_wsrt167():
@@ -97,7 +97,7 @@ def test_native_dt_ssb_interim_wsrt167():
     )
     dt_ssb = np.asarray(jax.device_get(native.dt_ssb_sec), dtype=np.float64)
     delta = delta_ns(dt_ssb, oracle.fields["dt_ssb_sec"])
-    assert np.sqrt(np.mean(delta**2)) < 5.0
+    assert np.sqrt(np.mean(delta**2)) < 1.0
 
 
 def test_single_toa_formbats_trace_wsrt167():
@@ -138,21 +138,10 @@ def test_model_epoch_batcorr_still_available_for_interim():
     params = parse_par_file(par_path)
     toas = parse_tim_file_mjds(tim_path)
     jug = compute_residuals_simple(par_path, tim_path, verbose=False, compatibility="tempo2")
-    obs_earth = np.zeros((len(toas), 3), dtype=np.float64)
-    from jug.utils.constants import OBSERVATORIES
-
-    for i, toa in enumerate(toas):
-        loc = OBSERVATORIES.get(toa.observatory.lower())
-        if loc is not None:
-            obs_earth[i] = loc
-    vel = jug["ssb_obs_vel_km_s"]
     interim = prepare_native_chain_from_simple_result(
         jug,
         params,
         toas,
-        observatory_earth_km=obs_earth,
-        earth_ssb_km=jug["ssb_obs_pos_km"],
-        earth_ssb_vel_km_s=vel,
         use_model_epoch_batcorr=True,
     )
     oracle = load_pytempo_native_oracle(par_path, tim_path, fixture_id="wsrt167")

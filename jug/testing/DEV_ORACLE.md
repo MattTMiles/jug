@@ -28,8 +28,43 @@ Docs: [`TEMPO2_PARITY.md`](../TEMPO2_PARITY.md), [`TEMPO2_NATIVE_CLOCK_STATUS.md
 | **Granular closure** | pytempo delay-chain diagnostics | `tests/test_tempo2_native_formbats_closure.py` | **Added** — component ranking |
 | **Oracle** | pytempo Tier-1 via `tempo2_pytempo_oracle.py` | dev_oracle gates | **Added** |
 
-libstempo remains the **acceptance residual** oracle; pytempo provides **per-TOA term** gates
-(`bbat_mjd`, `torb_sec`, `roemer_sec`, `pulse_number`). See `TEMPO2_PARITY.md` §0 cheat sheet.
+## wsrt167 native delay-chain parity (2026-07-06)
+
+Gate policy: **1 ns RMS** on every formBats slot vs pytempo ``toa_diagnostics``.
+
+| Term | RMS (ns) | Gate | Notes |
+|------|----------|------|-------|
+| `tt` | ~270 | 1 | ``getCorrectionTT`` / Astropy TT path |
+| `tt_tb` | ~44 000 | 1 | Fixed SPK vel (km/day→km/s) + ``formbats_correction_tt`` |
+| `roemer` (host export) | ~0.8 | 1 | Delay provider at ``model_mjd`` |
+| `roemer` (native BCLT) | ~4800 | 1 | IFTE fixed geometry vs pytempo BCLT epoch |
+| `tdis1` | ~42 | 1 | DM Taylor only; DMX/shapelets open |
+| `tdis2` | ~0.1 | 1 | Closed |
+| `tropo` | ~26 | 1 | Open |
+| `shap` | ~24 | 1 | Open |
+
+Temp probes (outside repo):
+
+```bash
+PYTHONPATH=/workspaces/metapulsar/ref-packages/jug:/workspaces/metapulsar/ref-packages/jug/tests \
+  python /tmp/jug_geometry_vector_probe.py
+PYTHONPATH=/workspaces/metapulsar/ref-packages/jug:/workspaces/metapulsar/ref-packages/jug/tests \
+  python /tmp/jug_clock_tt_probe.py
+PYTHONPATH=/workspaces/metapulsar/ref-packages/jug:/workspaces/metapulsar/ref-packages/jug/tests \
+  python /tmp/jug_wsrt167_parity_probe.py
+# writes /tmp/jug_wsrt167_parity_probe.txt
+```
+
+Full suite:
+
+```bash
+cd ref-packages/jug
+PYTHONPATH=.:tests pytest tests/test_tempo2_native_*.py -m dev_oracle -q
+```
+
+Exit criteria: all ``test_tempo2_native_*.py`` gates at **1 ns**; production path uses
+``compute_tempo2_toa_model_jax`` with no mid-chain ``device_get``.
+
 
 ## Delete checklist
 

@@ -1725,6 +1725,18 @@ def _build_setup_common(
             "design_matrix_method must be 'analytic' or 'autodiff'; "
             f"got {design_matrix_method!r}"
         )
+    use_native = str(compatibility).lower().startswith("tempo2") and USE_JAX_TEMPO2_NATIVE_CHAIN
+    native_chain_static = None
+    native_tempo2_terms = None
+    if use_native and extras.get("term_diagnostics") is not None:
+        native_chain_static = {
+            "term_diagnostics": extras["term_diagnostics"],
+            "dt_sec": np.asarray(extras.get("dt_sec", dt_sec_cached), dtype=np.float64),
+            "freq_bary_mhz": np.array(freq_mhz_bary, dtype=np.float64),
+            "ssb_obs_pos_ls": ssb_obs_pos_ls,
+            "obs_sun_pos_ls": obs_sun_pos_ls,
+            "obs_planet_pos_ls": obs_planet_pos_ls,
+        }
     return GeneralFitSetup(
         params=dict(params),
         fit_param_list=fit_params,
@@ -1786,9 +1798,9 @@ def _build_setup_common(
         tzr_phase=tzr_phase,
         noise_config=noise_config,
         binary_plan=binary_plan,
-        use_jax_tempo2_native_chain=(
-            str(compatibility).lower().startswith("tempo2") and USE_JAX_TEMPO2_NATIVE_CHAIN
-        ),
+        use_jax_tempo2_native_chain=use_native,
+        native_chain_static=native_chain_static,
+        native_tempo2_terms=native_tempo2_terms,
     )
 
 
@@ -1876,6 +1888,8 @@ def _build_general_fit_setup_from_files(
             'obs_planet_pos_ls': result.get('obs_planet_pos_ls'),
             'sw_geometry_pc': result.get('sw_geometry_pc'),
             'jump_phase': result.get('jump_phase'),
+            'term_diagnostics': result.get('term_diagnostics'),
+            'dt_sec': result.get('dt_sec'),
         },
         noise_config=noise_config,
         compatibility=compatibility,

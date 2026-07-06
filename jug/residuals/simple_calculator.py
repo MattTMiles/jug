@@ -1857,6 +1857,7 @@ def compute_residuals_simple(
     tempo2_clock_terms = None
     formbats_correction_tt = None
     earth_ssb_vel_km_s = None
+    tempo2_obs_state = None
     if is_tempo2_compat:
         from jug.residuals.tempo2_clock import (
             compute_get_correction_tt_sec,
@@ -1886,17 +1887,23 @@ def compute_residuals_simple(
             idxs = [i for i, t in enumerate(toas) if t.observatory.lower() == obs_code]
             loc = OBSERVATORIES.get(obs_code, obs_itrf_km)
             obs_earth_km[idxs] = loc
-        _, earth_ssb_vel_km_s = _tempo2_tt2tb_geometry(
-            model_mjd,
-            toas,
-            all_obs_codes,
-            obs_itrf_km,
-            ephem,
+        from jug.delays.tempo2_ephemeris import (
+            compute_tempo2_observatory_state,
+            resolve_tempo2_ephemeris_path,
         )
+
+        ephem_path = resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405"))
+        tempo2_obs_state = compute_tempo2_observatory_state(
+            np.asarray(tdb_mjd, dtype=np.float64),
+            np.asarray(obs_itrf_km, dtype=np.float64).reshape(3),
+            ephem_path=ephem_path,
+        )
+        earth_ssb_vel_km_s = tempo2_obs_state.earth_ssb_km[:, 3:6]
+        obs_earth_km = tempo2_obs_state.observatory_earth_km[:, :3]
         tt2tb_vel_km_s = earth_ssb_vel_km_s
         tempo2_clock_terms = compute_tempo2_clock_terms(
             sat_mjd=mjd_utc,
-            correction_tt_sec=correction_tt,
+            correction_tt_sec=formbats_correction_tt,
             observatory_earth_km=obs_earth_km,
             earth_ssb_vel_km_s=tt2tb_vel_km_s,
             prebinary_delay_sec=prebinary_delay_sec,
@@ -2165,6 +2172,15 @@ def compute_residuals_simple(
         binary_delay_sec = np.asarray(total_delay_sec - prebinary_delay_sec, dtype=np.float64)
         binary_status = "derived_total_minus_prebinary"
 
+    tempo2_obs_state_export = None
+    if tempo2_obs_state is not None:
+        tempo2_obs_state_export = {
+            "site_vel_km_s": tempo2_obs_state.site_vel_km_s,
+            "earth_ssb_km": tempo2_obs_state.earth_ssb_km,
+            "observatory_earth_km": tempo2_obs_state.observatory_earth_km,
+            "sun_ssb_km": tempo2_obs_state.sun_ssb_km,
+            "planet_ssb_km": tempo2_obs_state.planet_ssb_km,
+        }
     term_diagnostics = {
         "roemer_sec": np.asarray(roemer_sec, dtype=np.float64),
         "sun_shapiro_sec": np.asarray(sun_shapiro_sec, dtype=np.float64),
@@ -2181,6 +2197,8 @@ def compute_residuals_simple(
         "binary_status": binary_status,
         "metadata": term_metadata.as_dict(),
     }
+    if tempo2_obs_state_export is not None:
+        term_diagnostics["tempo2_obs_state"] = tempo2_obs_state_export
     if tempo2_clock_terms is not None:
         term_diagnostics.update(
             {

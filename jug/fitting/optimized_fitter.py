@@ -1733,10 +1733,29 @@ def _build_setup_common(
             "term_diagnostics": extras["term_diagnostics"],
             "dt_sec": np.asarray(extras.get("dt_sec", dt_sec_cached), dtype=np.float64),
             "freq_bary_mhz": np.array(freq_mhz_bary, dtype=np.float64),
+            "model_mjd": np.array(extras.get("model_mjd", toas_mjd), dtype=np.float64),
             "ssb_obs_pos_ls": ssb_obs_pos_ls,
             "obs_sun_pos_ls": obs_sun_pos_ls,
             "obs_planet_pos_ls": obs_planet_pos_ls,
+            "toas": extras.get("toas"),
         }
+        if extras.get("toas") is not None:
+            from jug.residuals.tempo2_native.chain_jax import prepare_native_terms_for_setup
+
+            native_tempo2_terms = prepare_native_terms_for_setup(
+                {
+                    "term_diagnostics": extras["term_diagnostics"],
+                    "dt_sec": extras.get("dt_sec", dt_sec_cached),
+                    "freq_bary_mhz": freq_mhz_bary,
+                    "model_mjd": extras.get("model_mjd", toas_mjd),
+                    "ssb_obs_pos_ls": ssb_obs_pos_ls,
+                    "obs_sun_pos_ls": obs_sun_pos_ls,
+                    "obs_planet_pos_ls": obs_planet_pos_ls,
+                    "compatibility": compatibility,
+                },
+                params,
+                extras["toas"],
+            )
     return GeneralFitSetup(
         params=dict(params),
         fit_param_list=fit_params,
@@ -1869,6 +1888,7 @@ def _build_general_fit_setup_from_files(
         compatibility=compatibility,
         engine_conventions=engine_conventions,
     )
+    toas = toas_data
 
     return _build_setup_common(
         params=params,
@@ -1890,6 +1910,9 @@ def _build_general_fit_setup_from_files(
             'jump_phase': result.get('jump_phase'),
             'term_diagnostics': result.get('term_diagnostics'),
             'dt_sec': result.get('dt_sec'),
+            'freq_bary_mhz': result.get('freq_bary_mhz'),
+            'model_mjd': result.get('model_mjd'),
+            'toas': toas,
         },
         noise_config=noise_config,
         compatibility=compatibility,

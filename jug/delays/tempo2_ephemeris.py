@@ -51,6 +51,21 @@ def _km_to_light_sec(km: np.ndarray) -> np.ndarray:
     return np.asarray(km, dtype=np.float64) / C_KM_S
 
 
+def tempo2_read_ephemeris_mjd(
+    sat_mjd: np.ndarray,
+    correction_tt_sec: np.ndarray,
+    *,
+    correction_tt_teph_sec: np.ndarray | None = None,
+) -> np.ndarray:
+    """MJD for ``readEphemeris.C`` (``sat + getCorrectionTT + correctionTT_Teph``)."""
+    sat = np.asarray(sat_mjd, dtype=np.float64)
+    tt = np.asarray(correction_tt_sec, dtype=np.float64)
+    out = sat + tt / SECS_PER_DAY
+    if correction_tt_teph_sec is not None:
+        out = out + np.asarray(correction_tt_teph_sec, dtype=np.float64) / SECS_PER_DAY
+    return out
+
+
 def resolve_tempo2_ephemeris_path(ephem_name: str) -> str:
     """Resolve a par ``EPHEM`` keyword to an on-disk SPK/BSP path for jplephem."""
     name = str(ephem_name).lower().strip()
@@ -185,10 +200,11 @@ def close_ephemeris_cache() -> None:
 
 
 def compute_tempo2_observatory_state(
-    tdb_mjd: np.ndarray,
+    ephem_mjd: np.ndarray,
     obs_itrf_km: np.ndarray,
     *,
     ephem_path: str,
+    site_time_scale: str = "tt",
     planet_names: tuple[str, ...] = (
         "mercury",
         "venus",
@@ -208,9 +224,9 @@ def compute_tempo2_observatory_state(
     from astropy.coordinates import EarthLocation
     from astropy.time import Time
 
-    n = len(tdb_mjd)
+    n = len(ephem_mjd)
     kernel = _open_spk(ephem_path)
-    jd_arr = mjd_to_jd(tdb_mjd)
+    jd_arr = mjd_to_jd(ephem_mjd)
 
     earth_ssb = np.zeros((n, 6), dtype=np.float64)
     sun_ssb = np.zeros((n, 6), dtype=np.float64)
@@ -233,7 +249,7 @@ def compute_tempo2_observatory_state(
         planet_ssb[planet] = arr
 
     obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
-    times = Time(np.asarray(tdb_mjd, dtype=np.float64), format="mjd", scale="tdb")
+    times = Time(np.asarray(ephem_mjd, dtype=np.float64), format="mjd", scale=site_time_scale)
     obs_loc = EarthLocation.from_geocentric(
         obs_itrf[0] * u.km, obs_itrf[1] * u.km, obs_itrf[2] * u.km
     )

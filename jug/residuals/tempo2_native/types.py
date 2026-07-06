@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import jax.numpy as jnp
 
 
-@dataclass(frozen=True)
-class Tempo2NativeTerms:
+class Tempo2NativeTerms(NamedTuple):
     """JAX-native tempo2 clock/delay/spin terms for one TOA batch."""
 
     sat_mjd: jnp.ndarray
@@ -40,7 +39,7 @@ def native_terms_to_numpy(terms: Tempo2NativeTerms) -> dict[str, object]:
     import numpy as np
 
     out: dict[str, object] = {}
-    for name in terms.__dataclass_fields__:
+    for name in terms._fields:
         value = getattr(terms, name)
         arr = jax.device_get(value)
         out[name] = np.asarray(arr)

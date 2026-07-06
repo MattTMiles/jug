@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -18,12 +19,12 @@ from jug.delays.tempo2_geometry import (
     pmrv_rad_per_century,
     psr_pos_at_delt,
 )
-from jug.utils.constants import SECS_PER_DAY
+from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 
 
 @dataclass
-class BcltTerms:
-    """Converged BCLT delay terms per TOA."""
+class BcltTermsHost:
+    """Host-side BCLT delay terms per TOA (NumPy reference path)."""
 
     roemer_sec: np.ndarray
     tdis1_sec: np.ndarray
@@ -34,6 +35,20 @@ class BcltTerms:
     dt_ssb_sec: np.ndarray
     bclt_iterations: np.ndarray
     converged: np.ndarray
+
+
+class BcltTerms(NamedTuple):
+    """Converged BCLT delay terms per TOA (JAX pytree)."""
+
+    roemer_sec: jnp.ndarray
+    tdis1_sec: jnp.ndarray
+    tdis2_sec: jnp.ndarray
+    shapiro_sun_sec: jnp.ndarray
+    shapiro_jupiter_sec: jnp.ndarray
+    shapiro_planets_sec: jnp.ndarray
+    dt_ssb_sec: jnp.ndarray
+    bclt_iterations: jnp.ndarray
+    converged: jnp.ndarray
 
 
 def bclt_delt_centuries(
@@ -97,7 +112,7 @@ def compute_bclt_terms_numpy(
     site_vel_km_s: np.ndarray | None = None,
     max_iter: int = 100,
     tol: float = 1.0e-10,
-) -> BcltTerms:
+) -> BcltTermsHost:
     """Host-side iterative BCLT loop with tempo2-fixed IFTE geometry.
 
     Mirrors ``calculate_bclt.C``: ``rca`` / ``sun_ssb`` / ``earth_ssb`` are fixed
@@ -218,7 +233,7 @@ def compute_bclt_terms_numpy(
         iterations[i] = it
         converged[i] = abs(dt - dt_old) <= tol
 
-    return BcltTerms(
+    return BcltTermsHost(
         roemer_sec=roemer,
         tdis1_sec=tdis1,
         tdis2_sec=tdis2,
@@ -239,11 +254,11 @@ def _dm_vals_numpy(sat_mjd: np.ndarray, params: dict) -> np.ndarray:
     return out
 
 
-def bclt_terms_to_jax(terms: BcltTerms) -> dict[str, jnp.ndarray]:
+def bclt_terms_to_jax(terms: BcltTermsHost) -> dict[str, jnp.ndarray]:
     """Convert host BCLT terms to JAX arrays."""
     return {
         name: jnp.asarray(getattr(terms, name))
-        for name in BcltTerms.__dataclass_fields__
+        for name in terms.__dataclass_fields__
     }
 
 
@@ -253,7 +268,7 @@ GM_C3_JAX = 4.925490947e-6
 GMJ_C3_JAX = 4.70255e-9
 PX_CONV_JAX = 1.74532925199432958e-2 / 3600.0e3
 AULTSC_JAX = 499.00478364
-K_DM_SEC_JAX = 2.410331125007655e-4
+K_DM_SEC_JAX = K_DM_SEC
 
 
 def _bclt_delt_jax(sat, posepoch, tt, tt_tb, dt):

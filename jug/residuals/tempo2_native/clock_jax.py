@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from jug.utils.constants import C_KM_S, SECS_PER_DAY
-from jug.utils.ifteph import IFTE_LC, IFTE_MJD0, IFTE_TEPH0_SEC, ifte_delta_t_mjd
+from jug.utils.ifteph import IFTE_LC, IFTE_MJD0, IFTE_TEPH0_SEC
 from jug.utils.timescales import IFTE_K, IFTE_KM1
 
 
@@ -62,27 +62,32 @@ def compute_tempo2_correction_tt_tb_jax(
     observatory_earth_km: jnp.ndarray,
     earth_ssb_vel_km_s: jnp.ndarray,
     *,
+    delta_t_sec: jnp.ndarray,
     units_tdb: bool = True,
     si_units: bool = False,
-) -> jnp.ndarray:
-    """``tt2tdb.C`` ``correctionTT_TB`` in seconds (JAX)."""
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """``tt2tdb.C`` ``correctionTT_TB`` in seconds (JAX-safe).
+
+    ``delta_t_sec`` must be supplied by the host (``IF_deltaT``) until the IFTE
+    table is ported to JAX.
+    """
     ifte_k = jnp.asarray(float(IFTE_K), dtype=jnp.float64)
     ifte_km1 = jnp.asarray(float(IFTE_KM1), dtype=jnp.float64)
     mjd = jnp.asarray(mjd_tt, dtype=jnp.float64)
     obs_km = jnp.asarray(observatory_earth_km, dtype=jnp.float64)
     earth_vel = jnp.asarray(earth_ssb_vel_km_s, dtype=jnp.float64)
-    delta_t = jnp.asarray(ifte_delta_t_mjd(np.asarray(mjd)), dtype=jnp.float64)
+    delta_t = jnp.asarray(delta_t_sec, dtype=jnp.float64)
     obs_term = jnp.sum(obs_km * earth_vel, axis=-1) / (C_KM_S**2)
     obs_term = obs_term / (1.0 - IFTE_LC)
-    if si_units:
-        obs_term = obs_term / (ifte_k * ifte_k)
-    else:
-        obs_term = obs_term / ifte_k
+    obs_term = jnp.where(si_units, obs_term / (ifte_k * ifte_k), obs_term / ifte_k)
     correction_teph = IFTE_TEPH0_SEC + obs_term + delta_t / (1.0 - IFTE_LC)
     if units_tdb and not si_units:
-        return correction_teph
-    linear = ifte_km1 * (mjd - IFTE_MJD0) * SECS_PER_DAY
-    return linear + ifte_k * (correction_teph - IFTE_TEPH0_SEC)
+        tt_tb = correction_teph
+    else:
+        tt_tb = ifte_km1 * (mjd - IFTE_MJD0) * SECS_PER_DAY + ifte_k * (
+            correction_teph - IFTE_TEPH0_SEC
+        )
+    return tt_tb, correction_teph
 
 
 def compute_einstein_rate_jax(mjd_tt: jnp.ndarray, *, si_units: bool = False) -> jnp.ndarray:

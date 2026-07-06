@@ -286,31 +286,29 @@ def _native_tempo2_residual_delta_jax(
     phase_mean_mode: str,
     binary_plan=None,
 ):
-    """Native-chain residual delta through ``compute_tempo2_native_terms_jax``."""
+    """Native-chain residual delta (phase 5 partial: frozen delay terms + JAX spin only).
+
+    Full phase 5 requires recomputing ``compute_tempo2_toa_model_jax`` for both
+    reference and perturbed parameters (astrometry, DM, BCLT, clocks, binary).
+    """
     del ref_f_terms, phase_mean_mode, binary_plan
-    static = getattr(setup, "native_chain_static", None)
-    if static is None:
+    native_terms = getattr(setup, "native_tempo2_terms", None)
+    if native_terms is None:
         return None
 
-    from jug.residuals.tempo2_native.chain_jax import compute_native_tempo2_residual_sec
+    from jug.residuals.tempo2_native.chain_jax import compute_native_spin_residual_sec_jax
 
     ref_params = setup.params
-    res_ref = compute_native_tempo2_residual_sec(
-        ref_params,
-        static=static,
-        weights=setup.weights,
+    common = dict(
+        pulse_numbers=getattr(setup, "external_pulse_numbers", None),
+        pn_add=getattr(setup, "external_pn_add", None),
         jump_phase=getattr(setup, "jump_phase", None),
         tzr_phase=getattr(setup, "tzr_phase", None),
         subtract_mean=True,
+        track_val=-2,
     )
-    res_pert = compute_native_tempo2_residual_sec(
-        params,
-        static=static,
-        weights=setup.weights,
-        jump_phase=getattr(setup, "jump_phase", None),
-        tzr_phase=getattr(setup, "tzr_phase", None),
-        subtract_mean=True,
-    )
+    res_ref = compute_native_spin_residual_sec_jax(native_terms, ref_params, **common)
+    res_pert = compute_native_spin_residual_sec_jax(native_terms, params, **common)
     return res_pert - res_ref
 
 

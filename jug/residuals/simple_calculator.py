@@ -1862,7 +1862,6 @@ def compute_residuals_simple(
         from jug.residuals.tempo2_clock import (
             compute_get_correction_tt_sec,
             compute_site_clock_corrections_sec,
-            compute_tempo2_clock_terms,
         )
 
         correction_tt = compute_site_clock_corrections_sec(
@@ -1882,32 +1881,59 @@ def compute_residuals_simple(
             all_obs_codes=all_obs_codes,
             time_offsets=time_offsets,
         )
-        obs_earth_km = np.zeros((len(toas), 3), dtype=np.float64)
-        for obs_code in all_obs_codes:
-            idxs = [i for i, t in enumerate(toas) if t.observatory.lower() == obs_code]
-            loc = OBSERVATORIES.get(obs_code, obs_itrf_km)
-            obs_earth_km[idxs] = loc
         from jug.delays.tempo2_ephemeris import (
             compute_tempo2_observatory_state,
             resolve_tempo2_ephemeris_path,
+            tempo2_read_ephemeris_mjd,
+        )
+        from jug.residuals.tempo2_clock import (
+            compute_correction_tt_tb_sec,
+            compute_formbats_arrival,
         )
 
         ephem_path = resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405"))
+        sat_arr = np.asarray(mjd_utc, dtype=np.float64)
+        formbats_tt_arr = np.asarray(formbats_correction_tt, dtype=np.float64)
+        obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
+
+        # Bootstrap ephemeris at sat+TT, then apply Teph for readEphemeris epoch.
+        ephem_boot = tempo2_read_ephemeris_mjd(sat_arr, formbats_tt_arr)
+        obs_boot = compute_tempo2_observatory_state(
+            ephem_boot, obs_itrf, ephem_path=ephem_path
+        )
+        mjd_tt = sat_arr + formbats_tt_arr / SECS_PER_DAY
+        _, tt_teph = compute_correction_tt_tb_sec(
+            mjd_tt,
+            observatory_earth_km=obs_boot.observatory_earth_km[:, :3],
+            earth_ssb_vel_km_s=obs_boot.earth_ssb_km[:, 3:6],
+            params=params,
+        )
+        ephemeris_mjd = tempo2_read_ephemeris_mjd(
+            sat_arr,
+            formbats_tt_arr,
+            correction_tt_teph_sec=tt_teph,
+        )
         tempo2_obs_state = compute_tempo2_observatory_state(
-            np.asarray(tdb_mjd, dtype=np.float64),
-            np.asarray(obs_itrf_km, dtype=np.float64).reshape(3),
-            ephem_path=ephem_path,
+            ephemeris_mjd, obs_itrf, ephem_path=ephem_path
         )
         earth_ssb_vel_km_s = tempo2_obs_state.earth_ssb_km[:, 3:6]
         obs_earth_km = tempo2_obs_state.observatory_earth_km[:, :3]
-        tt2tb_vel_km_s = earth_ssb_vel_km_s
-        tempo2_clock_terms = compute_tempo2_clock_terms(
-            sat_mjd=mjd_utc,
-            correction_tt_sec=formbats_correction_tt,
+        tt_tb, tt_teph = compute_correction_tt_tb_sec(
+            mjd_tt,
             observatory_earth_km=obs_earth_km,
-            earth_ssb_vel_km_s=tt2tb_vel_km_s,
-            prebinary_delay_sec=prebinary_delay_sec,
+            earth_ssb_vel_km_s=earth_ssb_vel_km_s,
             params=params,
+        )
+        from jug.utils.ifteph import ifte_delta_t_mjd
+
+        ifte_delta_t_sec = np.asarray(ifte_delta_t_mjd(mjd_tt), dtype=np.float64)
+        tempo2_clock_terms = compute_formbats_arrival(
+            sat_arr,
+            formbats_tt_arr,
+            tt_tb,
+            prebinary_delay_sec,
+            params,
+            correction_tt_teph_sec=tt_teph,
         )
         if USE_NATIVE_BBAT_PHASE5:
             from jug.residuals.tempo2_spin import compute_tempo2_torb_sec
@@ -2007,25 +2033,56 @@ def compute_residuals_simple(
     native_terms_export = None
     if is_tempo2_compat and USE_JAX_TEMPO2_NATIVE_CHAIN:
         from jug.delays.tempo2_ephemeris import resolve_tempo2_ephemeris_path
+        from jug.delays.tempo2_geometry import tempo2_observatory_chain_vectors
         from jug.residuals.tempo2_native.chain_jax import (
             compute_tempo2_native_residuals_jax,
             compute_tempo2_native_terms_jax,
         )
+        from jug.residuals.tempo2_native.model_jax import build_tempo2_model_static
 
+        _, ssb_obs_ls_bclt, obs_sun_ls_bclt, planets_bclt = tempo2_observatory_chain_vectors(
+            tempo2_obs_state
+        )
         tdis1_arr = np.asarray(dm_delay_sec, dtype=np.float64) + np.asarray(
             dmx_delay_sec, dtype=np.float64
         )
         utc_to_tdb_native_sec = (
             np.asarray(tdb_mjd, dtype=np.float64) - np.asarray(mjd_utc, dtype=np.float64)
         ) * SECS_PER_DAY
+        native_model_static = build_tempo2_model_static(
+            params=params,
+            toas=toas,
+            tropo_sec=np.asarray(tropo_delay_sec, dtype=np.float64),
+            dt_emission_sec=np.asarray(dt_sec, dtype=np.float64),
+            obs_clocks=obs_clocks,
+            obs_clock_default=obs_clock,
+            bipm_clock=bipm_clock,
+            obs_code=observatory.lower(),
+            ephem_path=resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405")),
+            obs_itrf_km=np.asarray(obs_itrf_km, dtype=np.float64),
+            ne_sw=resolve_ne_sw_cm3(params, engine_profile),
+            planet_shapiro_enabled=planet_shapiro_enabled,
+        )
+        from jug.utils.ifteph import ifte_delta_t_mjd
+
+        native_ifte_delta = np.asarray(
+            ifte_delta_t_mjd(
+                np.asarray(mjd_utc, dtype=np.float64)
+                + np.asarray(formbats_correction_tt, dtype=np.float64) / SECS_PER_DAY
+            ),
+            dtype=np.float64,
+        )
         native = compute_tempo2_native_terms_jax(
             sat_mjd=jnp.asarray(mjd_utc, dtype=jnp.float64),
-            correction_tt_sec=jnp.asarray(correction_tt, dtype=jnp.float64),
+            correction_tt_sec=jnp.asarray(formbats_correction_tt, dtype=jnp.float64),
+            correction_tt_tb_sec=jnp.asarray(
+                tempo2_clock_terms.correction_tt_tb_sec, dtype=jnp.float64
+            ),
             params=params,
             toas=toas,
             observatory_earth_km=jnp.asarray(obs_earth_km, dtype=jnp.float64),
-            earth_ssb_km=jnp.asarray(ssb_obs_pos_km, dtype=jnp.float64),
-            earth_ssb_vel_km_s=jnp.asarray(tt2tb_vel_km_s, dtype=jnp.float64),
+            earth_ssb_km=jnp.asarray(tempo2_obs_state.earth_ssb_km[:, :3], dtype=jnp.float64),
+            earth_ssb_vel_km_s=jnp.asarray(earth_ssb_vel_km_s, dtype=jnp.float64),
             ephem_path=resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405")),
             freq_mhz=jnp.asarray(freq_bary_mhz, dtype=jnp.float64),
             tdis1_sec=jnp.asarray(tdis1_arr, dtype=jnp.float64),
@@ -2034,8 +2091,18 @@ def compute_residuals_simple(
             dt_emission_sec=jnp.asarray(np.asarray(dt_sec, dtype=np.float64), dtype=jnp.float64),
             use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
             utc_to_tdb_sec=jnp.asarray(utc_to_tdb_native_sec, dtype=jnp.float64),
-            use_model_epoch_batcorr=False,
+            formbats_tt_sec=jnp.asarray(formbats_correction_tt, dtype=jnp.float64),
+            ssb_obs_ls_fixed=jnp.asarray(ssb_obs_ls_bclt, dtype=jnp.float64),
+            obs_sun_ls_fixed=jnp.asarray(obs_sun_ls_bclt, dtype=jnp.float64),
+            obs_planets_ls_fixed=planets_bclt,
+            freq_mhz_topocentric=jnp.asarray(
+                np.array([t.freq_mhz for t in toas], dtype=np.float64), dtype=jnp.float64
+            ),
+            ne_sw=resolve_ne_sw_cm3(params, engine_profile),
+            site_vel_km_s=jnp.asarray(tempo2_obs_state.site_vel_km_s, dtype=jnp.float64),
             planet_shapiro_enabled=planet_shapiro_enabled,
+            model_static=native_model_static,
+            ifte_delta_t_sec=jnp.asarray(native_ifte_delta, dtype=jnp.float64),
         )
         jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
         tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)
@@ -2209,6 +2276,10 @@ def compute_residuals_simple(
                 "correction_tt_tb_sec": np.asarray(
                     tempo2_clock_terms.correction_tt_tb_sec, dtype=np.float64
                 ),
+                "correction_tt_teph_sec": np.asarray(
+                    tempo2_clock_terms.correction_tt_teph_sec, dtype=np.float64
+                ),
+                "ifte_delta_t_sec": ifte_delta_t_sec,
                 "bat_mjd": np.asarray(tempo2_clock_terms.bat_mjd, dtype=np.float64),
                 "bbat_mjd": np.asarray(tempo2_clock_terms.bbat_mjd, dtype=np.float64),
                 "shklovskii_sec": np.asarray(

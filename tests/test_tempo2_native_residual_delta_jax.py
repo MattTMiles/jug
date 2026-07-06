@@ -16,19 +16,34 @@ from jug.fitting.optimized_fitter import _build_general_fit_setup_from_files
 from tempo2_native_test_helpers import load_wsrt167_fixture
 
 
-def test_native_residual_delta_uses_full_chain_not_taylor(monkeypatch):
+@pytest.fixture
+def wsrt167_setup(monkeypatch):
+    monkeypatch.setattr(
+        "jug.residuals.tempo2_native_quarantine.USE_JAX_TEMPO2_NATIVE_CHAIN",
+        True,
+    )
+    monkeypatch.setattr(
+        "jug.fitting.optimized_fitter.USE_JAX_TEMPO2_NATIVE_CHAIN",
+        True,
+    )
     fixture = load_wsrt167_fixture()
-    setup = _build_general_fit_setup_from_files(
+    return _build_general_fit_setup_from_files(
         fixture["par_path"],
         fixture["tim_path"],
         fit_params=["F0"],
-        clock_dir=str(fixture.get("clock_dir", "")),
+        clock_dir=None,
         verbose=False,
         compatibility="tempo2",
         design_matrix_method="autodiff",
     )
+
+
+def test_native_residual_delta_uses_full_chain_not_taylor(wsrt167_setup, monkeypatch):
+    setup = wsrt167_setup
     if setup.native_chain_static is None:
         pytest.skip("native_chain_static unavailable (USE_JAX_TEMPO2_NATIVE_CHAIN off?)")
+    if setup.native_tempo2_terms is None:
+        pytest.skip("native_tempo2_terms unavailable")
 
     calls = {"taylor": 0}
 
@@ -46,17 +61,8 @@ def test_native_residual_delta_uses_full_chain_not_taylor(monkeypatch):
     assert calls["taylor"] == 0
 
 
-def test_native_f0_jacfwd_finite_difference_spot_check():
-    fixture = load_wsrt167_fixture()
-    setup = _build_general_fit_setup_from_files(
-        fixture["par_path"],
-        fixture["tim_path"],
-        fit_params=["F0"],
-        clock_dir=str(fixture.get("clock_dir", "")),
-        verbose=False,
-        compatibility="tempo2",
-        design_matrix_method="autodiff",
-    )
+def test_native_f0_jacfwd_finite_difference_spot_check(wsrt167_setup):
+    setup = wsrt167_setup
     if setup.native_chain_static is None:
         pytest.skip("native_chain_static unavailable")
     fn = make_residual_delta_jax_fn(setup=setup, fit_params=["F0"])

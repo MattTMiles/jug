@@ -25,7 +25,9 @@ class Tempo2ClockTerms:
 
     sat_mjd: np.ndarray
     correction_tt_sec: np.ndarray
+    correction_tt_teph_sec: np.ndarray
     correction_tt_tb_sec: np.ndarray
+    einstein_rate: np.ndarray
     model_clock_mjd: np.ndarray
     bat_mjd: np.ndarray
     bbat_mjd: np.ndarray
@@ -131,8 +133,8 @@ def compute_correction_tt_tb_sec(
     observatory_earth_km: np.ndarray,
     earth_ssb_vel_km_s: np.ndarray,
     params: dict[str, Any],
-) -> np.ndarray:
-    """``tt2tb.C`` ``correctionTT_TB`` for TCB (or TDB) par units."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """``tt2tb.C`` ``correctionTT_TB`` and Teph component for TCB/TDB par units."""
     mjd = np.asarray(mjd_tt, dtype=np.float64)
     delta_t = np.asarray(ifte_delta_t_mjd(mjd), dtype=np.float64)
     obs_km = np.asarray(observatory_earth_km, dtype=np.float64)
@@ -149,10 +151,10 @@ def compute_correction_tt_tb_sec(
     correction_teph = IFTE_TEPH0_SEC + obs_term + delta_t / (1.0 - IFTE_LC)
 
     if units == "TDB":
-        return correction_teph
+        return correction_teph, correction_teph
 
     linear = IFTE_KM1 * (mjd - IFTE_MJD0) * SECS_PER_DAY
-    return linear + IFTE_K * (correction_teph - IFTE_TEPH0_SEC)
+    return linear + IFTE_K * (correction_teph - IFTE_TEPH0_SEC), correction_teph
 
 
 def compute_formbats_arrival(
@@ -161,12 +163,33 @@ def compute_formbats_arrival(
     correction_tt_tb_sec: np.ndarray,
     prebinary_delay_sec: np.ndarray,
     params: dict[str, Any],
+    *,
+    correction_tt_teph_sec: np.ndarray | None = None,
+    einstein_rate: np.ndarray | None = None,
 ) -> Tempo2ClockTerms:
     """Build tempo2 ``bat`` / ``bbat`` from ``formBats.C``."""
     sat = np.asarray(sat_mjd, dtype=np.float64)
     tt = np.asarray(correction_tt_sec, dtype=np.float64)
     tt_tb = np.asarray(correction_tt_tb_sec, dtype=np.float64)
     prebinary = np.asarray(prebinary_delay_sec, dtype=np.float64)
+    tt_teph = (
+        np.asarray(correction_tt_teph_sec, dtype=np.float64)
+        if correction_tt_teph_sec is not None
+        else tt_tb.copy()
+    )
+    if einstein_rate is None:
+        from jug.delays.barycentric import compute_einstein_rate
+
+        dilate = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
+        if dilate:
+            mjd_tt = sat + tt / SECS_PER_DAY
+            units = parse_timescale(params)
+            scale = "TCB" if units == "SI_UNITS" else "TDB"
+            einstein = np.asarray(compute_einstein_rate(mjd_tt, units=scale), dtype=np.float64)
+        else:
+            einstein = np.ones_like(sat, dtype=np.float64)
+    else:
+        einstein = np.asarray(einstein_rate, dtype=np.float64)
 
     clock_sec = tt + tt_tb
     model_clock = sat + clock_sec / SECS_PER_DAY
@@ -178,7 +201,9 @@ def compute_formbats_arrival(
     return Tempo2ClockTerms(
         sat_mjd=sat,
         correction_tt_sec=tt,
+        correction_tt_teph_sec=tt_teph,
         correction_tt_tb_sec=tt_tb,
+        einstein_rate=einstein,
         model_clock_mjd=model_clock,
         bat_mjd=bat,
         bbat_mjd=bbat,
@@ -199,7 +224,7 @@ def compute_tempo2_clock_terms(
     sat = np.asarray(sat_mjd, dtype=np.float64)
     tt = np.asarray(correction_tt_sec, dtype=np.float64)
     mjd_tt = sat + tt / SECS_PER_DAY
-    tt_tb = compute_correction_tt_tb_sec(
+    tt_tb, tt_teph = compute_correction_tt_tb_sec(
         mjd_tt,
         observatory_earth_km=observatory_earth_km,
         earth_ssb_vel_km_s=earth_ssb_vel_km_s,
@@ -211,4 +236,5 @@ def compute_tempo2_clock_terms(
         tt_tb,
         prebinary_delay_sec,
         params,
+        correction_tt_teph_sec=tt_teph,
     )

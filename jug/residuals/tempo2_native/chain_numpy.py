@@ -116,7 +116,7 @@ def _compute_tempo2_native_terms_numpy_impl(
         profile = resolve_engine_profile(params, "tempo2")
         ne_sw = resolve_ne_sw_cm3(params, profile)
     mjd_tt = sat + formbats_tt / SECS_PER_DAY
-    tt_tb = compute_correction_tt_tb_sec(
+    tt_tb, _tt_teph = compute_correction_tt_tb_sec(
         mjd_tt,
         observatory_earth_km=observatory_earth_km,
         earth_ssb_vel_km_s=earth_ssb_vel_km_s,

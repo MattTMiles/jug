@@ -153,11 +153,6 @@ def compute_tempo2_native_terms_jax(
         freq_mhz=freq,
         tropo_sec=np.asarray(tropospheric_sec, dtype=np.float64),
         dt_emission_sec=np.asarray(dt_emission_sec, dtype=np.float64),
-        correction_tt_sec=(
-            np.asarray(formbats_tt_sec, dtype=np.float64)
-            if formbats_tt_sec is not None
-            else np.asarray(correction_tt_sec, dtype=np.float64)
-        ),
         ssb_obs_ls=np.asarray(ssb_obs_ls_fixed, dtype=np.float64),
         obs_sun_ls=np.asarray(obs_sun_ls_fixed, dtype=np.float64),
         obs_jupiter_ls=jup,

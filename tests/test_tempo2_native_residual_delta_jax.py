@@ -72,3 +72,24 @@ def test_native_f0_jacfwd_finite_difference_spot_check(wsrt167_setup):
     fd = fd.reshape(-1)
     scale = max(float(np.max(np.abs(fd))), 1.0)
     assert float(np.max(np.abs(jac - fd))) / scale < 0.05
+
+
+@pytest.mark.parametrize(
+    "param,eps",
+    [
+        ("RAJ", 1e-10),
+        ("DECJ", 1e-10),
+        ("PX", 1e-4),
+        ("DM", 1e-5),
+    ],
+)
+def test_native_delta_recomputes_delay_terms(wsrt167_setup, param, eps):
+    """Phase 5 gate: delay terms must move when astrometry/DM are perturbed."""
+    setup = wsrt167_setup
+    if setup.native_chain_static is None:
+        pytest.skip("native_chain_static unavailable")
+    fn = make_residual_delta_jax_fn(setup=setup, fit_params=[param])
+    delta = np.asarray(fn(jnp.asarray([eps], dtype=jnp.float64)))
+    assert np.max(np.abs(delta)) > 0.0, (
+        f"{param} produced zero native residual_delta; delay terms are frozen"
+    )

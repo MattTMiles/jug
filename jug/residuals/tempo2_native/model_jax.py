@@ -36,7 +36,7 @@ from jug.residuals.tempo2_native.spin_jax import (
 )
 from jug.residuals.tempo2_native.types import Tempo2NativeTerms
 from jug.utils.constants import SECS_PER_DAY
-from jug.utils.timescales import parse_timescale
+from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
 
 @dataclass(frozen=True)
@@ -172,7 +172,6 @@ def compute_tempo2_toa_model_jax(
     *,
     sat_mjd: jnp.ndarray,
     freq_mhz: jnp.ndarray,
-    correction_tt_sec: jnp.ndarray,
     params_f_terms: jnp.ndarray,
     params_pepoch: jnp.float64,
     pos_pulsar: jnp.ndarray,
@@ -213,12 +212,21 @@ def compute_tempo2_toa_model_jax(
     pn_add: jnp.ndarray | None = None,
     ifte_delta_t_sec: jnp.ndarray | None = None,
 ) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
-    """Full Tempo2 delay/spin chain in one JIT graph."""
+    """Full Tempo2 delay/spin chain in one JIT graph.
+
+    Clock ``getCorrectionTT`` runs inside the JIT graph from static clock tables.
+    IFTE ``delta_t`` and ephemeris geometry remain host-fed until Phase 1/2 ports
+    complete (see ``run_tempo2_toa_model_with_fixed_ifte_geometry`` docstring).
+    """
     if dm_vals is None:
         dm_vals = compute_dm_vals_jax(sat_mjd, dm_epoch=dm_epoch, dm_coeffs=dm_coeffs)
-    # ``getCorrectionTT`` still uses the Astropy UTC→TT path on the host until
-    # ``clkcorr.C`` feedback is ported to match ``compute_get_correction_tt_sec``.
-    tt = jnp.asarray(correction_tt_sec, dtype=jnp.float64)
+    tt = compute_tempo2_get_correction_tt_jax(
+        sat_mjd,
+        chain_mjd_tables=chain_mjd_tables,
+        chain_offset_tables=chain_offset_tables,
+        bipm_mjd=bipm_mjd,
+        bipm_offset=bipm_offset,
+    )
     mjd_tt = sat_mjd + tt / SECS_PER_DAY
     if ifte_delta_t_sec is None:
         raise ValueError(
@@ -569,28 +577,29 @@ def run_tempo2_toa_model(
     dm_coeffs = _dm_coeffs_from_params(params)
     eph = prepare_ephemeris_inputs_jax(ephem_mjd, static.obs_itrf_km, static.ephem_path)
     sat = np.asarray(sat_mjd, dtype=np.float64)
-    tt = np.asarray(
-        compute_tempo2_get_correction_tt_jax(
-            jnp.asarray(sat, dtype=jnp.float64),
-            chain_mjd_tables=tuple(
-                jnp.asarray(t, dtype=jnp.float64) for t in static.chain_mjd_tables
-            ),
-            chain_offset_tables=tuple(
-                jnp.asarray(t, dtype=jnp.float64) for t in static.chain_offset_tables
-            ),
-            bipm_mjd=jnp.asarray(static.bipm_mjd, dtype=jnp.float64),
-            bipm_offset=jnp.asarray(static.bipm_offset, dtype=jnp.float64),
+    tt_pre = np.asarray(
+        jax.device_get(
+            compute_tempo2_get_correction_tt_jax(
+                jnp.asarray(sat, dtype=jnp.float64),
+                chain_mjd_tables=tuple(
+                    jnp.asarray(t, dtype=jnp.float64) for t in static.chain_mjd_tables
+                ),
+                chain_offset_tables=tuple(
+                    jnp.asarray(t, dtype=jnp.float64) for t in static.chain_offset_tables
+                ),
+                bipm_mjd=jnp.asarray(static.bipm_mjd, dtype=jnp.float64),
+                bipm_offset=jnp.asarray(static.bipm_offset, dtype=jnp.float64),
+            )
         ),
         dtype=np.float64,
     )
-    ifte_delta = np.asarray(ifte_delta_t_mjd(sat + tt / SECS_PER_DAY), dtype=np.float64)
+    ifte_delta = np.asarray(ifte_delta_t_mjd(sat + tt_pre / SECS_PER_DAY), dtype=np.float64)
     units = parse_timescale(params)
     dilate = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
     pmrv = pmrv_rad_per_century(float(params.get("PMRV", 0.0)))
     terms, res = compute_tempo2_toa_model_jax(
         sat_mjd=jnp.asarray(sat_mjd, dtype=jnp.float64),
         freq_mhz=jnp.asarray(freq_mhz, dtype=jnp.float64),
-        correction_tt_sec=jnp.asarray(tt, dtype=jnp.float64),
         params_f_terms=f_terms,
         params_pepoch=pepoch,
         pos_pulsar=jnp.asarray(pos, dtype=jnp.float64),
@@ -618,7 +627,7 @@ def run_tempo2_toa_model(
         parallax_mas=float(params.get("PX", 0.0)),
         pmrv_rad_century=pmrv,
         dilate_freq=dilate,
-        si_units=units == "SI_UNITS",
+        si_units=is_tempo2_si_units(units),
         units_tdb=units == "TDB",
         planet_shapiro_enabled=static.planet_shapiro_enabled,
         track_val=static.track_val,
@@ -653,7 +662,6 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     freq_mhz: np.ndarray,
     tropo_sec: np.ndarray,
     dt_emission_sec: np.ndarray,
-    correction_tt_sec: np.ndarray,
     ssb_obs_ls: np.ndarray,
     obs_sun_ls: np.ndarray,
     obs_jupiter_ls: np.ndarray,
@@ -676,8 +684,8 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
 ) -> tuple[Tempo2NativeTerms, np.ndarray | None]:
     """Run the unified JIT model with host-frozen IFTE geometry.
 
-    ``correction_tt_sec`` is host ``getCorrectionTT`` (Astropy UTC→TT). ``tt_tb``,
-    BCLT, formBats, and spin run in the JIT graph. IFTE ``delta_t`` is host-supplied.
+    ``getCorrectionTT`` and ``tt_tb`` (given IFTE delta_t) run in the JIT graph.
+    Ephemeris vectors and IFTE ``delta_t`` are still host-supplied staging inputs.
     """
     if model_static is None:
         raise ValueError(
@@ -715,7 +723,6 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     terms, residual_sec = compute_tempo2_toa_model_jax(
         sat_mjd=jnp.asarray(sat_mjd, dtype=jnp.float64),
         freq_mhz=jnp.asarray(freq_mhz, dtype=jnp.float64),
-        correction_tt_sec=jnp.asarray(correction_tt_sec, dtype=jnp.float64),
         params_f_terms=f_terms,
         params_pepoch=pepoch,
         pos_pulsar=jnp.asarray(pos, dtype=jnp.float64),
@@ -745,7 +752,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
         parallax_mas=float(params.get("PX", 0.0)),
         pmrv_rad_century=pmrv,
         dilate_freq=dilate,
-        si_units=units == "SI_UNITS",
+        si_units=is_tempo2_si_units(units),
         units_tdb=units == "TDB",
         planet_shapiro_enabled=planet_shapiro_enabled,
         track_val=int(track_val),

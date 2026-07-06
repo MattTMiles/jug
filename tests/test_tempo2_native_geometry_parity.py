@@ -103,6 +103,6 @@ def test_wsrt167_earth_ssb_pytempo_export_diagnostic():
     from pytempo.sandbox import tempopulsar
 
     psr = tempopulsar(parfile=str(fixture["par_path"]), timfile=str(fixture["tim_path"]), dofit=False)
-    pt_earth = np.asarray(psr.earth_ssb[:, :3], dtype=np.float64)
+    pt_earth = np.asarray(psr.earth_ssb[:, :3], dtype=np.float64) * C_KM_S
     rms_cm = float(np.sqrt(np.mean(np.sum((jug_earth - pt_earth) ** 2, axis=1))) * 100)
     assert rms_cm < 1.0

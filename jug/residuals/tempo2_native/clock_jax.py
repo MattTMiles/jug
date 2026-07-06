@@ -6,29 +6,48 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from jug.io.clock import _LEAP_INSERTION_MJDS
 from jug.utils.constants import C_KM_S, SECS_PER_DAY
 from jug.utils.ifteph import IFTE_LC, IFTE_MJD0, IFTE_TEPH0_SEC
 from jug.utils.timescales import IFTE_K, IFTE_KM1
 
+_LEAP_MJDS_JAX = jnp.asarray(_LEAP_INSERTION_MJDS, dtype=jnp.float64)
+
+
+def utc_mjd_to_continuous_jax(mjd: jnp.ndarray) -> jnp.ndarray:
+    """Leap-second-aware UTC MJD abscissa (matches ``jug.io.clock.utc_mjd_to_continuous``)."""
+    mjd = jnp.asarray(mjd, dtype=jnp.float64)
+    n_leaps = jnp.searchsorted(_LEAP_MJDS_JAX, mjd, side="right")
+    return mjd + n_leaps / SECS_PER_DAY
+
 
 def interpolate_clock_jax(mjd: jnp.ndarray, mjd_table: jnp.ndarray, offset_table: jnp.ndarray) -> jnp.ndarray:
-    """Linear clock interpolation on a continuous MJD grid (JAX)."""
+    """Linear clock interpolation with leap-aware abscissa and boundary extrapolation."""
     mjd = jnp.asarray(mjd, dtype=jnp.float64)
     mjd_table = jnp.asarray(mjd_table, dtype=jnp.float64)
     offset_table = jnp.asarray(offset_table, dtype=jnp.float64)
     if mjd_table.size == 0:
         return jnp.zeros_like(mjd)
+
+    mjd_cont = utc_mjd_to_continuous_jax(mjd)
+    table_cont = utc_mjd_to_continuous_jax(mjd_table)
     idx = jnp.searchsorted(mjd_table, mjd, side="right")
     idx = jnp.clip(idx, 1, mjd_table.size - 1)
-    mjd0 = mjd_table[idx - 1]
-    mjd1 = mjd_table[idx]
+    mjd0 = table_cont[idx - 1]
+    mjd1 = table_cont[idx]
     off0 = offset_table[idx - 1]
     off1 = offset_table[idx]
-    frac = (mjd - mjd0) / jnp.maximum(mjd1 - mjd0, 1e-30)
+    frac = (mjd_cont - mjd0) / jnp.maximum(mjd1 - mjd0, 1e-30)
     out = off0 + frac * (off1 - off0)
-    out = jnp.where(mjd <= mjd_table[0], 0.0, out)
-    out = jnp.where(mjd >= mjd_table[-1], 0.0, out)
+    out = jnp.where(mjd <= mjd_table[0], offset_table[0], out)
+    out = jnp.where(mjd >= mjd_table[-1], offset_table[-1], out)
     return out
+
+
+def tai_minus_utc_jax(mjd_utc: jnp.ndarray) -> jnp.ndarray:
+    """TAI−UTC in seconds at UTC MJD (10 s base at 1972-01-01 plus inserted leaps)."""
+    mjd_utc = jnp.asarray(mjd_utc, dtype=jnp.float64)
+    return 10.0 + jnp.searchsorted(_LEAP_MJDS_JAX, mjd_utc, side="right").astype(jnp.float64)
 
 
 def compute_tempo2_get_correction_tt_jax(
@@ -40,7 +59,7 @@ def compute_tempo2_get_correction_tt_jax(
     bipm_offset: jnp.ndarray,
     feedback_iters: int = 3,
 ) -> jnp.ndarray:
-    """Sum a pre-resolved UTC→TAI clock chain with ``sat+corr/SECDAY`` feedback."""
+    """Tempo2 ``clkcorr.C`` UTC→TT with ``sat+corr/SECDAY`` feedback."""
     sat = jnp.asarray(sat_mjd, dtype=jnp.float64)
 
     def one_iter(corr):
@@ -49,7 +68,9 @@ def compute_tempo2_get_correction_tt_jax(
         for mjd_tab, off_tab in zip(chain_mjd_tables, chain_offset_tables):
             total = total + interpolate_clock_jax(mjd_eval, mjd_tab, off_tab)
         bipm = interpolate_clock_jax(mjd_eval, bipm_mjd, bipm_offset) - 32.184
-        return total + bipm
+        clock_corr = total + bipm
+        tt_minus_utc = tai_minus_utc_jax(mjd_eval) + 32.184
+        return clock_corr + tt_minus_utc
 
     corr = jnp.zeros_like(sat)
     for _ in range(max(1, int(feedback_iters))):

@@ -16,7 +16,7 @@ import numpy as np
 
 from jug.utils.constants import C_KM_S, SECS_PER_DAY
 from jug.utils.ifteph import IFTE_LC, IFTE_MJD0, IFTE_TEPH0_SEC, ifte_delta_t_mjd
-from jug.utils.timescales import IFTE_K, IFTE_KM1, parse_timescale
+from jug.utils.timescales import IFTE_K, IFTE_KM1, is_tempo2_si_units, parse_timescale
 
 
 @dataclass
@@ -34,6 +34,58 @@ class Tempo2ClockTerms:
     shklovskii_sec: np.ndarray
 
 
+def _pack_clock_chain_tables(
+    obs_chain: dict,
+    bipm_clock: dict,
+) -> tuple[tuple[np.ndarray, ...], tuple[np.ndarray, ...], np.ndarray, np.ndarray]:
+    """Pack merged observatory + BIPM clock tables for feedback evaluation."""
+    mjd_tables: list[np.ndarray] = []
+    offset_tables: list[np.ndarray] = []
+    if "mjd" in obs_chain and "offset" in obs_chain:
+        mjd_tables.append(np.asarray(obs_chain["mjd"], dtype=np.float64))
+        offset_tables.append(np.asarray(obs_chain["offset"], dtype=np.float64))
+    for link in obs_chain.get("links", []):
+        mjd_tables.append(np.asarray(link["mjd"], dtype=np.float64))
+        offset_tables.append(np.asarray(link["offset"], dtype=np.float64))
+    return (
+        tuple(mjd_tables),
+        tuple(offset_tables),
+        np.asarray(bipm_clock["mjd"], dtype=np.float64),
+        np.asarray(bipm_clock["offset"], dtype=np.float64),
+    )
+
+
+def compute_tempo2_get_correction_tt_sec_vectorized(
+    sat_mjd: np.ndarray,
+    *,
+    chain_mjd_tables: tuple[np.ndarray, ...],
+    chain_offset_tables: tuple[np.ndarray, ...],
+    bipm_mjd: np.ndarray,
+    bipm_offset: np.ndarray,
+    feedback_iters: int = 3,
+) -> np.ndarray:
+    """Tempo2 ``clkcorr.C`` UTC→TT chain with ``sat+corr/SECDAY`` feedback."""
+    from jug.io.clock import interpolate_clock_vectorized
+
+    sat = np.asarray(sat_mjd, dtype=np.float64)
+    corr = np.zeros_like(sat)
+
+    def one_iter(prev_corr: np.ndarray) -> np.ndarray:
+        mjd_eval = sat + prev_corr / SECS_PER_DAY
+        total = np.zeros_like(sat)
+        for mjd_tab, off_tab in zip(chain_mjd_tables, chain_offset_tables):
+            total = total + interpolate_clock_vectorized(
+                {"mjd": mjd_tab, "offset": off_tab},
+                mjd_eval,
+            )
+        bipm = np.interp(mjd_eval, bipm_mjd, bipm_offset) - 32.184
+        return total + bipm
+
+    for _ in range(max(1, int(feedback_iters))):
+        corr = one_iter(corr)
+    return corr
+
+
 def compute_get_correction_tt_sec(
     toas: list[Any],
     *,
@@ -42,8 +94,13 @@ def compute_get_correction_tt_sec(
     bipm_clock: dict,
     all_obs_codes: list[str],
     time_offsets: np.ndarray | None = None,
+    feedback_iters: int = 3,
 ) -> np.ndarray:
-    """Tempo2 ``getCorrectionTT`` for ``formBats.C`` (seconds, per TOA)."""
+    """Tempo2 ``getCorrectionTT`` for ``formBats.C`` (seconds, per TOA).
+
+    Uses Astropy UTC→TT (leap-second aware) with ``sat+corr/SECDAY`` feedback
+    matching ``clkcorr.C`` evaluation time.
+    """
     from astropy import units as u
     from astropy.coordinates import EarthLocation
 
@@ -64,15 +121,22 @@ def compute_get_correction_tt_sec(
             loc_km[0] * u.km, loc_km[1] * u.km, loc_km[2] * u.km
         )
         offsets = None if time_offsets is None else time_offsets[idxs]
-        out[idxs] = compute_tt_correction_sec_vectorized(
-            [toas[i].mjd_int for i in idxs],
-            [toas[i].mjd_frac for i in idxs],
-            chain,
-            bipm_clock,
-            loc,
-            time_offsets=offsets,
-            mjd_strings=[toas[i].mjd_str for i in idxs],
-        )
+        mjd_ints = [toas[i].mjd_int for i in idxs]
+        mjd_fracs = [toas[i].mjd_frac for i in idxs]
+        mjd_strings = [toas[i].mjd_str for i in idxs]
+        corr = np.zeros(len(idxs), dtype=np.float64)
+        for _ in range(max(1, int(feedback_iters))):
+            corr = compute_tt_correction_sec_vectorized(
+                mjd_ints,
+                mjd_fracs,
+                chain,
+                bipm_clock,
+                loc,
+                time_offsets=offsets,
+                mjd_strings=mjd_strings,
+                clock_eval_offset_sec=corr,
+            )
+        out[idxs] = corr
     return out
 
 
@@ -143,14 +207,14 @@ def compute_correction_tt_tb_sec(
     obs_term = obs_term / (1.0 - IFTE_LC)
 
     units = parse_timescale(params)
-    if units == "SI_UNITS":
+    if is_tempo2_si_units(units):
         obs_term = obs_term / (IFTE_K * IFTE_K)
     else:
         obs_term = obs_term / IFTE_K
 
     correction_teph = IFTE_TEPH0_SEC + obs_term + delta_t / (1.0 - IFTE_LC)
 
-    if units == "TDB":
+    if str(units).upper() == "TDB":
         return correction_teph, correction_teph
 
     linear = IFTE_KM1 * (mjd - IFTE_MJD0) * SECS_PER_DAY
@@ -184,7 +248,7 @@ def compute_formbats_arrival(
         if dilate:
             mjd_tt = sat + tt / SECS_PER_DAY
             units = parse_timescale(params)
-            scale = "TCB" if units == "SI_UNITS" else "TDB"
+            scale = "TCB" if is_tempo2_si_units(units) else "TDB"
             einstein = np.asarray(compute_einstein_rate(mjd_tt, units=scale), dtype=np.float64)
         else:
             einstein = np.ones_like(sat, dtype=np.float64)

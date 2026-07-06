@@ -24,6 +24,7 @@ __all__ = [
     'IFTE_KM1', 
     'IFTE_K',
     'IFTE_TEPH0_SEC',
+    'is_tempo2_si_units',
     'parse_timescale',
     'convert_tcb_epoch_to_tdb',
     'convert_tdb_epoch_to_tcb',
@@ -103,6 +104,11 @@ NO_CONVERSION_PARAMETERS = {
 
 # FD parameters (frequency-dependent delays) are also not converted
 # They are identified by pattern matching in convert_par_params_to_tdb
+
+
+def is_tempo2_si_units(units: str) -> bool:
+    """Return True when par units use Tempo2 ``SI_UNITS`` / TCB semantics."""
+    return str(units).upper() in {"SI_UNITS", "TCB"}
 
 
 def parse_timescale(params: Dict[str, Any]) -> str:

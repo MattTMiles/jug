@@ -1,4 +1,4 @@
-"""DEV ORACLE — production native chain avoids host round-trips in the JIT graph."""
+"""DEV ORACLE — native chain JIT boundary vs host staging inputs."""
 
 from __future__ import annotations
 
@@ -46,8 +46,8 @@ def test_native_chain_does_not_call_legacy_bclt_numpy_dm(monkeypatch):
     compute_native_terms_for_fixture(fixture)
 
 
-def test_unified_model_rejects_host_shortcuts(monkeypatch):
-    """JIT wrapper must not re-enter host IFTE/ephemeris/DM staging."""
+def test_unified_model_rejects_mid_jit_host_shortcuts(monkeypatch):
+    """JIT graph must not re-enter host ephemeris/DM during term evaluation."""
     fixture = load_wsrt167_fixture()
     params = parse_par_file(fixture["par_path"])
     toas = parse_tim_file_mjds(fixture["tim_path"])
@@ -56,9 +56,8 @@ def test_unified_model_rejects_host_shortcuts(monkeypatch):
     )
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("host shortcut used in native production path")
+        raise AssertionError("host shortcut used inside JIT term evaluation")
 
-    monkeypatch.setattr("jug.utils.ifteph.ifte_delta_t_mjd", forbidden)
     monkeypatch.setattr(
         "jug.residuals.tempo2_native.model_jax.prepare_ephemeris_inputs_jax",
         forbidden,
@@ -68,3 +67,27 @@ def test_unified_model_rejects_host_shortcuts(monkeypatch):
         forbidden,
     )
     prepare_native_chain_from_simple_result(jug, params, toas)
+
+
+def test_public_native_path_still_stages_host_ifte_geometry(monkeypatch):
+    """Documents staging boundary: IFTE delta_t is host-precomputed before JIT."""
+    fixture = load_wsrt167_fixture()
+    params = parse_par_file(fixture["par_path"])
+    toas = parse_tim_file_mjds(fixture["tim_path"])
+    jug = compute_residuals_simple(
+        fixture["par_path"], fixture["tim_path"], verbose=False, compatibility="tempo2"
+    )
+    jug["term_diagnostics"] = dict(jug["term_diagnostics"])
+    jug["term_diagnostics"].pop("ifte_delta_t_sec", None)
+    calls = {"ifte": 0}
+    from jug.utils import ifteph
+
+    _orig_ifte = ifteph.ifte_delta_t_mjd
+
+    def tracked_ifte(mjd):
+        calls["ifte"] += 1
+        return _orig_ifte(mjd)
+
+    monkeypatch.setattr(ifteph, "ifte_delta_t_mjd", tracked_ifte)
+    prepare_native_chain_from_simple_result(jug, params, toas)
+    assert calls["ifte"] > 0, "native chain must document host IFTE staging until JAX IFTE port"

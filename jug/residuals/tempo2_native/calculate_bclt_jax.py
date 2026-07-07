@@ -18,6 +18,7 @@ from jug.delays.tempo2_geometry import (
     planet_shapiro_sec,
     pmrv_rad_per_century,
     psr_pos_at_delt,
+    tempo2_dilate_freq_enabled,
 )
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 
@@ -132,17 +133,19 @@ def compute_bclt_terms_numpy(
     )
     freq = np.asarray(freq_mhz, dtype=np.float64)
     planets = obs_planets_ls_fixed or {}
-    einstein = (
-        np.ones(n, dtype=np.float64)
-        if einstein_rate is None
-        else np.asarray(einstein_rate, dtype=np.float64)
-    )
+    dilate_freq = tempo2_dilate_freq_enabled(params)
+    if einstein_rate is None and dilate_freq:
+        from jug.delays.barycentric import compute_einstein_rate
+        from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
-    posepoch = float(params.get("POSEPOCH", params["PEPOCH"]))
-    parallax_mas = float(params.get("PX", 0.0))
-    pmrv = pmrv_rad_per_century(float(params.get("PMRV", 0.0)))
-    planet_shapiro = 1.0 if planet_shapiro_enabled else 0.0
-    dilate_freq = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
+        mjd_tt = sat + tt / SECS_PER_DAY
+        units = parse_timescale(params)
+        scale = "TCB" if is_tempo2_si_units(units) else "TDB"
+        einstein = np.asarray(compute_einstein_rate(mjd_tt, units=scale), dtype=np.float64)
+    elif einstein_rate is None:
+        einstein = np.ones(n, dtype=np.float64)
+    else:
+        einstein = np.asarray(einstein_rate, dtype=np.float64)
 
     pos_pulsar, vel_pulsar, acc_pulsar = build_tempo2_pulsar_vectors(
         params,
@@ -304,7 +307,17 @@ def _shapiro_jax(rsa, psr_pos, gm_c3):
     return -2.0 * gm_c3 * jnp.log(jnp.maximum(r / AULTSC_JAX * (1.0 + ctheta), 1e-30))
 
 
-def _dm_jax(freq_mhz, dm_val, psr_pos, obs_sun_ls, earth_vel, site_vel, einstein, dilate_freq, ne_sw):
+def _dm_jax(
+    freq_mhz,
+    dm_val,
+    psr_pos,
+    obs_sun_ls,
+    earth_vel,
+    site_vel,
+    einstein,
+    dilate_freq,
+    ne_sw,
+):
     rsa = -obs_sun_ls
     vobs = earth_vel / 299792.458 + site_vel / 299792.458
     r = jnp.linalg.norm(rsa)

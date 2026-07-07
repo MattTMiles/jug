@@ -380,6 +380,14 @@ def planet_shapiro_sec(
     return total
 
 
+def tempo2_dilate_freq_enabled(params: dict) -> bool:
+    """Match tempo2 ``initialise.C`` default ``dilateFreq=1`` unless par overrides."""
+    if "DILATEFREQ" not in params:
+        return True
+    val = str(params["DILATEFREQ"]).upper()
+    return val in ("Y", "YES", "TRUE", "1")
+
+
 def _tempo2_spherical_solar_wind_sec(
     *,
     ctheta: float,

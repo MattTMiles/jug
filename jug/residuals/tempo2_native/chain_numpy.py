@@ -127,9 +127,10 @@ def _compute_tempo2_native_terms_numpy_impl(
 
         ephem_path = resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405"))
     from jug.delays.barycentric import compute_einstein_rate
+    from jug.delays.tempo2_geometry import tempo2_dilate_freq_enabled
     from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
-    dilate_freq = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
+    dilate_freq = tempo2_dilate_freq_enabled(params)
     einstein = np.ones_like(sat, dtype=np.float64)
     if dilate_freq:
         units = parse_timescale(params)

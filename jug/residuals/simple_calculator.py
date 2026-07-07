@@ -63,6 +63,7 @@ from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
 )
+from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
 # Old JPL ephemerides moved to a_old_versions/ on NAIF server
 _OLD_EPHEM_URL = (
@@ -1687,7 +1688,8 @@ def compute_residuals_simple(
     dm_epoch = float(params.get('DMEPOCH', params['PEPOCH']))
     dt_years = (np.array(model_mjd, dtype=np.float64) - dm_epoch) / 365.25
     dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
-    dm_delay_sec = K_DM_SEC * dm_eff / (freq_bary_mhz ** 2)
+    freq_for_dm_mhz = np.asarray(freq_bary_mhz, dtype=np.float64)
+    dm_delay_sec = K_DM_SEC * dm_eff / (freq_for_dm_mhz ** 2)
 
     # Add DMX contribution to total delay.
     # DMX was already computed before the kernel call (for pre-binary time);
@@ -1820,7 +1822,7 @@ def compute_residuals_simple(
     sw_geometry_pc = AU_PC * rho / (r_au * sin_rho)
     if ne_sw != 0:
         dm_sw = ne_sw * sw_geometry_pc
-        sw_delay_sec = K_DM_SEC * dm_sw / (freq_bary_mhz ** 2)
+        sw_delay_sec = K_DM_SEC * dm_sw / (freq_for_dm_mhz ** 2)
     else:
         sw_delay_sec = np.zeros(len(tdb_mjd))
 
@@ -1908,6 +1910,54 @@ def compute_residuals_simple(
         tt_teph = geo_boot.correction_tt_teph_sec
         earth_ssb_vel_km_s = tempo2_obs_state.earth_ssb_km[:, 3:6]
         obs_earth_km = tempo2_obs_state.observatory_earth_km[:, :3]
+        from jug.delays.barycentric import compute_einstein_rate
+        from jug.delays.tempo2_geometry import (
+            build_tempo2_pulsar_vectors,
+            compute_tempo2_dm_delays_sec,
+            psr_pos_at_delt,
+            tempo2_dilate_freq_enabled,
+            tempo2_observatory_chain_vectors,
+        )
+
+        _, _, obs_sun_ls_dm, _ = tempo2_observatory_chain_vectors(tempo2_obs_state)
+        pos_pulsar, vel_pulsar, _ = build_tempo2_pulsar_vectors(
+            params,
+            use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
+        )
+        posepoch = float(params.get("POSEPOCH", params["PEPOCH"]))
+        delt_formbats = (
+            sat_arr - posepoch + (formbats_tt_arr + tt_tb) / SECS_PER_DAY
+        ) / 36525.0
+        topo_freq_mhz = np.array([t.freq_mhz for t in toas], dtype=np.float64)
+        dilate_freq = tempo2_dilate_freq_enabled(params)
+        if dilate_freq:
+            units = parse_timescale(params)
+            ein_scale = "TCB" if is_tempo2_si_units(units) else "TDB"
+            einstein_rate = np.asarray(
+                compute_einstein_rate(mjd_tt, units=ein_scale), dtype=np.float64
+            )
+        else:
+            einstein_rate = np.ones_like(sat_arr, dtype=np.float64)
+        ne_sw_val = resolve_ne_sw_cm3(params, engine_profile)
+        dm_host = np.zeros(len(toas), dtype=np.float64)
+        sw_host = np.zeros(len(toas), dtype=np.float64)
+        for i in range(len(toas)):
+            psr_pos_i = psr_pos_at_delt(pos_pulsar, vel_pulsar, float(delt_formbats[i]))
+            dm_host[i], sw_host[i] = compute_tempo2_dm_delays_sec(
+                sat_mjd=float(sat_arr[i]),
+                freq_mhz=float(topo_freq_mhz[i]),
+                psr_pos=psr_pos_i,
+                obs_to_sun_ls=obs_sun_ls_dm[i],
+                earth_ssb_vel_km_s=earth_ssb_vel_km_s[i],
+                dm_val=float(dm_eff[i]),
+                ne_sw=float(ne_sw_val),
+                einstein_rate=float(einstein_rate[i]),
+                dilate_freq=dilate_freq,
+                site_vel_km_s=tempo2_obs_state.site_vel_km_s[i],
+            )
+        dm_delay_sec = dm_host
+        sw_delay_sec = sw_host
+
         from jug.utils.ifteph import ifte_delta_t_mjd
 
         ifte_delta_t_sec = np.asarray(ifte_delta_t_mjd(mjd_tt), dtype=np.float64)
@@ -2096,6 +2146,8 @@ def compute_residuals_simple(
         pulse_number = np.asarray(jax.device_get(pulse_number_jax), dtype=np.longdouble)
         residuals_us = residuals_sec * 1e6
         native_terms_export = native
+        dm_delay_sec = np.asarray(jax.device_get(native.tdis1_sec), dtype=np.float64)
+        sw_delay_sec = np.asarray(jax.device_get(native.tdis2_sec), dtype=np.float64)
     else:
         residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
             dt_sec, params, weights_scaled, subtract_mean=subtract_mean_in_phase,

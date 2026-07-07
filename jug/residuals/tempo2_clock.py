@@ -243,8 +243,9 @@ def compute_formbats_arrival(
     )
     if einstein_rate is None:
         from jug.delays.barycentric import compute_einstein_rate
+        from jug.delays.tempo2_geometry import tempo2_dilate_freq_enabled
 
-        dilate = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
+        dilate = tempo2_dilate_freq_enabled(params)
         if dilate:
             mjd_tt = sat + tt / SECS_PER_DAY
             units = parse_timescale(params)

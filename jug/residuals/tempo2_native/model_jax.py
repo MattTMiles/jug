@@ -17,9 +17,9 @@ from jug.delays.tempo2_geometry import (
     tempo2_observatory_chain_vectors,
 )
 from jug.delays.tempo2_ephemeris import compute_tempo2_observatory_state
+from jug.delays.tempo2_geometry import tempo2_dilate_freq_enabled
 from jug.residuals.tempo2_native.calculate_bclt_jax import compute_bclt_terms_jax
 from jug.residuals.tempo2_native.clock_jax import (
-    compute_einstein_rate_jax,
     compute_tempo2_correction_tt_tb_jax,
     compute_tempo2_get_correction_tt_jax,
 )
@@ -163,6 +163,18 @@ def build_tempo2_model_static(
     )
 
 
+def tempo2_einstein_rate_host(mjd_tt: np.ndarray, params: dict) -> np.ndarray:
+    """Host ``einsteinRate`` for ``dm_delays.C`` when ``dilateFreq`` is enabled."""
+    from jug.delays.barycentric import compute_einstein_rate
+
+    mjd = np.asarray(mjd_tt, dtype=np.float64)
+    if not tempo2_dilate_freq_enabled(params):
+        return np.ones_like(mjd, dtype=np.float64)
+    units = parse_timescale(params)
+    scale = "TCB" if is_tempo2_si_units(units) else "TDB"
+    return np.asarray(compute_einstein_rate(mjd, units=scale), dtype=np.float64)
+
+
 @partial(
     jax.jit,
     static_argnames=(
@@ -219,6 +231,7 @@ def compute_tempo2_toa_model_jax(
     ssb_obs_ls: jnp.ndarray,
     obs_sun_ls: jnp.ndarray,
     obs_jupiter_ls: jnp.ndarray,
+    einstein_rate: jnp.ndarray,
     posepoch_mjd: float,
     parallax_mas: float = 0.0,
     pmrv_rad_century: float = 0.0,
@@ -266,11 +279,7 @@ def compute_tempo2_toa_model_jax(
         units_tdb=units_tdb,
         si_units=si_units,
     )
-    einstein = (
-        compute_einstein_rate_jax(mjd_tt, si_units=si_units)
-        if dilate_freq
-        else jnp.ones_like(sat_mjd)
-    )
+    einstein = jnp.asarray(einstein_rate, dtype=jnp.float64)
     bclt = compute_bclt_terms_jax(
         sat_mjd=sat_mjd,
         correction_tt_sec=tt,
@@ -411,6 +420,7 @@ def compute_tempo2_toa_model_with_frozen_terms_for_tests(
     obs_jupiter_ls: jnp.ndarray,
     correction_tt_sec_pre: jnp.ndarray,
     correction_tt_tb_sec_pre: jnp.ndarray | None = None,
+    einstein_rate: jnp.ndarray | None = None,
     ifte_records: jnp.ndarray | None = None,
     ifte_start_jd: jnp.ndarray | None = None,
     ifte_end_jd: jnp.ndarray | None = None,
@@ -464,11 +474,9 @@ def compute_tempo2_toa_model_with_frozen_terms_for_tests(
         )
     else:
         tt_tb = jnp.asarray(correction_tt_tb_sec_pre, dtype=jnp.float64)
-    einstein = (
-        compute_einstein_rate_jax(mjd_tt, si_units=si_units)
-        if dilate_freq
-        else jnp.ones_like(sat_mjd)
-    )
+    if einstein_rate is None:
+        raise ValueError("frozen staging helper requires precomputed einstein_rate")
+    einstein = jnp.asarray(einstein_rate, dtype=jnp.float64)
     bclt = compute_bclt_terms_jax(
         sat_mjd=sat_mjd,
         correction_tt_sec=tt,
@@ -631,6 +639,7 @@ def run_tempo2_toa_model(
         dtype=np.float64,
     )
     site_mjd = sat + tt_pre / SECS_PER_DAY
+    einstein = tempo2_einstein_rate_host(site_mjd, params)
     eph = prepare_ephemeris_inputs_jax(
         ephem_mjd,
         static.obs_itrf_km,
@@ -638,7 +647,7 @@ def run_tempo2_toa_model(
         site_mjd=site_mjd,
     )
     units = parse_timescale(params)
-    dilate = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
+    dilate = tempo2_dilate_freq_enabled(params)
     pmrv = pmrv_rad_per_century(float(params.get("PMRV", 0.0)))
     terms, res = compute_tempo2_toa_model_jax(
         sat_mjd=jnp.asarray(sat_mjd, dtype=jnp.float64),
@@ -673,6 +682,7 @@ def run_tempo2_toa_model(
         ssb_obs_ls=eph["ssb_obs_ls"],
         obs_sun_ls=eph["obs_sun_ls"],
         obs_jupiter_ls=eph["obs_jupiter_ls"],
+        einstein_rate=jnp.asarray(einstein, dtype=jnp.float64),
         posepoch_mjd=float(params.get("POSEPOCH", params["PEPOCH"])),
         parallax_mas=float(params.get("PX", 0.0)),
         pmrv_rad_century=pmrv,
@@ -750,7 +760,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     dm_epoch = float(params.get("DMEPOCH", params["PEPOCH"]))
     dm_coeffs = _dm_coeffs_from_params(params)
     units = parse_timescale(params)
-    dilate = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
+    dilate = tempo2_dilate_freq_enabled(params)
     pmrv = pmrv_rad_per_century(float(params.get("PMRV", 0.0)))
     earth_ssb = np.asarray(earth_ssb_km, dtype=np.float64)
     if earth_ssb.ndim == 1:
@@ -762,6 +772,24 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
             else np.zeros((len(sat_mjd), 3), dtype=np.float64)
         )
         earth_ssb = np.concatenate([earth_ssb, earth_vel], axis=1)
+    sat = np.asarray(sat_mjd, dtype=np.float64)
+    tt_pre = np.asarray(
+        jax.device_get(
+            compute_tempo2_get_correction_tt_jax(
+                jnp.asarray(sat, dtype=jnp.float64),
+                chain_mjd_tables=tuple(
+                    jnp.asarray(t, dtype=jnp.float64) for t in model_static.chain_mjd_tables
+                ),
+                chain_offset_tables=tuple(
+                    jnp.asarray(t, dtype=jnp.float64) for t in model_static.chain_offset_tables
+                ),
+                bipm_mjd=jnp.asarray(model_static.bipm_mjd, dtype=jnp.float64),
+                bipm_offset=jnp.asarray(model_static.bipm_offset, dtype=jnp.float64),
+            )
+        ),
+        dtype=np.float64,
+    )
+    einstein = tempo2_einstein_rate_host(sat + tt_pre / SECS_PER_DAY, params)
     terms, residual_sec = compute_tempo2_toa_model_jax(
         sat_mjd=jnp.asarray(sat_mjd, dtype=jnp.float64),
         freq_mhz=jnp.asarray(freq_mhz, dtype=jnp.float64),
@@ -797,6 +825,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
         ssb_obs_ls=jnp.asarray(ssb_obs_ls, dtype=jnp.float64),
         obs_sun_ls=jnp.asarray(obs_sun_ls, dtype=jnp.float64),
         obs_jupiter_ls=jnp.asarray(obs_jupiter_ls, dtype=jnp.float64),
+        einstein_rate=jnp.asarray(einstein, dtype=jnp.float64),
         posepoch_mjd=float(params.get("POSEPOCH", params["PEPOCH"])),
         parallax_mas=float(params.get("PX", 0.0)),
         pmrv_rad_century=pmrv,

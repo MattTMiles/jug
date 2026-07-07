@@ -51,9 +51,10 @@ not the JUG shortcut ``(model_mjd − sat)×86400 − prebinary``.
 
 | Gate | Interim (dev_oracle) | Strict target | Notes |
 |------|---------------------|---------------|-------|
-| ``batCorr`` vs lib | **~286 ns** RMS | `< 1 ns` | IFTE model-epoch + JUG prebinary |
-| ``bbat`` vs pytempo | **~330 ns** RMS | `< 5 ns` | model − prebinary − Shklovskii |
-| ``torb`` closure vs pytempo | **~262 ns** RMS | `< 1 ns` | JUG ``dt`` + model-epoch ``bbat`` |
+| ``batCorr`` vs lib | **~286 ns** RMS | `< 1 ns` | IFTE model-epoch + JUG prebinary (production path) |
+| ``bat_corr_days`` vs tempo2 | **~1.1 ns** RMS | `< 1 ns` | unified JAX strict formBats component sum (wsrt167) |
+| ``bat_mjd`` / ``bbat_mjd`` vs tempo2 | **~304 ns** RMS | `< 1 ns` | **MJD assembly recipe** — see § below; not delay physics |
+| ``torb`` closure vs pytempo | **~262 ns** RMS | `< 1 ns` | JUG ``dt`` + model-epoch ``bbat`` (production path) |
 | BCLT ``roemer`` vs pytempo | **~18 ms** RMS | term ranking | fixed IFTE ``tdis`` in loop |
 | Spin counterfactual | **~5.6 µs** RMS | `< 5 ns` | pending full BCLT ``formBats`` |
 | Full residuals wsrt167 | skipped (flag off) | `< 5 ns` | flip after all gates green |
@@ -63,6 +64,66 @@ NumPy reference env-gated: ``JUG_DEV_NUMPY_TEMPO2_CHAIN=1``.
 
 **Reference sources:** ``ref-packages/tempo2/{calculate_bclt,formBats,formResiduals,tt2tdb}.C``;
 pytempo ``toa_diagnostics()`` for Tier-1 oracles.
+
+### formBats ``bat_mjd`` / ``bbat_mjd`` assembly — unified JAX path
+
+**Do not confuse delay parity with MJD epoch parity.** On wsrt167 the unified JAX
+native chain (``jug/residuals/tempo2_native/formbats_jax.py``) shows:
+
+| Quantity | Native vs tempo2 RMS | What it tests |
+|----------|---------------------|---------------|
+| ``bat_corr_days`` | **~1.1 ns** | Delay-component closure (physics gate) |
+| ``bat_mjd`` | **~304 ns** | Assembled MJD epoch scalar |
+| ``bbat_mjd`` | **~304 ns** | Same on wsrt167 (Shklovskii ≈ 0) |
+| ``shklovskii_sec`` | **0 ns** | Not the wsrt167 blocker |
+
+**Root cause:** tempo2 ``formBats.C`` does **not** build ``bat`` as a single
+float64 sum ``sat + (all terms)/86400``. It uses ``long double`` and **splits the
+UTC→TT term**:
+
+```c
+// ref-packages/tempo2/formBats.C (L67–83)
+batCorr = getCorrectionTT(obsn)/SECDAY
+        + (correctionTT_TB - tropo + roemer - shap - tdis1 - tdis2)/SECDAY;
+bat  = sat + getCorrectionTT(obsn)/SECDAY
+     + (correctionTT_TB - tropo + roemer - shap - tdis1 - tdis2)/SECDAY;
+bbat = bat - shklovskii/SECDAY;
+```
+
+JUG's JAX helper instead sums all correction seconds in float64, divides once, and
+assembles with ``assemble_mjd_from_day_sec`` (``two_sum`` in float64). That recipe is
+**internally consistent** (``sat + bat_corr_days`` matches JUG ``bat_mjd`` to 0 ns)
+but **does not reproduce tempo2's split long-double assembly** when ``sat`` is
+O(10⁴) MJD and the net correction is O(10²) s.
+
+**Verified on wsrt167 (2026-07-07):**
+
+- tempo2 ``bat_corr_days`` matches the component-sum formula to **~0 ns**.
+- tempo2 ``bat_mjd`` matches ``sat + bat_corr_days`` in **float64** to **~304 ns**.
+- tempo2 ``bat_mjd`` matches the **split long-double recipe** to **0 ns**.
+- JUG native ``bat_mjd`` matches the split long-double recipe with **JUG components**
+  to **0 ns**, but differs from tempo2 ``bat_mjd`` by **~304 ns** because of the
+  assembly recipe, not because roemer/clock/Shapiro components are wrong.
+
+**Is this a residual-parity blocker?** Not automatically. The native chain defines
+``torb`` as a closure (``dt_emission − (bbat − PEPOCH)·86400``) and feeds
+``phase5(bbat, torb)``. A constant ~304 ns shift in ``bbat`` can cancel against
+``torb`` in ``deltaT = (bbat−PEPOCH)·86400 + torb`` as long as the integer MJD day
+of ``bbat`` is unchanged. So a failing ``bbat_mjd`` gate does **not** mean delay
+physics is wrong; it means the exported epoch scalar is not yet tempo2-identical.
+
+**What to gate on:**
+
+- **Physics / delay closure:** ``bat_corr_days`` and per-component gates (``tt``,
+  ``roemer``, ``tdis*``, ``shap``, …) — target **< 1 ns**.
+- **MJD assembly parity:** ``bat_mjd`` / ``bbat_mjd`` — requires porting tempo2's
+  split summation (or equivalent compensated float64) in ``formbats_jax.py``.
+- **End-to-end:** ``acceptance_residual_sec`` vs libstempo/tempo2 — the only gate
+  that ultimately matters for production parity.
+
+**Tests:** ``test_native_strict_formbats_batcorr_wsrt167`` (delay gate, ~1 ns);
+``test_native_bbat_strict_formbats_wsrt167`` (epoch gate, expected fail ~304 ns until
+assembly is ported). See ``TEMPO2_NATIVE_CLOCK_STATUS.md`` § "formBats MJD assembly".
 
 ---
 
@@ -164,10 +225,11 @@ paths — **not** the tempo2 oracle.
 7. Do **not** use libstempo **`binarydelay`** as a ``torb`` oracle on a fresh construct —
    it reads **zeros** until the full tempo2 pipeline has run; use **`torb_sec`** or
    JUG ``prebinary − total`` (0.17 ns on wsrt167).
-8. Do **not** treat float64 recompositions as physics disagreements:
-   ``sat + bat_corr → bat`` (~237–304 ns RMS), ``bbat − torb/86400 → pet`` (~275 ns RMS),
-   and ``bat_corr`` vs ``bat − sat`` (~237 ns) — all hold at **~10⁻¹² day** in tempo2
-   ``long double``; the ns-scale RMS is separate float64 field-export noise.
+8. Do **not** treat float64 recompositions as physics disagreements — see
+   **§ formBats ``bat_mjd`` / ``bbat_mjd`` assembly** above. In short:
+   ``sat + bat_corr → bat`` (~304 ns on wsrt167) fails in float64 because tempo2
+   uses split ``long double`` assembly; ``bat_corr_days`` itself is the delay gate.
+   ``bbat − torb/86400 → pet`` (~275 ns) is a similar export/assembly artifact.
 
 #### libstempo property traps
 
@@ -286,8 +348,10 @@ Treat tempo2 mode as **experimental** outside curated par+tim tests. Do not use
 | **G5** Fixture coverage | **Open** | Green on A/B/C; IPTA workloads partial (see §1) |
 | **G6** Documented residual debt | **Open** | `ppta_j1741_ell1` ~5–8 ns; `DM_SERIES` warn-only |
 | **G7** EPTA multi-backend | **Open (improved)** | ~608 ns bulk after integer-turn and `-addsat` fixes; wsrt167 subset ~263 ns |
+| **G8** `DMASSPLANET` reflex correction | **Deferred** | Not parsed in JUG; unused in IPTA fixtures; easy patch when needed |
+| **G9** Full `get_obsCoord` port | **Deferred** | Astropy/ERFA approximation already <0.01 cm on wsrt167; not blocking ns gates |
 
-**Scorecard:** 2 closed (G1, G2 primary), 5 with open items.
+**Scorecard:** 2 closed (G1, G2 primary), 5 with open items, 2 deferred (G8, G9).
 
 ### G1 — closed
 
@@ -350,6 +414,86 @@ Measured on `epta_j0613_t2_ipta_all` (`tests/test_tempo2_ipta_dr2_j0613_parity.p
 Tests: `test_tempo2_mode_epta_j0613_ipta_dr2_residual_parity` (xfail strict);
 `test_epta_j0613_ipta_dr2_track_minus2_debt_reduced` (debt pin).
 
+### G8 — `DMASSPLANET` / `DPHASEPLANET` (deferred)
+
+**Priority:** not on the active queue. Recorded for completeness; does not block current
+IPTA parity gates.
+
+Tempo2 optionally adjusts `earth_ssb` for errors in planetary masses
+(`ref-packages/tempo2/readEphemeris.C`):
+
+```c
+for (iplanet=0; iplanet < 9; iplanet++)
+    if (psr[p].param[param_dmassplanet].paramSet[iplanet])
+        for (icomp=0; icomp < 6; icomp++)
+            psr[p].obsn[i].earth_ssb[icomp] -=
+                psr[p].param[param_dmassplanet].val[iplanet] *
+                psr[p].obsn[i].planet_ssb[iplanet][icomp];
+```
+
+| Item | Tempo2 | JUG today |
+|------|--------|-----------|
+| Par keywords | `DMASSPLANET1` … `DMASSPLANET9` (solar masses; `readParfile.C`) | Not parsed in `par_reader` |
+| Physics | Subtract `dmass[i] × planet_ssb[i]` from `earth_ssb` pos/vel | No correction applied |
+| `planet_ssb` source | Read from ephemeris when `DMASSPLANET` or `DPHASEPLANET` set | Already computed for Shapiro |
+| `DPHASEPLANET` | Parsed; would use `planet_ssb_derv` | **Dead in Tempo2** — correction block commented out in `readEphemeris.C` |
+
+**Impact:** none on gated fixtures (no `DMASSPLANET` in `tests/data_tempo2/`). Niche
+ephemeris-systematics feature (e.g. fitting Jupiter mass offsets). MetaPulsar mock pulsars
+set `DMASSPLANET*` to zero.
+
+**Patch estimate (when needed):** easy (~½ day). Parse `DMASSPLANET1..9`; apply linear
+correction after `earth_ssb` assembly in `tempo2_ephemeris.py` and `tempo2_geometry_jax.py`;
+add dev_oracle test with non-zero `DMASSPLANET5` (Jupiter). Caveats: 9-slot planet index
+map (Tempo2 Mercury–Neptune + Moon/Pluto vs JUG's 7 named planets); design-matrix columns
+for fitting would be extra work beyond evaluation-only parity. Skip `DPHASEPLANET` unless
+reviving dead Tempo2 code.
+
+### G9 — Full `get_obsCoord` port (deferred)
+
+**Priority:** not on the active queue. Recorded for completeness; does not block current
+residual debt (~16 ns wsrt167 is in clock / formBats / spin, not site geometry).
+
+JUG does **not** line-port `ref-packages/tempo2/get_obsCoord.C`. For ground telescopes it
+approximates the modern IAU2000B path:
+
+| Path | Implementation | Notes |
+|------|----------------|-------|
+| Host (`compute_tempo2_observatory_state`) | Astropy `EarthLocation.get_gcrs_posvel()` at `site_mjd` (TT) | Documented as *not* a line-by-line C port |
+| JAX (`tempo2_site_jax.py`) | ERFA via `jax.pure_callback` (`c2i06a`, `pom00`, `c2tcio`) + Astropy polar motion / UT1 | Mirrors Astropy `get_gcrs_posvel` route, not Tempo2 `iau_c2t00b_` + `get_EOP` |
+
+**Measured on wsrt167 (ground WSRT):** `observatory_earth` RMS **< 0.01 cm** vs pytempo
+(`tests/test_tempo2_native_geometry_parity.py`). Ephemeris delay terms (`roemer_sec`,
+`dt_ssb_sec`) already **< 1 ns** RMS vs pytempo on the same fixture.
+
+**What Tempo2 `get_obsCoord.C` includes that JUG does not fully port:**
+
+| Gap | Severity for IPTA | Notes |
+|-----|-------------------|-------|
+| Line-accurate `get_obsCoord_IAU2000B` + `get_EOP(eopc04_file)` | Low | Astropy IERS-B vs Tempo2 EOP file; mm-level possible at some epochs; not visible in current gates |
+| Satellite `STL` / `STL_FBAT` | Niche | `TELX/TELY/TELZ` polynomials, tim `-telx/-tely/-telz`, `telDX/DY/DZ` tables; no STL fixtures in JUG tests |
+| `STL_BAT` (barycentric satellite) | Niche | `observatory_earth = 0`, tropo off |
+| Legacy nutation path (`t2cMethod` ≠ IAU2000B) | Very low | Nutations from ephemeris + precession + LMST; obsolete for modern data |
+| Ecliptic rotation of site vectors | Low | JUG rotates combined `earth_ssb + observatory_earth` (equivalent rigid rotation) |
+| Tropo zenith EOP | Medium for tropo only | `tropo_jax._host_zenith_gcrs_m` hardcodes `xp=yp=0` |
+| Pure JAX ERFA (no `pure_callback`) | Architectural | JIT/autodiff unity, not correctness |
+
+**Patch estimates (when needed):**
+
+| Sub-feature | Effort | ROI for IPTA DR2 |
+|-------------|--------|------------------|
+| Ground IAU2000B line-port | Medium (~1–2 weeks) | Low — sub-cm already |
+| Satellite / STL paths | Medium–hard (~1–2 weeks) | Only if spacecraft timing workloads appear |
+| Legacy nutation path | Medium | Not recommended — obsolete |
+| Tropo zenith with real EOP | Easy–medium (~1 day) | After clock/BCLT debt closes |
+| Native JAX ERFA | Hard (~weeks) | Phase 4 JIT architecture only |
+
+**Related context:** production tempo2 mode already uses host jplephem SPK for planetary
+positions (`Tempo2DelayProvider`); the in-graph SPK path (`tempo2_spk_jax.py`) is for the
+quarantined unified JIT chain (`USE_JAX_TEMPO2_NATIVE_CHAIN = False`). Astropy ephemeris
+(PINT path) is **not** a substitute for tempo2-native site motion — wrong clock chain,
+Teph epoch coupling, and `get_obsCoord` conventions (see `TEMPO2_COMPATIBILITY.md` §2).
+
 ---
 
 ## 3. Active work queue
@@ -369,6 +513,8 @@ Tests: `test_tempo2_mode_epta_j0613_ipta_dr2_residual_parity` (xfail strict);
 | **Done** | **Phase D Step 1 — pnNew convention** | `tests/test_tempo2_track2_pnnew.py` | **Done** — relative ``-pn`` |
 | **Ruled out** | **Phase D Step 2 — wire ``phase5@bbat`` to production** | `tempo2_track2_oracle.py` | **~17.5 ns** — worse than Taylor production |
 | **Defer** | formBats ``bbat`` diagnostic fix | ~65 s off oracle | — |
+| **Defer** | **G8 — `DMASSPLANET` reflex correction** | `readEphemeris.C`; no fixture coverage | Recorded §G8 — easy when needed |
+| **Defer** | **G9 — full `get_obsCoord` port** | wsrt167 `< 0.01 cm` observatory_earth | Recorded §G9 — low ROI for ground IPTA |
 
 ---
 

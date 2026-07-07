@@ -1291,6 +1291,7 @@ def compute_residuals_simple(
     compatibility: str = "pint",
     diagnostic_conventions: DiagnosticConventions | None = None,
     engine_conventions: EngineConventionProfile | None = None,
+    skip_native_bclt_overlay: bool = False,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -1606,9 +1607,12 @@ def compute_residuals_simple(
     # The resolved engine profile is the single source of truth so implicit
     # tempo2 defaults and explicit par overrides follow the same code path.
     correct_troposphere = bool(engine_profile.correct_troposphere)
-    
+    is_tempo2_compat_early = str(compatibility_mode).lower() in (
+        "tempo2", "tempo2-compatible", "tempo2_compatible"
+    )
+
     tropo_delay_sec = np.zeros(len(toas), dtype=np.float64)
-    if correct_troposphere:
+    if correct_troposphere and not is_tempo2_compat_early:
         if verbose: print(f"   Calculating tropospheric delay (Davis ZHD + Niell MF)...")
         from jug.delays.troposphere import compute_tropospheric_delay
         
@@ -1957,6 +1961,59 @@ def compute_residuals_simple(
             )
         dm_delay_sec = dm_host
         sw_delay_sec = sw_host
+
+        if correct_troposphere:
+            from jug.delays.tropo_jax import compute_tempo2_tropo_delay_host
+
+            tropo_delay_sec = compute_tempo2_tropo_delay_host(
+                sat_arr,
+                formbats_tt_arr,
+                obs_itrf_km=obs_itrf,
+                pos_pulsar=pos_pulsar,
+            )
+
+        from jug.residuals.tempo2_native.chain_jax import (
+            prepare_native_chain_from_simple_result,
+        )
+        from jug.residuals.tempo2_native.types import native_terms_to_numpy
+
+        if not skip_native_bclt_overlay:
+            _overlay_td = {
+                "sat_mjd": sat_arr,
+                "correction_tt_sec": formbats_tt_arr,
+                "correction_tt_tb_sec": tt_tb,
+                "formbats_correction_tt_sec": formbats_tt_arr,
+                "tropo_delay_sec": tropo_delay_sec,
+                "dm_delay_sec": dm_delay_sec,
+                "sw_delay_sec": sw_delay_sec,
+                "freq_bary_mhz": freq_bary_mhz,
+            }
+            _overlay_jug = {
+                "term_diagnostics": _overlay_td,
+                "dt_sec": np.asarray(dt_sec, dtype=np.float64),
+                "freq_bary_mhz": freq_bary_mhz,
+                "compatibility": compatibility_mode,
+            }
+            _native_overlay = prepare_native_chain_from_simple_result(
+                _overlay_jug, params, toas
+            )
+            _native_np = native_terms_to_numpy(_native_overlay)
+            formbats_tt_arr = np.asarray(_native_np["correction_tt_sec"], dtype=np.float64)
+            formbats_correction_tt = formbats_tt_arr
+            tropo_delay_sec = np.asarray(_native_np["tropospheric_sec"], dtype=np.float64)
+            roemer_sec = -np.asarray(_native_np["roemer_sec"], dtype=np.float64)
+            sun_shapiro_sec = np.asarray(_native_np["shapiro_sun_sec"], dtype=np.float64)
+            planet_shapiro_sec = np.asarray(
+                _native_np["shapiro_planets_sec"], dtype=np.float64
+            )
+            dm_delay_sec = np.asarray(_native_np["tdis1_sec"], dtype=np.float64)
+            sw_delay_sec = np.asarray(_native_np["tdis2_sec"], dtype=np.float64)
+            roemer_shapiro = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
+
+        prebinary_delay_sec = (
+            roemer_shapiro + dm_delay_sec + dmx_delay_sec
+            + sw_delay_sec + tropo_delay_sec
+        )
 
         from jug.utils.ifteph import ifte_delta_t_mjd
 

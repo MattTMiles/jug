@@ -192,18 +192,47 @@ def observatory_earth_km_jax(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """GCRS observatory position/velocity (km, km/s) at ``site_mjd`` (TT).
 
-    Mirrors Astropy ``EarthLocation.get_gcrs_posvel`` (CIRS route).
+    Uses Astropy ``EarthLocation.get_gcrs_posvel`` via ``pure_callback`` so
+    site velocity matches tempo2 host geometry (required for ``dm_delays``).
     """
+    del eop
     obs = jnp.asarray(obs_itrf_km, dtype=jnp.float64).reshape(3)
     mjd = jnp.atleast_1d(jnp.asarray(site_mjd, dtype=jnp.float64))
-    ref_to_itrs = cirs_to_itrs_mat_jax(mjd, eop)
-    gcrs_to_ref = gcrs_to_cirs_mat_jax(mjd)
-    ref_to_gcrs = jnp.swapaxes(gcrs_to_ref, -1, -2)
-    itrs_to_gcrs = ref_to_gcrs @ jnp.swapaxes(ref_to_itrs, -1, -2)
+    n = mjd.size
 
-    pos = jnp.einsum("...ij,j->...i", itrs_to_gcrs, obs)
-    rot_vec = ref_to_gcrs[..., 2, :] * OMEGA_EARTH
-    vel = jnp.cross(rot_vec, pos)
+    def callback(mjd_v, obs_v):
+        from astropy import units as u
+        from astropy.coordinates import EarthLocation
+        from astropy.time import Time
+
+        obs_km = np.asarray(obs_v, dtype=np.float64).reshape(3)
+        loc = EarthLocation.from_geocentric(
+            obs_km[0] * u.km, obs_km[1] * u.km, obs_km[2] * u.km
+        )
+        pos = np.zeros((n, 3), dtype=np.float64)
+        vel = np.zeros((n, 3), dtype=np.float64)
+        for i in range(n):
+            gcrs_pos, gcrs_vel = loc.get_gcrs_posvel(
+                obstime=Time(float(mjd_v[i]), format="mjd", scale="tt")
+            )
+            pos[i, 0] = gcrs_pos.x.to(u.km).value
+            pos[i, 1] = gcrs_pos.y.to(u.km).value
+            pos[i, 2] = gcrs_pos.z.to(u.km).value
+            vel[i, 0] = gcrs_vel.x.to(u.km / u.s).value
+            vel[i, 1] = gcrs_vel.y.to(u.km / u.s).value
+            vel[i, 2] = gcrs_vel.z.to(u.km / u.s).value
+        return pos, vel
+
+    pos, vel = jax.pure_callback(
+        callback,
+        (
+            jax.ShapeDtypeStruct((n, 3), jnp.float64),
+            jax.ShapeDtypeStruct((n, 3), jnp.float64),
+        ),
+        mjd,
+        obs,
+        vmap_method="broadcast_all",
+    )
     return pos, vel
 
 

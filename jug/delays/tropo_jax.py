@@ -249,3 +249,22 @@ def tempo2_tropo_delay_jax(
     else:
         zwd = jnp.asarray(zenith_wet_delay_sec, dtype=jnp.float64)
     return zhd * mapping_h + zwd * mapping_w
+
+
+def compute_tempo2_tropo_delay_host(
+    sat_mjd: np.ndarray,
+    correction_tt_sec: np.ndarray,
+    *,
+    obs_itrf_km: np.ndarray,
+    pos_pulsar: np.ndarray,
+    pressure_mbar: float = 101.325,
+) -> np.ndarray:
+    """Host batch wrapper around ``tempo2_tropo_delay_jax`` for legacy exports."""
+    site = pack_tropo_obs_static(obs_itrf_km=obs_itrf_km, pressure_mbar=pressure_mbar)
+    sat = jnp.asarray(sat_mjd, dtype=jnp.float64)
+    tt = jnp.asarray(correction_tt_sec, dtype=jnp.float64)
+    pos = jnp.asarray(pos_pulsar, dtype=jnp.float64)
+    zenith = compute_tempo2_zenith_gcrs_jax(sat, tt, site)
+    elev = tempo2_source_elevation_rad_jax(zenith, pos, site.height_m)
+    delay = tempo2_tropo_delay_jax(sat, tt, elev, site)
+    return np.asarray(jax.device_get(delay), dtype=np.float64)

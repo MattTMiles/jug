@@ -61,6 +61,8 @@ def _load_model_static_for_native_chain(
             correct_tropo = _flag_from_par(params, "CORRECT_TROPOSPHERE")
         else:
             correct_tropo = True
+    from jug.residuals.diagnostic_conventions import resolve_planet_shapiro_enabled
+
     return build_tempo2_model_static(
         params=params,
         toas=toas,
@@ -73,6 +75,7 @@ def _load_model_static_for_native_chain(
         obs_itrf_km=np.asarray(obs_itrf, dtype=np.float64),
         correct_troposphere=correct_tropo,
         ne_sw=resolve_ne_sw_cm3(params, profile),
+        planet_shapiro_enabled=resolve_planet_shapiro_enabled(params, profile),
     )
 
 
@@ -164,7 +167,7 @@ def compute_tempo2_native_terms_jax(
         dt_emission_sec=np.asarray(dt_emission_sec, dtype=np.float64),
         model_static=model_static,
         ne_sw=float(ne_sw),
-        planet_shapiro_enabled=planet_shapiro_enabled,
+        planet_shapiro_enabled=bool(model_static.planet_shapiro_enabled),
         use_native_ecliptic=use_native_ecliptic,
     )
     return terms
@@ -254,23 +257,22 @@ def prepare_native_terms_for_setup(
     return prepare_native_chain_from_simple_result(jug_result, params, toas)
 
 
+
 def prepare_native_chain_from_simple_result(
     jug_result: dict,
     params: dict,
     toas: list[Any],
-    *,
-    use_model_epoch_batcorr: bool = False,
 ) -> Tempo2NativeTerms:
-    """Build native terms through unified in-graph geometry (Phase 4)."""
+    """Build native terms through unified in-graph geometry."""
     from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
     from jug.residuals.engine_conventions import resolve_engine_profile
 
-    del use_model_epoch_batcorr
     td = jug_result["term_diagnostics"]
     profile = resolve_engine_profile(params, jug_result.get("compatibility", "tempo2"))
     ne_sw = resolve_ne_sw_cm3(params, profile)
     freq_topo = np.array([t.freq_mhz for t in toas], dtype=np.float64)
     model_static = _load_model_static_for_native_chain(params, toas, jug_result)
+
     return compute_tempo2_native_terms_jax(
         sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
         correction_tt_sec=jnp.asarray(
@@ -288,7 +290,7 @@ def prepare_native_chain_from_simple_result(
         ),
         tdis1_sec=jnp.asarray(td["dm_delay_sec"], dtype=jnp.float64),
         tdis2_sec=jnp.asarray(td["sw_delay_sec"], dtype=np.float64),
-        tropospheric_sec=jnp.asarray(td["tropo_delay_sec"], dtype=np.float64),
+        tropospheric_sec=jnp.asarray(td.get("tropo_delay_sec", 0.0), dtype=jnp.float64),
         dt_emission_sec=jnp.asarray(jug_result["dt_sec"], dtype=np.float64),
         use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
         freq_mhz_topocentric=jnp.asarray(freq_topo, dtype=jnp.float64),

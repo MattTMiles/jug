@@ -17,38 +17,16 @@ from jug.residuals.tempo2_clock import compute_get_correction_tt_sec
 from jug.residuals.tempo2_native.chain_jax import _load_model_static_for_native_chain
 from jug.residuals.tempo2_native.clock_jax import compute_tempo2_get_correction_tt_jax
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.testing.tempo2_pytempo_oracle import load_pytempo_native_oracle
-from tempo2_native_test_helpers import (
-    compute_native_terms_for_fixture,
-    delta_ns,
-    load_wsrt167_fixture,
-)
+from tempo2_native_test_helpers import delta_ns
 
 
-def _wsrt167_clock_inputs():
-    fixture = load_wsrt167_fixture()
-    params = parse_par_file(fixture["par_path"])
-    toas = parse_tim_file_mjds(fixture["tim_path"])
-    jug = compute_residuals_simple(
-        fixture["par_path"], fixture["tim_path"], verbose=False, compatibility="tempo2"
-    )
-    static = _load_model_static_for_native_chain(params, toas, jug)
-    sat = np.asarray(jug["term_diagnostics"]["sat_mjd"], dtype=np.float64)
-    return fixture, sat, static
-
-
-def test_jax_get_correction_tt_matches_host_astropy():
+def test_jax_get_correction_tt_matches_host_astropy(wsrt167_fixture, wsrt167_clock_inputs, wsrt167_jug):
     """Astropy UTC→TT includes topocentric terms absent from tempo2 clkcorr.C."""
-    fixture, sat, static = _wsrt167_clock_inputs()
+    fixture, sat, static = wsrt167_clock_inputs
     params = parse_par_file(fixture["par_path"])
     toas = parse_tim_file_mjds(fixture["tim_path"])
-    jug = compute_residuals_simple(
-        fixture["par_path"], fixture["tim_path"], verbose=False, compatibility="tempo2"
-    )
+    jug = wsrt167_jug
     from jug.residuals.simple_calculator import _load_clock_corrections
-    from jug.residuals.tempo2_native.chain_jax import _load_model_static_for_native_chain
-
-    static = _load_model_static_for_native_chain(params, toas, jug)
     all_obs = sorted(set(t.observatory.lower() for t in toas))
     mjd_utc = np.array([t.mjd_int + t.mjd_frac for t in toas], dtype=np.float64)
     from pathlib import Path
@@ -85,11 +63,8 @@ def test_jax_get_correction_tt_matches_host_astropy():
     assert rms > 100.0, "expected Astropy topocentric offset vs tempo2-native JAX clock"
 
 
-def test_jax_get_correction_tt_matches_pytempo_wsrt167():
-    fixture, sat, static = _wsrt167_clock_inputs()
-    oracle = load_pytempo_native_oracle(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
+def test_jax_get_correction_tt_matches_pytempo_wsrt167(wsrt167_clock_inputs, wsrt167_pytempo_oracle):
+    fixture, sat, static = wsrt167_clock_inputs
     jax_tt = np.asarray(
         jax.device_get(
             compute_tempo2_get_correction_tt_jax(
@@ -106,20 +81,19 @@ def test_jax_get_correction_tt_matches_pytempo_wsrt167():
         ),
         dtype=np.float64,
     )
-    delta = delta_ns(jax_tt, oracle.fields["correction_tt_sec"])
+    delta = delta_ns(jax_tt, wsrt167_pytempo_oracle.fields["correction_tt_sec"])
     rms = float(np.sqrt(np.mean(delta**2)))
     assert rms < 1.0, f"JAX getCorrectionTT RMS {rms:.3f} ns vs pytempo"
 
 
-def test_wsrt167_parity_probe_writes_report():
+@pytest.mark.probe
+def test_wsrt167_parity_probe_writes_report(wsrt167_clock_inputs, wsrt167_native_terms, wsrt167_pytempo_oracle):
     """Write /tmp/jug_wsrt167_parity_probe.txt for sprint diagnostics."""
     from pathlib import Path
 
-    fixture, _, _ = _wsrt167_clock_inputs()
-    oracle = load_pytempo_native_oracle(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
-    native = compute_native_terms_for_fixture(fixture)
+    fixture, _, _ = wsrt167_clock_inputs
+    native = wsrt167_native_terms
+    oracle = wsrt167_pytempo_oracle
     tt = np.asarray(jax.device_get(native.correction_tt_sec), dtype=np.float64)
     tt_tb = np.asarray(jax.device_get(native.correction_tt_tb_sec), dtype=np.float64)
     roemer = np.asarray(jax.device_get(native.roemer_sec), dtype=np.float64)
@@ -149,7 +123,8 @@ def test_wsrt167_parity_probe_writes_report():
     Path("/tmp/jug_wsrt167_parity_probe.txt").write_text("\n".join(lines) + "\n")
 
 
-def test_clock_tt_probe_writes_report():
+@pytest.mark.probe
+def test_clock_tt_probe_writes_report(wsrt167_clock_inputs, wsrt167_jug):
     """Write /tmp/jug_clock_tt_probe.txt — stepwise tt_tb vs pytempo IFTE diagnostics."""
     from pathlib import Path
 
@@ -159,11 +134,9 @@ def test_clock_tt_probe_writes_report():
     from jug.utils.ifteph import IFTE_LC, IFTE_TEPH0_SEC, ifte_delta_t_mjd, load_ifte_coeff_tables
     from jug.utils.timescales import IFTE_K, is_tempo2_si_units, parse_timescale
 
-    fixture, sat, static = _wsrt167_clock_inputs()
+    fixture, sat, static = wsrt167_clock_inputs
     params = parse_par_file(fixture["par_path"])
-    jug = compute_residuals_simple(
-        fixture["par_path"], fixture["tim_path"], verbose=False, compatibility="tempo2"
-    )
+    jug = wsrt167_jug
     td = jug["term_diagnostics"]
     obs = td["tempo2_obs_state"]
     obs_earth = np.asarray(obs["observatory_earth_km"], dtype=np.float64)[:, :3]
@@ -268,12 +241,6 @@ def test_clock_tt_probe_writes_report():
     Path("/tmp/jug_clock_tt_probe.txt").write_text("\n".join(lines))
 
 
-def test_wsrt167_host_tt_tb_component_gate():
+def test_wsrt167_host_tt_tb_component_gate(wsrt167_formbats_report):
     """Host ``correction_tt_tb_sec`` export matches pytempo after IFTE fix."""
-    from jug.testing.tempo2_formbats_closure import compare_formbats_components
-
-    fixture, _, _ = _wsrt167_clock_inputs()
-    report = compare_formbats_components(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
-    assert report.component_rms_ns["tt_tb"] < 1.0
+    assert wsrt167_formbats_report.component_rms_ns["tt_tb"] < 1.0

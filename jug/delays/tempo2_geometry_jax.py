@@ -16,7 +16,6 @@ from jug.delays.tempo2_spk_jax import (
     sun_from_ssb_jax,
 )
 from jug.delays.tempo2_site_jax import IersEopPacked, observatory_earth_state_jax
-from jug.residuals.tempo2_native.clock_jax import compute_tempo2_correction_tt_tb_jax
 from jug.utils.constants import C_KM_S, SECS_PER_DAY
 
 
@@ -36,6 +35,36 @@ class Tempo2ObservatoryStateJax(NamedTuple):
 def _scale_ephemeris_km(arr: jnp.ndarray, *, si_units: bool) -> jnp.ndarray:
     scale = jnp.asarray(tempo2_read_ephemeris_au_scale(si_units=si_units), dtype=jnp.float64)
     return arr * scale
+
+
+def _stack_planet_shapiro_rsa_jax(
+    geom: "Tempo2ObservatoryStateJax",
+    names: tuple[str, ...] = ("venus", "jupiter", "saturn", "uranus", "neptune"),
+) -> tuple[jnp.ndarray, ...]:
+    """Tempo2 ``shapiro_delay.C`` rsa vectors (body→observatory) in light-seconds.
+
+    Uses geocentric ``planet_earth`` (``jpl_pleph(N,3)``), not ``planet_ssb - ssb_obs``:
+    ``rsa = observatory_earth - (planet_ssb - earth_ssb)``.
+    """
+    obs = geom.observatory_earth_km[:, :3]
+    earth = geom.earth_ssb_km[:, :3]
+    out = []
+    for name in names:
+        pv = geom.planet_ssb_km.get(name)
+        if pv is None:
+            out.append(jnp.zeros((obs.shape[0], 3), dtype=jnp.float64))
+        else:
+            planet_geo = pv[:, :3] - earth
+            out.append((obs - planet_geo) / C_KM_S)
+    return tuple(out)
+
+
+def _stack_planet_obs_ls_jax(
+    geom: "Tempo2ObservatoryStateJax",
+    names: tuple[str, ...] = ("venus", "jupiter", "saturn", "uranus", "neptune"),
+) -> tuple[jnp.ndarray, ...]:
+    """Alias retained for callers; vectors are Tempo2 rsa (see ``_stack_planet_shapiro_rsa_jax``)."""
+    return _stack_planet_shapiro_rsa_jax(geom, names=names)
 
 
 def observatory_chain_vectors_jax(
@@ -133,6 +162,8 @@ def bootstrap_tempo2_geometry_jax(
     tol: float = 1.0e-15,
 ) -> tuple[jnp.ndarray, Tempo2ObservatoryStateJax]:
     """Fixed-point Teph ↔ ephemeris bootstrap inside the JIT graph."""
+    from jug.residuals.tempo2_native.clock_jax import compute_tempo2_correction_tt_tb_jax
+
     site_mjd = sat_mjd + correction_tt_sec / SECS_PER_DAY
     mjd_tt = site_mjd
 

@@ -22,7 +22,10 @@ from jug.delays.tempo2_geometry import (
     build_tempo2_pulsar_vectors,
     pmrv_rad_per_century,
 )
-from jug.delays.tempo2_geometry_jax import bootstrap_tempo2_geometry_jax
+from jug.delays.tempo2_geometry_jax import (
+    _stack_planet_obs_ls_jax,
+    bootstrap_tempo2_geometry_jax,
+)
 from jug.delays.tempo2_spk_jax import Tempo2SpkPacked, SpkSegmentPacked, pack_tempo2_spk_jax
 from jug.delays.tempo2_site_jax import IersEopPacked, pack_iers_eop_jax
 from jug.delays.tempo2_geometry import tempo2_dilate_freq_enabled
@@ -228,7 +231,6 @@ def _eop_to_jax(eop: IersEopPacked) -> IersEopPacked:
     static_argnames=(
         "ne_sw",
         "posepoch_mjd",
-        "parallax_mas",
         "pmrv_rad_century",
         "dilate_freq",
         "si_units",
@@ -237,8 +239,6 @@ def _eop_to_jax(eop: IersEopPacked) -> IersEopPacked:
         "track_val",
         "subtract_mean",
         "dshk",
-        "pmra",
-        "pmdec",
         "shk_posepoch",
         "dm_epoch",
         "dm_coeffs",
@@ -286,7 +286,7 @@ def compute_tempo2_toa_model_jax(
     obs_site_height_m: float = 0.0,
     obs_site_pressure_mbar: float = 101.325,
     posepoch_mjd: float,
-    parallax_mas: float = 0.0,
+    parallax_mas: jnp.ndarray | float = 0.0,
     pmrv_rad_century: float = 0.0,
     dilate_freq: bool = False,
     si_units: bool = False,
@@ -295,8 +295,8 @@ def compute_tempo2_toa_model_jax(
     track_val: int = -2,
     subtract_mean: bool = True,
     dshk: float = 0.0,
-    pmra: float = 0.0,
-    pmdec: float = 0.0,
+    pmra: jnp.ndarray | float = 0.0,
+    pmdec: jnp.ndarray | float = 0.0,
     shk_posepoch: float | None = None,
     jump_phase: jnp.ndarray | None = None,
     tzr_phase: jnp.float64 | None = None,
@@ -379,8 +379,13 @@ def compute_tempo2_toa_model_jax(
         dilate_freq=dilate_freq,
         planet_shapiro_enabled=planet_shapiro_enabled,
         obs_jupiter_ls=geom.obs_jupiter_ls,
+        planet_obs_ls=_stack_planet_obs_ls_jax(geom),
     )
-    shap_delay = bclt.shapiro_sun_sec + bclt.shapiro_planets_sec
+    shap_delay = bclt.shapiro_sun_sec + jnp.where(
+        planet_shapiro_enabled,
+        bclt.shapiro_planets_sec,
+        0.0,
+    )
     bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
         sat_mjd,
         tt,
@@ -462,7 +467,6 @@ def compute_tempo2_toa_model_jax(
     static_argnames=(
         "ne_sw",
         "posepoch_mjd",
-        "parallax_mas",
         "pmrv_rad_century",
         "dilate_freq",
         "si_units",
@@ -471,8 +475,6 @@ def compute_tempo2_toa_model_jax(
         "track_val",
         "subtract_mean",
         "dshk",
-        "pmra",
-        "pmdec",
         "shk_posepoch",
         "dm_epoch",
         "dm_coeffs",
@@ -579,9 +581,14 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
         dilate_freq=dilate_freq,
         planet_shapiro_enabled=planet_shapiro_enabled,
         obs_jupiter_ls=obs_jupiter_ls,
+        planet_obs_ls=None,
     )
     tropo = jnp.asarray(tropo_sec, dtype=jnp.float64)
-    shap_delay = bclt.shapiro_sun_sec + bclt.shapiro_planets_sec
+    shap_delay = bclt.shapiro_sun_sec + jnp.where(
+        planet_shapiro_enabled,
+        bclt.shapiro_planets_sec,
+        0.0,
+    )
     bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
         sat_mjd,
         tt,
@@ -739,6 +746,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     observatory_earth_km: np.ndarray | None = None,
     site_vel_km_s: np.ndarray | None = None,
     earth_ssb_vel_km_s: np.ndarray | None = None,
+    correction_tt_tb_sec: np.ndarray | None = None,
     model_static: Tempo2ModelStatic | None = None,
     ne_sw: float = 0.0,
     planet_shapiro_enabled: bool = True,
@@ -863,6 +871,11 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
             obs_sun_ls=jnp.asarray(obs_sun_ls, dtype=jnp.float64),
             obs_jupiter_ls=jnp.asarray(jup, dtype=jnp.float64),
             correction_tt_sec_pre=jnp.asarray(tt_pre, dtype=jnp.float64),
+            correction_tt_tb_sec_pre=(
+                None
+                if correction_tt_tb_sec is None
+                else jnp.asarray(correction_tt_tb_sec, dtype=jnp.float64)
+            ),
             einstein_rate=jnp.asarray(einstein, dtype=jnp.float64),
             ifte_records=jnp.asarray(model_static.ifte_records, dtype=jnp.float64),
             ifte_start_jd=jnp.asarray(model_static.ifte_start_jd, dtype=jnp.float64),

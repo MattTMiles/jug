@@ -1,4 +1,11 @@
-"""Tempo2 ``formBats.C`` assembly in JAX."""
+"""Tempo2 ``formBats.C`` assembly in JAX.
+
+MJD assembly note: tempo2 builds ``bat`` as ``sat + tt/86400 + (other terms)/86400``
+in ``long double`` (``ref-packages/tempo2/formBats.C``). This module currently sums all
+correction seconds in float64 first, then uses ``assemble_mjd_from_day_sec``. That
+matches ``bat_corr_days`` to tempo2 at ~ns level but ``bat_mjd`` / ``bbat_mjd`` can
+differ by ~300 ns on wsrt167. See ``TEMPO2_PARITY.md`` § "formBats bat_mjd assembly".
+"""
 
 from __future__ import annotations
 

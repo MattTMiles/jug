@@ -67,7 +67,9 @@ def test_native_f0_jacfwd_finite_difference_spot_check(wsrt167_setup):
         pytest.skip("native_chain_static unavailable")
     fn = make_residual_delta_jax_fn(setup=setup, fit_params=["F0"])
     jac = np.asarray(jax.jacfwd(fn)(jnp.zeros(1, dtype=jnp.float64)), dtype=np.float64).reshape(-1)
-    eps = 1e-8
+    # Full-chain phase5 spans decades; keep FD in the local linear regime (trunc wraps
+    # outside ~1e-10 Hz for wsrt167).
+    eps = 1e-10
     fd = (np.asarray(fn(jnp.asarray([eps]))) - np.asarray(fn(jnp.asarray([-eps])))) / (2 * eps)
     fd = fd.reshape(-1)
     scale = max(float(np.max(np.abs(fd))), 1.0)

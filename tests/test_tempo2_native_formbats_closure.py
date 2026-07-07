@@ -1,4 +1,12 @@
-"""DEV ORACLE — granular formBats component closure using pytempo delay diagnostics."""
+"""DEV ORACLE — granular formBats component closure using pytempo delay diagnostics.
+
+Gate semantics (wsrt167, unified JAX path):
+
+- ``bat_corr_days`` and per-component gates test **delay physics** (~1 ns target).
+- ``bbat_mjd`` is tested separately in ``test_tempo2_native_bbat_parity.py``; raw
+  ``bbat_mjd`` can fail at ~304 ns while ``bat_corr_days`` passes because tempo2
+  assembles ``bat`` with split ``long double`` summation. See ``TEMPO2_PARITY.md``.
+"""
 
 from __future__ import annotations
 
@@ -11,53 +19,30 @@ pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 
 import jax
 
-from jug.testing.tempo2_formbats_closure import compare_formbats_components
-from jug.testing.tempo2_pytempo_oracle import load_pytempo_native_oracle
-from tempo2_native_test_helpers import (
-    compute_native_terms_for_fixture,
-    delta_ns,
-    load_wsrt167_fixture,
-    native_batcorr_days,
-)
+from tempo2_native_test_helpers import delta_ns, native_batcorr_days
 
 WSRT167_TRACE_INDICES = [0, 42, 85, 166]
 
 
-def test_pytempo_formbats_self_closure_wsrt167():
-    fixture = load_wsrt167_fixture()
-    oracle = load_pytempo_native_oracle(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
-    closure = np.abs(oracle.fields["bat_corr_closure_ns"])
+def test_pytempo_formbats_self_closure_wsrt167(wsrt167_pytempo_oracle):
+    closure = np.abs(wsrt167_pytempo_oracle.fields["bat_corr_closure_ns"])
     assert float(np.max(closure)) < 1.0
 
 
-def test_jug_formbats_replay_with_pytempo_components_wsrt167():
-    """JUG formBats algebra closes when all slots come from pytempo."""
-    fixture = load_wsrt167_fixture()
-    report = compare_formbats_components(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
-    assert report.jug_replay_all_pytempo_rms_ns < 1.0
+def test_jug_formbats_replay_with_pytempo_components_wsrt167(wsrt167_formbats_report):
+    assert wsrt167_formbats_report.jug_replay_all_pytempo_rms_ns < 1.0
 
 
-def test_wsrt167_component_ranking_documents_tt_blocker():
-    """Per-slot swap-one ranking against pytempo oracle."""
-    fixture = load_wsrt167_fixture()
-    report = compare_formbats_components(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
+def test_wsrt167_component_ranking_documents_tt_blocker(wsrt167_formbats_report):
+    report = wsrt167_formbats_report
     assert report.swap_one_rms_ns["tt"] < 1.0
     assert report.swap_one_rms_ns["roemer"] < 1.0
     assert report.swap_one_rms_ns["tdis2"] < 1.0
     assert report.component_rms_ns["tt"] < 1.0
 
 
-def test_wsrt167_per_component_gates():
-    fixture = load_wsrt167_fixture()
-    report = compare_formbats_components(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
+def test_wsrt167_per_component_gates(wsrt167_formbats_report):
+    report = wsrt167_formbats_report
     assert report.component_rms_ns["roemer"] < 1.0
     assert report.component_rms_ns["tdis2"] < 1.0
     assert report.component_rms_ns["tdis1"] < 1.0
@@ -66,46 +51,36 @@ def test_wsrt167_per_component_gates():
     assert report.component_rms_ns["shap"] < 1.0
 
 
-def test_native_strict_formbats_batcorr_wsrt167():
-    """Strict native formBats path on wsrt167."""
-    fixture = load_wsrt167_fixture()
-    native = compute_native_terms_for_fixture(fixture)
-    oracle = load_pytempo_native_oracle(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
+def test_native_strict_formbats_batcorr_wsrt167(wsrt167_native_terms, wsrt167_pytempo_oracle):
+    """Delay-component gate on wsrt167 (physics), not MJD assembly.
+
+    Compares ``bat_corr_days`` / integrated formBats correction. Target < 1 ns.
+    May fail at ~1.1 ns until clock-outlier TOAs are closed. For ``bbat_mjd``
+    assembly (~304 ns), see ``test_tempo2_native_bbat_parity.py``.
+    """
+    delta = delta_ns(
+        native_batcorr_days(wsrt167_native_terms),
+        wsrt167_pytempo_oracle.fields["bat_corr_days"],
+        is_mjd=True,
     )
-    delta = delta_ns(native_batcorr_days(native), oracle.fields["bat_corr_days"], is_mjd=True)
     rms = float(np.sqrt(np.mean(delta**2)))
     assert rms < 1.0
 
 
-def test_native_bclt_roemer_interim_wsrt167():
-    fixture = load_wsrt167_fixture()
-    native = compute_native_terms_for_fixture(fixture)
-    oracle = load_pytempo_native_oracle(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
-    roemer = np.asarray(jax.device_get(native.roemer_sec), dtype=np.float64)
-    delta = delta_ns(roemer, oracle.fields["roemer_sec"])
+def test_native_bclt_roemer_interim_wsrt167(wsrt167_native_terms, wsrt167_pytempo_oracle):
+    roemer = np.asarray(jax.device_get(wsrt167_native_terms.roemer_sec), dtype=np.float64)
+    delta = delta_ns(roemer, wsrt167_pytempo_oracle.fields["roemer_sec"])
     assert np.sqrt(np.mean(delta**2)) < 1.0
 
 
-def test_native_dt_ssb_interim_wsrt167():
-    fixture = load_wsrt167_fixture()
-    native = compute_native_terms_for_fixture(fixture)
-    oracle = load_pytempo_native_oracle(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
-    dt_ssb = np.asarray(jax.device_get(native.dt_ssb_sec), dtype=np.float64)
-    delta = delta_ns(dt_ssb, oracle.fields["dt_ssb_sec"])
+def test_native_dt_ssb_interim_wsrt167(wsrt167_native_terms, wsrt167_pytempo_oracle):
+    dt_ssb = np.asarray(jax.device_get(wsrt167_native_terms.dt_ssb_sec), dtype=np.float64)
+    delta = delta_ns(dt_ssb, wsrt167_pytempo_oracle.fields["dt_ssb_sec"])
     assert np.sqrt(np.mean(delta**2)) < 1.0
 
 
-def test_single_toa_formbats_trace_wsrt167():
-    fixture = load_wsrt167_fixture()
-    oracle = load_pytempo_native_oracle(
-        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
-    )
-    pt = oracle.fields
+def test_single_toa_formbats_trace_wsrt167(wsrt167_pytempo_oracle):
+    pt = wsrt167_pytempo_oracle.fields
     for idx in WSRT167_TRACE_INDICES:
         if int(pt["delay_corr"][idx]) != 1:
             continue
@@ -124,26 +99,3 @@ def test_single_toa_formbats_trace_wsrt167():
             rtol=0,
             atol=1e-15,
         )
-
-
-def test_model_epoch_batcorr_still_available_for_interim():
-    fixture = load_wsrt167_fixture()
-    from jug.io.par_reader import parse_par_file
-    from jug.io.tim_reader import parse_tim_file_mjds
-    from jug.residuals.simple_calculator import compute_residuals_simple
-    from jug.residuals.tempo2_native.chain_jax import prepare_native_chain_from_simple_result
-
-    par_path = fixture["par_path"]
-    tim_path = fixture["tim_path"]
-    params = parse_par_file(par_path)
-    toas = parse_tim_file_mjds(tim_path)
-    jug = compute_residuals_simple(par_path, tim_path, verbose=False, compatibility="tempo2")
-    interim = prepare_native_chain_from_simple_result(
-        jug,
-        params,
-        toas,
-        use_model_epoch_batcorr=True,
-    )
-    oracle = load_pytempo_native_oracle(par_path, tim_path, fixture_id="wsrt167")
-    delta = delta_ns(native_batcorr_days(interim), oracle.fields["bat_corr_days"], is_mjd=True)
-    assert np.sqrt(np.mean(delta**2)) < 500.0

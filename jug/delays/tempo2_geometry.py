@@ -22,11 +22,12 @@ from jug.utils.constants import C_KM_S, K_DM_SEC
 
 # tempo2 ``tempo2.h``
 GM_C3 = 4.925490947e-6
+# tempo2 ``tempo2.h`` planetary GM/c^3 (seconds).  ``GMS_C3`` is Saturn, not the Sun.
 GMJ_C3 = 4.70255e-9
-GMS_C3 = 1.47428e-8
-GMU_C3 = 2.04269e-9
-GMN_C3 = 2.45808e-9
-GMV_C3 = 3.1764e-10
+GMS_C3 = 1.40797e-9
+GMV_C3 = 1.2061e-11
+GMU_C3 = 2.14539e-10
+GMN_C3 = 2.54488e-10
 AULTSC = 499.00478364
 PX_CONV = 1.74532925199432958e-2 / 3600.0e3  # mas → rad
 # tempo2 ``tempo2.h`` dispersion / solar-wind constants

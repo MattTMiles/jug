@@ -193,7 +193,39 @@ early-epoch astrometry (separate from wsrt167).
 - **Open:** ``torb`` / ``formResiduals`` / in-flight ``model_mjd_ld`` (Step 14)
 - **Red herring:** idx 85 pnNew / ``nphase`` ladder — pytempo exact at idx 85
 
-### formBats diagnostic gap
+### formBats MJD assembly — unified JAX path (2026-07-07)
+
+**Authoritative detail:** [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) § "formBats
+``bat_mjd`` / ``bbat_mjd`` assembly — unified JAX path".
+
+The unified JAX native chain (``formbats_jax.py``) closes delay components to tempo2
+at **~1 ns** on ``bat_corr_days``, but raw ``bat_mjd`` / ``bbat_mjd`` comparisons fail
+at **~304 ns** on wsrt167. This is **not** IFTE model-epoch physics and **not**
+Shklovskii on wsrt167 (Shk ≈ 0). It is tempo2 ``formBats.C`` using **split
+``long double`` summation** (``sat + tt/86400 + (other terms)/86400``) while JUG sums
+all correction seconds in float64 first.
+
+| Check | wsrt167 RMS | Interpretation |
+|-------|-------------|----------------|
+| ``bat_corr_days`` | ~1.1 ns | Delay physics — **gate here** |
+| ``bat_mjd`` | ~304 ns | MJD assembly recipe mismatch |
+| ``bbat_mjd`` | ~304 ns | Same (Shk = 0 on wsrt167) |
+
+Rebuilding tempo2 ``bat`` with JUG components + tempo2's split long-double recipe
+matches tempo2 ``bat_mjd`` to **0 ns**. Rebuilding with JUG's float64 single-sum
+recipe matches JUG ``bat_mjd`` to **0 ns** but tempo2 ``bat_mjd`` to **~304 ns**.
+
+**Residual impact:** the native chain uses ``torb`` closure against ``bbat``, so a
+pure epoch offset can cancel in ``deltaT = (bbat−PEPOCH)·86400 + torb``. A failing
+``bbat_mjd`` oracle test is therefore **not** equivalent to a failing residual test,
+but full tempo2 emulation still requires porting the split assembly into JAX.
+
+**Tests:**
+
+- ``test_native_strict_formbats_batcorr_wsrt167`` — delay gate (~1 ns target)
+- ``test_native_bbat_strict_formbats_wsrt167`` — epoch gate (expected ~304 ns fail)
+
+### formBats diagnostic gap (production ``tempo2_clock.py`` path)
 
 JUG formBats ``bbat_mjd`` in ``tempo2_clock.py`` differs from pytempo by **~65 s RMS** on
 wsrt167 (bundled ``tt+tt_tb−prebinary``). **Step 13 temp prototype** rebuilds from production
@@ -224,10 +256,13 @@ Both editable pytempo (``./ref-packages/pytempo``) and installed libstempo link 
 | **2** | ``phase_offset_turns`` | ``residual_sec`` on TRACK −2 |
 | **3** | informational | ``nphase`` vs ``pulse_number``; ``binarydelay`` stale on fresh construct; ``toas`` not ``bbat`` |
 
-Naïve float64 recompositions ``sat + bat_corr → bat`` (~237–304 ns) or
-``bbat − torb/86400 → pet`` (~275 ns) are export artifacts — tempo2 ``long double``
-identities hold at ~10⁻¹² day. libstempo ``binarydelay`` reads **zeros** on fresh
-construct — use ``torb_sec`` or ``prebinary − total`` (0.17 ns on wsrt167).
+Naïve float64 recompositions ``sat + bat_corr → bat`` (~304 ns on wsrt167) are
+**assembly-recipe mismatches**, not delay disagreements — see
+``TEMPO2_PARITY.md`` § "formBats ``bat_mjd`` / ``bbat_mjd`` assembly". tempo2
+split ``long double`` identities hold to ~10⁻¹² day; ``bat_corr_days`` is the
+delay gate. ``bbat − torb/86400 → pet`` (~275 ns) is a similar artifact.
+libstempo ``binarydelay`` reads **zeros** on fresh construct — use ``torb_sec`` or
+``prebinary − total`` (0.17 ns on wsrt167).
 
 ---
 

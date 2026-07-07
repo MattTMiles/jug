@@ -99,7 +99,9 @@ def resolve_planet_shapiro_enabled(
 ) -> bool:
     """Resolve PLANET_SHAPIRO for the active engine profile."""
     if "PLANET_SHAPIRO" in params:
-        return str(params["PLANET_SHAPIRO"]).upper() in ("Y", "YES", "TRUE", "1")
+        return str(params["PLANET_SHAPIRO"]).upper() in ("1", "Y", "YES", "TRUE", "T")
+    if profile.is_tempo2:
+        return True
     return profile.planet_shapiro
 
 

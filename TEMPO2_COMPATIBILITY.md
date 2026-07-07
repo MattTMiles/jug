@@ -112,7 +112,8 @@ Key `toa_diagnostics()` fields for parity work:
 
 | Field | Units | Use |
 |-------|-------|-----|
-| `bbat_mjd`, `bat_mjd`, `pet_mjd` | MJD | Epoch comparison vs JUG |
+| `bbat_mjd`, `bat_mjd`, `pet_mjd` | MJD | Epoch scalars — **not** interchangeable with `bat_corr_days`; split long-double assembly in tempo2 can differ by ~300 ns from float64 `sat + bat_corr` even when delays match (~1 ns). See [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) § "formBats bat_mjd assembly". |
+| `bat_corr_days` | days | Integrated formBats delay correction — primary delay gate |
 | `roemer_sec`, `sun_shapiro_sec`, `torb_sec` | seconds | Delay terms |
 | `freq_ssb_hz` | Hz | Barycentric frequency |
 | `phase_turns`, `nphase` | turns | TRACK −2 / wrapping |

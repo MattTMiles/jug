@@ -22,13 +22,19 @@ def test_wsrt167_batcorr_matches_model_mjd_minus_prebinary():
     assert report.batcorr_utc_model_tdb_rms_ns < 500.0
 
 
-def test_wsrt167_formbats_dm_sw_does_not_match_batcorr():
-    """Naive formBats with dm+sw misses utc_to_tdb (~65 s) in batCorrs oracle."""
+def test_wsrt167_formbats_dm_sw_closes_batcorr():
+    """Naive formBats split with dm+sw as tdis now closes batCorrs to <100 ns.
+
+    Historically this missed by ~65 s (utc_to_tdb confound); with the
+    troposphere folded into the dt chain (2026-07-07) the dm+sw split matches
+    the batCorrs oracle to ~25 ns (remaining scatter is tdis evaluation-epoch
+    differences, not a missing chain term).
+    """
     fx = get_tempo2_fixture("wsrt167")
     report = compare_batcorr_epoch_chain(
         fx["par_path"], fx["tim_path"], fixture_id="wsrt167"
     )
-    assert report.formbats_dm_sw_rms_ns > 1e10
+    assert report.formbats_dm_sw_rms_ns < 100.0
     assert report.formbats_tdis_implied_rms_ns < 1.0
 
 

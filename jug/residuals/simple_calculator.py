@@ -473,15 +473,20 @@ def _fortran_mod(value, period):
 
 
 def _fortran_nlong(value):
-    """Nearest integer with ties away from zero (tempo2Util.C fortran_nlong)."""
-    x = np.asarray(value, dtype=np.float64)
+    """Nearest integer with ties away from zero (tempo2Util.C fortran_nlong).
+
+    Rounds in longdouble: at |phase5| ~ 1e11 turns a float64 downcast can
+    round to the wrong integer near half-turn boundaries.
+    """
+    x = np.asarray(value, dtype=np.longdouble)
     scalar = x.ndim == 0
     if scalar:
         x = x.reshape(1)
+    half = np.longdouble(0.5)
     out = np.empty(len(x), dtype=np.int64)
     pos = x > 0.0
-    out[pos] = np.trunc(x[pos] + 0.5).astype(np.int64)
-    out[~pos] = np.trunc(x[~pos] - 0.5).astype(np.int64)
+    out[pos] = np.trunc(x[pos] + half).astype(np.int64)
+    out[~pos] = np.trunc(x[~pos] - half).astype(np.int64)
     return out[0] if scalar else out
 
 
@@ -687,7 +692,11 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         if tzr_phase is not None:
             phase = phase - np.longdouble(tzr_phase)
 
-        phase = np.asarray(phase, dtype=np.float64)
+        # Keep longdouble through wrapping: the Taylor phase carries the full
+        # integer pulse count (~1e11 turns on decade-long data at F0~300 Hz),
+        # where a float64 downcast quantizes phase at ~2e-5 turns (~60 ns).
+        # tempo2 keeps phase5 in longdouble throughout formResiduals.C.
+        phase = np.asarray(phase, dtype=np.longdouble)
 
     # Phase wrapping (Tempo2 formResiduals.C for TRACK -2; sequential connection otherwise).
     # Native ``track_minus2_frac_phase`` (tempo2 pnNew) is used with ``phase5`` when
@@ -713,7 +722,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         # Legacy TRACK -2 on emission-time Taylor phase (PINT / partial tempo2).
         phas1 = _fortran_mod(phase[0], np.longdouble(1.0))
         phase5 = np.asarray(phase, dtype=np.longdouble) - phas1
-        nphase = np.longdouble(_fortran_nlong(np.asarray(phase5, dtype=np.float64)))
+        nphase = np.asarray(_fortran_nlong(phase5), dtype=np.longdouble)
 
         if external_pn_add is not None:
             pn_add_arr = np.asarray(external_pn_add, dtype=np.int64)
@@ -1928,6 +1937,19 @@ def compute_residuals_simple(
         bbat_mjd = _t2_setup.bbat_mjd
         torb_sec = _t2_setup.torb_sec
         model_mjd = _t2_setup.model_mjd
+
+        # formBats.C subtracts troposphericDelay inside ``bat``, so tempo2's
+        # spin argument includes the troposphere.  The kernel stage above ran
+        # with tropo=0 (the tempo2-native troposphere needs the formBats clock
+        # chain computed inside the host setup), so fold it into the total
+        # delay and emission dt now.  Delays enter dt linearly, so this
+        # post-hoc adjustment is exact; without it the Taylor host residuals
+        # are missing up to ~100 ns of troposphere vs tempo2 (wsrt167 floor).
+        if np.any(np.asarray(tropo_delay_sec) != 0.0):
+            _tropo_ld = np.asarray(tropo_delay_sec, dtype=np.longdouble)
+            total_delay_sec = total_delay_sec + _tropo_ld
+            delay_sec = total_delay_sec
+            dt_sec = dt_sec - _tropo_ld
 
     phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
     phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None

@@ -14,7 +14,7 @@ from tempo2_fixtures import get_tempo2_fixture
 
 
 def test_jax_native_wsrt167_residuals():
-    """Tempo2 absolute eval uses native graph (default staged_bclt); ~18 ns vs libstempo."""
+    """Tempo2 absolute eval vs libstempo; ~1.4 ns since tropo-in-dt + ld-wrap fixes."""
     from jug.residuals.simple_calculator import compute_residuals_simple
 
     fx = get_tempo2_fixture("wsrt167")
@@ -28,4 +28,4 @@ def test_jax_native_wsrt167_residuals():
     ) * 1e3
     delta_ns = delta_ns - np.mean(delta_ns)
     rms = float(np.sqrt(np.mean(delta_ns**2)))
-    assert 14.0 < rms < 20.0
+    assert rms < 2.5

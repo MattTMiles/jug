@@ -26,7 +26,7 @@ from test_tempo2_residual_parity import (
 
 pytestmark = pytest.mark.tempo2
 
-WSRT167_DEBT_RMS_NS = 25.0
+WSRT167_DEBT_RMS_NS = 2.5
 NO_TRACK_DEBT_RMS_NS = 100.0
 ADDSAT_DEBT_MAX_NS = 1000.0  # 1 µs — catches integer-turn regressions
 
@@ -116,7 +116,7 @@ def test_epta_j0613_addsat_min_bulk_context_near_libstempo():
 
 
 def test_wsrt167_track2_bulk_spin_debt_pin():
-    """wsrt167 TRACK -2 bulk floor debt pin (production Taylor spin route)."""
+    """wsrt167 TRACK -2 floor pin (production Taylor spin route, ~1.4 ns)."""
     fixture = get_tempo2_fixture("wsrt167")
     jug = compute_residuals_simple(
         fixture["par_path"],
@@ -129,15 +129,10 @@ def test_wsrt167_track2_bulk_spin_debt_pin():
     assert stats["rms"] < WSRT167_DEBT_RMS_NS, (
         f"wsrt167 rms={stats['rms']:.2f} ns exceeds {WSRT167_DEBT_RMS_NS} ns debt cap"
     )
-    assert stats["rms"] > FINAL_RMS_DELTA_NS
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="wsrt167 strict 5 ns gate — bulk spin floor ~15.5 ns remains",
-)
 def test_wsrt167_track2_strict_residual_target():
-    """Strict wsrt167 target once bulk spin floor closes."""
+    """Strict wsrt167 gate (passing since tropo-in-dt + longdouble-wrap fixes)."""
     fixture = get_tempo2_fixture("wsrt167")
     jug = compute_residuals_simple(
         fixture["par_path"],

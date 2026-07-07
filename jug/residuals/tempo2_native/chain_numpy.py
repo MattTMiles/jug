@@ -93,6 +93,8 @@ def _compute_tempo2_native_terms_numpy_impl(
     use_model_epoch_batcorr=False,
     model_mjd=None,
     prebinary_override_sec=None,
+    site_vel_km_s=None,
+    correction_tt_tb_sec_pre=None,
 ):
     from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
     from jug.residuals.engine_conventions import resolve_engine_profile
@@ -115,13 +117,17 @@ def _compute_tempo2_native_terms_numpy_impl(
     if ne_sw == 0.0:
         profile = resolve_engine_profile(params, "tempo2")
         ne_sw = resolve_ne_sw_cm3(params, profile)
+    if correction_tt_tb_sec_pre is not None:
+        tt_tb = np.asarray(correction_tt_tb_sec_pre, dtype=np.float64)
+    else:
+        mjd_tt = sat + formbats_tt / SECS_PER_DAY
+        tt_tb, _tt_teph = compute_correction_tt_tb_sec(
+            mjd_tt,
+            observatory_earth_km=observatory_earth_km,
+            earth_ssb_vel_km_s=earth_ssb_vel_km_s,
+            params=params,
+        )
     mjd_tt = sat + formbats_tt / SECS_PER_DAY
-    tt_tb, _tt_teph = compute_correction_tt_tb_sec(
-        mjd_tt,
-        observatory_earth_km=observatory_earth_km,
-        earth_ssb_vel_km_s=earth_ssb_vel_km_s,
-        params=params,
-    )
     if ephem_path is None:
         from jug.delays.tempo2_ephemeris import resolve_tempo2_ephemeris_path
 
@@ -151,6 +157,7 @@ def _compute_tempo2_native_terms_numpy_impl(
         earth_ssb_vel_km_s=earth_ssb_vel_km_s,
         ne_sw=float(ne_sw),
         einstein_rate=einstein,
+        site_vel_km_s=site_vel_km_s,
     )
     tdis1_sec = bclt.tdis1_sec
     tdis2_sec = bclt.tdis2_sec
@@ -215,6 +222,74 @@ def _compute_tempo2_native_terms_numpy_impl(
         "bclt_iterations": bclt.bclt_iterations,
         "converged": bclt.converged,
     }
+
+
+def compute_tempo2_native_terms_numpy_from_simple_result(
+    jug_result: dict,
+    params: dict,
+    toas: list,
+    *,
+    model_static=None,
+):
+    """NumPy host-frozen reference fed from Tempo2-native diagnostics."""
+    import jax
+    import jax.numpy as jnp
+
+    from jug.residuals.tempo2_native.chain_jax import _load_model_static_for_native_chain
+    from jug.residuals.tempo2_native.clock_jax import compute_tempo2_get_correction_tt_jax
+    from jug.residuals.tempo2_native.model_jax import host_frozen_vectors_from_tempo2_obs_state
+
+    td = jug_result["term_diagnostics"]
+    frozen = host_frozen_vectors_from_tempo2_obs_state(td)
+
+    if model_static is None:
+        model_static = _load_model_static_for_native_chain(params, toas, jug_result)
+
+    sat = np.asarray(td["sat_mjd"], dtype=np.float64)
+    tt_pre = np.asarray(
+        jax.device_get(
+            compute_tempo2_get_correction_tt_jax(
+                jnp.asarray(sat, dtype=jnp.float64),
+                chain_mjd_tables=tuple(
+                    jnp.asarray(t, dtype=jnp.float64) for t in model_static.chain_mjd_tables
+                ),
+                chain_offset_tables=tuple(
+                    jnp.asarray(t, dtype=jnp.float64)
+                    for t in model_static.chain_offset_tables
+                ),
+                bipm_mjd=jnp.asarray(model_static.bipm_mjd, dtype=jnp.float64),
+                bipm_offset=jnp.asarray(model_static.bipm_offset, dtype=jnp.float64),
+            )
+        ),
+        dtype=np.float64,
+    )
+    tropo = np.asarray(td.get("tropo_delay_sec", 0.0), dtype=np.float64)
+    if tropo.ndim == 0:
+        tropo = np.full(len(sat), float(tropo), dtype=np.float64)
+
+    return _compute_tempo2_native_terms_numpy_impl(
+        sat_mjd=sat,
+        correction_tt_sec=tt_pre,
+        params=params,
+        ssb_obs_pos_km=frozen["ssb_obs_ls"] * 299792.458,
+        observatory_earth_km=frozen["observatory_earth_km"][:, :3],
+        earth_ssb_vel_km_s=frozen["earth_ssb_km"][:, 3:6],
+        ephem_path=model_static.ephem_path,
+        tdis1_sec=td["dm_delay_sec"],
+        tdis2_sec=td["sw_delay_sec"],
+        tropospheric_sec=tropo,
+        dt_emission_sec=jug_result["dt_sec"],
+        use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
+        formbats_tt_sec=tt_pre,
+        ssb_obs_ls_fixed=frozen["ssb_obs_ls"],
+        obs_sun_ls_fixed=frozen["obs_sun_ls"],
+        obs_planets_ls_fixed=frozen["planet_obs_ls"],
+        freq_mhz_topocentric=np.asarray([t.freq_mhz for t in toas], dtype=np.float64),
+        ne_sw=float(model_static.ne_sw),
+        planet_shapiro_enabled=bool(model_static.planet_shapiro_enabled),
+        site_vel_km_s=frozen["site_vel_km_s"],
+        correction_tt_tb_sec_pre=np.asarray(td["correction_tt_tb_sec"], dtype=np.float64),
+    )
 
 
 def compute_tempo2_native_terms_numpy(*args, **kwargs):

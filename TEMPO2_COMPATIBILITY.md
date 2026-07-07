@@ -75,6 +75,20 @@ use outside curated tests.
 | Canonical TDB fixtures | Cases A (TCB), B (equatorial NG5), and C (ecliptic cross-engine) must stay green. |
 | PINT vs tempo2 cross-engine floor | Closing PINT↔tempo2 gaps inside PINT is **out of scope**. |
 | Design matrix in tempo2 mode | Use `design_matrix_method="autodiff"`. **Do not** use `"analytic"` on tempo2 sessions (known broken). |
+| Tempo2-native JAX fitting | **Hybrid host-frozen path** (default): `USE_JAX_TEMPO2_NATIVE_CHAIN=True`, `USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH=False`. Requires `term_diagnostics['tempo2_obs_state']` in residual cache for `native_chain_static`. |
+| IERS preflight | **Warn** in notebooks / offline use; **strict fail** under pytest or `JUG_IERS_STRICT=1`. |
+
+### Tempo2-native JAX switches (do not confuse)
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `USE_JAX_TEMPO2_NATIVE_CHAIN` | `True` | Enables tempo2-native **fitting** and `residual_delta_jax` (hybrid staging tail). |
+| `USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH` | `False` | Opt-in **slow** unified in-graph model only (`JUG_TEMPO2_NATIVE_FULL_INGRAPH=1`). |
+
+MetaPulsar / notebook integrators must call `compute_residuals` (or
+`force_recompute=True` after JUG upgrades) before `export_jax_timing_state`, and pass
+`term_diagnostics` through cached fit-setup builders. See
+[`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md).
 
 ---
 

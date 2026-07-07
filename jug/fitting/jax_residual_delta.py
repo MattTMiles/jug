@@ -7,9 +7,11 @@ there are no finite-difference perturbations and no hand-written derivative
 columns in this path.
 
 When ``use_jax_tempo2_native_chain=True``, tempo2-native fits recompute
-``residual_sec(θ+Δθ) − residual_sec(θ)`` through ``compute_tempo2_toa_model_jax``
-(clocks, ephemeris, BCLT / Roemer, DM, formBats, Shklovskii, binary closure,
-spin / TRACK−2).  The Taylor ``dt_base + delay_change`` fallback is not used.
+``residual_sec(θ+Δθ) − residual_sec(θ)`` through the host-frozen staging tail
+by default (BCLT, formBats, Shklovskii, spin / TRACK−2). Set
+``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH=True`` (or ``JUG_TEMPO2_NATIVE_FULL_INGRAPH=1``)
+only to differentiate through the full in-graph model; expect multi-minute JIT
+compile on first call. The Taylor ``dt_base + delay_change`` fallback is not used.
 """
 
 from __future__ import annotations
@@ -24,7 +26,9 @@ import numpy as np
 
 from jug.residuals.tempo2_native.chain_jax import (
     NativeDeltaPack,
-    build_native_delta_pack,
+    NativeFrozenDeltaPack,
+    build_native_delta_pack_for_setup,
+    compute_native_frozen_residual_delta_jax,
     compute_native_full_chain_residual_delta_jax,
 )
 from jug.utils.units import native_derivative_to_fit_column
@@ -293,7 +297,7 @@ def _compute_residual_delta_jax(
     params_pert: dict,
     setup: "GeneralFitSetup",
     *,
-    native_pack: NativeDeltaPack | None,
+    native_pack: NativeDeltaPack | NativeFrozenDeltaPack | None,
     ref_f_terms: Sequence[float],
     phase_mean_mode: str,
     binary_plan=None,
@@ -304,9 +308,24 @@ def _compute_residual_delta_jax(
         and getattr(setup, "use_jax_tempo2_native_chain", False)
     ):
         if native_pack is None:
+            static = getattr(setup, "native_chain_static", None)
+            if static is None:
+                raise ValueError(
+                    "tempo2 native residual_delta requires native_chain_static on "
+                    "GeneralFitSetup. Rebuild from a residual cache that includes "
+                    "term_diagnostics (e.g. call compute_residuals before "
+                    "export_jax_timing_state). "
+                    "USE_JAX_TEMPO2_NATIVE_CHAIN enables the native fitting path; "
+                    "USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH is a separate slow in-graph "
+                    "compile opt-in (default off — production uses host-frozen staging)."
+                )
             raise ValueError(
-                "tempo2 native residual_delta requires native_chain_static on "
-                "GeneralFitSetup; rebuild with USE_JAX_TEMPO2_NATIVE_CHAIN enabled"
+                "tempo2 native residual_delta could not build a native delta pack "
+                "(missing term_diagnostics['tempo2_obs_state'] or TOA list on setup)."
+            )
+        if isinstance(native_pack, NativeFrozenDeltaPack):
+            return compute_native_frozen_residual_delta_jax(
+                params_ref, params_pert, native_pack
             )
         return compute_native_full_chain_residual_delta_jax(
             params_ref, params_pert, native_pack
@@ -379,7 +398,7 @@ def make_residual_delta_jax_fn(
         str(setup.compatibility).lower().startswith("tempo2")
         and getattr(setup, "use_jax_tempo2_native_chain", False)
     ):
-        native_pack = build_native_delta_pack(setup)
+        native_pack = build_native_delta_pack_for_setup(setup)
 
     @jax.jit
     def _fn(delta_theta):

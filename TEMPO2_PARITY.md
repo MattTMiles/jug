@@ -5,11 +5,14 @@ active work queue, and investigation log.
 
 **Policy and architecture:** [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md)
 
-**Status (2026-07-06):** Cases A/B/C green (~1–2 ns). IPTA DR2 workloads **partially
-green**. **Fix #1 (TZR, Phase C):** done. **Fix #2 (wsrt167, Phase D):** Steps 1–18 —
-production Taylor@``model_mjd`` + ``dt_sec_ld`` remains best at **~16.4 ns**; **0 ns**
-requires the **JAX tempo2-native clock/delay chain** (see § below). Do **not** wire
-``phase5@bbat`` or ``tempo2_clock`` ``bbat`` to production. **Primary report:**
+**Status (2026-07-07):** Cases A/B/C green (~1–2 ns). **Hybrid host-frozen JAX path**
+(wsrt167 pytempo gates **< 1 ns** on delay terms; production fitting default) is wired for
+`design_matrix_method="autodiff"` when `term_diagnostics['tempo2_obs_state']` is present in
+the residual cache. IPTA DR2 workloads **partially green**. **Fix #1 (TZR, Phase C):** done.
+**Fix #2 (wsrt167, Phase D):** Steps 1–18 — production Taylor@``model_mjd`` + ``dt_sec_ld``
+remains best at **~16.4 ns** for scalar residuals; JAX native **fitting** uses host-frozen
+staging (not full in-graph). Do **not** wire ``phase5@bbat`` or enable
+``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH`` in interactive sessions. **Primary report:**
 [`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md).
 
 ---

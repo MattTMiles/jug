@@ -1,4 +1,4 @@
-"""DEV ORACLE — native residual_delta uses full JAX chain, not Taylor fallback."""
+"""DEV ORACLE — native residual_delta uses frozen staging tail by default."""
 
 from __future__ import annotations
 
@@ -18,6 +18,15 @@ from jug.fitting.jax_residual_delta import (
 from jug.fitting.optimized_fitter import _build_general_fit_setup_from_files
 from tempo2_native_test_helpers import load_wsrt167_fixture
 from test_tempo2_designmatrix_parity import _assert_column_matches
+
+
+@pytest.fixture(autouse=True)
+def _force_frozen_native_path(monkeypatch):
+    monkeypatch.setattr(
+        "jug.residuals.tempo2_native_quarantine.USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH",
+        False,
+    )
+    monkeypatch.delenv("JUG_TEMPO2_NATIVE_FULL_INGRAPH", raising=False)
 
 
 @pytest.fixture

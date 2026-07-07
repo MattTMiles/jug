@@ -151,6 +151,37 @@ do **not** mean tempo2 mode is ready for JAX-traced likelihoods or IPTA-scale
 workloads. See [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md) for policy and
 [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) for gap analysis, pytempo workflow, and usage guidance.
 
+### Tempo2-native JAX fitting (hybrid path, 2026-07-07)
+
+Production tempo2 `design_matrix_method="autodiff"` and `residual_delta_jax` use a
+**host-frozen** native chain by default:
+
+| Switch | Default | Role |
+|--------|---------|------|
+| `USE_JAX_TEMPO2_NATIVE_CHAIN` | `True` | Master switch for tempo2-native fitting / JAX residual deltas |
+| `USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH` | `False` | Opt-in slow unified in-graph model (`JUG_TEMPO2_NATIVE_FULL_INGRAPH=1`) |
+
+Requirements for MetaPulsar / `export_jax_timing_state`:
+
+1. Call `session.compute_residuals(...)` (or `force_recompute=True` after upgrades) so
+   the cache includes `term_diagnostics['tempo2_obs_state']`.
+2. `_build_general_fit_setup_from_cache` must pass `term_diagnostics` and `toas` into
+   `GeneralFitSetup.native_chain_static`.
+
+IERS preflight: **warn** in general use; **strict fail** under pytest or `JUG_IERS_STRICT=1`.
+
+Fast hybrid regression probes:
+
+```bash
+cd ref-packages/jug
+JAX_ENABLE_X64=1 PYTHONPATH=.:tests python3 -m pytest \
+  tests/test_tempo2_obs_state_export.py \
+  tests/test_tempo2_native_staging_host_frozen.py \
+  tests/test_tempo2_native_residual_delta_jax.py -q
+```
+
+See [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) for the full parity table.
+
 **Tempo2 parity status (2026-07-06):** Phase C TZR closed J0030 to **~4.7 ns RMS**.
 wsrt167 remains **~16.4 ns RMS** (max **~110 ns** at idx 85 — spin-error tail). Phase D Steps 1–3 done/ruled out; Step 4 ruled out Taylor vs tempo2 ``phase2+phase3`` (0.02 ns fractional). Next: clock / ``model_mjd`` vs ``updateBatsAll``.
 Details: [`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md).

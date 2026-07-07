@@ -153,6 +153,28 @@ def _load_obs_chain(clock_dir, obs_code: str, verbose: bool = False) -> dict:
     return chain
 
 
+def _validate_clock_and_iers(mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose):
+    from jug.io.clock import (
+        check_clock_files,
+        check_iers_coverage,
+        iers_strict_enabled,
+        raise_on_iers_failure,
+        warn_on_iers_failure,
+    )
+
+    _zero = {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0])}
+    clock_ok, clock_issues = check_clock_files(
+        mjd_start, mjd_end, obs_clock, _zero, bipm_clock,
+        verbose=verbose, clock_dir=str(clock_dir),
+    )
+    iers_ok, iers_issues = check_iers_coverage(mjd_start, mjd_end, verbose=verbose)
+    if iers_strict_enabled():
+        raise_on_iers_failure(iers_ok, iers_issues)
+    else:
+        warn_on_iers_failure(iers_ok, iers_issues)
+    return clock_ok, clock_issues + iers_issues
+
+
 def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
                             mjd_utc, verbose):
     """Load observatory and BIPM clock corrections using a graph-based chain.
@@ -211,13 +233,10 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
 
         obs_clocks = {obs: obs_clock for obs in all_obs_codes}
 
-        # Validate coverage
-        from jug.io.clock import check_clock_files, check_iers_coverage
-        _zero = {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0])}
-        clock_ok, clock_issues = check_clock_files(
-            np.min(mjd_utc), np.max(mjd_utc),
-            obs_clock, _zero, bipm_clock,
-            verbose=verbose, clock_dir=str(clock_dir)
+        mjd_start = np.min(mjd_utc)
+        mjd_end = np.max(mjd_utc)
+        clock_ok, clock_issues = _validate_clock_and_iers(
+            mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose
         )
         return {
             'obs_clock': obs_clock, 'obs_clocks': obs_clocks,
@@ -237,18 +256,13 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
 
     bipm_clock, bipm_version = _load_bipm_clock(clock_dir, params, verbose)
 
-    # Validate coverage
-    from jug.io.clock import check_clock_files, check_iers_coverage
     mjd_start = np.min(mjd_utc)
-    mjd_end   = np.max(mjd_utc)
+    mjd_end = np.max(mjd_utc)
     if verbose:
         print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
-    _zero = {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0])}
-    clock_ok, clock_issues = check_clock_files(
-        mjd_start, mjd_end, obs_clock, _zero, bipm_clock,
-        verbose=verbose, clock_dir=str(clock_dir)
+    clock_ok, clock_issues = _validate_clock_and_iers(
+        mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose
     )
-    check_iers_coverage(mjd_start, mjd_end, verbose=verbose)
 
     return {
         'obs_clock': obs_clock, 'obs_clocks': obs_clocks,
@@ -1862,6 +1876,7 @@ def compute_residuals_simple(
     formbats_correction_tt = None
     earth_ssb_vel_km_s = None
     tempo2_obs_state = None
+    tempo2_obs_state_export = None
     if is_tempo2_compat:
         from jug.residuals.tempo2_clock import (
             compute_get_correction_tt_sec,
@@ -1910,6 +1925,13 @@ def compute_residuals_simple(
         ephemeris_mjd = geo_boot.ephemeris_mjd
         tt_tb = geo_boot.correction_tt_tb_sec
         tt_teph = geo_boot.correction_tt_teph_sec
+        tempo2_obs_state_export = {
+            "site_vel_km_s": tempo2_obs_state.site_vel_km_s,
+            "earth_ssb_km": tempo2_obs_state.earth_ssb_km,
+            "observatory_earth_km": tempo2_obs_state.observatory_earth_km,
+            "sun_ssb_km": tempo2_obs_state.sun_ssb_km,
+            "planet_ssb_km": tempo2_obs_state.planet_ssb_km,
+        }
         earth_ssb_vel_km_s = tempo2_obs_state.earth_ssb_km[:, 3:6]
         obs_earth_km = tempo2_obs_state.observatory_earth_km[:, :3]
         from jug.delays.barycentric import compute_einstein_rate
@@ -1968,6 +1990,7 @@ def compute_residuals_simple(
                 formbats_tt_arr,
                 obs_itrf_km=obs_itrf,
                 pos_pulsar=pos_pulsar,
+                mapping_clock_sec=correction_tt,
             )
 
         from jug.residuals.tempo2_native.chain_jax import (
@@ -1985,6 +2008,7 @@ def compute_residuals_simple(
                 "dm_delay_sec": dm_delay_sec,
                 "sw_delay_sec": sw_delay_sec,
                 "freq_bary_mhz": freq_bary_mhz,
+                "tempo2_obs_state": tempo2_obs_state_export,
             }
             _overlay_jug = {
                 "term_diagnostics": _overlay_td,
@@ -2137,6 +2161,7 @@ def compute_residuals_simple(
             "dm_delay_sec": np.asarray(dm_delay_sec, dtype=np.float64),
             "sw_delay_sec": np.asarray(sw_delay_sec, dtype=np.float64),
             "freq_bary_mhz": np.asarray(freq_bary_mhz, dtype=np.float64),
+            "tempo2_obs_state": tempo2_obs_state_export,
         }
         _jug = {
             "term_diagnostics": _native_td,
@@ -2281,15 +2306,6 @@ def compute_residuals_simple(
         binary_delay_sec = np.asarray(total_delay_sec - prebinary_delay_sec, dtype=np.float64)
         binary_status = "derived_total_minus_prebinary"
 
-    tempo2_obs_state_export = None
-    if tempo2_obs_state is not None:
-        tempo2_obs_state_export = {
-            "site_vel_km_s": tempo2_obs_state.site_vel_km_s,
-            "earth_ssb_km": tempo2_obs_state.earth_ssb_km,
-            "observatory_earth_km": tempo2_obs_state.observatory_earth_km,
-            "sun_ssb_km": tempo2_obs_state.sun_ssb_km,
-            "planet_ssb_km": tempo2_obs_state.planet_ssb_km,
-        }
     term_diagnostics = {
         "roemer_sec": np.asarray(roemer_sec, dtype=np.float64),
         "sun_shapiro_sec": np.asarray(sun_shapiro_sec, dtype=np.float64),

@@ -14,6 +14,7 @@ from pathlib import Path
 from bisect import bisect_left
 import heapq
 import os
+import sys
 import warnings
 import numpy as np
 
@@ -802,6 +803,60 @@ def compare_clock_files(path_a: Path | str, path_b: Path | str,
     }
 
 
+_IERS_REMEDIATION = (
+    'python -c "from astropy.utils.iers import IERS_A; IERS_A.open()" '
+    "or bind a host ~/.astropy/cache into the container"
+)
+
+
+def _probe_iers_gcrs_transform(mjd: float) -> None:
+    """Smoke-test ITRF→GCRS; raises if Astropy IERS/EOP data is unusable."""
+    from astropy import units as u
+    from astropy.coordinates import EarthLocation
+    from astropy.time import Time
+
+    # Fixed geocentric ITRF position (Green Bank approximate); avoids site registry.
+    loc = EarthLocation.from_geocentric(
+        -849.066 * u.km, -4792.015 * u.km, 3952.036 * u.km
+    )
+    times = Time([mjd], format="mjd", scale="tdb")
+    loc.get_gcrs_posvel(obstime=times)
+
+
+def iers_strict_enabled() -> bool:
+    """Return True when IERS preflight should hard-fail (parity/dev), not warn."""
+    if os.environ.get("JUG_IERS_STRICT", "").lower() in ("1", "true", "yes"):
+        return True
+    return "pytest" in sys.modules
+
+
+def warn_on_iers_failure(valid: bool, issues: list) -> None:
+    """Emit warnings for IERS preflight issues (general fitting / offline use)."""
+    if valid:
+        return
+    messages = [i["message"] for i in issues if i.get("message")]
+    if not messages:
+        messages = ["IERS/EOP preflight failed."]
+    for msg in messages:
+        warnings.warn(
+            f"{msg} Observatory geometry may be wrong. Try: {_IERS_REMEDIATION}.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def raise_on_iers_failure(valid: bool, issues: list) -> None:
+    """Abort when IERS preflight reports errors."""
+    if valid:
+        return
+    errors = [i["message"] for i in issues if i.get("severity") == "error"]
+    detail = errors[0] if errors else "IERS/EOP preflight failed."
+    raise RuntimeError(
+        f"{detail} Observatory geometry (ITRF→GCRS) requires working Astropy "
+        f"IERS data. Try: {_IERS_REMEDIATION}."
+    )
+
+
 def check_iers_coverage(mjd_start: float, mjd_end: float,
                         verbose: bool = True) -> tuple:
     """Check that astropy's IERS Earth-orientation data covers the data MJD range.
@@ -809,6 +864,9 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
     The ITRF->GCRS coordinate transform (used when computing observatory SSB
     positions) relies on IERS UT1-UTC and polar-motion data.  Using predicted
     rather than measured values introduces small but systematic errors.
+
+    After the table-range check, performs a functional ``get_gcrs_posvel``
+    probe so missing or corrupt IERS caches fail before geometry computation.
 
     Parameters
     ----------
@@ -832,10 +890,11 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
 
     try:
         from astropy.utils import iers as astropy_iers
-        import numpy as np
 
         tab = astropy_iers.earth_orientation_table.get()
         table_mjds = np.asarray(tab['MJD'])
+        if table_mjds.size == 0:
+            raise ValueError("IERS table is empty")
         table_end = float(table_mjds[-1])
 
         # Find end of *measured* (vs predicted) UT1-UTC
@@ -861,7 +920,7 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
             issues.append({'severity': 'error', 'message': msg})
             valid = False
             print(f"{_RED}[!] {msg}{_RESET}")
-            print(f"{_RED}  -> Run: python -c \"from astropy.utils.iers import IERS_A; IERS_A.open()\"{_RESET}")
+            print(f"{_RED}  -> Run: {_IERS_REMEDIATION}{_RESET}")
         elif mjd_end > measured_end:
             days_predicted = mjd_end - measured_end
             msg = (
@@ -872,7 +931,7 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
             issues.append({'severity': 'warning', 'message': msg})
             if verbose:
                 print(f"{_YELLOW}[!]  {msg}{_RESET}")
-                print(f"{_YELLOW}  -> Download fresh IERS-A: python -c \"from astropy.utils.iers import IERS_A; IERS_A.open()\"{_RESET}")
+                print(f"{_YELLOW}  -> Download fresh IERS-A: {_IERS_REMEDIATION}{_RESET}")
         else:
             if verbose:
                 print(
@@ -880,10 +939,24 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
                     f"with measured data to MJD {measured_end:.1f}"
                 )
 
+        probe_mjd = 0.5 * (float(mjd_start) + float(mjd_end))
+        try:
+            _probe_iers_gcrs_transform(probe_mjd)
+        except Exception as exc:
+            msg = (
+                f"EOP/IERS ERROR: ITRF→GCRS transform failed at MJD {probe_mjd:.1f} "
+                f"({exc}). Astropy IERS/EOP data may be missing or corrupt."
+            )
+            issues.append({'severity': 'error', 'message': msg})
+            valid = False
+            print(f"{_RED}[!] {msg}{_RESET}")
+            print(f"{_RED}  -> Run: {_IERS_REMEDIATION}{_RESET}")
+
     except Exception as e:
-        msg = f"EOP/IERS WARNING: Could not check IERS coverage: {e}"
-        issues.append({'severity': 'warning', 'message': msg})
-        if verbose:
-            print(f"{_YELLOW}[!]  {msg}{_RESET}")
+        msg = f"EOP/IERS ERROR: Could not check IERS coverage: {e}"
+        issues.append({'severity': 'error', 'message': msg})
+        valid = False
+        print(f"{_RED}[!] {msg}{_RESET}")
+        print(f"{_RED}  -> Run: {_IERS_REMEDIATION}{_RESET}")
 
     return valid, issues

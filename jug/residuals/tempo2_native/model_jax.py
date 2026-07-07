@@ -226,6 +226,97 @@ def _eop_to_jax(eop: IersEopPacked) -> IersEopPacked:
     )
 
 
+_PLANET_RSA_NAMES = ("venus", "jupiter", "saturn", "uranus", "neptune")
+
+
+def host_frozen_vectors_from_tempo2_obs_state(
+    td: dict,
+) -> dict[str, np.ndarray | dict[str, np.ndarray]]:
+    """Build staging vectors from ``term_diagnostics['tempo2_obs_state']``.
+
+    Do not use top-level ``jug['ssb_obs_pos_ls']``; that is legacy geometry and is
+    known to be metres off the Tempo2-native state.
+    """
+    from jug.utils.constants import C_KM_S
+
+    state = td.get("tempo2_obs_state")
+    if state is None:
+        raise ValueError(
+            "host-frozen native path requires term_diagnostics['tempo2_obs_state']"
+        )
+
+    earth = np.asarray(state["earth_ssb_km"], dtype=np.float64)
+    obs = np.asarray(state["observatory_earth_km"], dtype=np.float64)
+    sun = np.asarray(state["sun_ssb_km"], dtype=np.float64)
+    site_vel = np.asarray(state["site_vel_km_s"], dtype=np.float64)
+    planets_ssb = state.get("planet_ssb_km", {}) or {}
+
+    ssb_obs_km = earth[:, :3] + obs[:, :3]
+    planet_obs_ls: dict[str, np.ndarray] = {}
+    for name, pv in planets_ssb.items():
+        pv = np.asarray(pv, dtype=np.float64)
+        planet_geo = pv[:, :3] - earth[:, :3]
+        planet_obs_ls[name] = (obs[:, :3] - planet_geo) / C_KM_S
+
+    return {
+        "earth_ssb_km": earth,
+        "observatory_earth_km": obs,
+        "site_vel_km_s": site_vel,
+        "ssb_obs_ls": ssb_obs_km / C_KM_S,
+        "obs_sun_ls": (sun[:, :3] - ssb_obs_km) / C_KM_S,
+        "planet_obs_ls": planet_obs_ls,
+        "obs_jupiter_ls": planet_obs_ls.get(
+            "jupiter", np.zeros((earth.shape[0], 3), dtype=np.float64)
+        ),
+    }
+
+
+def planet_rsa_tuple_from_dict(
+    planet_obs_ls: dict[str, np.ndarray] | None,
+    *,
+    n_toa: int,
+    obs_jupiter_ls: np.ndarray | None = None,
+) -> tuple[np.ndarray, ...]:
+    """Tempo2 BCLT rsa tuple (venus … neptune) in light-seconds."""
+    zeros = np.zeros((n_toa, 3), dtype=np.float64)
+    if planet_obs_ls is None:
+        if obs_jupiter_ls is None:
+            return tuple(zeros for _ in _PLANET_RSA_NAMES)
+        jup = -np.asarray(obs_jupiter_ls, dtype=np.float64)
+        return (zeros, jup, zeros, zeros, zeros)
+    out: list[np.ndarray] = []
+    for name in _PLANET_RSA_NAMES:
+        arr = planet_obs_ls.get(name)
+        if arr is None:
+            out.append(zeros)
+        else:
+            out.append(np.asarray(arr, dtype=np.float64))
+    return tuple(out)
+
+
+def planet_rsa_tuple_jax_from_dict(
+    planet_obs_ls: dict[str, jnp.ndarray] | None,
+    *,
+    n_toa: int,
+    obs_jupiter_ls: jnp.ndarray | None = None,
+) -> tuple[jnp.ndarray, ...]:
+    """JAX variant of :func:`planet_rsa_tuple_from_dict`."""
+    zeros = jnp.zeros((n_toa, 3), dtype=jnp.float64)
+    if planet_obs_ls is None:
+        if obs_jupiter_ls is None:
+            return tuple(zeros for _ in _PLANET_RSA_NAMES)
+        jup = -jnp.asarray(obs_jupiter_ls, dtype=jnp.float64)
+        return (zeros, jup, zeros, zeros, zeros)
+    out: list[jnp.ndarray] = []
+    for name in _PLANET_RSA_NAMES:
+        arr = None if planet_obs_ls is None else planet_obs_ls.get(name)
+        if arr is None:
+            out.append(zeros)
+        else:
+            out.append(jnp.asarray(arr, dtype=jnp.float64))
+    return tuple(out)
+
+
 @partial(
     jax.jit,
     static_argnames=(
@@ -306,6 +397,15 @@ def compute_tempo2_toa_model_jax(
     correct_troposphere: bool = False,
 ) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
     """Full Tempo2 delay/spin chain in one JIT graph.
+
+    .. warning::
+        **Extremely slow first compile.** This function evaluates clocks, SPK
+        ephemeris, EOP site motion, IFTE bootstrap, troposphere, BCLT, formBats,
+        and spin inside a single ``@jax.jit`` boundary. On wsrt167 (167 TOAs) the
+        initial compile can take **minutes**. Production fitting and fast dev loops
+        should use ``compute_tempo2_toa_model_staging_with_host_inputs_jax`` with
+        host-frozen inputs instead. Enable only via
+        ``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH`` or ``JUG_TEMPO2_NATIVE_FULL_INGRAPH=1``.
 
     Clock ``getCorrectionTT``, IFTE ``IF_deltaT``, ephemeris geometry
     (SPK + site motion + Teph bootstrap), troposphere, and ``einsteinRate``
@@ -497,6 +597,7 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
     ssb_obs_ls: jnp.ndarray,
     obs_sun_ls: jnp.ndarray,
     obs_jupiter_ls: jnp.ndarray,
+    planet_obs_ls: dict[str, jnp.ndarray] | None = None,
     correction_tt_sec_pre: jnp.ndarray,
     correction_tt_tb_sec_pre: jnp.ndarray | None = None,
     einstein_rate: jnp.ndarray | None = None,
@@ -529,10 +630,14 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
     pulse_numbers: jnp.ndarray | None = None,
     pn_add: jnp.ndarray | None = None,
 ) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
-    """STAGING API: accepts host-precomputed geometry.
+    """Production Tempo2 TOA model with host-frozen static inputs.
 
-    Use ONLY for debug/testing. Production path must use
-    ``compute_tempo2_toa_model_jax`` (unified in-graph geometry).
+    Accepts precomputed geometry, clocks, and ``einsteinRate`` from
+    ``term_diagnostics['tempo2_obs_state']``. Only the parameter-dependent tail
+    (BCLT, formBats, Shklovskii, spin) runs inside JAX. This is the **default**
+    production path when ``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH`` is False.
+
+    For the slow unified in-graph reference, see ``compute_tempo2_toa_model_jax``.
     """
     if dm_vals is None:
         dm_vals = compute_dm_vals_jax(sat_mjd, dm_epoch=dm_epoch, dm_coeffs=dm_coeffs)
@@ -560,6 +665,13 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
     if einstein_rate is None:
         raise ValueError("frozen staging helper requires precomputed einstein_rate")
     einstein = jnp.asarray(einstein_rate, dtype=jnp.float64)
+    if planet_obs_ls is None:
+        planet_obs_ls = {"jupiter": obs_jupiter_ls}
+    planet_rsa = planet_rsa_tuple_jax_from_dict(
+        planet_obs_ls,
+        n_toa=int(sat_mjd.shape[0]),
+        obs_jupiter_ls=obs_jupiter_ls,
+    )
     bclt = compute_bclt_terms_jax(
         sat_mjd=sat_mjd,
         correction_tt_sec=tt,
@@ -581,7 +693,7 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
         dilate_freq=dilate_freq,
         planet_shapiro_enabled=planet_shapiro_enabled,
         obs_jupiter_ls=obs_jupiter_ls,
-        planet_obs_ls=None,
+        planet_obs_ls=planet_rsa,
     )
     tropo = jnp.asarray(tropo_sec, dtype=jnp.float64)
     shap_delay = bclt.shapiro_sun_sec + jnp.where(
@@ -742,6 +854,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     ssb_obs_ls: np.ndarray | None = None,
     obs_sun_ls: np.ndarray | None = None,
     obs_jupiter_ls: np.ndarray | None = None,
+    obs_planets_ls: dict[str, np.ndarray] | None = None,
     earth_ssb_km: np.ndarray | None = None,
     observatory_earth_km: np.ndarray | None = None,
     site_vel_km_s: np.ndarray | None = None,
@@ -861,6 +974,11 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
         )
         site_mjd = np.asarray(sat_mjd, dtype=np.float64) + tt_pre / SECS_PER_DAY
         einstein = tempo2_einstein_rate_host(site_mjd, params)
+        planet_obs_ls = None
+        if obs_planets_ls is not None:
+            planet_obs_ls = {
+                k: jnp.asarray(v, dtype=jnp.float64) for k, v in obs_planets_ls.items()
+            }
         terms, residual_sec = compute_tempo2_toa_model_staging_with_host_inputs_jax(
             **common,
             tropo_sec=jnp.asarray(tropo_sec, dtype=jnp.float64),
@@ -870,6 +988,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
             ssb_obs_ls=jnp.asarray(ssb_obs_ls, dtype=jnp.float64),
             obs_sun_ls=jnp.asarray(obs_sun_ls, dtype=jnp.float64),
             obs_jupiter_ls=jnp.asarray(jup, dtype=jnp.float64),
+            planet_obs_ls=planet_obs_ls,
             correction_tt_sec_pre=jnp.asarray(tt_pre, dtype=jnp.float64),
             correction_tt_tb_sec_pre=(
                 None

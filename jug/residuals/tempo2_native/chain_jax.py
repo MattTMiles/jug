@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -18,7 +19,10 @@ from jug.residuals.tempo2_native.model_jax import (
     _spk_to_jax,
     build_tempo2_model_static,
     compute_dm_vals_jax,
+    compute_tempo2_get_correction_tt_jax,
     compute_tempo2_toa_model_jax,
+    compute_tempo2_toa_model_staging_with_host_inputs_jax,
+    host_frozen_vectors_from_tempo2_obs_state,
     run_tempo2_toa_model_with_fixed_ifte_geometry,
 )
 from jug.residuals.tempo2_native.types import Tempo2NativeTerms
@@ -26,6 +30,51 @@ from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
 if TYPE_CHECKING:
     from jug.fitting.optimized_fitter import GeneralFitSetup
+
+
+def _native_chain_mode() -> str:
+    """Return ``'frozen'`` (default) or ``'full_ingraph'`` (opt-in, slow compile)."""
+    from jug.residuals.tempo2_native_quarantine import tempo2_native_full_ingraph_enabled
+
+    return "full_ingraph" if tempo2_native_full_ingraph_enabled() else "frozen"
+
+
+@dataclass(frozen=True)
+class NativeFrozenDeltaPack:
+    """Host-frozen static inputs for tempo2-native residual evaluation."""
+
+    sat_mjd: Any
+    freq_mhz: Any
+    dt_emission_sec: Any
+    earth_ssb_km: Any
+    observatory_earth_km: Any
+    site_vel_km_s: Any
+    ssb_obs_ls: Any
+    obs_sun_ls: Any
+    obs_jupiter_ls: Any
+    planet_obs_ls: dict[str, Any]
+    correction_tt_sec: Any
+    correction_tt_tb_sec: Any | None
+    einstein_rate: Any
+    tropo_sec: Any
+    ne_sw: float
+    use_native_ecliptic: bool
+    dm_epoch: float
+    dm_coeffs_ref: tuple[float, ...]
+    posepoch_mjd: float
+    shk_posepoch: float
+    pmrv_rad_century: float
+    dilate_freq: bool
+    si_units: bool
+    units_tdb: bool
+    planet_shapiro_enabled: bool
+    track_val: int
+    subtract_mean: bool
+    dshk: float
+    jump_phase: Any | None
+    tzr_phase: Any | None
+    pulse_numbers: Any | None
+    pn_add: Any | None
 
 
 @dataclass(frozen=True)
@@ -435,7 +484,12 @@ def prepare_native_chain_from_simple_result(
     params: dict,
     toas: list[Any],
 ) -> Tempo2NativeTerms:
-    """Build native terms through unified in-graph geometry."""
+    """Build native terms for dev_oracle / diagnostics.
+
+    Uses the host-frozen staging path by default. When
+    ``tempo2_native_full_ingraph_enabled()`` is True, falls back to
+    ``compute_tempo2_toa_model_jax`` (extremely slow compile; dev_oracle only).
+    """
     from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
     from jug.residuals.engine_conventions import resolve_engine_profile
 
@@ -445,30 +499,58 @@ def prepare_native_chain_from_simple_result(
     freq_topo = np.array([t.freq_mhz for t in toas], dtype=np.float64)
     model_static = _load_model_static_for_native_chain(params, toas, jug_result)
 
-    return compute_tempo2_native_terms_jax(
-        sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
-        correction_tt_sec=jnp.asarray(
-            td.get("formbats_correction_tt_sec", td["correction_tt_sec"]), dtype=jnp.float64
-        ),
-        correction_tt_tb_sec=jnp.asarray(td["correction_tt_tb_sec"], dtype=jnp.float64),
+    if _native_chain_mode() == "full_ingraph":
+        return compute_tempo2_native_terms_jax(
+            sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
+            correction_tt_sec=jnp.asarray(
+                td.get("formbats_correction_tt_sec", td["correction_tt_sec"]),
+                dtype=jnp.float64,
+            ),
+            correction_tt_tb_sec=jnp.asarray(td["correction_tt_tb_sec"], dtype=jnp.float64),
+            params=params,
+            toas=toas,
+            observatory_earth_km=jnp.zeros((len(toas), 3), dtype=jnp.float64),
+            earth_ssb_km=jnp.zeros((len(toas), 3), dtype=jnp.float64),
+            earth_ssb_vel_km_s=jnp.zeros((len(toas), 3), dtype=jnp.float64),
+            ephem_path=model_static.ephem_path,
+            freq_mhz=jnp.asarray(
+                jug_result.get("freq_bary_mhz", td.get("freq_bary_mhz", [])),
+                dtype=jnp.float64,
+            ),
+            tdis1_sec=jnp.asarray(td["dm_delay_sec"], dtype=jnp.float64),
+            tdis2_sec=jnp.asarray(td["sw_delay_sec"], dtype=np.float64),
+            tropospheric_sec=jnp.asarray(td.get("tropo_delay_sec", 0.0), dtype=jnp.float64),
+            dt_emission_sec=jnp.asarray(jug_result["dt_sec"], dtype=np.float64),
+            use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
+            freq_mhz_topocentric=jnp.asarray(freq_topo, dtype=jnp.float64),
+            ne_sw=ne_sw,
+            model_static=model_static,
+        )
+
+    frozen = host_frozen_vectors_from_tempo2_obs_state(td)
+    tropo = np.asarray(td.get("tropo_delay_sec", 0.0), dtype=np.float64)
+    if tropo.ndim == 0:
+        tropo = np.full(len(td["sat_mjd"]), float(tropo), dtype=np.float64)
+    terms, _ = run_tempo2_toa_model_with_fixed_ifte_geometry(
         params=params,
-        toas=toas,
-        observatory_earth_km=jnp.zeros((len(toas), 3), dtype=jnp.float64),
-        earth_ssb_km=jnp.zeros((len(toas), 3), dtype=jnp.float64),
-        earth_ssb_vel_km_s=jnp.zeros((len(toas), 3), dtype=jnp.float64),
-        ephem_path=model_static.ephem_path,
-        freq_mhz=jnp.asarray(
-            jug_result.get("freq_bary_mhz", td.get("freq_bary_mhz", [])), dtype=jnp.float64
-        ),
-        tdis1_sec=jnp.asarray(td["dm_delay_sec"], dtype=jnp.float64),
-        tdis2_sec=jnp.asarray(td["sw_delay_sec"], dtype=np.float64),
-        tropospheric_sec=jnp.asarray(td.get("tropo_delay_sec", 0.0), dtype=jnp.float64),
-        dt_emission_sec=jnp.asarray(jug_result["dt_sec"], dtype=np.float64),
-        use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
-        freq_mhz_topocentric=jnp.asarray(freq_topo, dtype=jnp.float64),
-        ne_sw=ne_sw,
+        sat_mjd=np.asarray(td["sat_mjd"], dtype=np.float64),
+        freq_mhz=freq_topo,
+        dt_emission_sec=np.asarray(jug_result["dt_sec"], dtype=np.float64),
+        tropo_sec=tropo,
+        ssb_obs_ls=frozen["ssb_obs_ls"],
+        obs_sun_ls=frozen["obs_sun_ls"],
+        obs_jupiter_ls=frozen["obs_jupiter_ls"],
+        obs_planets_ls=frozen["planet_obs_ls"],
+        earth_ssb_km=frozen["earth_ssb_km"],
+        observatory_earth_km=frozen["observatory_earth_km"][:, :3],
+        site_vel_km_s=frozen["site_vel_km_s"],
+        correction_tt_tb_sec=np.asarray(td["correction_tt_tb_sec"], dtype=np.float64),
         model_static=model_static,
+        ne_sw=float(ne_sw),
+        planet_shapiro_enabled=bool(model_static.planet_shapiro_enabled),
+        use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
     )
+    return terms
 
 
 def build_native_delta_pack(setup: "GeneralFitSetup") -> NativeDeltaPack | None:
@@ -567,6 +649,193 @@ def build_native_delta_pack(setup: "GeneralFitSetup") -> NativeDeltaPack | None:
             else jnp.asarray(model_static.pn_add, dtype=jnp.int64)
         ),
     )
+
+
+def build_native_frozen_delta_pack(
+    setup: "GeneralFitSetup",
+) -> NativeFrozenDeltaPack | None:
+    """Build host-frozen cache for tempo2-native residual deltas (default path)."""
+    from jug.residuals.tempo2_native.model_jax import tempo2_einstein_rate_host
+
+    static = getattr(setup, "native_chain_static", None)
+    if static is None:
+        return None
+    toas = static.get("toas")
+    if not toas:
+        return None
+
+    params = setup.params
+    jug_result = {
+        "term_diagnostics": static["term_diagnostics"],
+        "dt_sec": static["dt_sec"],
+        "freq_bary_mhz": static["freq_bary_mhz"],
+        "compatibility": setup.compatibility,
+    }
+    pulse_numbers, pn_add = track2_pulse_arrays_from_toas(toas, params)
+    model_static = _load_model_static_for_native_chain(
+        params,
+        toas,
+        jug_result,
+        pulse_numbers=pulse_numbers,
+        pn_add=pn_add,
+        jump_phase=getattr(setup, "jump_phase", None),
+        tzr_phase=getattr(setup, "tzr_phase", None),
+        track_val=int(params.get("TRACK", -2)) if params.get("TRACK") is not None else -2,
+    )
+    td = static["term_diagnostics"]
+    frozen = host_frozen_vectors_from_tempo2_obs_state(td)
+    sat = np.asarray(td["sat_mjd"], dtype=np.float64)
+    tt_pre = np.asarray(
+        jax.device_get(
+            compute_tempo2_get_correction_tt_jax(
+                jnp.asarray(sat, dtype=jnp.float64),
+                chain_mjd_tables=tuple(
+                    jnp.asarray(t, dtype=jnp.float64) for t in model_static.chain_mjd_tables
+                ),
+                chain_offset_tables=tuple(
+                    jnp.asarray(t, dtype=jnp.float64)
+                    for t in model_static.chain_offset_tables
+                ),
+                bipm_mjd=jnp.asarray(model_static.bipm_mjd, dtype=jnp.float64),
+                bipm_offset=jnp.asarray(model_static.bipm_offset, dtype=jnp.float64),
+            )
+        ),
+        dtype=np.float64,
+    )
+    site_mjd = sat + tt_pre / SECS_PER_DAY
+    einstein = tempo2_einstein_rate_host(site_mjd, params)
+    tropo = np.asarray(td.get("tropo_delay_sec", 0.0), dtype=np.float64)
+    if tropo.ndim == 0:
+        tropo = np.full(len(sat), float(tropo), dtype=np.float64)
+    units = parse_timescale(params)
+    jump = getattr(setup, "jump_phase", None)
+    tzr = getattr(setup, "tzr_phase", None)
+    planet_obs_ls = {
+        k: jnp.asarray(v, dtype=jnp.float64) for k, v in frozen["planet_obs_ls"].items()
+    }
+    return NativeFrozenDeltaPack(
+        sat_mjd=jnp.asarray(sat, dtype=jnp.float64),
+        freq_mhz=jnp.asarray([t.freq_mhz for t in toas], dtype=jnp.float64),
+        dt_emission_sec=jnp.asarray(static["dt_sec"], dtype=jnp.float64),
+        earth_ssb_km=jnp.asarray(frozen["earth_ssb_km"], dtype=jnp.float64),
+        observatory_earth_km=jnp.asarray(frozen["observatory_earth_km"], dtype=jnp.float64),
+        site_vel_km_s=jnp.asarray(frozen["site_vel_km_s"], dtype=jnp.float64),
+        ssb_obs_ls=jnp.asarray(frozen["ssb_obs_ls"], dtype=jnp.float64),
+        obs_sun_ls=jnp.asarray(frozen["obs_sun_ls"], dtype=jnp.float64),
+        obs_jupiter_ls=jnp.asarray(frozen["obs_jupiter_ls"], dtype=jnp.float64),
+        planet_obs_ls=planet_obs_ls,
+        correction_tt_sec=jnp.asarray(tt_pre, dtype=jnp.float64),
+        correction_tt_tb_sec=jnp.asarray(td["correction_tt_tb_sec"], dtype=jnp.float64),
+        einstein_rate=jnp.asarray(einstein, dtype=jnp.float64),
+        tropo_sec=jnp.asarray(tropo, dtype=jnp.float64),
+        ne_sw=float(model_static.ne_sw),
+        use_native_ecliptic=bool(model_static.use_native_ecliptic),
+        dm_epoch=float(params.get("DMEPOCH", params["PEPOCH"])),
+        dm_coeffs_ref=_dm_coeffs_from_params(params),
+        posepoch_mjd=float(params.get("POSEPOCH", params["PEPOCH"])),
+        shk_posepoch=float(params.get("POSEPOCH", params["PEPOCH"])),
+        pmrv_rad_century=float(pmrv_rad_per_century(float(params.get("PMRV", 0.0)))),
+        dilate_freq=bool(tempo2_dilate_freq_enabled(params)),
+        si_units=bool(is_tempo2_si_units(units)),
+        units_tdb=units == "TDB",
+        planet_shapiro_enabled=bool(model_static.planet_shapiro_enabled),
+        track_val=int(model_static.track_val),
+        subtract_mean=True,
+        dshk=float(params.get("DSHK", 0.0)) if "DSHK" in params else 0.0,
+        jump_phase=None if jump is None else jnp.asarray(jump, dtype=jnp.float64),
+        tzr_phase=None if tzr is None else jnp.asarray(tzr, dtype=jnp.float64),
+        pulse_numbers=(
+            None
+            if model_static.pulse_numbers is None
+            else jnp.asarray(model_static.pulse_numbers, dtype=jnp.int64)
+        ),
+        pn_add=(
+            None
+            if model_static.pn_add is None
+            else jnp.asarray(model_static.pn_add, dtype=jnp.int64)
+        ),
+    )
+
+
+def build_native_delta_pack_for_setup(
+    setup: "GeneralFitSetup",
+) -> NativeDeltaPack | NativeFrozenDeltaPack | None:
+    """Select frozen (default) or full in-graph native delta pack."""
+    if _native_chain_mode() == "full_ingraph":
+        return build_native_delta_pack(setup)
+    return build_native_frozen_delta_pack(setup)
+
+
+def compute_native_frozen_residual_sec_jax(
+    params: dict,
+    pack: NativeFrozenDeltaPack,
+) -> jnp.ndarray:
+    """Recompute tempo2-native residuals through the host-frozen staging tail."""
+    pos, vel, acc = pulsar_vectors_from_params_jax(
+        params, use_native_ecliptic=pack.use_native_ecliptic
+    )
+    f_terms = _spin_f_terms_jax(params)
+    pepoch = jnp.asarray(_param_scalar_jax(params, "PEPOCH"), dtype=jnp.float64)
+    dm_vals = compute_dm_vals_jax(
+        pack.sat_mjd, dm_epoch=pack.dm_epoch, dm_coeffs=_dm_coeffs_jax(params)
+    )
+    _, residual_sec = compute_tempo2_toa_model_staging_with_host_inputs_jax(
+        sat_mjd=pack.sat_mjd,
+        freq_mhz=pack.freq_mhz,
+        params_f_terms=f_terms,
+        params_pepoch=pepoch,
+        pos_pulsar=pos,
+        vel_pulsar=vel,
+        acc_pulsar=acc,
+        tropo_sec=pack.tropo_sec,
+        dt_emission_sec=pack.dt_emission_sec,
+        earth_ssb_km=pack.earth_ssb_km,
+        observatory_earth_km=pack.observatory_earth_km,
+        site_vel_km_s=pack.site_vel_km_s,
+        ssb_obs_ls=pack.ssb_obs_ls,
+        obs_sun_ls=pack.obs_sun_ls,
+        obs_jupiter_ls=pack.obs_jupiter_ls,
+        planet_obs_ls=pack.planet_obs_ls,
+        correction_tt_sec_pre=pack.correction_tt_sec,
+        correction_tt_tb_sec_pre=pack.correction_tt_tb_sec,
+        einstein_rate=pack.einstein_rate,
+        dm_vals=dm_vals,
+        dm_epoch=pack.dm_epoch,
+        dm_coeffs=pack.dm_coeffs_ref,
+        ne_sw=pack.ne_sw,
+        posepoch_mjd=pack.posepoch_mjd,
+        parallax_mas=jnp.asarray(_param_scalar_jax(params, "PX"), dtype=jnp.float64),
+        pmrv_rad_century=pack.pmrv_rad_century,
+        dilate_freq=pack.dilate_freq,
+        si_units=pack.si_units,
+        units_tdb=pack.units_tdb,
+        planet_shapiro_enabled=pack.planet_shapiro_enabled,
+        track_val=pack.track_val,
+        subtract_mean=False,
+        dshk=pack.dshk,
+        pmra=jnp.asarray(_param_scalar_jax(params, "PMRA"), dtype=jnp.float64),
+        pmdec=jnp.asarray(_param_scalar_jax(params, "PMDEC"), dtype=jnp.float64),
+        shk_posepoch=pack.shk_posepoch,
+        jump_phase=pack.jump_phase,
+        tzr_phase=pack.tzr_phase,
+        pulse_numbers=pack.pulse_numbers,
+        pn_add=pack.pn_add,
+    )
+    return residual_sec
+
+
+def compute_native_frozen_residual_delta_jax(
+    params_ref: dict,
+    params_pert: dict,
+    pack: NativeFrozenDeltaPack,
+) -> jnp.ndarray:
+    """Host-frozen residual delta: ``res(θ+Δθ) − res(θ)`` with mean on delta."""
+    res_ref = compute_native_frozen_residual_sec_jax(params_ref, pack)
+    res_pert = compute_native_frozen_residual_sec_jax(params_pert, pack)
+    delta = res_pert - res_ref
+    if pack.subtract_mean:
+        delta = delta - jnp.mean(delta)
+    return delta
 
 
 def compute_native_full_chain_residual_sec_jax(

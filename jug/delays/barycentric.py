@@ -152,7 +152,15 @@ def compute_ssb_obs_pos_vel(
     # Get observatory position and velocity in GCRS using astropy's analytical method.
     # This matches PINT's gcrs_posvel_from_itrf / get_gcrs_posvel approach and avoids
     # the ~10 mm/s systematic error that the 1-second finite-difference introduced.
-    gcrs_pv = obs_itrf.get_gcrs_posvel(obstime=times)
+    try:
+        gcrs_pv = obs_itrf.get_gcrs_posvel(obstime=times)
+    except Exception as exc:
+        raise RuntimeError(
+            "JUG geometry requires Astropy IERS/EOP data for ITRF→GCRS site motion. "
+            'Populate ~/.astropy/cache (e.g. '
+            'python -c "from astropy.utils.iers import IERS_A; IERS_A.open()"). '
+            f"Original error: {exc}"
+        ) from exc
     geo_obs_pos = np.column_stack([
         gcrs_pv[0].x.to(u.km).value,
         gcrs_pv[0].y.to(u.km).value,

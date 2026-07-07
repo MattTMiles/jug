@@ -213,7 +213,7 @@ def compute_bclt_terms_numpy(
             shap_jup_i = 0.0
             if planet_shapiro_enabled and "jupiter" in planets:
                 shap_jup_i = compute_tempo2_shapiro_sec(
-                    -planets["jupiter"][i],
+                    planets["jupiter"][i],
                     psr_pos,
                     GMJ_C3_JAX,
                 )[0]
@@ -245,18 +245,20 @@ def compute_bclt_terms_numpy(
             compute_tempo2_shapiro_sec(-obs_sun_ls[i], psr_pos_final, GM_C3_JAX)[0]
         )
         shap_planets_i = 0.0
-        if planet_shapiro_enabled and "jupiter" in planets:
-            shap_planets_i = float(
-                compute_tempo2_shapiro_sec(
-                    -np.asarray(planets["jupiter"][i], dtype=np.float64),
-                    psr_pos_final,
-                    GMJ_C3_JAX,
-                )[0]
-            )
+        if planet_shapiro_enabled:
+            for name, gm in _PLANET_SHAP:
+                if name not in planets:
+                    continue
+                rsa = np.asarray(planets[name][i], dtype=np.float64)
+                if np.linalg.norm(rsa) <= 1e-20:
+                    continue
+                shap_planets_i += float(
+                    compute_tempo2_shapiro_sec(rsa, psr_pos_final, gm)[0]
+                )
         if "jupiter" in planets:
             shap_jup_i = float(
                 compute_tempo2_shapiro_sec(
-                    -np.asarray(planets["jupiter"][i], dtype=np.float64),
+                    np.asarray(planets["jupiter"][i], dtype=np.float64),
                     psr_pos_final,
                     GMJ_C3_JAX,
                 )[0]

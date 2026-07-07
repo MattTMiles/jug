@@ -516,9 +516,14 @@ class TimingSession:
             'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
             'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
             'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
+            'obs_sun_pos_ls': cached_result.get('obs_sun_pos_ls'),
+            'obs_planet_pos_ls': cached_result.get('obs_planet_pos_ls'),
             'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
             'jump_phase': cached_result.get('jump_phase'),
             'tzr_phase': cached_result.get('tzr_phase'),
+            'term_diagnostics': cached_result.get('term_diagnostics'),
+            'model_mjd': cached_result.get('model_mjd'),
+            'toas': self.toas_data,
         }
 
         # Build setup only for parameters being overridden.
@@ -690,9 +695,14 @@ class TimingSession:
                 'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
                 'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
                 'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
+                'obs_sun_pos_ls': cached_result.get('obs_sun_pos_ls'),
+                'obs_planet_pos_ls': cached_result.get('obs_planet_pos_ls'),
                 'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
                 'jump_phase': cached_result.get('jump_phase'),
                 'tzr_phase': cached_result.get('tzr_phase'),
+                'term_diagnostics': cached_result.get('term_diagnostics'),
+                'model_mjd': cached_result.get('model_mjd'),
+                'toas': self.toas_data,
             }
             
             # Build setup from cache (with optional TOA mask)

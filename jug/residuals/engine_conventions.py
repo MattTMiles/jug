@@ -163,7 +163,7 @@ class EngineConventionProfile:
 
         sources: dict[str, str] = {}
 
-        if use_implicit and tempo2_mode and units == "TDB":
+        if use_implicit and tempo2_mode and units in ("TDB", "TCB"):
             timeeph: TimeEph = "IF99"
             t2cmethod: T2CMethod = "IAU2000B"
             dilatefreq = True

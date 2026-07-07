@@ -1199,6 +1199,33 @@ def _compute_condition_diagnostics(
     }
 
 
+def _mask_term_diagnostics_for_toas(term_diagnostics: dict, toa_mask: np.ndarray) -> dict:
+    """Apply a boolean TOA mask to per-TOA arrays inside term_diagnostics."""
+    mask = np.asarray(toa_mask, dtype=bool)
+    n = int(mask.sum())
+    out = dict(term_diagnostics)
+    for key, val in term_diagnostics.items():
+        if key == "tempo2_obs_state" and isinstance(val, dict):
+            obs = {}
+            for obs_key, obs_val in val.items():
+                arr = np.asarray(obs_val)
+                if arr.ndim >= 1 and arr.shape[0] == mask.shape[0]:
+                    obs[obs_key] = arr[mask]
+                else:
+                    obs[obs_key] = obs_val
+            out[key] = obs
+        else:
+            arr = np.asarray(val)
+            if arr.ndim >= 1 and arr.shape[0] == mask.shape[0]:
+                out[key] = arr[mask]
+    if "metadata" in term_diagnostics and isinstance(term_diagnostics["metadata"], dict):
+        meta = dict(term_diagnostics["metadata"])
+        if "n_toas" in meta:
+            meta["n_toas"] = n
+        out["metadata"] = meta
+    return out
+
+
 def _build_setup_common(
     params: Dict[str, Any],
     fit_params: List[str],
@@ -3340,9 +3367,16 @@ def _build_general_fit_setup_from_cache(
         'prebinary_delay_sec': session_cached_data.get('prebinary_delay_sec'),
         'roemer_shapiro_sec': session_cached_data.get('roemer_shapiro_sec'),
         'ssb_obs_pos_ls': session_cached_data.get('ssb_obs_pos_ls'),
+        'obs_sun_pos_ls': session_cached_data.get('obs_sun_pos_ls'),
+        'obs_planet_pos_ls': session_cached_data.get('obs_planet_pos_ls'),
         'sw_geometry_pc': session_cached_data.get('sw_geometry_pc'),
         'jump_phase': session_cached_data.get('jump_phase'),
         'tzr_phase': session_cached_data.get('tzr_phase'),
+        'term_diagnostics': session_cached_data.get('term_diagnostics'),
+        'dt_sec': session_cached_data.get('dt_sec'),
+        'freq_bary_mhz': session_cached_data.get('freq_bary_mhz'),
+        'model_mjd': session_cached_data.get('model_mjd'),
+        'toas': session_cached_data.get('toas'),
     }
 
     # Apply TOA mask if provided
@@ -3358,10 +3392,28 @@ def _build_general_fit_setup_from_cache(
             toa_flags = [toa_flags[i] for i, m in enumerate(toa_mask) if m]
         if subtract_noise_sec is not None:
             subtract_noise_sec = subtract_noise_sec[toa_mask]
-        for key in ('prebinary_delay_sec', 'roemer_shapiro_sec',
-                     'ssb_obs_pos_ls', 'sw_geometry_pc', 'jump_phase'):
-            if extras[key] is not None:
+        for key in (
+            'prebinary_delay_sec',
+            'roemer_shapiro_sec',
+            'ssb_obs_pos_ls',
+            'obs_sun_pos_ls',
+            'obs_planet_pos_ls',
+            'sw_geometry_pc',
+            'jump_phase',
+            'dt_sec',
+            'freq_bary_mhz',
+            'model_mjd',
+        ):
+            if extras.get(key) is not None:
                 extras[key] = extras[key][toa_mask]
+        if extras.get('term_diagnostics') is not None:
+            extras['term_diagnostics'] = _mask_term_diagnostics_for_toas(
+                extras['term_diagnostics'], toa_mask
+            )
+        if extras.get('toas') is not None:
+            extras['toas'] = [
+                toa for toa, keep in zip(extras['toas'], toa_mask) if keep
+            ]
 
     # Handle missing prebinary_delay_sec with informative warning
     if extras.get('prebinary_delay_sec') is None and extras.get('roemer_shapiro_sec') is not None:

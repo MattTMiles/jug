@@ -169,15 +169,27 @@ def tempo2_source_elevation_rad_jax(
     return jnp.arcsin(jnp.clip(dot / h, -1.0, 1.0))
 
 
+def _interp_eop_host(mjd: np.ndarray, table_mjd: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Linear EOP interpolation on host (IERS table MJD grid)."""
+    mjd = np.asarray(mjd, dtype=np.float64)
+    return np.interp(mjd, np.asarray(table_mjd, dtype=np.float64), np.asarray(values, dtype=np.float64))
+
+
 def _host_zenith_gcrs_m(
     sat_mjd: np.ndarray,
     tt_sec: np.ndarray,
     latitude_rad: float,
     longitude_rad: float,
     height_m: float,
+    utc_sec: np.ndarray | None = None,
 ) -> np.ndarray:
     """Transform geodetic zenith vector to GCRS (Tempo2 ``get_obsCoord_IAU2000B``)."""
     import erfa
+
+    from jug.delays.tempo2_site_jax import pack_iers_eop_jax
+
+    eop = pack_iers_eop_jax()
+    arcsec_to_rad = np.pi / 180.0 / 3600.0
 
     sat = np.asarray(sat_mjd, dtype=np.float64)
     tt = np.asarray(tt_sec, dtype=np.float64)
@@ -189,16 +201,26 @@ def _host_zenith_gcrs_m(
         [h * np.cos(lon) * np.cos(lat), h * np.sin(lon) * np.cos(lat), h * np.sin(lat)],
         dtype=np.float64,
     )
+    if utc_sec is None:
+        utc_mjd = sat
+    else:
+        utc_mjd = sat + np.asarray(utc_sec, dtype=np.float64) / SECS_PER_DAY
+    dut1 = _interp_eop_host(utc_mjd, eop.mjd, eop.dut1)
+    xp = _interp_eop_host(utc_mjd, eop.mjd, eop.xp) * arcsec_to_rad
+    yp = _interp_eop_host(utc_mjd, eop.mjd, eop.yp) * arcsec_to_rad
+    tt_jd = sat + tt / SECS_PER_DAY + 2400000.5
+    tt_jd1 = np.floor(tt_jd).astype(np.int64)
+    tt_jd2 = tt_jd - tt_jd1
+    ut1_jd = utc_mjd + dut1 / SECS_PER_DAY + 2400000.5
+    ut1_jd1 = np.floor(ut1_jd).astype(np.int64)
+    ut1_jd2 = ut1_jd - ut1_jd1
     out = np.zeros((n, 3), dtype=np.float64)
     for i in range(n):
-        tt_jd = float(sat[i] + tt[i] / SECS_PER_DAY) + 2400000.5
-        utc_jd = float(sat[i]) + 2400000.5
-        tt_jd1 = int(tt_jd)
-        tt_jd2 = tt_jd - tt_jd1
-        ut1_jd1 = int(utc_jd)
-        ut1_jd2 = utc_jd - ut1_jd1
-        xp = yp = 0.0
-        t2c = erfa.c2t00b(tt_jd1, tt_jd2, ut1_jd1, ut1_jd2, xp, yp)
+        t2c = erfa.c2t00b(
+            int(tt_jd1[i]), float(tt_jd2[i]),
+            int(ut1_jd1[i]), float(ut1_jd2[i]),
+            float(xp[i]), float(yp[i]),
+        )
         out[i] = erfa.trxp(t2c, zenith_trs)
     return out
 
@@ -207,16 +229,35 @@ def compute_tempo2_zenith_gcrs_jax(
     sat_mjd: jnp.ndarray,
     correction_tt_sec: jnp.ndarray,
     tropo: TropoObsPacked,
+    *,
+    utc_sec: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Zenith vector in GCRS (meters), batched via ``pure_callback``."""
+    if utc_sec is None:
+        utc_arg = jnp.zeros_like(jnp.asarray(sat_mjd, dtype=jnp.float64))
+        use_utc = jnp.array(False)
+    else:
+        utc_arg = jnp.asarray(utc_sec, dtype=jnp.float64)
+        use_utc = jnp.array(True)
+
+    def callback(sat, tt, utc, use_utc_flag):
+        utc_host = utc if bool(use_utc_flag) else None
+        return _host_zenith_gcrs_m(
+            sat,
+            tt,
+            float(tropo.latitude_rad),
+            float(tropo.longitude_rad),
+            float(tropo.height_m),
+            utc_sec=utc_host,
+        )
+
     return jax.pure_callback(
-        _host_zenith_gcrs_m,
+        callback,
         jax.ShapeDtypeStruct(sat_mjd.shape + (3,), jnp.float64),
         sat_mjd,
         correction_tt_sec,
-        float(tropo.latitude_rad),
-        float(tropo.longitude_rad),
-        float(tropo.height_m),
+        utc_arg,
+        use_utc,
         vmap_method="expand_dims",
     )
 
@@ -228,6 +269,7 @@ def tempo2_tropo_delay_jax(
     tropo: TropoObsPacked,
     *,
     zenith_wet_delay_sec: jnp.ndarray | None = None,
+    mapping_clock_sec: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Full Tempo2 ``compute_tropospheric_delays`` hydrostatic + wet path."""
     sat = jnp.asarray(sat_mjd, dtype=jnp.float64)
@@ -237,8 +279,13 @@ def tempo2_tropo_delay_jax(
     height = jnp.asarray(tropo.height_m, dtype=jnp.float64)
     pressure = jnp.asarray(tropo.pressure_mbar, dtype=jnp.float64)
 
-    # Mapping epoch: SAT + UTC clock correction / SECDAY (approximate with TT corr).
-    utc_mjd = sat + tt / SECS_PER_DAY
+    # Mapping epoch: SAT + UTC site-clock correction / SECDAY (``tropo.C`` L441-444).
+    map_clock = (
+        jnp.asarray(mapping_clock_sec, dtype=jnp.float64)
+        if mapping_clock_sec is not None
+        else tt
+    )
+    utc_mjd = sat + map_clock / SECS_PER_DAY
     mapping_h = _nmf_hydrostatic_mapping(utc_mjd, lat, height, elev)
     mapping_w = _nmf_wet_mapping(lat, elev)
 
@@ -258,13 +305,21 @@ def compute_tempo2_tropo_delay_host(
     obs_itrf_km: np.ndarray,
     pos_pulsar: np.ndarray,
     pressure_mbar: float = 101.325,
+    mapping_clock_sec: np.ndarray | None = None,
 ) -> np.ndarray:
     """Host batch wrapper around ``tempo2_tropo_delay_jax`` for legacy exports."""
     site = pack_tropo_obs_static(obs_itrf_km=obs_itrf_km, pressure_mbar=pressure_mbar)
     sat = jnp.asarray(sat_mjd, dtype=jnp.float64)
     tt = jnp.asarray(correction_tt_sec, dtype=jnp.float64)
     pos = jnp.asarray(pos_pulsar, dtype=jnp.float64)
-    zenith = compute_tempo2_zenith_gcrs_jax(sat, tt, site)
+    map_clock = None if mapping_clock_sec is None else jnp.asarray(
+        mapping_clock_sec, dtype=jnp.float64
+    )
+    zenith = compute_tempo2_zenith_gcrs_jax(
+        sat, tt, site, utc_sec=map_clock
+    )
     elev = tempo2_source_elevation_rad_jax(zenith, pos, site.height_m)
-    delay = tempo2_tropo_delay_jax(sat, tt, elev, site)
+    delay = tempo2_tropo_delay_jax(
+        sat, tt, elev, site, mapping_clock_sec=map_clock
+    )
     return np.asarray(jax.device_get(delay), dtype=np.float64)

@@ -4,7 +4,7 @@ Quarantined experimental path: ``compute_tempo2_phase5`` and
 ``track_minus2_frac_phase`` are **not** on the production parity route.
 Production uses emission-time Taylor spin + legacy TRACK −2.
 
-See ``jug.residuals.tempo2_native_quarantine`` and
+See ``jug.residuals.tempo2_graph_config`` and
 ``TEMPO2_NATIVE_CLOCK_STATUS.md``.
 """
 

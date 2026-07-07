@@ -12,6 +12,10 @@ selected by ``JUG_TEMPO2_NATIVE_GRAPH_MODE`` (default ``staged_bclt``). Set
 ``JUG_TEMPO2_NATIVE_GRAPH_MODE=full`` only to differentiate through the unified
 in-graph model; expect multi-minute JIT compile on first call. The Taylor
 ``dt_base + delay_change`` fallback is not used for tempo2 compatibility.
+
+**Host vs fit model split:** production host residuals (``compute_residuals_simple``)
+use Taylor emission spin for TRACK −2 / absent TRACK; this module uses native
+``phase5@bbat`` in JAX. See ``jug.residuals.tempo2_native.pipeline`` routing contract.
 """
 
 from __future__ import annotations
@@ -26,12 +30,8 @@ import numpy as np
 
 from jug.residuals.tempo2_native.chain_jax import (
     NativeDeltaPack,
-    NativeFixedStateNonlinearDeltaPack,
-    NativeFrozenDeltaPack,
     build_native_delta_pack_for_setup,
-    compute_native_fixed_state_nonlinear_residual_delta_jax,
-    compute_native_frozen_residual_delta_jax,
-    compute_native_full_chain_residual_delta_jax,
+    compute_native_residual_delta_jax,
 )
 from jug.utils.units import native_derivative_to_fit_column
 
@@ -299,9 +299,7 @@ def _compute_residual_delta_jax(
     params_pert: dict,
     setup: "GeneralFitSetup",
     *,
-    native_pack: (
-        NativeDeltaPack | NativeFrozenDeltaPack | NativeFixedStateNonlinearDeltaPack | None
-    ),
+    native_pack: NativeDeltaPack | None,
     ref_f_terms: Sequence[float],
     phase_mean_mode: str,
     binary_plan=None,
@@ -323,17 +321,7 @@ def _compute_residual_delta_jax(
                 "tempo2 native residual_delta could not build a native delta pack "
                 "(missing term_diagnostics['tempo2_obs_state'] or TOA list on setup)."
             )
-        if isinstance(native_pack, NativeFixedStateNonlinearDeltaPack):
-            return compute_native_fixed_state_nonlinear_residual_delta_jax(
-                params_ref, params_pert, native_pack
-            )
-        if isinstance(native_pack, NativeFrozenDeltaPack):
-            return compute_native_frozen_residual_delta_jax(
-                params_ref, params_pert, native_pack
-            )
-        return compute_native_full_chain_residual_delta_jax(
-            params_ref, params_pert, native_pack
-        )
+        return compute_native_residual_delta_jax(params_ref, params_pert, native_pack)
 
     del native_pack
     from jug.fitting.forward_delay import compute_total_delay_change

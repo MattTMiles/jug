@@ -30,7 +30,7 @@ from jug.residuals.tempo2_native.model_jax import (
     host_frozen_vectors_from_tempo2_obs_state,
     run_tempo2_toa_model_with_fixed_ifte_geometry,
 )
-from jug.residuals.tempo2_native_quarantine import (
+from jug.residuals.tempo2_graph_config import (
     TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR,
     TEMPO2_NATIVE_GRAPH_FULL,
     TEMPO2_NATIVE_GRAPH_STAGED_BCLT,
@@ -50,109 +50,14 @@ def _native_chain_mode() -> str:
 
 
 @dataclass(frozen=True)
-class NativeFrozenDeltaPack:
-    """Host-frozen static inputs for tempo2-native residual evaluation."""
-
-    sat_mjd: Any
-    freq_mhz: Any
-    dt_emission_sec: Any
-    earth_ssb_km: Any
-    observatory_earth_km: Any
-    site_vel_km_s: Any
-    ssb_obs_ls: Any
-    obs_sun_ls: Any
-    obs_jupiter_ls: Any
-    planet_obs_ls: dict[str, Any]
-    correction_tt_sec: Any
-    correction_tt_tb_sec: Any | None
-    einstein_rate: Any
-    tropo_sec: Any
-    ne_sw: float
-    use_native_ecliptic: bool
-    dm_epoch: float
-    dm_coeffs_ref: tuple[float, ...]
-    posepoch_mjd: float
-    shk_posepoch: float
-    pmrv_rad_century: float
-    dilate_freq: bool
-    si_units: bool
-    units_tdb: bool
-    planet_shapiro_enabled: bool
-    track_val: int
-    subtract_mean: bool
-    dshk: float
-    jump_phase: Any | None
-    tzr_phase: Any | None
-    pulse_numbers: Any | None
-    pn_add: Any | None
-
-
-@dataclass(frozen=True)
-class NativeFixedStateNonlinearDeltaPack:
-    """Fast nonlinear tempo2 residuals with fixed host/BCLT reference state."""
-
-    sat_mjd: Any
-    freq_mhz: Any
-    dt_emission_sec: Any
-    earth_ssb_km: Any
-    observatory_earth_km: Any
-    site_vel_km_s: Any
-    ssb_obs_ls: Any
-    obs_sun_ls: Any
-    obs_jupiter_ls: Any
-    planet_obs_ls: dict[str, Any]
-    correction_tt_sec: Any
-    correction_tt_tb_sec: Any
-    einstein_rate: Any
-    tropo_sec: Any
-    dt_ssb_ref_sec: Any
-    ne_sw: float
-    use_native_ecliptic: bool
-    dm_epoch: float
-    dm_coeffs_ref: tuple[float, ...]
-    posepoch_mjd: float
-    shk_posepoch: float
-    pmrv_rad_century: float
-    dilate_freq: bool
-    si_units: bool
-    units_tdb: bool
-    planet_shapiro_enabled: bool
-    track_val: int
-    subtract_mean: bool
-    dshk: float
-    jump_phase: Any | None
-    tzr_phase: Any | None
-    pulse_numbers: Any | None
-    pn_add: Any | None
-
-
-@dataclass(frozen=True)
 class NativeDeltaPack:
-    """Prepacked static inputs for tempo2-native full-chain residual evaluation."""
+    """Prepacked static inputs for tempo2-native residual evaluation (all graph modes)."""
 
+    mode: str
     sat_mjd: Any
     freq_mhz: Any
     dt_emission_sec: Any
-    obs_itrf_km: Any
-    spk_packed: Any
-    eop_packed: Any
-    chain_mjd_tables: tuple[Any, ...]
-    chain_offset_tables: tuple[Any, ...]
-    bipm_mjd: Any
-    bipm_offset: Any
-    ifte_records: Any
-    ifte_start_jd: Any
-    ifte_end_jd: Any
-    ifte_step_jd: Any
-    ifte_coef_offset: int
-    ifte_ncf: int
-    ifte_na: int
     ne_sw: float
-    correct_troposphere: bool
-    obs_site_latitude_rad: float
-    obs_site_longitude_rad: float
-    obs_site_height_m: float
-    obs_site_pressure_mbar: float
     use_native_ecliptic: bool
     dm_epoch: float
     dm_coeffs_ref: tuple[float, ...]
@@ -170,6 +75,44 @@ class NativeDeltaPack:
     tzr_phase: Any | None
     pulse_numbers: Any | None
     pn_add: Any | None
+    # staged_bclt / fixed_state_nonlinear (host-frozen staging)
+    earth_ssb_km: Any | None = None
+    observatory_earth_km: Any | None = None
+    site_vel_km_s: Any | None = None
+    ssb_obs_ls: Any | None = None
+    obs_sun_ls: Any | None = None
+    obs_jupiter_ls: Any | None = None
+    planet_obs_ls: dict[str, Any] | None = None
+    correction_tt_sec: Any | None = None
+    correction_tt_tb_sec: Any | None = None
+    einstein_rate: Any | None = None
+    tropo_sec: Any | None = None
+    dt_ssb_ref_sec: Any | None = None
+    # full in-graph chain only
+    obs_itrf_km: Any | None = None
+    spk_packed: Any | None = None
+    eop_packed: Any | None = None
+    chain_mjd_tables: tuple[Any, ...] | None = None
+    chain_offset_tables: tuple[Any, ...] | None = None
+    bipm_mjd: Any | None = None
+    bipm_offset: Any | None = None
+    ifte_records: Any | None = None
+    ifte_start_jd: Any | None = None
+    ifte_end_jd: Any | None = None
+    ifte_step_jd: Any | None = None
+    ifte_coef_offset: int | None = None
+    ifte_ncf: int | None = None
+    ifte_na: int | None = None
+    correct_troposphere: bool | None = None
+    obs_site_latitude_rad: float | None = None
+    obs_site_longitude_rad: float | None = None
+    obs_site_height_m: float | None = None
+    obs_site_pressure_mbar: float | None = None
+
+
+# Back-compat type names (same dataclass, mode field discriminates).
+NativeFrozenDeltaPack = NativeDeltaPack
+NativeFixedStateNonlinearDeltaPack = NativeDeltaPack
 
 
 def _param_scalar_jax(params: dict, name: str, default: float = 0.0):
@@ -689,6 +632,7 @@ def build_native_delta_pack(setup: "GeneralFitSetup") -> NativeDeltaPack | None:
     jump = getattr(setup, "jump_phase", None)
     tzr = getattr(setup, "tzr_phase", None)
     return NativeDeltaPack(
+        mode=TEMPO2_NATIVE_GRAPH_FULL,
         sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
         freq_mhz=jnp.asarray([t.freq_mhz for t in toas], dtype=jnp.float64),
         dt_emission_sec=jnp.asarray(static["dt_sec"], dtype=jnp.float64),
@@ -750,10 +694,10 @@ def build_native_delta_pack(setup: "GeneralFitSetup") -> NativeDeltaPack | None:
     )
 
 
-def build_native_frozen_delta_pack(
+def build_native_staged_delta_pack(
     setup: "GeneralFitSetup",
 ) -> NativeFrozenDeltaPack | None:
-    """Build host-frozen cache for tempo2-native residual deltas (default path)."""
+    """Build host-staged cache for tempo2-native residual deltas (default path)."""
     from jug.residuals.tempo2_native.model_jax import tempo2_einstein_rate_host
 
     static = getattr(setup, "native_chain_static", None)
@@ -813,6 +757,7 @@ def build_native_frozen_delta_pack(
         k: jnp.asarray(v, dtype=jnp.float64) for k, v in frozen["planet_obs_ls"].items()
     }
     return NativeFrozenDeltaPack(
+        mode=TEMPO2_NATIVE_GRAPH_STAGED_BCLT,
         sat_mjd=jnp.asarray(sat, dtype=jnp.float64),
         freq_mhz=jnp.asarray([t.freq_mhz for t in toas], dtype=jnp.float64),
         dt_emission_sec=jnp.asarray(static["dt_sec"], dtype=jnp.float64),
@@ -941,6 +886,7 @@ def _build_fixed_state_pack_from_host(
         k: jnp.asarray(v, dtype=jnp.float64) for k, v in frozen["planet_obs_ls"].items()
     }
     return NativeFixedStateNonlinearDeltaPack(
+        mode=TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR,
         sat_mjd=jnp.asarray(sat, dtype=jnp.float64),
         freq_mhz=jnp.asarray([t.freq_mhz for t in toas], dtype=jnp.float64),
         dt_emission_sec=jnp.asarray(jug_result["dt_sec"], dtype=jnp.float64),
@@ -1109,15 +1055,19 @@ def build_native_delta_pack_for_setup(
     if mode == TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR:
         return build_native_fixed_state_nonlinear_delta_pack(setup)
     if mode == TEMPO2_NATIVE_GRAPH_STAGED_BCLT:
-        return build_native_frozen_delta_pack(setup)
+        return build_native_staged_delta_pack(setup)
     raise ValueError(f"Unknown tempo2 native graph mode: {mode!r}")
 
 
-def compute_native_fixed_state_nonlinear_residual_sec_jax(
+# Back-compat alias: staged_bclt mode was historically named "frozen".
+build_native_frozen_delta_pack = build_native_staged_delta_pack
+
+
+def compute_native_residual_sec_jax(
     params: dict,
-    pack: NativeFixedStateNonlinearDeltaPack,
+    pack: NativeDeltaPack,
 ) -> jnp.ndarray:
-    """Recompute tempo2-native residuals through the fixed-state nonlinear tail."""
+    """Recompute tempo2-native residuals for any graph mode pack."""
     pos, vel, acc = pulsar_vectors_from_params_jax(
         params, use_native_ecliptic=pack.use_native_ecliptic
     )
@@ -1126,7 +1076,7 @@ def compute_native_fixed_state_nonlinear_residual_sec_jax(
     dm_vals = compute_dm_vals_jax(
         pack.sat_mjd, dm_epoch=pack.dm_epoch, dm_coeffs=_dm_coeffs_jax(params)
     )
-    _, residual_sec = compute_tempo2_toa_model_fixed_state_nonlinear_jax(
+    common = dict(
         sat_mjd=pack.sat_mjd,
         freq_mhz=pack.freq_mhz,
         params_f_terms=f_terms,
@@ -1134,19 +1084,7 @@ def compute_native_fixed_state_nonlinear_residual_sec_jax(
         pos_pulsar=pos,
         vel_pulsar=vel,
         acc_pulsar=acc,
-        tropo_sec=pack.tropo_sec,
         dt_emission_sec=pack.dt_emission_sec,
-        earth_ssb_km=pack.earth_ssb_km,
-        observatory_earth_km=pack.observatory_earth_km,
-        site_vel_km_s=pack.site_vel_km_s,
-        ssb_obs_ls=pack.ssb_obs_ls,
-        obs_sun_ls=pack.obs_sun_ls,
-        obs_jupiter_ls=pack.obs_jupiter_ls,
-        planet_obs_ls=pack.planet_obs_ls,
-        correction_tt_sec_pre=pack.correction_tt_sec,
-        correction_tt_tb_sec_pre=pack.correction_tt_tb_sec,
-        einstein_rate=pack.einstein_rate,
-        dt_ssb_ref_sec=pack.dt_ssb_ref_sec,
         dm_vals=dm_vals,
         dm_epoch=pack.dm_epoch,
         dm_coeffs=pack.dm_coeffs_ref,
@@ -1169,7 +1107,83 @@ def compute_native_fixed_state_nonlinear_residual_sec_jax(
         pulse_numbers=pack.pulse_numbers,
         pn_add=pack.pn_add,
     )
+    if pack.mode == TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR:
+        _, residual_sec = compute_tempo2_toa_model_fixed_state_nonlinear_jax(
+            tropo_sec=pack.tropo_sec,
+            earth_ssb_km=pack.earth_ssb_km,
+            observatory_earth_km=pack.observatory_earth_km,
+            site_vel_km_s=pack.site_vel_km_s,
+            ssb_obs_ls=pack.ssb_obs_ls,
+            obs_sun_ls=pack.obs_sun_ls,
+            obs_jupiter_ls=pack.obs_jupiter_ls,
+            planet_obs_ls=pack.planet_obs_ls,
+            correction_tt_sec_pre=pack.correction_tt_sec,
+            correction_tt_tb_sec_pre=pack.correction_tt_tb_sec,
+            einstein_rate=pack.einstein_rate,
+            dt_ssb_ref_sec=pack.dt_ssb_ref_sec,
+            **common,
+        )
+    elif pack.mode == TEMPO2_NATIVE_GRAPH_FULL:
+        _, residual_sec = compute_tempo2_toa_model_jax(
+            obs_itrf_km=pack.obs_itrf_km,
+            spk_packed=pack.spk_packed,
+            eop_packed=pack.eop_packed,
+            chain_mjd_tables=pack.chain_mjd_tables,
+            chain_offset_tables=pack.chain_offset_tables,
+            bipm_mjd=pack.bipm_mjd,
+            bipm_offset=pack.bipm_offset,
+            ifte_records=pack.ifte_records,
+            ifte_start_jd=pack.ifte_start_jd,
+            ifte_end_jd=pack.ifte_end_jd,
+            ifte_step_jd=pack.ifte_step_jd,
+            ifte_coef_offset=pack.ifte_coef_offset,
+            ifte_ncf=pack.ifte_ncf,
+            ifte_na=pack.ifte_na,
+            obs_site_latitude_rad=pack.obs_site_latitude_rad,
+            obs_site_longitude_rad=pack.obs_site_longitude_rad,
+            obs_site_height_m=pack.obs_site_height_m,
+            obs_site_pressure_mbar=pack.obs_site_pressure_mbar,
+            correct_troposphere=pack.correct_troposphere,
+            **common,
+        )
+    else:
+        _, residual_sec = compute_tempo2_toa_model_staging_with_host_inputs_jax(
+            tropo_sec=pack.tropo_sec,
+            earth_ssb_km=pack.earth_ssb_km,
+            observatory_earth_km=pack.observatory_earth_km,
+            site_vel_km_s=pack.site_vel_km_s,
+            ssb_obs_ls=pack.ssb_obs_ls,
+            obs_sun_ls=pack.obs_sun_ls,
+            obs_jupiter_ls=pack.obs_jupiter_ls,
+            planet_obs_ls=pack.planet_obs_ls,
+            correction_tt_sec_pre=pack.correction_tt_sec,
+            correction_tt_tb_sec_pre=pack.correction_tt_tb_sec,
+            einstein_rate=pack.einstein_rate,
+            **common,
+        )
     return residual_sec
+
+
+def compute_native_residual_delta_jax(
+    params_ref: dict,
+    params_pert: dict,
+    pack: NativeDeltaPack,
+) -> jnp.ndarray:
+    """Native residual delta: ``res(θ+Δθ) − res(θ)`` with optional mean on delta."""
+    res_ref = compute_native_residual_sec_jax(params_ref, pack)
+    res_pert = compute_native_residual_sec_jax(params_pert, pack)
+    delta = res_pert - res_ref
+    if pack.subtract_mean:
+        delta = delta - jnp.mean(delta)
+    return delta
+
+
+def compute_native_fixed_state_nonlinear_residual_sec_jax(
+    params: dict,
+    pack: NativeFixedStateNonlinearDeltaPack,
+) -> jnp.ndarray:
+    """Recompute tempo2-native residuals through the fixed-state nonlinear tail."""
+    return compute_native_residual_sec_jax(params, pack)
 
 
 def compute_native_fixed_state_nonlinear_residual_delta_jax(
@@ -1178,12 +1192,7 @@ def compute_native_fixed_state_nonlinear_residual_delta_jax(
     pack: NativeFixedStateNonlinearDeltaPack,
 ) -> jnp.ndarray:
     """Fixed-state nonlinear residual delta: ``res(θ+Δθ) − res(θ)`` with mean on delta."""
-    res_ref = compute_native_fixed_state_nonlinear_residual_sec_jax(params_ref, pack)
-    res_pert = compute_native_fixed_state_nonlinear_residual_sec_jax(params_pert, pack)
-    delta = res_pert - res_ref
-    if pack.subtract_mean:
-        delta = delta - jnp.mean(delta)
-    return delta
+    return compute_native_residual_delta_jax(params_ref, params_pert, pack)
 
 
 def compute_native_frozen_residual_sec_jax(
@@ -1191,57 +1200,7 @@ def compute_native_frozen_residual_sec_jax(
     pack: NativeFrozenDeltaPack,
 ) -> jnp.ndarray:
     """Recompute tempo2-native residuals through the host-frozen staging tail."""
-    pos, vel, acc = pulsar_vectors_from_params_jax(
-        params, use_native_ecliptic=pack.use_native_ecliptic
-    )
-    f_terms = _spin_f_terms_jax(params)
-    pepoch = jnp.asarray(_param_scalar_jax(params, "PEPOCH"), dtype=jnp.float64)
-    dm_vals = compute_dm_vals_jax(
-        pack.sat_mjd, dm_epoch=pack.dm_epoch, dm_coeffs=_dm_coeffs_jax(params)
-    )
-    _, residual_sec = compute_tempo2_toa_model_staging_with_host_inputs_jax(
-        sat_mjd=pack.sat_mjd,
-        freq_mhz=pack.freq_mhz,
-        params_f_terms=f_terms,
-        params_pepoch=pepoch,
-        pos_pulsar=pos,
-        vel_pulsar=vel,
-        acc_pulsar=acc,
-        tropo_sec=pack.tropo_sec,
-        dt_emission_sec=pack.dt_emission_sec,
-        earth_ssb_km=pack.earth_ssb_km,
-        observatory_earth_km=pack.observatory_earth_km,
-        site_vel_km_s=pack.site_vel_km_s,
-        ssb_obs_ls=pack.ssb_obs_ls,
-        obs_sun_ls=pack.obs_sun_ls,
-        obs_jupiter_ls=pack.obs_jupiter_ls,
-        planet_obs_ls=pack.planet_obs_ls,
-        correction_tt_sec_pre=pack.correction_tt_sec,
-        correction_tt_tb_sec_pre=pack.correction_tt_tb_sec,
-        einstein_rate=pack.einstein_rate,
-        dm_vals=dm_vals,
-        dm_epoch=pack.dm_epoch,
-        dm_coeffs=pack.dm_coeffs_ref,
-        ne_sw=pack.ne_sw,
-        posepoch_mjd=pack.posepoch_mjd,
-        parallax_mas=jnp.asarray(_param_scalar_jax(params, "PX"), dtype=jnp.float64),
-        pmrv_rad_century=pack.pmrv_rad_century,
-        dilate_freq=pack.dilate_freq,
-        si_units=pack.si_units,
-        units_tdb=pack.units_tdb,
-        planet_shapiro_enabled=pack.planet_shapiro_enabled,
-        track_val=pack.track_val,
-        subtract_mean=False,
-        dshk=pack.dshk,
-        pmra=jnp.asarray(_param_scalar_jax(params, "PMRA"), dtype=jnp.float64),
-        pmdec=jnp.asarray(_param_scalar_jax(params, "PMDEC"), dtype=jnp.float64),
-        shk_posepoch=pack.shk_posepoch,
-        jump_phase=pack.jump_phase,
-        tzr_phase=pack.tzr_phase,
-        pulse_numbers=pack.pulse_numbers,
-        pn_add=pack.pn_add,
-    )
-    return residual_sec
+    return compute_native_residual_sec_jax(params, pack)
 
 
 def compute_native_frozen_residual_delta_jax(
@@ -1250,12 +1209,7 @@ def compute_native_frozen_residual_delta_jax(
     pack: NativeFrozenDeltaPack,
 ) -> jnp.ndarray:
     """Host-frozen residual delta: ``res(θ+Δθ) − res(θ)`` with mean on delta."""
-    res_ref = compute_native_frozen_residual_sec_jax(params_ref, pack)
-    res_pert = compute_native_frozen_residual_sec_jax(params_pert, pack)
-    delta = res_pert - res_ref
-    if pack.subtract_mean:
-        delta = delta - jnp.mean(delta)
-    return delta
+    return compute_native_residual_delta_jax(params_ref, params_pert, pack)
 
 
 def compute_native_full_chain_residual_sec_jax(
@@ -1263,65 +1217,7 @@ def compute_native_full_chain_residual_sec_jax(
     pack: NativeDeltaPack,
 ) -> jnp.ndarray:
     """Recompute tempo2-native residuals through ``compute_tempo2_toa_model_jax``."""
-    pos, vel, acc = pulsar_vectors_from_params_jax(
-        params, use_native_ecliptic=pack.use_native_ecliptic
-    )
-    f_terms = _spin_f_terms_jax(params)
-    pepoch = jnp.asarray(_param_scalar_jax(params, "PEPOCH"), dtype=jnp.float64)
-    dm_vals = compute_dm_vals_jax(
-        pack.sat_mjd, dm_epoch=pack.dm_epoch, dm_coeffs=_dm_coeffs_jax(params)
-    )
-    _, residual_sec = compute_tempo2_toa_model_jax(
-        sat_mjd=pack.sat_mjd,
-        freq_mhz=pack.freq_mhz,
-        params_f_terms=f_terms,
-        params_pepoch=pepoch,
-        pos_pulsar=pos,
-        vel_pulsar=vel,
-        acc_pulsar=acc,
-        obs_itrf_km=pack.obs_itrf_km,
-        spk_packed=pack.spk_packed,
-        eop_packed=pack.eop_packed,
-        dm_vals=dm_vals,
-        dm_epoch=pack.dm_epoch,
-        dm_coeffs=pack.dm_coeffs_ref,
-        dt_emission_sec=pack.dt_emission_sec,
-        chain_mjd_tables=pack.chain_mjd_tables,
-        chain_offset_tables=pack.chain_offset_tables,
-        bipm_mjd=pack.bipm_mjd,
-        bipm_offset=pack.bipm_offset,
-        ifte_records=pack.ifte_records,
-        ifte_start_jd=pack.ifte_start_jd,
-        ifte_end_jd=pack.ifte_end_jd,
-        ifte_step_jd=pack.ifte_step_jd,
-        ifte_coef_offset=pack.ifte_coef_offset,
-        ifte_ncf=pack.ifte_ncf,
-        ifte_na=pack.ifte_na,
-        ne_sw=pack.ne_sw,
-        obs_site_latitude_rad=pack.obs_site_latitude_rad,
-        obs_site_longitude_rad=pack.obs_site_longitude_rad,
-        obs_site_height_m=pack.obs_site_height_m,
-        obs_site_pressure_mbar=pack.obs_site_pressure_mbar,
-        posepoch_mjd=pack.posepoch_mjd,
-        parallax_mas=jnp.asarray(_param_scalar_jax(params, "PX"), dtype=jnp.float64),
-        pmrv_rad_century=pack.pmrv_rad_century,
-        dilate_freq=pack.dilate_freq,
-        si_units=pack.si_units,
-        units_tdb=pack.units_tdb,
-        planet_shapiro_enabled=pack.planet_shapiro_enabled,
-        track_val=pack.track_val,
-        subtract_mean=False,
-        dshk=pack.dshk,
-        pmra=jnp.asarray(_param_scalar_jax(params, "PMRA"), dtype=jnp.float64),
-        pmdec=jnp.asarray(_param_scalar_jax(params, "PMDEC"), dtype=jnp.float64),
-        shk_posepoch=pack.shk_posepoch,
-        jump_phase=pack.jump_phase,
-        tzr_phase=pack.tzr_phase,
-        pulse_numbers=pack.pulse_numbers,
-        pn_add=pack.pn_add,
-        correct_troposphere=pack.correct_troposphere,
-    )
-    return residual_sec
+    return compute_native_residual_sec_jax(params, pack)
 
 
 def compute_native_full_chain_residual_delta_jax(
@@ -1330,12 +1226,7 @@ def compute_native_full_chain_residual_delta_jax(
     pack: NativeDeltaPack,
 ) -> jnp.ndarray:
     """Full native-chain residual delta: ``res(θ+Δθ) − res(θ)`` with mean on delta."""
-    res_ref = compute_native_full_chain_residual_sec_jax(params_ref, pack)
-    res_pert = compute_native_full_chain_residual_sec_jax(params_pert, pack)
-    delta = res_pert - res_ref
-    if pack.subtract_mean:
-        delta = delta - jnp.mean(delta)
-    return delta
+    return compute_native_residual_delta_jax(params_ref, params_pert, pack)
 
 
 def compute_native_eval_residuals_jax(

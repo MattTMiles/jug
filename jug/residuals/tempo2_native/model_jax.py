@@ -320,6 +320,110 @@ def planet_rsa_tuple_jax_from_dict(
     return tuple(out)
 
 
+def _tempo2_residual_tail_jax(
+    *,
+    bclt,
+    sat_mjd: jnp.ndarray,
+    tt: jnp.ndarray,
+    tt_tb: jnp.ndarray,
+    tropo: jnp.ndarray,
+    dt_emission_sec: jnp.ndarray,
+    params_f_terms: jnp.ndarray,
+    params_pepoch: jnp.float64,
+    planet_shapiro_enabled: bool,
+    dshk: float,
+    pmra,
+    pmdec,
+    shk_posepoch_mjd,
+    track_val: int,
+    subtract_mean: bool,
+    jump_phase: jnp.ndarray | None,
+    tzr_phase: jnp.float64 | None,
+    pulse_numbers: jnp.ndarray | None,
+    pn_add: jnp.ndarray | None,
+) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+    """Shared formBats → Shklovskii → spin tail for all tempo2 TOA model modes."""
+    shap_delay = bclt.shapiro_sun_sec + jnp.where(
+        planet_shapiro_enabled,
+        bclt.shapiro_planets_sec,
+        0.0,
+    )
+    bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
+        sat_mjd,
+        tt,
+        tt_tb,
+        tropo,
+        bclt.roemer_sec,
+        shap_delay,
+        bclt.tdis1_sec,
+        bclt.tdis2_sec,
+        jnp.zeros_like(sat_mjd),
+    )
+    shk = compute_shklovskii_sec_jax_pure(
+        bat_mjd,
+        params_pepoch,
+        params_f_terms,
+        dshk=dshk,
+        pmra=pmra,
+        pmdec=pmdec,
+        posepoch_mjd=shk_posepoch_mjd,
+    )
+    _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
+        sat_mjd,
+        tt,
+        tt_tb,
+        tropo,
+        bclt.roemer_sec,
+        shap_delay,
+        bclt.tdis1_sec,
+        bclt.tdis2_sec,
+        shk,
+    )
+    dt_emit = jnp.asarray(dt_emission_sec, dtype=jnp.float64)
+    torb = compute_torb_closure_jax(bbat_mjd, dt_emit, params_pepoch)
+    terms = Tempo2NativeTerms(
+        sat_mjd=sat_mjd,
+        correction_tt_sec=tt,
+        correction_tt_tb_sec=tt_tb,
+        roemer_sec=bclt.roemer_sec,
+        tdis1_sec=bclt.tdis1_sec,
+        tdis2_sec=bclt.tdis2_sec,
+        shapiro_sun_sec=bclt.shapiro_sun_sec,
+        shapiro_planets_sec=bclt.shapiro_planets_sec,
+        shapiro_delay_sec=shap_delay,
+        tropospheric_sec=tropo,
+        prebinary_sec=jnp.zeros_like(sat_mjd),
+        bat_corr_day=bat_corr_day,
+        bat_corr_day_residual=bat_corr_resid,
+        bat_mjd=bat_mjd,
+        bbat_mjd=bbat_mjd,
+        shklovskii_sec=shk,
+        torb_sec=torb,
+        dt_emission_sec=dt_emit,
+        dt_ssb_sec=bclt.dt_ssb_sec,
+        bclt_iterations=bclt.bclt_iterations,
+        converged=bclt.converged,
+    )
+    phase5 = compute_tempo2_phase5_jax(
+        bbat_mjd,
+        torb,
+        params_f_terms,
+        params_pepoch,
+        jump_phase=jump_phase,
+        tzr_phase=tzr_phase,
+    )
+    if track_val == -2 and pulse_numbers is not None and pn_add is not None:
+        frac, _pulse = track_minus2_frac_phase_jax(
+            phase5, bbat_mjd, params_f_terms[0], pulse_numbers, pn_add
+        )
+    else:
+        frac = phase5 - jnp.trunc(phase5)
+    residual_sec = frac / params_f_terms[0]
+    if subtract_mean:
+        residual_sec = residual_sec - jnp.mean(residual_sec)
+    return terms, residual_sec
+
+
 @partial(
     jax.jit,
     static_argnames=(
@@ -484,85 +588,28 @@ def compute_tempo2_toa_model_jax(
         obs_jupiter_ls=geom.obs_jupiter_ls,
         planet_obs_ls=_stack_planet_obs_ls_jax(geom),
     )
-    shap_delay = bclt.shapiro_sun_sec + jnp.where(
-        planet_shapiro_enabled,
-        bclt.shapiro_planets_sec,
-        0.0,
-    )
-    bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
-        sat_mjd,
-        tt,
-        tt_tb,
-        tropo,
-        bclt.roemer_sec,
-        shap_delay,
-        bclt.tdis1_sec,
-        bclt.tdis2_sec,
-        jnp.zeros_like(sat_mjd),
-    )
-    shk = compute_shklovskii_sec_jax_pure(
-        bat_mjd,
-        params_pepoch,
-        params_f_terms,
+    tropo = jnp.asarray(tropo, dtype=jnp.float64)
+    return _tempo2_residual_tail_jax(
+        bclt=bclt,
+        sat_mjd=sat_mjd,
+        tt=tt,
+        tt_tb=tt_tb,
+        tropo=tropo,
+        dt_emission_sec=dt_emission_sec,
+        params_f_terms=params_f_terms,
+        params_pepoch=params_pepoch,
+        planet_shapiro_enabled=planet_shapiro_enabled,
         dshk=dshk,
         pmra=pmra,
         pmdec=pmdec,
-        posepoch_mjd=shk_posepoch,
-    )
-    _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
-        sat_mjd,
-        tt,
-        tt_tb,
-        tropo,
-        bclt.roemer_sec,
-        shap_delay,
-        bclt.tdis1_sec,
-        bclt.tdis2_sec,
-        shk,
-    )
-    dt_emit = jnp.asarray(dt_emission_sec, dtype=jnp.float64)
-    torb = compute_torb_closure_jax(bbat_mjd, dt_emit, params_pepoch)
-    terms = Tempo2NativeTerms(
-        sat_mjd=sat_mjd,
-        correction_tt_sec=tt,
-        correction_tt_tb_sec=tt_tb,
-        roemer_sec=bclt.roemer_sec,
-        tdis1_sec=bclt.tdis1_sec,
-        tdis2_sec=bclt.tdis2_sec,
-        shapiro_sun_sec=bclt.shapiro_sun_sec,
-        shapiro_planets_sec=bclt.shapiro_planets_sec,
-        shapiro_delay_sec=shap_delay,
-        tropospheric_sec=tropo,
-        prebinary_sec=jnp.zeros_like(sat_mjd),
-        bat_corr_day=bat_corr_day,
-        bat_corr_day_residual=bat_corr_resid,
-        bat_mjd=bat_mjd,
-        bbat_mjd=bbat_mjd,
-        shklovskii_sec=shk,
-        torb_sec=torb,
-        dt_emission_sec=dt_emit,
-        dt_ssb_sec=bclt.dt_ssb_sec,
-        bclt_iterations=bclt.bclt_iterations,
-        converged=bclt.converged,
-    )
-    phase5 = compute_tempo2_phase5_jax(
-        bbat_mjd,
-        torb,
-        params_f_terms,
-        params_pepoch,
+        shk_posepoch_mjd=shk_posepoch,
+        track_val=track_val,
+        subtract_mean=subtract_mean,
         jump_phase=jump_phase,
         tzr_phase=tzr_phase,
+        pulse_numbers=pulse_numbers,
+        pn_add=pn_add,
     )
-    if track_val == -2 and pulse_numbers is not None and pn_add is not None:
-        frac, _pulse = track_minus2_frac_phase_jax(
-            phase5, bbat_mjd, params_f_terms[0], pulse_numbers, pn_add
-        )
-    else:
-        frac = phase5 - jnp.trunc(phase5)
-    residual_sec = frac / params_f_terms[0]
-    if subtract_mean:
-        residual_sec = residual_sec - jnp.mean(residual_sec)
-    return terms, residual_sec
 
 
 @partial(
@@ -699,85 +746,27 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
         planet_obs_ls=planet_rsa,
     )
     tropo = jnp.asarray(tropo_sec, dtype=jnp.float64)
-    shap_delay = bclt.shapiro_sun_sec + jnp.where(
-        planet_shapiro_enabled,
-        bclt.shapiro_planets_sec,
-        0.0,
-    )
-    bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
-        sat_mjd,
-        tt,
-        tt_tb,
-        tropo,
-        bclt.roemer_sec,
-        shap_delay,
-        bclt.tdis1_sec,
-        bclt.tdis2_sec,
-        jnp.zeros_like(sat_mjd),
-    )
-    shk = compute_shklovskii_sec_jax_pure(
-        bat_mjd,
-        params_pepoch,
-        params_f_terms,
+    return _tempo2_residual_tail_jax(
+        bclt=bclt,
+        sat_mjd=sat_mjd,
+        tt=tt,
+        tt_tb=tt_tb,
+        tropo=tropo,
+        dt_emission_sec=dt_emission_sec,
+        params_f_terms=params_f_terms,
+        params_pepoch=params_pepoch,
+        planet_shapiro_enabled=planet_shapiro_enabled,
         dshk=dshk,
         pmra=pmra,
         pmdec=pmdec,
-        posepoch_mjd=shk_posepoch,
-    )
-    _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
-        sat_mjd,
-        tt,
-        tt_tb,
-        tropo,
-        bclt.roemer_sec,
-        shap_delay,
-        bclt.tdis1_sec,
-        bclt.tdis2_sec,
-        shk,
-    )
-    dt_emit = jnp.asarray(dt_emission_sec, dtype=jnp.float64)
-    torb = compute_torb_closure_jax(bbat_mjd, dt_emit, params_pepoch)
-    terms = Tempo2NativeTerms(
-        sat_mjd=sat_mjd,
-        correction_tt_sec=tt,
-        correction_tt_tb_sec=tt_tb,
-        roemer_sec=bclt.roemer_sec,
-        tdis1_sec=bclt.tdis1_sec,
-        tdis2_sec=bclt.tdis2_sec,
-        shapiro_sun_sec=bclt.shapiro_sun_sec,
-        shapiro_planets_sec=bclt.shapiro_planets_sec,
-        shapiro_delay_sec=shap_delay,
-        tropospheric_sec=tropo,
-        prebinary_sec=jnp.zeros_like(sat_mjd),
-        bat_corr_day=bat_corr_day,
-        bat_corr_day_residual=bat_corr_resid,
-        bat_mjd=bat_mjd,
-        bbat_mjd=bbat_mjd,
-        shklovskii_sec=shk,
-        torb_sec=torb,
-        dt_emission_sec=dt_emit,
-        dt_ssb_sec=bclt.dt_ssb_sec,
-        bclt_iterations=bclt.bclt_iterations,
-        converged=bclt.converged,
-    )
-    phase5 = compute_tempo2_phase5_jax(
-        bbat_mjd,
-        torb,
-        params_f_terms,
-        params_pepoch,
+        shk_posepoch_mjd=shk_posepoch,
+        track_val=track_val,
+        subtract_mean=subtract_mean,
         jump_phase=jump_phase,
         tzr_phase=tzr_phase,
+        pulse_numbers=pulse_numbers,
+        pn_add=pn_add,
     )
-    if track_val == -2 and pulse_numbers is not None and pn_add is not None:
-        frac, _pulse = track_minus2_frac_phase_jax(
-            phase5, bbat_mjd, params_f_terms[0], pulse_numbers, pn_add
-        )
-    else:
-        frac = phase5 - jnp.trunc(phase5)
-    residual_sec = frac / params_f_terms[0]
-    if subtract_mean:
-        residual_sec = residual_sec - jnp.mean(residual_sec)
-    return terms, residual_sec
 
 
 @partial(
@@ -880,90 +869,33 @@ def compute_tempo2_toa_model_fixed_state_nonlinear_jax(
         planet_obs_ls=planet_rsa,
     )
     tropo = jnp.asarray(tropo_sec, dtype=jnp.float64)
-    shap_delay = bclt.shapiro_sun_sec + jnp.where(
-        planet_shapiro_enabled,
-        bclt.shapiro_planets_sec,
-        0.0,
-    )
-    bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
-        sat_mjd,
-        tt,
-        tt_tb,
-        tropo,
-        bclt.roemer_sec,
-        shap_delay,
-        bclt.tdis1_sec,
-        bclt.tdis2_sec,
-        jnp.zeros_like(sat_mjd),
-    )
     shk_posepoch_val = (
         float(shk_posepoch) if shk_posepoch is not None else float(posepoch_mjd)
     )
-    shk = compute_shklovskii_sec_jax_pure(
-        bat_mjd,
-        params_pepoch,
-        params_f_terms,
+    return _tempo2_residual_tail_jax(
+        bclt=bclt,
+        sat_mjd=sat_mjd,
+        tt=tt,
+        tt_tb=tt_tb,
+        tropo=tropo,
+        dt_emission_sec=dt_emission_sec,
+        params_f_terms=params_f_terms,
+        params_pepoch=params_pepoch,
+        planet_shapiro_enabled=planet_shapiro_enabled,
         dshk=dshk,
         pmra=pmra,
         pmdec=pmdec,
-        posepoch_mjd=shk_posepoch_val,
-    )
-    _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
-        sat_mjd,
-        tt,
-        tt_tb,
-        tropo,
-        bclt.roemer_sec,
-        shap_delay,
-        bclt.tdis1_sec,
-        bclt.tdis2_sec,
-        shk,
-    )
-    dt_emit = jnp.asarray(dt_emission_sec, dtype=jnp.float64)
-    torb = compute_torb_closure_jax(bbat_mjd, dt_emit, params_pepoch)
-    terms = Tempo2NativeTerms(
-        sat_mjd=sat_mjd,
-        correction_tt_sec=tt,
-        correction_tt_tb_sec=tt_tb,
-        roemer_sec=bclt.roemer_sec,
-        tdis1_sec=bclt.tdis1_sec,
-        tdis2_sec=bclt.tdis2_sec,
-        shapiro_sun_sec=bclt.shapiro_sun_sec,
-        shapiro_planets_sec=bclt.shapiro_planets_sec,
-        shapiro_delay_sec=shap_delay,
-        tropospheric_sec=tropo,
-        prebinary_sec=jnp.zeros_like(sat_mjd),
-        bat_corr_day=bat_corr_day,
-        bat_corr_day_residual=bat_corr_resid,
-        bat_mjd=bat_mjd,
-        bbat_mjd=bbat_mjd,
-        shklovskii_sec=shk,
-        torb_sec=torb,
-        dt_emission_sec=dt_emit,
-        dt_ssb_sec=bclt.dt_ssb_sec,
-        bclt_iterations=bclt.bclt_iterations,
-        converged=bclt.converged,
-    )
-    phase5 = compute_tempo2_phase5_jax(
-        bbat_mjd,
-        torb,
-        params_f_terms,
-        params_pepoch,
+        shk_posepoch_mjd=shk_posepoch_val,
+        track_val=track_val,
+        subtract_mean=subtract_mean,
         jump_phase=jump_phase,
         tzr_phase=tzr_phase,
+        pulse_numbers=pulse_numbers,
+        pn_add=pn_add,
     )
-    if track_val == -2 and pulse_numbers is not None and pn_add is not None:
-        frac, _pulse = track_minus2_frac_phase_jax(
-            phase5, bbat_mjd, params_f_terms[0], pulse_numbers, pn_add
-        )
-    else:
-        frac = phase5 - jnp.trunc(phase5)
-    residual_sec = frac / params_f_terms[0]
-    if subtract_mean:
-        residual_sec = residual_sec - jnp.mean(residual_sec)
-    return terms, residual_sec
 
 
+# Canonical staging model; ``..._for_tests`` kept for historical imports.
 compute_tempo2_toa_model_with_frozen_terms_for_tests = (
     compute_tempo2_toa_model_staging_with_host_inputs_jax
 )

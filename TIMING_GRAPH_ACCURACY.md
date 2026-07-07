@@ -29,10 +29,29 @@ host pipeline for the current par file:
 
 This is what parity tests compare against external codes.
 
-**PINT-family (`compatibility="pint"`):** host residuals vs PINT agree on curated
-fixtures to roughly **tens of nanoseconds per TOA** (e.g. J1909: max ~28 ns,
-WRMS ~0.03%). See `tests/test_pint_parity.py` and
-`tests/data_golden/J1909_proper_golden.json`.
+**PINT-family (`compatibility="pint"`):** the JUG↔PINT host-residual difference
+depends almost entirely on whether the two codes are given **identical clock and
+ephemeris inputs**, not on the timing model:
+
+- **Matched inputs (same ephemeris + clock files + timescale).** The difference
+  collapses to a shared **phase-precision floor**. The JUG paper's Fig. 7 reports
+  **~5.25 ps RMS** over the NG15 J1909−3744 baseline (35k TOAs), and attributes it
+  to the *shared* longdouble-phase strategy that JUG and PINT both use — i.e. they
+  track each other far more closely than either tracks exact arithmetic. This is a
+  bespoke, carefully-matched comparison, **not** part of the gated test suite.
+- **Unmatched inputs (CI default).** The gated fixtures use whatever clock/ephemeris
+  files PINT/astropy happen to resolve, so they are gated loosely at **< 50 ns max
+  per TOA** (e.g. `J1909_proper`, MPTA-DR3, 100 TOAs: max ~23 ns). The golden file
+  itself notes these numbers "drift ~tens of ns as PINT/astropy clock & ephemeris
+  files update." Decomposing that difference on `J1909_proper` in a mismatched
+  environment: ~**−18 ns is a constant DC phase offset** (arbitrary absolute-phase /
+  mean-subtraction convention), leaving only ~**4 ns scatter** consistent with
+  clock-file version drift. **None of it is a timing-model disagreement.**
+
+So the honest one-line statement is: *at identical inputs, JUG matches PINT host
+residuals to a ps-level shared precision floor; the tens-of-ns seen in CI is a DC
+convention offset plus clock/ephemeris data drift.* See `tests/test_pint_parity.py`
+and `tests/data_golden/J1909_proper_golden.json`.
 
 **Tempo2-family (`compatibility="tempo2"`):** host residuals vs libstempo are
 gated on raw pre-fit δ with ns-scale targets on curated Cases A/B/C; IPTA-scale
@@ -83,63 +102,101 @@ Concretely:
 | Phase mean | Weighted residual mean subtraction |
 | Astrometry formulas | PINT-style Roemer + PM + parallax + Shapiro (`derivatives_astrometry.py`) |
 | FD design matrix | `pint_phase_scaled` or `delay_only` per setup |
-| Host residuals at θ_ref | Match PINT to ~tens of ns (fixture-dependent) |
+| Host residuals at θ_ref | ~5 ps vs PINT at **matched** ephemeris/clock (paper Fig. 7); tens of ns in CI from DC offset + clock-file drift |
 
 ### What "picosecond compatibility" means (and does not)
 
-Tests such as `tests/test_jax_numpy_parity_deprecated.py` define
-`PICOSECOND = 1e-12` and assert:
+Three *different* comparisons all get called "picosecond" or "nanosecond"
+agreement. Keeping them separate resolves essentially all the confusion:
+
+| # | What is compared | Where | Result | Meaning |
+|---|------------------|-------|--------|---------|
+| **A** | Host residuals, unmatched clock/ephem (MPTA `J1909_proper`, 100 TOAs) | `tests/test_pint_parity.py` | gated **< 50 ns**, measured ~23 ns | Loose CI guard tolerant of clock-file drift |
+| **B** | Host residuals, **matched** ephem+clock+timescale (NG15 J1909, 35k TOAs) | paper §5.1 / Fig. 7 | **~5.25 ps RMS** | Shared phase-precision floor between JUG and PINT |
+| **C** | JAX traced graph vs JUG's own NumPy fixed-state model | `tests/test_jax_numpy_parity_deprecated.py` (`PICOSECOND = 1e-12`) | **1 ps** | **Internal** JUG consistency, *not* vs PINT |
+
+Comparison **C** asserts:
 
 ```text
 JAX residual_delta(Δθ)  ≈  NumPy _compute_full_model_residuals residual_delta(Δθ)
 ```
 
-for small perturbations in `Δθ`.
-
-That tolerance is **internal JUG consistency**: the JAX traced evaluator
+for small `Δθ`. This is **internal JUG consistency** — the JAX evaluator
 faithfully implements JUG's own fixed-state nonlinear model. It is **not** a
-claim that JUG JAX matches PINT full model recompute at 1 ps for arbitrary
-parameter moves.
+claim that JUG JAX matches a PINT full-model recompute at 1 ps for arbitrary
+parameter moves. There is **no** test that perturbs parameters and requires JUG
+JAX vs PINT `ModelState` at picosecond level.
 
-There is **no** test that perturbs parameters and requires JUG JAX vs PINT
-`ModelState` at picosecond level. PINT cross-validation on host residuals uses
-**nanosecond-scale** tolerances (~50 ns max per TOA on J1909).
+The paper's headline "agrees with PINT at the picosecond level" is comparison
+**B**: a *forward-model, fixed-parameter* result on *one* pulsar at *matched*
+inputs. It is real, but two qualifications matter:
 
-### Fixed-state approximation vs PINT full model
+1. **ps *with PINT*, not ps *accurate*.** The 5.25 ps largely measures that JUG
+   and PINT implement the *same* longdouble-phase trick, so they are correlated
+   by construction (the paper says as much). It is not evidence of independent
+   correctness against nature.
+2. It does **not** characterize the traced/fitting delta layer under
+   perturbation (that is comparison C, internal-only), nor the practical
+   unmatched-input case (comparison A).
 
-PINT's fitter revalidates each step against a **full model recompute** (clocks,
-BCLT fixed point, emission epoch feedback, etc.).
+### Fixed-state approximation vs PINT — what is actually frozen
 
-JUG's fitter and JAX path validate against `_compute_full_model_residuals`,
-which uses the **same fixed-state architecture** as the JAX graph:
+**Correction to an earlier framing in this doc.** It is tempting to say JUG's
+fixed-state path "omits the self-consistent BCLT feedback that PINT performs at
+each step." For the **PINT path this is wrong**, and it matters for reasoning
+about picosecond parity.
+
+What JUG freezes in the delta layer is only **astrometry-independent** observer
+geometry — `ssb_obs_pos_ls`, `obs_sun_pos_ls`, `tdb_mjd`. The astrometry-dependent
+pieces (Roemer projection onto the pulsar direction, parallax, solar Shapiro
+geometry, proper motion) are **recomputed nonlinearly every call** with the
+perturbed parameters:
 
 ```python
-dt_sec_np = dt_sec_base.copy()
-delay_change = compute_total_delay_change(params, setup, xp=...)
-dt_sec_np = dt_sec_np - delay_change
-# → phase residuals via compute_phase_residuals
+# jug/fitting/forward_delay.py :: compute_total_delay_change
+new_astro = compute_astrometric_delay(
+    params, tdb_mjd, setup.ssb_obs_pos_ls,     # frozen SSB→obs vectors
+    obs_sun_pos_ls=setup.obs_sun_pos_ls,        # frozen obs→Sun vectors
+    ...)
+delay_change += new_astro - setup.initial_astrometric_delay
 ```
 
-The docstring in `_compute_full_model_residuals` calling this "analogous to
-PINT's ModelState.resids" describes intent, not equivalence. The omitted physics
-is the **self-consistent BCLT feedback**: when astrometry or delays move, PINT
-can shift the emission/BCLT epoch used to evaluate proper motion, Shapiro
-geometry, and frequency-dilation pieces. JUG's traced path holds those epochs
-and observer vectors at the values frozen from the reference host solve.
+**PINT does the same thing.** PINT computes `ssb_obs_pos` once in the TOA table
+at `get_TOAs()` and never recomputes it when model parameters change; it only
+re-projects onto the pulsar direction. There is **no astrometry-dependent
+emission-epoch / BCLT fixed-point iteration in PINT's standard path** for JUG to
+omit. So freezing this state is **exact relative to PINT**, not an approximation
+of it — which is precisely why matched-input host residuals reach the ps floor
+(comparison B above).
 
-For typical PTA scales (small moves near a well-constrained MAP) this omission
-is expected to be negligible, but it has **not** been validated at picosecond
-level against PINT under perturbation.
+Two honest caveats remain:
+
+- **"ps with PINT, not with nature."** Both codes evaluate solar-system geometry
+  at the topocentric arrival time and neither iterates an astrometry-dependent
+  emission-epoch fixed point. If a more self-consistent model (or tempo2) does,
+  JUG and PINT would both differ from it *together*. They agree with each other
+  at ps; absolute accuracy is a separate, untested question.
+- **The one genuinely-frozen astrometry-dependent term** is the barycentric
+  frequency feeding the DM delay. Its residual astrometry dependence is
+  `O(v/c · δθ)` — femtoseconds for fit-scale astrometry moves — negligible.
+
+**The BCLT-feedback concern is a tempo2-path issue, not a PINT-path issue.**
+tempo2's `formBats` genuinely iterates an emission-epoch fixed point, which is
+why the tempo2 chain exposes the `fixed_state_nonlinear / staged_bclt / full`
+graph modes (below). The PINT path has nothing analogous to freeze.
 
 ### Practical summary (PINT mode)
 
 | Claim | Accurate? |
 |-------|-----------|
 | PINT-family conventions and analytic astrometry derivatives | Yes |
-| Host residuals match PINT at reference θ | Yes, to ~tens of ns on gated fixtures |
-| JAX traced path = PINT full in-graph model at all θ | **No** |
+| Host residuals match PINT at reference θ, **matched** ephem/clock | Yes — ~5 ps shared precision floor (paper Fig. 7) |
+| Host residuals match PINT in CI (**unmatched** inputs) | ~tens of ns, dominated by DC phase offset + clock-file drift |
+| What JUG freezes in the delta layer is astrometry-independent | Yes — and PINT freezes the same |
+| JUG omits an astrometry-dependent BCLT feedback that PINT performs | **No** (that is a tempo2-path concern only) |
 | Picosecond tests = JAX vs JUG NumPy fixed-state model | Yes |
-| Picosecond tests = JAX vs PINT under perturbation | **No** |
+| Picosecond tests = JAX vs PINT under perturbation | **No** (no such test exists) |
+| "ps with PINT" implies "ps accurate against nature" | **No** — shared phase-precision floor |
 
 When MetaPulsar sets `engines={"pint": "jug"}`, NUTS sees JUG's fixed-state
 nonlinear graph with PINT-family conventions — not PINT itself.
@@ -243,8 +300,8 @@ in the delay terms themselves.
 
 | Component | Location |
 |-----------|----------|
-| Mode selector | `jug/residuals/tempo2_native_quarantine.py` → `tempo2_native_graph_mode()` |
-| Pack types | `jug/residuals/tempo2_native/chain_jax.py` — `NativeFixedStateNonlinearDeltaPack`, `NativeFrozenDeltaPack`, `NativeDeltaPack` |
+| Mode selector | `jug/residuals/tempo2_graph_config.py` → `tempo2_native_graph_mode()` |
+| Pack types | `jug/residuals/tempo2_native/chain_jax.py` — `NativeDeltaPack` (mode field; staged/full/fixed_state) |
 | One-pass BCLT | `jug/residuals/tempo2_native/calculate_bclt_jax.py` → `compute_bclt_terms_fixed_state_jax()` |
 | Residual kernel | `jug/residuals/tempo2_native/model_jax.py` → `compute_tempo2_toa_model_fixed_state_nonlinear_jax()` |
 | JAX dispatch | `jug/fitting/jax_residual_delta.py` → `_compute_residual_delta_jax()` |

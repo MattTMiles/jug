@@ -55,7 +55,7 @@ from jug.residuals.tzr_geometry import (
     resolve_tempo2_tzr_apply_mode,
     resolve_tzrmjd_epochs,
 )
-from jug.residuals.tempo2_native_quarantine import USE_NATIVE_BBAT_PHASE5
+from jug.residuals.tempo2_graph_config import USE_NATIVE_BBAT_PHASE5
 from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
@@ -564,7 +564,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     use_native_bbat_phase5 : bool
         When True (and TRACK −2 + ``-pn``), use quarantined tempo2 ``phase5`` at
         ``bbat`` with ``track_minus2_frac_phase``. See
-        ``jug.residuals.tempo2_native_quarantine.USE_NATIVE_BBAT_PHASE5``.
+        ``jug.residuals.tempo2_graph_config.USE_NATIVE_BBAT_PHASE5``.
     addsat_sec : np.ndarray (float64), optional
         Per-TOA integer-second ``-addsat`` shifts (already applied to site MJD at
         read). On TRACK -2, applies ``addsat_track2_turn_delta`` from
@@ -1881,182 +1881,52 @@ def compute_residuals_simple(
     tempo2_obs_state = None
     tempo2_obs_state_export = None
     if is_tempo2_compat:
-        from jug.residuals.tempo2_clock import (
-            compute_get_correction_tt_sec,
-            compute_site_clock_corrections_sec,
-        )
+        from jug.residuals.tempo2_native.pipeline import compute_tempo2_host_setup
 
-        correction_tt = compute_site_clock_corrections_sec(
-            mjd_utc,
+        _t2_setup = compute_tempo2_host_setup(
+            mjd_utc=mjd_utc,
             obs_clocks=obs_clocks,
             bipm_clock=bipm_clock,
             toas=toas,
             all_obs_codes=all_obs_codes,
-            obs_clock_default=obs_clock,
+            obs_clock=obs_clock,
             time_offsets=time_offsets,
-        )
-        formbats_correction_tt = compute_get_correction_tt_sec(
-            toas,
-            obs_clocks=obs_clocks,
-            obs_clock_default=obs_clock,
-            bipm_clock=bipm_clock,
-            all_obs_codes=all_obs_codes,
-            time_offsets=time_offsets,
-        )
-        from jug.delays.tempo2_ephemeris import (
-            bootstrap_tempo2_observatory_state,
-            resolve_tempo2_ephemeris_path,
-        )
-        from jug.residuals.tempo2_clock import (
-            compute_formbats_arrival,
-        )
-
-        ephem_path = resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405"))
-        sat_arr = np.asarray(mjd_utc, dtype=np.float64)
-        formbats_tt_arr = np.asarray(formbats_correction_tt, dtype=np.float64)
-        obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
-
-        geo_boot = bootstrap_tempo2_observatory_state(
-            sat_arr,
-            formbats_tt_arr,
-            obs_itrf,
-            ephem_path=ephem_path,
             params=params,
+            obs_itrf_km=obs_itrf_km,
+            dm_eff=dm_eff,
+            freq_bary_mhz=freq_bary_mhz,
+            dt_sec=dt_sec,
+            model_mjd=model_mjd,
+            PEPOCH=PEPOCH,
+            compatibility_mode=compatibility_mode,
+            engine_profile=engine_profile,
+            correct_troposphere=correct_troposphere,
+            roemer_sec=roemer_sec,
+            sun_shapiro_sec=sun_shapiro_sec,
+            planet_shapiro_sec=planet_shapiro_sec,
+            roemer_shapiro=roemer_shapiro,
+            dm_delay_sec=dm_delay_sec,
+            sw_delay_sec=sw_delay_sec,
+            tropo_delay_sec=tropo_delay_sec,
+            dmx_delay_sec=dmx_delay_sec,
+            skip_native_bclt_overlay=skip_native_bclt_overlay,
         )
-        tempo2_obs_state = geo_boot.state
-        mjd_tt = geo_boot.site_mjd
-        ephemeris_mjd = geo_boot.ephemeris_mjd
-        tt_tb = geo_boot.correction_tt_tb_sec
-        tt_teph = geo_boot.correction_tt_teph_sec
-        tempo2_obs_state_export = {
-            "site_vel_km_s": tempo2_obs_state.site_vel_km_s,
-            "earth_ssb_km": tempo2_obs_state.earth_ssb_km,
-            "observatory_earth_km": tempo2_obs_state.observatory_earth_km,
-            "sun_ssb_km": tempo2_obs_state.sun_ssb_km,
-            "planet_ssb_km": tempo2_obs_state.planet_ssb_km,
-        }
-        earth_ssb_vel_km_s = tempo2_obs_state.earth_ssb_km[:, 3:6]
-        obs_earth_km = tempo2_obs_state.observatory_earth_km[:, :3]
-        from jug.delays.barycentric import compute_einstein_rate
-        from jug.delays.tempo2_geometry import (
-            build_tempo2_pulsar_vectors,
-            compute_tempo2_dm_delays_sec,
-            psr_pos_at_delt,
-            tempo2_dilate_freq_enabled,
-            tempo2_observatory_chain_vectors,
-        )
-
-        _, _, obs_sun_ls_dm, _ = tempo2_observatory_chain_vectors(tempo2_obs_state)
-        pos_pulsar, vel_pulsar, _ = build_tempo2_pulsar_vectors(
-            params,
-            use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
-        )
-        posepoch = float(params.get("POSEPOCH", params["PEPOCH"]))
-        delt_formbats = (
-            sat_arr - posepoch + (formbats_tt_arr + tt_tb) / SECS_PER_DAY
-        ) / 36525.0
-        topo_freq_mhz = np.array([t.freq_mhz for t in toas], dtype=np.float64)
-        dilate_freq = tempo2_dilate_freq_enabled(params)
-        if dilate_freq:
-            units = parse_timescale(params)
-            ein_scale = "TCB" if is_tempo2_si_units(units) else "TDB"
-            einstein_rate = np.asarray(
-                compute_einstein_rate(mjd_tt, units=ein_scale), dtype=np.float64
-            )
-        else:
-            einstein_rate = np.ones_like(sat_arr, dtype=np.float64)
-        ne_sw_val = resolve_ne_sw_cm3(params, engine_profile)
-        dm_host = np.zeros(len(toas), dtype=np.float64)
-        sw_host = np.zeros(len(toas), dtype=np.float64)
-        for i in range(len(toas)):
-            psr_pos_i = psr_pos_at_delt(pos_pulsar, vel_pulsar, float(delt_formbats[i]))
-            dm_host[i], sw_host[i] = compute_tempo2_dm_delays_sec(
-                sat_mjd=float(sat_arr[i]),
-                freq_mhz=float(topo_freq_mhz[i]),
-                psr_pos=psr_pos_i,
-                obs_to_sun_ls=obs_sun_ls_dm[i],
-                earth_ssb_vel_km_s=earth_ssb_vel_km_s[i],
-                dm_val=float(dm_eff[i]),
-                ne_sw=float(ne_sw_val),
-                einstein_rate=float(einstein_rate[i]),
-                dilate_freq=dilate_freq,
-                site_vel_km_s=tempo2_obs_state.site_vel_km_s[i],
-            )
-        dm_delay_sec = dm_host
-        sw_delay_sec = sw_host
-
-        if correct_troposphere:
-            from jug.delays.tropo_jax import compute_tempo2_tropo_delay_host
-
-            tropo_delay_sec = compute_tempo2_tropo_delay_host(
-                sat_arr,
-                formbats_tt_arr,
-                obs_itrf_km=obs_itrf,
-                pos_pulsar=pos_pulsar,
-                mapping_clock_sec=correction_tt,
-            )
-
-        from jug.residuals.tempo2_native.chain_jax import (
-            prepare_native_chain_from_simple_result,
-        )
-        from jug.residuals.tempo2_native.types import native_terms_to_numpy
-
-        if not skip_native_bclt_overlay:
-            _overlay_td = {
-                "sat_mjd": sat_arr,
-                "correction_tt_sec": formbats_tt_arr,
-                "correction_tt_tb_sec": tt_tb,
-                "formbats_correction_tt_sec": formbats_tt_arr,
-                "tropo_delay_sec": tropo_delay_sec,
-                "dm_delay_sec": dm_delay_sec,
-                "sw_delay_sec": sw_delay_sec,
-                "freq_bary_mhz": freq_bary_mhz,
-                "tempo2_obs_state": tempo2_obs_state_export,
-            }
-            _overlay_jug = {
-                "term_diagnostics": _overlay_td,
-                "dt_sec": np.asarray(dt_sec, dtype=np.float64),
-                "freq_bary_mhz": freq_bary_mhz,
-                "compatibility": compatibility_mode,
-            }
-            _native_overlay = prepare_native_chain_from_simple_result(
-                _overlay_jug, params, toas
-            )
-            _native_np = native_terms_to_numpy(_native_overlay)
-            formbats_tt_arr = np.asarray(_native_np["correction_tt_sec"], dtype=np.float64)
-            formbats_correction_tt = formbats_tt_arr
-            tropo_delay_sec = np.asarray(_native_np["tropospheric_sec"], dtype=np.float64)
-            roemer_sec = -np.asarray(_native_np["roemer_sec"], dtype=np.float64)
-            sun_shapiro_sec = np.asarray(_native_np["shapiro_sun_sec"], dtype=np.float64)
-            planet_shapiro_sec = np.asarray(
-                _native_np["shapiro_planets_sec"], dtype=np.float64
-            )
-            dm_delay_sec = np.asarray(_native_np["tdis1_sec"], dtype=np.float64)
-            sw_delay_sec = np.asarray(_native_np["tdis2_sec"], dtype=np.float64)
-            roemer_shapiro = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
-
-        prebinary_delay_sec = (
-            roemer_shapiro + dm_delay_sec + dmx_delay_sec
-            + sw_delay_sec + tropo_delay_sec
-        )
-
-        from jug.utils.ifteph import ifte_delta_t_mjd
-
-        ifte_delta_t_sec = np.asarray(ifte_delta_t_mjd(mjd_tt), dtype=np.float64)
-        tempo2_clock_terms = compute_formbats_arrival(
-            sat_arr,
-            formbats_tt_arr,
-            tt_tb,
-            prebinary_delay_sec,
-            params,
-            correction_tt_teph_sec=tt_teph,
-        )
-        if USE_NATIVE_BBAT_PHASE5:
-            from jug.residuals.tempo2_spin import compute_tempo2_torb_sec
-
-            bbat_mjd = tempo2_clock_terms.bbat_mjd
-            model_mjd = tempo2_clock_terms.model_clock_mjd
-            torb_sec = compute_tempo2_torb_sec(bbat_mjd, dt_sec, PEPOCH)
+        formbats_correction_tt = _t2_setup.formbats_correction_tt
+        tempo2_clock_terms = _t2_setup.tempo2_clock_terms
+        tempo2_obs_state_export = _t2_setup.tempo2_obs_state_export
+        earth_ssb_vel_km_s = _t2_setup.earth_ssb_vel_km_s
+        dm_delay_sec = _t2_setup.dm_delay_sec
+        sw_delay_sec = _t2_setup.sw_delay_sec
+        tropo_delay_sec = _t2_setup.tropo_delay_sec
+        roemer_sec = _t2_setup.roemer_sec
+        sun_shapiro_sec = _t2_setup.sun_shapiro_sec
+        planet_shapiro_sec = _t2_setup.planet_shapiro_sec
+        roemer_shapiro = _t2_setup.roemer_shapiro
+        prebinary_delay_sec = _t2_setup.prebinary_delay_sec
+        ifte_delta_t_sec = _t2_setup.ifte_delta_t_sec
+        bbat_mjd = _t2_setup.bbat_mjd
+        torb_sec = _t2_setup.torb_sec
+        model_mjd = _t2_setup.model_mjd
 
     phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
     phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None
@@ -2147,103 +2017,59 @@ def compute_residuals_simple(
     subtract_mean_in_phase = tzr_apply_mode != "post_wrap"
 
     if is_tempo2_compat:
-        from jug.residuals.tempo2_native.chain_jax import (
-            compute_native_eval_residuals_jax,
-            prepare_native_chain_from_simple_result,
-        )
+        # Production tempo2 host routing (strict-parity contract; see pipeline.py):
+        #   TRACK == -2  -> compute_phase_residuals (Taylor + legacy TRACK-2)
+        #   TRACK absent -> compute_phase_residuals (Taylor sequential)
+        #   other TRACK  -> compute_native_eval_residuals_jax (native delay chain)
+        # JAX autodiff uses phase5@bbat via jax_residual_delta — different model.
+        from jug.residuals.tempo2_native.pipeline import finalize_tempo2_host_residuals
 
-        _native_td = {
-            "sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64),
-            "correction_tt_sec": np.asarray(
-                tempo2_clock_terms.correction_tt_sec, dtype=np.float64
-            ),
-            "correction_tt_tb_sec": np.asarray(
-                tempo2_clock_terms.correction_tt_tb_sec, dtype=np.float64
-            ),
-            "formbats_correction_tt_sec": np.asarray(
-                formbats_correction_tt, dtype=np.float64
-            ),
-            "tropo_delay_sec": np.asarray(tropo_delay_sec, dtype=np.float64),
-            "dm_delay_sec": np.asarray(dm_delay_sec, dtype=np.float64),
-            "sw_delay_sec": np.asarray(sw_delay_sec, dtype=np.float64),
-            "freq_bary_mhz": np.asarray(freq_bary_mhz, dtype=np.float64),
-            "tempo2_obs_state": tempo2_obs_state_export,
-        }
-        _jug = {
-            "term_diagnostics": _native_td,
-            "dt_sec": np.asarray(dt_sec, dtype=np.float64),
-            "freq_bary_mhz": freq_bary_mhz,
-            "compatibility": compatibility_mode,
-        }
-        native = prepare_native_chain_from_simple_result(_jug, params, toas)
-        use_taylor_track2_spin = track_val is not None and int(track_val) == -2
-        use_taylor_nontrack_spin = track_val is None
-        if use_taylor_track2_spin or use_taylor_nontrack_spin:
-            # TRACK -2: Taylor emission spin + legacy TRACK −2 wrapping.
-            # TRACK absent: Taylor sequential wrapping (tempo2 default TRACK=0).
-            # Native phase5@bbat trunc is wrong for TRACK-absent TDB/TCB fixtures.
-            if use_taylor_track2_spin:
-                residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
-                    dt_sec,
-                    params,
-                    weights_scaled,
-                    subtract_mean=subtract_mean_in_phase,
-                    tzr_phase=tzr_phase_for_residuals,
-                    jump_phase=jump_phase,
-                    external_pulse_numbers=external_pn,
-                    track_val=int(track_val),
-                    external_pn_add=external_pn_add,
-                    bbat_mjd=phase_bbat_mjd,
-                    torb_sec=phase_torb_sec,
-                    use_native_bbat_phase5=False,
-                    addsat_sec=addsat_sec,
-                    mean_mode=delay_provider.phase_mean_mode,
-                )
-            else:
-                residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
-                    dt_sec,
-                    params,
-                    weights_scaled,
-                    subtract_mean=subtract_mean_in_phase,
-                    tzr_phase=tzr_phase_for_residuals,
-                    jump_phase=jump_phase,
-                    mean_mode=delay_provider.phase_mean_mode,
-                )
-        else:
-            jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
-            tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)
-            residuals_sec_jax, pulse_number_jax, native = compute_native_eval_residuals_jax(
-                params=params,
-                toas=toas,
-                jug_result=_jug,
-                pulse_numbers=external_pn,
-                pn_add=external_pn_add,
-                jump_phase=jump_j,
-                tzr_phase=tzr_j,
-                subtract_mean=subtract_mean_in_phase,
-                mean_mode=delay_provider.phase_mean_mode,
-                track_val=int(track_val) if track_val is not None else -2,
-                weights=jnp.asarray(weights_scaled, dtype=jnp.float64),
-                addsat_sec=addsat_sec,
-            )
-            residuals_sec = np.asarray(jax.device_get(residuals_sec_jax), dtype=np.float64)
-            pulse_number = np.asarray(jax.device_get(pulse_number_jax), dtype=np.longdouble)
-            residuals_us = residuals_sec * 1e6
-        dm_delay_sec = np.asarray(jax.device_get(native.tdis1_sec), dtype=np.float64)
-        sw_delay_sec = np.asarray(jax.device_get(native.tdis2_sec), dtype=np.float64)
-    else:
-        residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
-            dt_sec, params, weights_scaled, subtract_mean=subtract_mean_in_phase,
-            tzr_phase=tzr_phase_for_residuals,
+        _t2_final = finalize_tempo2_host_residuals(
+            params=params,
+            toas=toas,
+            dt_sec=dt_sec,
+            compatibility_mode=compatibility_mode,
+            tempo2_clock_terms=tempo2_clock_terms,
+            formbats_correction_tt=formbats_correction_tt,
+            tempo2_obs_state_export=tempo2_obs_state_export,
+            tropo_delay_sec=tropo_delay_sec,
+            dm_delay_sec=dm_delay_sec,
+            sw_delay_sec=sw_delay_sec,
+            freq_bary_mhz=freq_bary_mhz,
+            weights_scaled=weights_scaled,
+            subtract_mean_in_phase=subtract_mean_in_phase,
+            tzr_phase_for_residuals=tzr_phase_for_residuals,
             jump_phase=jump_phase,
-            external_pulse_numbers=external_pn,
-            track_val=int(track_val) if track_val is not None else None,
+            external_pn=external_pn,
             external_pn_add=external_pn_add,
-            bbat_mjd=phase_bbat_mjd,
-            torb_sec=phase_torb_sec,
-            use_native_bbat_phase5=USE_NATIVE_BBAT_PHASE5,
+            track_val=track_val,
             addsat_sec=addsat_sec,
-            mean_mode=delay_provider.phase_mean_mode,
+            phase_mean_mode=delay_provider.phase_mean_mode,
+            phase_bbat_mjd=phase_bbat_mjd,
+            phase_torb_sec=phase_torb_sec,
+        )
+        residuals_us = _t2_final.residuals_us
+        residuals_sec = _t2_final.residuals_sec
+        pulse_number = _t2_final.pulse_number
+        dm_delay_sec = _t2_final.dm_delay_sec
+        sw_delay_sec = _t2_final.sw_delay_sec
+    else:
+        from jug.residuals.tempo2_native.pipeline import finalize_pint_host_residuals
+
+        residuals_us, residuals_sec, pulse_number = finalize_pint_host_residuals(
+            dt_sec=dt_sec,
+            params=params,
+            weights_scaled=weights_scaled,
+            subtract_mean_in_phase=subtract_mean_in_phase,
+            tzr_phase_for_residuals=tzr_phase_for_residuals,
+            jump_phase=jump_phase,
+            external_pn=external_pn,
+            track_val=track_val,
+            external_pn_add=external_pn_add,
+            phase_bbat_mjd=phase_bbat_mjd,
+            phase_torb_sec=phase_torb_sec,
+            addsat_sec=addsat_sec,
+            phase_mean_mode=delay_provider.phase_mean_mode,
         )
 
     if tzr_apply_mode == "post_wrap":

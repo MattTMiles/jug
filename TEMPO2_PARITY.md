@@ -1550,7 +1550,7 @@ fixed ``track_minus2_frac_phase`` → **~17.5 ns** RMS on wsrt167 (validated in
 formBats ``bbat_mjd`` diagnostic remains **~65 s** off tempo2.
 
 Key touchpoints: `jug/residuals/tempo2_spin.py`,
-`jug/residuals/tempo2_native_quarantine.py`, `jug/residuals/simple_calculator.py`.
+`jug/residuals/tempo2_graph_config.py`, `jug/residuals/simple_calculator.py`.
 
 ### Subset pitfall
 

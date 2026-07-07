@@ -1752,16 +1752,18 @@ def _build_setup_common(
     use_native = str(compatibility).lower().startswith("tempo2")
     native_chain_static = None
     if use_native and extras.get("term_diagnostics") is not None:
-        native_chain_static = {
-            "term_diagnostics": extras["term_diagnostics"],
-            "dt_sec": np.asarray(extras.get("dt_sec", dt_sec_cached), dtype=np.float64),
-            "freq_bary_mhz": np.array(freq_mhz_bary, dtype=np.float64),
-            "model_mjd": np.array(extras.get("model_mjd", toas_mjd), dtype=np.float64),
-            "ssb_obs_pos_ls": ssb_obs_pos_ls,
-            "obs_sun_pos_ls": obs_sun_pos_ls,
-            "obs_planet_pos_ls": obs_planet_pos_ls,
-            "toas": extras.get("toas"),
-        }
+        from jug.residuals.tempo2_native.fit_cache import Tempo2NativeChainStatic
+
+        native_chain_static = Tempo2NativeChainStatic(
+            term_diagnostics=extras["term_diagnostics"],
+            dt_sec=np.asarray(extras.get("dt_sec", dt_sec_cached), dtype=np.float64),
+            freq_bary_mhz=np.array(freq_mhz_bary, dtype=np.float64),
+            model_mjd=np.array(extras.get("model_mjd", toas_mjd), dtype=np.float64),
+            ssb_obs_pos_ls=ssb_obs_pos_ls,
+            obs_sun_pos_ls=obs_sun_pos_ls,
+            obs_planet_pos_ls=obs_planet_pos_ls,
+            toas=extras.get("toas"),
+        )
     return GeneralFitSetup(
         params=dict(params),
         fit_param_list=fit_params,

@@ -424,7 +424,7 @@ PYTHONPATH=.:tests:/tmp TEMPO2=/opt/software/tempo2/T2runtime \
 | `jug/residuals/tempo2_clock.py` | IFTE + formBats — **diagnostics only** |
 | `jug/residuals/tzr_geometry.py` | TZR apply modes (Phase C) |
 | `jug/residuals/tempo2_spin.py` | ``compute_tempo2_bbat_mjd``; ``phase5`` / TRACK −2 |
-| `jug/residuals/tempo2_native_quarantine.py` | `USE_NATIVE_BBAT_PHASE5 = False` |
+| `jug/residuals/tempo2_graph_config.py` | `USE_NATIVE_BBAT_PHASE5 = False` |
 | `jug/testing/tempo2_outlier_diff.py` | Per-TOA clock + Roemer diff harness |
 | `jug/testing/tempo2_track2_oracle.py` | TRACK −2 pnNew oracle (Phase D) |
 | `tools/run_tempo2_outlier_clock_roemer_diff.py` | CLI for harness |

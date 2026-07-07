@@ -156,7 +156,7 @@ def test_clock_tt_probe_writes_report():
     from jug.residuals.tempo2_clock import compute_correction_tt_tb_sec
     from jug.residuals.tempo2_native.clock_jax import compute_tempo2_correction_tt_tb_jax
     from jug.utils.constants import C_KM_S, SECS_PER_DAY
-    from jug.utils.ifteph import IFTE_LC, IFTE_TEPH0_SEC, ifte_delta_t_mjd
+    from jug.utils.ifteph import IFTE_LC, IFTE_TEPH0_SEC, ifte_delta_t_mjd, load_ifte_coeff_tables
     from jug.utils.timescales import IFTE_K, is_tempo2_si_units, parse_timescale
 
     fixture, sat, static = _wsrt167_clock_inputs()
@@ -187,12 +187,19 @@ def test_clock_tt_probe_writes_report():
     )
     mjd_tt = sat + tt_jax / SECS_PER_DAY
     ifte_delta = np.asarray(ifte_delta_t_mjd(mjd_tt), dtype=np.float64)
+    ifte_tables = load_ifte_coeff_tables()
     units = parse_timescale(params)
     tt_tb_jax, teph_jax = compute_tempo2_correction_tt_tb_jax(
         jnp.asarray(mjd_tt, dtype=jnp.float64),
         jnp.asarray(obs_earth, dtype=jnp.float64),
         jnp.asarray(earth_vel, dtype=jnp.float64),
-        delta_t_sec=jnp.asarray(ifte_delta, dtype=jnp.float64),
+        ifte_records=jnp.asarray(ifte_tables.records, dtype=jnp.float64),
+        ifte_start_jd=jnp.asarray(ifte_tables.start_jd, dtype=jnp.float64),
+        ifte_end_jd=jnp.asarray(ifte_tables.end_jd, dtype=jnp.float64),
+        ifte_step_jd=jnp.asarray(ifte_tables.step_jd, dtype=jnp.float64),
+        ifte_coef_offset=int(ifte_tables.coef_offset),
+        ifte_ncf=int(ifte_tables.ncf),
+        ifte_na=int(ifte_tables.na),
         units_tdb=str(units).upper() == "TDB",
         si_units=is_tempo2_si_units(units),
     )
@@ -259,3 +266,14 @@ def test_clock_tt_probe_writes_report():
             ]
         )
     Path("/tmp/jug_clock_tt_probe.txt").write_text("\n".join(lines))
+
+
+def test_wsrt167_host_tt_tb_component_gate():
+    """Host ``correction_tt_tb_sec`` export matches pytempo after IFTE fix."""
+    from jug.testing.tempo2_formbats_closure import compare_formbats_components
+
+    fixture, _, _ = _wsrt167_clock_inputs()
+    report = compare_formbats_components(
+        fixture["par_path"], fixture["tim_path"], fixture_id="wsrt167"
+    )
+    assert report.component_rms_ns["tt_tb"] < 1.0

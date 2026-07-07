@@ -49,6 +49,13 @@ class Tempo2ModelStatic:
     chain_offset_tables: tuple
     bipm_mjd: np.ndarray
     bipm_offset: np.ndarray
+    ifte_records: np.ndarray
+    ifte_start_jd: float
+    ifte_end_jd: float
+    ifte_step_jd: float
+    ifte_coef_offset: int
+    ifte_ncf: int
+    ifte_na: int
     tropo_sec: np.ndarray
     dt_emission_sec: np.ndarray
     pulse_numbers: np.ndarray | None
@@ -123,9 +130,11 @@ def build_tempo2_model_static(
     subtract_mean: bool = True,
 ) -> Tempo2ModelStatic:
     from jug.residuals.tempo2_native.clock_jax import pack_clock_chain_jax
+    from jug.utils.ifteph import load_ifte_coeff_tables
 
     chain = obs_clocks.get(obs_code, obs_clock_default)
     mjd_t, off_t, bipm_mjd, bipm_off = pack_clock_chain_jax(chain, bipm_clock)
+    ifte = load_ifte_coeff_tables()
     return Tempo2ModelStatic(
         obs_itrf_km=np.asarray(obs_itrf_km, dtype=np.float64),
         ephem_path=str(ephem_path),
@@ -133,6 +142,13 @@ def build_tempo2_model_static(
         chain_offset_tables=tuple(np.asarray(t, dtype=np.float64) for t in off_t),
         bipm_mjd=np.asarray(bipm_mjd, dtype=np.float64),
         bipm_offset=np.asarray(bipm_off, dtype=np.float64),
+        ifte_records=np.asarray(ifte.records, dtype=np.float64),
+        ifte_start_jd=float(ifte.start_jd),
+        ifte_end_jd=float(ifte.end_jd),
+        ifte_step_jd=float(ifte.step_jd),
+        ifte_coef_offset=int(ifte.coef_offset),
+        ifte_ncf=int(ifte.ncf),
+        ifte_na=int(ifte.na),
         tropo_sec=np.asarray(tropo_sec, dtype=np.float64),
         dt_emission_sec=np.asarray(dt_emission_sec, dtype=np.float64),
         pulse_numbers=None if pulse_numbers is None else np.asarray(pulse_numbers, dtype=np.int64),
@@ -166,6 +182,9 @@ def build_tempo2_model_static(
         "shk_posepoch",
         "dm_epoch",
         "dm_coeffs",
+        "ifte_coef_offset",
+        "ifte_ncf",
+        "ifte_na",
     ),
 )
 def compute_tempo2_toa_model_jax(
@@ -186,6 +205,13 @@ def compute_tempo2_toa_model_jax(
     chain_offset_tables: tuple[jnp.ndarray, ...],
     bipm_mjd: jnp.ndarray,
     bipm_offset: jnp.ndarray,
+    ifte_records: jnp.ndarray,
+    ifte_start_jd: jnp.ndarray,
+    ifte_end_jd: jnp.ndarray,
+    ifte_step_jd: jnp.ndarray,
+    ifte_coef_offset: int,
+    ifte_ncf: int,
+    ifte_na: int,
     ne_sw: float,
     earth_ssb_km: jnp.ndarray,
     observatory_earth_km: jnp.ndarray,
@@ -210,13 +236,11 @@ def compute_tempo2_toa_model_jax(
     tzr_phase: jnp.float64 | None = None,
     pulse_numbers: jnp.ndarray | None = None,
     pn_add: jnp.ndarray | None = None,
-    ifte_delta_t_sec: jnp.ndarray | None = None,
 ) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
     """Full Tempo2 delay/spin chain in one JIT graph.
 
-    Clock ``getCorrectionTT`` runs inside the JIT graph from static clock tables.
-    IFTE ``delta_t`` and ephemeris geometry remain host-fed until Phase 1/2 ports
-    complete (see ``run_tempo2_toa_model_with_fixed_ifte_geometry`` docstring).
+    Clock ``getCorrectionTT`` and IFTE ``IF_deltaT`` run inside the JIT graph
+    from static clock and IFTE tables.
     """
     if dm_vals is None:
         dm_vals = compute_dm_vals_jax(sat_mjd, dm_epoch=dm_epoch, dm_coeffs=dm_coeffs)
@@ -228,15 +252,17 @@ def compute_tempo2_toa_model_jax(
         bipm_offset=bipm_offset,
     )
     mjd_tt = sat_mjd + tt / SECS_PER_DAY
-    if ifte_delta_t_sec is None:
-        raise ValueError(
-            "compute_tempo2_toa_model_jax requires ifte_delta_t_sec until IFTE is ported to JAX"
-        )
     tt_tb, _teph = compute_tempo2_correction_tt_tb_jax(
         mjd_tt,
         observatory_earth_km,
         earth_ssb_km[:, 3:6],
-        delta_t_sec=ifte_delta_t_sec,
+        ifte_records=ifte_records,
+        ifte_start_jd=ifte_start_jd,
+        ifte_end_jd=ifte_end_jd,
+        ifte_step_jd=ifte_step_jd,
+        ifte_coef_offset=ifte_coef_offset,
+        ifte_ncf=ifte_ncf,
+        ifte_na=ifte_na,
         units_tdb=units_tdb,
         si_units=si_units,
     )
@@ -385,7 +411,13 @@ def compute_tempo2_toa_model_with_frozen_terms_for_tests(
     obs_jupiter_ls: jnp.ndarray,
     correction_tt_sec_pre: jnp.ndarray,
     correction_tt_tb_sec_pre: jnp.ndarray | None = None,
-    ifte_delta_t_sec: jnp.ndarray | None = None,
+    ifte_records: jnp.ndarray | None = None,
+    ifte_start_jd: jnp.ndarray | None = None,
+    ifte_end_jd: jnp.ndarray | None = None,
+    ifte_step_jd: jnp.ndarray | None = None,
+    ifte_coef_offset: int | None = None,
+    ifte_ncf: int | None = None,
+    ifte_na: int | None = None,
     dm_vals: jnp.ndarray | None = None,
     dm_epoch: float = 0.0,
     dm_coeffs: tuple[float, ...] = (0.0,),
@@ -414,13 +446,19 @@ def compute_tempo2_toa_model_with_frozen_terms_for_tests(
     tt = jnp.asarray(correction_tt_sec_pre, dtype=jnp.float64)
     mjd_tt = sat_mjd + tt / SECS_PER_DAY
     if correction_tt_tb_sec_pre is None:
-        if ifte_delta_t_sec is None:
-            raise ValueError("frozen staging helper requires ifte_delta_t_sec or tt_tb pre")
+        if ifte_records is None:
+            raise ValueError("frozen staging helper requires IFTE tables or tt_tb pre")
         tt_tb, _teph = compute_tempo2_correction_tt_tb_jax(
             mjd_tt,
             observatory_earth_km,
             earth_ssb_km[:, 3:6],
-            delta_t_sec=ifte_delta_t_sec,
+            ifte_records=ifte_records,
+            ifte_start_jd=ifte_start_jd,
+            ifte_end_jd=ifte_end_jd,
+            ifte_step_jd=ifte_step_jd,
+            ifte_coef_offset=ifte_coef_offset,
+            ifte_ncf=ifte_ncf,
+            ifte_na=ifte_na,
             units_tdb=units_tdb,
             si_units=si_units,
         )
@@ -569,8 +607,6 @@ def run_tempo2_toa_model(
     static: Tempo2ModelStatic,
 ) -> tuple[Tempo2NativeTerms, np.ndarray]:
     """Host wrapper: build pulsar vectors + ephemeris, run JIT model."""
-    from jug.utils.ifteph import ifte_delta_t_mjd
-
     pos, vel, acc = build_tempo2_pulsar_vectors(
         params, use_native_ecliptic=static.use_native_ecliptic
     )
@@ -601,7 +637,6 @@ def run_tempo2_toa_model(
         static.ephem_path,
         site_mjd=site_mjd,
     )
-    ifte_delta = np.asarray(ifte_delta_t_mjd(sat + tt_pre / SECS_PER_DAY), dtype=np.float64)
     units = parse_timescale(params)
     dilate = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
     pmrv = pmrv_rad_per_century(float(params.get("PMRV", 0.0)))
@@ -624,6 +659,13 @@ def run_tempo2_toa_model(
         ),
         bipm_mjd=jnp.asarray(static.bipm_mjd, dtype=jnp.float64),
         bipm_offset=jnp.asarray(static.bipm_offset, dtype=jnp.float64),
+        ifte_records=jnp.asarray(static.ifte_records, dtype=jnp.float64),
+        ifte_start_jd=jnp.asarray(static.ifte_start_jd, dtype=jnp.float64),
+        ifte_end_jd=jnp.asarray(static.ifte_end_jd, dtype=jnp.float64),
+        ifte_step_jd=jnp.asarray(static.ifte_step_jd, dtype=jnp.float64),
+        ifte_coef_offset=int(static.ifte_coef_offset),
+        ifte_ncf=int(static.ifte_ncf),
+        ifte_na=int(static.ifte_na),
         ne_sw=static.ne_sw,
         earth_ssb_km=eph["earth_ssb_km"],
         observatory_earth_km=eph["observatory_earth_km"],
@@ -658,7 +700,6 @@ def run_tempo2_toa_model(
             else jnp.asarray(static.pulse_numbers, dtype=jnp.int64)
         ),
         pn_add=None if static.pn_add is None else jnp.asarray(static.pn_add, dtype=jnp.int64),
-        ifte_delta_t_sec=jnp.asarray(ifte_delta, dtype=jnp.float64),
     )
     return terms, jax.device_get(res)
 
@@ -678,7 +719,6 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     site_vel_km_s: np.ndarray,
     earth_ssb_vel_km_s: np.ndarray | None = None,
     model_static: Tempo2ModelStatic | None = None,
-    ifte_delta_t_sec: np.ndarray | None = None,
     ne_sw: float = 0.0,
     planet_shapiro_enabled: bool = True,
     use_native_ecliptic: bool | None = None,
@@ -692,18 +732,13 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
 ) -> tuple[Tempo2NativeTerms, np.ndarray | None]:
     """Run the unified JIT model with host-frozen IFTE geometry.
 
-    ``getCorrectionTT`` and ``tt_tb`` (given IFTE delta_t) run in the JIT graph.
-    Ephemeris vectors and IFTE ``delta_t`` are still host-supplied staging inputs.
+    ``getCorrectionTT`` and IFTE ``IF_deltaT`` run in the JIT graph from static
+    tables. Ephemeris vectors remain host-supplied staging inputs.
     """
     if model_static is None:
         raise ValueError(
             "run_tempo2_toa_model_with_fixed_ifte_geometry requires model_static "
-            "with clock tables"
-        )
-    if ifte_delta_t_sec is None:
-        raise ValueError(
-            "run_tempo2_toa_model_with_fixed_ifte_geometry requires host-precomputed "
-            "ifte_delta_t_sec"
+            "with clock and IFTE tables"
         )
     if use_native_ecliptic is None:
         use_native_ecliptic = bool(params.get("_ecliptic_coords", False))
@@ -717,7 +752,6 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     units = parse_timescale(params)
     dilate = str(params.get("DILATEFREQ", "N")).upper() in ("Y", "YES", "TRUE", "1")
     pmrv = pmrv_rad_per_century(float(params.get("PMRV", 0.0)))
-    ifte_delta = np.asarray(ifte_delta_t_sec, dtype=np.float64)
     earth_ssb = np.asarray(earth_ssb_km, dtype=np.float64)
     if earth_ssb.ndim == 1:
         earth_ssb = np.broadcast_to(earth_ssb, (len(sat_mjd), earth_ssb.shape[0]))
@@ -749,6 +783,13 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
         ),
         bipm_mjd=jnp.asarray(model_static.bipm_mjd, dtype=jnp.float64),
         bipm_offset=jnp.asarray(model_static.bipm_offset, dtype=jnp.float64),
+        ifte_records=jnp.asarray(model_static.ifte_records, dtype=jnp.float64),
+        ifte_start_jd=jnp.asarray(model_static.ifte_start_jd, dtype=jnp.float64),
+        ifte_end_jd=jnp.asarray(model_static.ifte_end_jd, dtype=jnp.float64),
+        ifte_step_jd=jnp.asarray(model_static.ifte_step_jd, dtype=jnp.float64),
+        ifte_coef_offset=int(model_static.ifte_coef_offset),
+        ifte_ncf=int(model_static.ifte_ncf),
+        ifte_na=int(model_static.ifte_na),
         ne_sw=float(ne_sw),
         earth_ssb_km=jnp.asarray(earth_ssb, dtype=jnp.float64),
         observatory_earth_km=jnp.asarray(observatory_earth_km, dtype=jnp.float64),
@@ -777,7 +818,6 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
             None if pulse_numbers is None else jnp.asarray(pulse_numbers, dtype=jnp.int64)
         ),
         pn_add=None if pn_add is None else jnp.asarray(pn_add, dtype=jnp.int64),
-        ifte_delta_t_sec=jnp.asarray(ifte_delta, dtype=jnp.float64),
     )
     if compute_residuals:
         return terms, jax.device_get(residual_sec)

@@ -6,16 +6,50 @@ project’s strict ns-level gate (5 / 25 / 10 ns) on **wsrt167** (~16 ns product
 Policy and architecture: [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md).
 Broader parity tracker: [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md).
 
-**Where we are (2026-07-06):**
+**Where we are (2026-07-07):**
 
 | Fix | Fixture | Status |
 |-----|---------|--------|
+| **Phase 2 — IFTE ``IF_deltaT`` + JAX ``tt_tb``** | `wsrt167` | **Done** — Chebyshev ``tc`` bug fixed; ``teph_jax`` / ``tt_tb_jax`` vs pytempo **< 1 ns RMS**; IFTE runs in JIT (no host ``ifte_delta_t_sec``) |
 | **#1 Phase C — TZR** | `epta_j0030_isolated` | **Done** — 15.9 → **~4.7 ns RMS** |
 | **#2 Phase D Step 1 — pnNew** | `wsrt167` | **Done** — relative ``-pn`` convention; tests added |
 | **#2 Phase D Step 2 — wire ``phase5@bbat``** | `wsrt167` | **Ruled out** — ~17.5 ns vs production ~16.4 ns |
 | **#2 Phase D Step 3 — ``-padd`` / ``jump_phase``** | `wsrt167` | **Ruled out** — JUG ``jump_phase`` exact vs pytempo |
 | **#2 Phase D Steps 16–18** | `wsrt167` | **Done (investigation)** — ~16 ns = best JUG Taylor spin; 0 ns needs JAX chain |
-| **Next** | MetaPulsar JAX | **JAX tempo2-native clock/delay chain** (see § below) |
+| **Next** | MetaPulsar JAX | **BCLT / formBats residual closure** (roemer sign, ``tdis1``, strict ``batCorr``) |
+
+### Phase 2 IFTE / ``tt_tb`` (2026-07-07) — done
+
+Root cause: ``jug/utils/ifteph.py`` ``IFTEinterp`` used ``frac(t[0])`` where Tempo2 C
+uses ``modf(t[0], &dt1)`` integer part in ``tc = 2*(modf(temp,&temp1)+dt1)-1`` (``ifteph.C``
+lines 401–407). That skewed ``IF_deltaT`` by ~28 µs/TOA → ~44 µs ``tt_tb`` RMS on wsrt167
+(TCB/SI).
+
+Fix: line-accurate ``tc`` / ``l`` in host port; static IFTE coefficient table embedded in
+``Tempo2ModelStatic``; ``ifte_delta_t_sec_jax`` evaluated inside
+``compute_tempo2_correction_tt_tb_jax`` (no host ``ifte_delta_t_sec`` on production JIT path).
+
+Gates (wsrt167, pytempo oracle):
+
+| Component | RMS vs pytempo |
+|-----------|----------------|
+| ``tt_jax`` | **< 1 ns** |
+| ``teph_jax`` | **< 1 ns** |
+| ``tt_tb_jax`` | **< 1 ns** |
+| host ``correction_tt_tb_sec`` slot | **< 1 ns** |
+
+Probe: ``pytest tests/test_tempo2_native_clock_jax.py::test_clock_tt_probe_writes_report`` →
+``/tmp/jug_clock_tt_probe.txt`` (``ifte_delta_host == implied_pt`` at trace TOAs).
+
+Runtime evidence bundle (fresh pytempo oracle, all gates asserted):
+
+```bash
+pytest tests/test_phase2_runtime_evidence.py -q
+# writes /tmp/jug_phase2_runtime_evidence.txt
+```
+
+**Follow-on (explicitly NOT Phase 2):** formBats ``tt`` (~270 ns), ``tdis1`` (~42 ns),
+strict native ``batCorr`` (~187 ns) — BCLT/delay-chain work; do not conflate with IFTE.
 
 ---
 
@@ -382,6 +416,14 @@ PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
 # Outlier clock / Roemer harness
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
   /opt/venvs/pta/bin/python -m pytest tests/test_tempo2_outlier_clock_roemer_diff.py -m dev_oracle -q
+
+# wsrt167 IFTE / tt_tb gates (Phase 2)
+PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
+  /opt/venvs/pta/bin/python -m pytest \
+  tests/test_ifteph.py \
+  tests/test_tempo2_native_clock_jax.py \
+  tests/test_tempo2_native_jax_no_host_roundtrip.py \
+  tests/test_phase2_runtime_evidence.py -q
 
 # wsrt167 acceptance (still failing strict gate)
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \

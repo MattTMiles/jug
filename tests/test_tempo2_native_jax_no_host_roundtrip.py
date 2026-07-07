@@ -69,16 +69,14 @@ def test_unified_model_rejects_mid_jit_host_shortcuts(monkeypatch):
     prepare_native_chain_from_simple_result(jug, params, toas)
 
 
-def test_public_native_path_still_stages_host_ifte_geometry(monkeypatch):
-    """Documents staging boundary: IFTE delta_t is host-precomputed before JIT."""
+def test_public_native_path_does_not_call_host_ifte_delta(monkeypatch):
+    """IFTE ``IF_deltaT`` runs inside JIT; host ``ifte_delta_t_mjd`` is not called."""
     fixture = load_wsrt167_fixture()
     params = parse_par_file(fixture["par_path"])
     toas = parse_tim_file_mjds(fixture["tim_path"])
     jug = compute_residuals_simple(
         fixture["par_path"], fixture["tim_path"], verbose=False, compatibility="tempo2"
     )
-    jug["term_diagnostics"] = dict(jug["term_diagnostics"])
-    jug["term_diagnostics"].pop("ifte_delta_t_sec", None)
     calls = {"ifte": 0}
     from jug.utils import ifteph
 
@@ -90,4 +88,4 @@ def test_public_native_path_still_stages_host_ifte_geometry(monkeypatch):
 
     monkeypatch.setattr(ifteph, "ifte_delta_t_mjd", tracked_ifte)
     prepare_native_chain_from_simple_result(jug, params, toas)
-    assert calls["ifte"] > 0, "native chain must document host IFTE staging until JAX IFTE port"
+    assert calls["ifte"] == 0, "native chain must evaluate IFTE inside JAX JIT"

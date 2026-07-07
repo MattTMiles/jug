@@ -95,7 +95,6 @@ def compute_tempo2_native_terms_jax(
     addsat_sec=None,
     site_vel_km_s=None,
     model_static: Tempo2ModelStatic | None = None,
-    ifte_delta_t_sec: np.ndarray | None = None,
     tdb_mjd=None,
 ) -> Tempo2NativeTerms:
     """Compute tempo2-native terms through ``compute_tempo2_toa_model_jax``."""
@@ -122,11 +121,7 @@ def compute_tempo2_native_terms_jax(
         raise ValueError("tempo2-native BCLT requires fixed IFTE geometry arrays")
     if model_static is None:
         raise ValueError(
-            "compute_tempo2_native_terms_jax requires model_static with clock tables"
-        )
-    if ifte_delta_t_sec is None:
-        raise ValueError(
-            "compute_tempo2_native_terms_jax requires host-precomputed ifte_delta_t_sec"
+            "compute_tempo2_native_terms_jax requires model_static with clock and IFTE tables"
         )
 
     if freq_mhz_topocentric is not None:
@@ -161,7 +156,6 @@ def compute_tempo2_native_terms_jax(
         site_vel_km_s=site_vel,
         earth_ssb_vel_km_s=np.asarray(earth_ssb_vel_km_s, dtype=np.float64),
         model_static=model_static,
-        ifte_delta_t_sec=np.asarray(ifte_delta_t_sec, dtype=np.float64),
         ne_sw=float(ne_sw),
         planet_shapiro_enabled=planet_shapiro_enabled,
         use_native_ecliptic=use_native_ecliptic,
@@ -326,17 +320,6 @@ def prepare_native_chain_from_simple_result(
             "or explicit observatory_earth_km / earth_ssb_km / earth_ssb_vel_km_s"
         )
     model_static = _load_model_static_for_native_chain(params, toas, jug_result)
-    ifte_delta = td.get("ifte_delta_t_sec")
-    if ifte_delta is None:
-        from jug.utils.ifteph import ifte_delta_t_mjd
-
-        sat_arr = np.asarray(td["sat_mjd"], dtype=np.float64)
-        formbats_tt_arr = np.asarray(formbats_tt, dtype=np.float64)
-        ifte_delta = np.asarray(
-            ifte_delta_t_mjd(sat_arr + formbats_tt_arr / SECS_PER_DAY), dtype=np.float64
-        )
-    else:
-        ifte_delta = np.asarray(ifte_delta, dtype=np.float64)
     return compute_tempo2_native_terms_jax(
         sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
         correction_tt_sec=jnp.asarray(formbats_tt, dtype=jnp.float64),
@@ -367,7 +350,6 @@ def prepare_native_chain_from_simple_result(
         prebinary_override_sec=jnp.asarray(prebinary_jug, dtype=np.float64),
         site_vel_km_s=None if site_vel is None else jnp.asarray(site_vel, dtype=jnp.float64),
         model_static=model_static,
-        ifte_delta_t_sec=jnp.asarray(ifte_delta, dtype=jnp.float64),
     )
 
 

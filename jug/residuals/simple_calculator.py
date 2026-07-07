@@ -2047,15 +2047,6 @@ def compute_residuals_simple(
             ne_sw=resolve_ne_sw_cm3(params, engine_profile),
             planet_shapiro_enabled=planet_shapiro_enabled,
         )
-        from jug.utils.ifteph import ifte_delta_t_mjd
-
-        native_ifte_delta = np.asarray(
-            ifte_delta_t_mjd(
-                np.asarray(mjd_utc, dtype=np.float64)
-                + np.asarray(formbats_correction_tt, dtype=np.float64) / SECS_PER_DAY
-            ),
-            dtype=np.float64,
-        )
         native = compute_tempo2_native_terms_jax(
             sat_mjd=jnp.asarray(mjd_utc, dtype=jnp.float64),
             correction_tt_sec=jnp.asarray(formbats_correction_tt, dtype=jnp.float64),
@@ -2086,7 +2077,6 @@ def compute_residuals_simple(
             site_vel_km_s=jnp.asarray(tempo2_obs_state.site_vel_km_s, dtype=jnp.float64),
             planet_shapiro_enabled=planet_shapiro_enabled,
             model_static=native_model_static,
-            ifte_delta_t_sec=jnp.asarray(native_ifte_delta, dtype=jnp.float64),
         )
         jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
         tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)

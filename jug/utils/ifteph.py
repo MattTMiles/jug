@@ -148,11 +148,12 @@ def _ifte_interp(
 ) -> np.ndarray:
     posvel = np.zeros(ncm * ifl, dtype=np.float64)
     dna = float(na)
+    # ``ifteph.C`` IFTEinterp: ``modf(t[0], &dt1)`` then ``tc = 2*(modf(temp,&temp1)+dt1)-1``
     frac_t0, int_t0 = math.modf(t[0])
     temp = dna * t[0]
     temp_frac, temp_int = math.modf(temp)
-    l = int(temp_int - int_t0)
-    tc = 2.0 * (temp_frac + frac_t0) - 1.0
+    l = int(temp - int_t0)
+    tc = 2.0 * (temp_frac + int_t0) - 1.0
 
     if tc != iinfo.pc[1]:
         iinfo.np_ = 2
@@ -284,6 +285,156 @@ def ifte_delta_t_mjd(mjd_tt: float | np.ndarray) -> np.ndarray:
     for i, m in enumerate(flat):
         out.ravel()[i] = ifte_delta_t_sec(float(m))
     return out.reshape(mjd.shape)
+
+
+@dataclass(frozen=True)
+class IFTECoeffTables:
+    """Static IFTE coefficient records for host and JAX evaluation."""
+
+    records: np.ndarray
+    start_jd: float
+    end_jd: float
+    step_jd: float
+    ipt: np.ndarray
+    coef_offset: int
+    ncf: int
+    na: int
+
+
+def load_ifte_coeff_tables(path: str | Path | None = None) -> IFTECoeffTables:
+    """Load all IFTE Chebyshev records (``ifteph.C`` record 2..N)."""
+    ifte_init(path)
+    st = _STATE
+    ncoeff = st.reclen // 8
+    irec_min = 2
+    irec_max = int(math.floor((st.end_jd - st.start_jd) / st.step_jd)) + 1
+    records = np.empty((irec_max - irec_min + 1, ncoeff), dtype=np.float64)
+    for idx, irec in enumerate(range(irec_min, irec_max + 1)):
+        st.f.seek(st.reclen * irec, 0)
+        raw = st.f.read(st.reclen)
+        if len(raw) < st.reclen:
+            raise EOFError("IFTE record read truncated")
+        buf = np.frombuffer(raw, dtype="<f8", count=ncoeff).copy()
+        if st.swap_endian:
+            buf = buf.byteswap()
+        records[idx] = buf
+    return IFTECoeffTables(
+        records=records,
+        start_jd=st.start_jd,
+        end_jd=st.end_jd,
+        step_jd=st.step_jd,
+        ipt=st.ipt.copy(),
+        coef_offset=int(st.ipt[0, 0] - 1),
+        ncf=int(st.ipt[0, 1]),
+        na=int(st.ipt[0, 2]),
+    )
+
+
+def pack_ifte_tables_jax(tables: IFTECoeffTables):
+    """Pack ``IFTECoeffTables`` into JAX arrays."""
+    import jax.numpy as jnp
+
+    return {
+        "ifte_records": jnp.asarray(tables.records, dtype=jnp.float64),
+        "ifte_start_jd": jnp.asarray(tables.start_jd, dtype=jnp.float64),
+        "ifte_end_jd": jnp.asarray(tables.end_jd, dtype=jnp.float64),
+        "ifte_step_jd": jnp.asarray(tables.step_jd, dtype=jnp.float64),
+        "ifte_ipt": jnp.asarray(tables.ipt, dtype=jnp.int32),
+    }
+
+
+def _ifte_combine_jd_parts_jax(jd0, jd1):
+    """``IFTE_get_Vals`` JD splitting (``ifteph.C`` lines 226–237)."""
+    import jax.numpy as jnp
+
+    whole0 = jnp.floor(jd0 - 0.5)
+    frac0 = jd0 - 0.5 - whole0
+    whole1 = jnp.floor(jd1)
+    frac1 = jd1 - whole1
+    whole0 = whole0 + whole1 + 0.5
+    frac0 = frac0 + frac1
+    whole1 = jnp.floor(frac0)
+    frac1 = frac0 - whole1
+    whole0 = whole0 + whole1
+    return whole0, frac1
+
+
+def _ifte_interp_pos_jax(coef, t_frac, ncf, na):
+    """Position-only ``IFTEinterp`` (``ifteph.C`` lines 400–444)."""
+    import jax
+    import jax.numpy as jnp
+
+    dna = jnp.float64(na)
+    int_t0 = jnp.floor(t_frac)
+    temp = dna * t_frac
+    int_temp = jnp.floor(temp)
+    frac_temp = temp - int_temp
+    l = (int_temp - int_t0).astype(jnp.int32)
+    tc = 2.0 * (frac_temp + int_t0) - 1.0
+
+    twot = tc + tc
+    pc = jnp.zeros(ncf, dtype=jnp.float64)
+    pc = pc.at[0].set(1.0)
+    pc = pc.at[1].set(tc)
+
+    def cheb_step(i, arr):
+        return arr.at[i].set(twot * arr[i - 1] - arr[i - 2])
+
+    pc = jax.lax.fori_loop(2, ncf, cheb_step, pc)
+    k = jnp.arange(ncf, dtype=jnp.int32)
+    cidx = ncf * (l + 1) - 1 - k
+    return jnp.sum(pc[ncf - 1 - k] * coef[cidx])
+
+
+def _ifte_delta_t_days_jax(jd0, jd1, records, start_jd, end_jd, step_jd, coef_offset, ncf, na):
+    """``IFTE_get_Vals`` + ``IFTE_DeltaT`` in days (``ifteph.C`` / ``tt2tdb.C``)."""
+    import jax.numpy as jnp
+
+    jd0, jd1 = _ifte_combine_jd_parts_jax(jd0, jd1)
+    irec = jnp.floor((jd0 - start_jd) / step_jd).astype(jnp.int32) + 2
+    irec = jnp.where(jd0 == end_jd, irec - 1, irec)
+    t_frac = (jd0 - (start_jd + step_jd * (irec - 2)) + jd1) / step_jd
+    buf = records[irec - 2]
+    coef = buf[coef_offset:]
+    return _ifte_interp_pos_jax(coef, t_frac, ncf, na)
+
+
+def ifte_delta_t_sec_jax(
+    mjd_tt,
+    *,
+    ifte_records,
+    ifte_start_jd,
+    ifte_end_jd,
+    ifte_step_jd,
+    ifte_coef_offset: int,
+    ifte_ncf: int,
+    ifte_na: int,
+):
+    """``IF_deltaT(mjd_tt)`` inside JAX (``tt2tdb.C`` wrapper × ``SECS_PER_DAY``)."""
+    import jax
+    import jax.numpy as jnp
+
+    mjd = jnp.asarray(mjd_tt, dtype=jnp.float64)
+
+    def one(m):
+        jd0 = 2400000.0 + jnp.floor(m)
+        jd1 = 0.5 + (m - jnp.floor(m))
+        delta_days = _ifte_delta_t_days_jax(
+            jd0,
+            jd1,
+            ifte_records,
+            ifte_start_jd,
+            ifte_end_jd,
+            ifte_step_jd,
+            ifte_coef_offset,
+            ifte_ncf,
+            ifte_na,
+        )
+        return delta_days * SECS_PER_DAY
+
+    if mjd.ndim == 0:
+        return one(mjd)
+    return jax.vmap(one)(mjd)
 
 
 def ifte_delta_t_dot(jd0: float, jd1: float) -> float:

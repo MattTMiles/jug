@@ -8,7 +8,7 @@ import numpy as np
 
 from jug.io.clock import _LEAP_INSERTION_MJDS
 from jug.utils.constants import C_KM_S, SECS_PER_DAY
-from jug.utils.ifteph import IFTE_LC, IFTE_MJD0, IFTE_TEPH0_SEC
+from jug.utils.ifteph import IFTE_LC, IFTE_MJD0, IFTE_TEPH0_SEC, ifte_delta_t_sec_jax
 from jug.utils.timescales import IFTE_K, IFTE_KM1
 
 _LEAP_MJDS_JAX = jnp.asarray(_LEAP_INSERTION_MJDS, dtype=jnp.float64)
@@ -83,21 +83,32 @@ def compute_tempo2_correction_tt_tb_jax(
     observatory_earth_km: jnp.ndarray,
     earth_ssb_vel_km_s: jnp.ndarray,
     *,
-    delta_t_sec: jnp.ndarray,
+    ifte_records: jnp.ndarray,
+    ifte_start_jd: jnp.ndarray,
+    ifte_end_jd: jnp.ndarray,
+    ifte_step_jd: jnp.ndarray,
+    ifte_coef_offset: int,
+    ifte_ncf: int,
+    ifte_na: int,
     units_tdb: bool = True,
     si_units: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """``tt2tdb.C`` ``correctionTT_TB`` in seconds (JAX-safe).
-
-    ``delta_t_sec`` must be supplied by the host (``IF_deltaT``) until the IFTE
-    table is ported to JAX.
-    """
+    """``tt2tdb.C`` ``correctionTT_TB`` in seconds (JAX-safe, IFTE in-graph)."""
     ifte_k = jnp.asarray(float(IFTE_K), dtype=jnp.float64)
     ifte_km1 = jnp.asarray(float(IFTE_KM1), dtype=jnp.float64)
     mjd = jnp.asarray(mjd_tt, dtype=jnp.float64)
     obs_km = jnp.asarray(observatory_earth_km, dtype=jnp.float64)
     earth_vel = jnp.asarray(earth_ssb_vel_km_s, dtype=jnp.float64)
-    delta_t = jnp.asarray(delta_t_sec, dtype=jnp.float64)
+    delta_t = ifte_delta_t_sec_jax(
+        mjd,
+        ifte_records=ifte_records,
+        ifte_start_jd=ifte_start_jd,
+        ifte_end_jd=ifte_end_jd,
+        ifte_step_jd=ifte_step_jd,
+        ifte_coef_offset=ifte_coef_offset,
+        ifte_ncf=ifte_ncf,
+        ifte_na=ifte_na,
+    )
     obs_term = jnp.sum(obs_km * earth_vel, axis=-1) / (C_KM_S**2)
     obs_term = obs_term / (1.0 - IFTE_LC)
     obs_term = jnp.where(si_units, obs_term / (ifte_k * ifte_k), obs_term / ifte_k)

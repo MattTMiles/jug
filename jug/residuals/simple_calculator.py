@@ -78,6 +78,27 @@ _SSD_EPHEMERIDES = {
 # Current recommended default
 _DEFAULT_EPHEMERIS = 'de440'
 
+# Ephemerides bundled in the JUG data directory (offline fallback). Maps the
+# lowercase ``EPHEM`` name to the on-disk BSP shipped under ``data/ephemeris``.
+# ``de440`` ships as the short ``de440s`` kernel (1550-2650), which is more than
+# adequate for barycentric geometry / design-matrix parity.
+_BUNDLED_EPHEMERIS_DIR = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "ephemeris"
+)
+_BUNDLED_EPHEMERIS = {
+    "de440": "de440s.bsp",
+    "de440s": "de440s.bsp",
+}
+
+
+def _bundled_ephemeris_path(name: str) -> str | None:
+    """Return the on-disk path to a bundled BSP for ``name`` if present."""
+    fname = _BUNDLED_EPHEMERIS.get(name.lower())
+    if fname is None:
+        return None
+    candidate = _BUNDLED_EPHEMERIS_DIR / fname
+    return str(candidate) if candidate.is_file() else None
+
 # Observatory name → TEMPO2-style clock-from scale, used to seed the graph
 # search.  The graph will find the shortest path from this scale to UTC by
 # reading the # FROM TO headers of all .clk files in the clock directory.
@@ -391,7 +412,14 @@ def _resolve_ephemeris(name: str) -> str:
     """
     import re
     import sys
-    
+
+    # Offline fast path: a BSP shipped in the JUG data directory (e.g. DE440s)
+    # is always preferred over network downloads and bare astropy names, so the
+    # tempo2 jplephem path can resolve an on-disk kernel without connectivity.
+    bundled = _bundled_ephemeris_path(name)
+    if bundled is not None:
+        return bundled
+
     # Check if ephemeris is available from SSD server
     if name.lower() in _SSD_EPHEMERIDES:
         from astropy.utils.data import download_file, is_url_in_cache
@@ -410,7 +438,7 @@ def _resolve_ephemeris(name: str) -> str:
             print(f"         Error: {e}", file=sys.stderr)
             print(f"         Falling back to {_DEFAULT_EPHEMERIS.upper()}.", file=sys.stderr)
             print(f"{'='*70}\n", file=sys.stderr)
-            return _DEFAULT_EPHEMERIS
+            return _bundled_ephemeris_path(_DEFAULT_EPHEMERIS) or _DEFAULT_EPHEMERIS
     
     if not re.match(r'de\d{3}s?$', name.lower()):
         return name
@@ -434,7 +462,7 @@ def _resolve_ephemeris(name: str) -> str:
         print(f"WARNING: Could not download ephemeris {name.upper()}.", file=sys.stderr)
         print(f"         Falling back to {_DEFAULT_EPHEMERIS.upper()}.", file=sys.stderr)
         print(f"{'='*70}\n", file=sys.stderr)
-        return _DEFAULT_EPHEMERIS
+        return _bundled_ephemeris_path(_DEFAULT_EPHEMERIS) or _DEFAULT_EPHEMERIS
 
 
 def _fortran_mod(value, period):
@@ -710,37 +738,10 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
             pulse_number[i] = np.round(predicted_n)
         frac_phase = phase - pulse_number
 
-    # -addsat shifts site MJD by integer seconds before phase evaluation
-    # (readTimfile.C).  TRACK -2 uses per-TOA phase5 wrapping; other track
-    # modes keep the scalar F0*addsat - nlong(F0*addsat) turn delta.
-    if addsat_sec is not None:
-        addsat_arr = np.asarray(addsat_sec, dtype=np.float64)
-        if np.any(addsat_arr != 0.0):
-            f0_f64 = float(F0)
-            if has_track_minus2_pn:
-                from jug.residuals.tempo2_spin import (
-                    addsat_track2_turn_delta,
-                    compute_emission_taylor_phase5_nphase,
-                )
-
-                if use_tempo2_bbat_phase5:
-                    p5_f64, nph_f64 = compute_emission_taylor_phase5_nphase(
-                        dt_sec_ld,
-                        params,
-                        jump_phase=jump_phase,
-                        tzr_phase=tzr_phase,
-                    )
-                else:
-                    p5_f64 = np.asarray(phase5, dtype=np.float64)
-                    nph_f64 = np.asarray(nphase, dtype=np.float64)
-                for i in np.where(addsat_arr != 0.0)[0]:
-                    frac_phase[i] += addsat_track2_turn_delta(
-                        p5_f64[i], float(nph_f64[i]), addsat_arr[i], f0_f64
-                    )
-            else:
-                addsat_turns = f0_f64 * addsat_arr
-                addsat_int = _fortran_nlong(addsat_turns).astype(np.float64)
-                frac_phase = frac_phase + (addsat_turns - addsat_int)
+    # -addsat is applied to sat at timfile read (readTimfile.C); native/tempo2
+    # paths must not apply a second phase-domain correction here.
+    if addsat_sec is not None and np.any(np.asarray(addsat_sec) != 0.0):
+        pass
 
     # Convert to float64 seconds
     residuals_sec = np.asarray(frac_phase / F0, dtype=np.float64)
@@ -2017,11 +2018,11 @@ def compute_residuals_simple(
     subtract_mean_in_phase = tzr_apply_mode != "post_wrap"
 
     if is_tempo2_compat:
-        # Production tempo2 host routing (strict-parity contract; see pipeline.py):
-        #   TRACK == -2  -> compute_phase_residuals (Taylor + legacy TRACK-2)
-        #   TRACK absent -> compute_phase_residuals (Taylor sequential)
-        #   other TRACK  -> compute_native_eval_residuals_jax (native delay chain)
-        # JAX autodiff uses phase5@bbat via jax_residual_delta — different model.
+        # Production tempo2 host routing (see pipeline.py):
+        #   TRACK absent  -> Taylor sequential
+        #   TRACK == -2   -> Taylor emission-time + legacy -pn (libstempo parity)
+        #   other TRACK   -> native two-part phase5@bbat
+        # JAX autodiff uses phase5@bbat via jax_residual_delta for all TRACK values.
         from jug.residuals.tempo2_native.pipeline import finalize_tempo2_host_residuals
 
         _t2_final = finalize_tempo2_host_residuals(
@@ -2193,9 +2194,13 @@ def compute_residuals_simple(
     if tempo2_obs_state_export is not None:
         term_diagnostics["tempo2_obs_state"] = tempo2_obs_state_export
     if tempo2_clock_terms is not None:
+        sat_int_day = np.array([t.mjd_int for t in toas], dtype=np.float64)
+        sat_sec_in_day = np.array([t.mjd_frac * SECS_PER_DAY for t in toas], dtype=np.float64)
         term_diagnostics.update(
             {
                 "sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64),
+                "sat_int_day": sat_int_day,
+                "sat_sec_in_day": sat_sec_in_day,
                 "correction_tt_sec": np.asarray(
                     tempo2_clock_terms.correction_tt_sec, dtype=np.float64
                 ),

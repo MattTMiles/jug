@@ -364,31 +364,13 @@ def addsat_track2_turn_delta(
     addsat_s: float,
     f0: float,
 ) -> float:
-    """Per-TOA fractional-turn delta for tempo2 ``-addsat`` (TRACK -2).
+    """Deprecated: ``-addsat`` is applied to ``sat`` at timfile read (readTimfile.C).
 
-    tempo2 shifts ``sat`` by integer seconds at read (``readTimfile.C``), which
-    changes barycentric spin phase by ``float(F0)*addsat`` while JUG emission
-    ``dt`` cancels the site shift.  Tempo2 then re-wraps via ``fortran_nlong``
-    on the induced phase jump (``formResiduals.C`` TRACK -2).  The sub-turn
-    ``eps`` term closes the ``(int)F0`` vs ``float(F0)`` pnNew coupling at the
-    local fractional phase (``ff0`` and ``frac0``).
+    Two-part barycentric time in the native JAX path makes phase-domain fudge
+    unnecessary. Kept for backward-compatible imports only; returns 0.
     """
-    p5f = float(p5)
-    nphf = float(nph)
-    s = float(addsat_s)
-    f0f = float(f0)
-    f0_frac = f0f - int(f0f)
-    frac0 = p5f - nphf
-    spin_s = f0f * s
-    # int(F0) pnNew vs float(F0) spin coupling at local fractional phase
-    # (formResiduals.C TRACK -2 with readTimfile.C -addsat sat shift).
-    f0_frac_sq = f0_frac * f0_frac
-    eps = s * f0_frac_sq * (
-        1.0 / 7.13 - 0.759 * frac0 * frac0
-    )
-    p5_shifted = p5f + spin_s + eps
-    nph_new = float(_fortran_nlong(np.array([p5_shifted], dtype=np.float64))[0])
-    return (p5_shifted - nph_new) - frac0
+    del p5, nph, addsat_s, f0
+    return 0.0
 
 
 def addsat_frac_turn_correction(
@@ -403,22 +385,19 @@ def addsat_frac_turn_correction(
     jump_phase: Optional[np.ndarray] = None,
     tzr_phase=None,
 ) -> np.ndarray:
-    """Fractional-turn TRACK -2 correction for ``-addsat`` TOAs.
-
-    Delegates to :func:`addsat_track2_turn_delta` on emission-time ``phase5``
-    (``readTimfile.C`` site shift cancels in ``dt``; tempo2 spin is applied
-    structurally via ``float(F0)*addsat`` plus int(F0) sub-turn coupling).
-    """
-    del bbat_mjd, torb_sec, params, jump_phase, tzr_phase  # legacy signature
-
-    addsat = np.asarray(addsat_sec, dtype=np.float64)
-    p5 = np.asarray(phase5_after_phas1, dtype=np.float64)
-    nph = np.asarray(nphase, dtype=np.float64)
-
-    out = np.zeros(len(p5), dtype=np.float64)
-    for i in np.where(addsat != 0.0)[0]:
-        out[i] = addsat_track2_turn_delta(p5[i], float(nph[i]), addsat[i], f0)
-    return out
+    """Deprecated: see :func:`addsat_track2_turn_delta`. Returns zeros."""
+    del (
+        bbat_mjd,
+        torb_sec,
+        addsat_sec,
+        params,
+        phase5_after_phas1,
+        nphase,
+        f0,
+        jump_phase,
+        tzr_phase,
+    )
+    return np.zeros_like(np.asarray(phase5_after_phas1, dtype=np.float64))
 
 
 def form_residuals_tempo2_numpy(
@@ -465,13 +444,7 @@ def form_residuals_tempo2_numpy(
             np.asarray(pn_add, dtype=np.int64),
         )
         if addsat_sec is not None and np.any(np.asarray(addsat_sec) != 0.0):
-            phas1 = float(_fortran_mod(phase5_full[0], 1.0))
-            p5_after = phase5_full - phas1
-            nph = _fortran_nlong(p5_after).astype(np.float64)
-            for i in np.where(np.asarray(addsat_sec) != 0.0)[0]:
-                frac_turns[i] += addsat_track2_turn_delta(
-                    float(p5_after[i]), float(nph[i]), float(addsat_sec[i]), f0
-                )
+            pass  # -addsat applied to sat at timfile read; no phase-domain fudge
         nphase = _fortran_nlong(phase5_full - float(_fortran_mod(phase5_full[0], 1.0))).astype(
             np.float64
         )
@@ -483,9 +456,7 @@ def form_residuals_tempo2_numpy(
         pulse_number = np.zeros_like(p5)
         residual_turns = p5 - nphase
         if addsat_sec is not None and np.any(np.asarray(addsat_sec) != 0.0):
-            addsat_turns = f0 * np.asarray(addsat_sec, dtype=np.float64)
-            addsat_int = _fortran_nlong(addsat_turns).astype(np.float64)
-            residual_turns = residual_turns + (addsat_turns - addsat_int)
+            pass  # -addsat applied to sat at timfile read; no phase-domain fudge
 
     residual_sec = residual_turns / f0
     if subtract_mean:

@@ -1,25 +1,19 @@
-"""Tempo2-compatible host pipeline (setup + hybrid residual finalization).
+"""Tempo2-compatible host pipeline (setup + native residual finalization).
 
-Production host routing contract (strict-parity baseline, 2026-07-07)
-----------------------------------------------------------------------
-Host residuals in ``compute_residuals_simple`` use **hybrid** routing — not a
-single native-eval path. See ``TEMPO2_PARITY.md`` § "Production fix".
+Production host routing contract (two-part bbat parity, 2026-07-07)
+--------------------------------------------------------------------
+Host **residuals** (libstempo parity):
 
-| Condition | Route | Notes |
-|-----------|-------|-------|
-| ``TRACK == -2`` | ``compute_phase_residuals`` (Taylor + legacy TRACK −2) | wsrt167 ~15.5 ns RMS |
-| ``TRACK`` absent (tempo2 default 0) | ``compute_phase_residuals`` (Taylor sequential) | no-TRACK nrt1400 ~4.4 ns |
-| explicit non-(-2) ``TRACK`` | ``compute_native_eval_residuals_jax`` | native delay chain staging |
+* ``TRACK`` absent  → Taylor ``compute_phase_residuals`` (sequential wrap)
+* ``TRACK == -2``   → Taylor emission-time spin + legacy ``-pn`` wrapping
+  (matches libstempo; ``phase5@bbat`` TRACK−2 mis-handles ``-addsat`` even when
+  sat carries the read-time shift)
+* other ``TRACK``   → ``compute_native_eval_residuals_jax`` (two-part formBats)
 
-Do **not** promote ``phase5@bbat`` or split-longdouble formBats into this host
-path (strict-parity probes ruled them out).
-
-Fit / autodiff / design-matrix path
-------------------------------------
-``jug.fitting.jax_residual_delta`` uses the tempo2-native JAX graph
-(``phase5@bbat`` via ``JUG_TEMPO2_NATIVE_GRAPH_MODE``). That is an **intentionally
-different model** from the host Taylor path above. Do not merge them without
-explicit parity work and documented gates.
+JAX fit/autodiff always uses the native two-part ``staged_bclt`` tail
+(``phase5@bbat`` + TRACK−2 in-graph). Host vs fit spin routing therefore
+differs only for ``TRACK == -2`` until ``-addsat`` + ``phase5@bbat`` coupling
+matches tempo2 ``formResiduals.C`` exactly.
 """
 
 from __future__ import annotations
@@ -144,7 +138,9 @@ def compute_tempo2_host_setup(
     )
 
     ephem_path = resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405"))
-    sat_arr = np.asarray(mjd_utc, dtype=np.float64)
+    sat_int_arr = np.array([t.mjd_int for t in toas], dtype=np.float64)
+    sat_sec_arr = np.array([t.mjd_frac * SECS_PER_DAY for t in toas], dtype=np.float64)
+    sat_arr = sat_int_arr + sat_sec_arr / SECS_PER_DAY
     formbats_tt_arr = np.asarray(formbats_correction_tt, dtype=np.float64)
     obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
 
@@ -221,6 +217,8 @@ def compute_tempo2_host_setup(
     if not skip_native_bclt_overlay:
         _overlay_td = {
             "sat_mjd": sat_arr,
+            "sat_int_day": sat_int_arr,
+            "sat_sec_in_day": sat_sec_arr,
             "correction_tt_sec": formbats_tt_arr,
             "correction_tt_tb_sec": tt_tb,
             "formbats_correction_tt_sec": formbats_tt_arr,
@@ -321,15 +319,22 @@ def finalize_tempo2_host_residuals(
     phase_bbat_mjd,
     phase_torb_sec,
 ) -> Tempo2HostFinalizeResult:
-    """Hybrid tempo2 host residual routing (strict-parity production contract)."""
+    """Tempo2 host residuals: Taylor for TRACK−2/no-TRACK; native for other TRACK."""
     from jug.residuals.simple_calculator import compute_phase_residuals
     from jug.residuals.tempo2_native.chain_jax import (
         compute_native_eval_residuals_jax,
         prepare_native_chain_from_simple_result,
+        sat_daysec_numpy_from_td_and_toas,
     )
 
+    sat_int, sat_sec = sat_daysec_numpy_from_td_and_toas(
+        {"sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64)},
+        toas,
+    )
     _native_td = {
         "sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64),
+        "sat_int_day": sat_int,
+        "sat_sec_in_day": sat_sec,
         "correction_tt_sec": np.asarray(
             tempo2_clock_terms.correction_tt_sec, dtype=np.float64
         ),
@@ -352,36 +357,21 @@ def finalize_tempo2_host_residuals(
         "compatibility": compatibility_mode,
     }
     native = prepare_native_chain_from_simple_result(_jug, params, toas)
-    use_taylor_track2_spin = track_val is not None and int(track_val) == -2
-    use_taylor_nontrack_spin = track_val is None
-    if use_taylor_track2_spin or use_taylor_nontrack_spin:
-        if use_taylor_track2_spin:
-            residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
-                dt_sec,
-                params,
-                weights_scaled,
-                subtract_mean=subtract_mean_in_phase,
-                tzr_phase=tzr_phase_for_residuals,
-                jump_phase=jump_phase,
-                external_pulse_numbers=external_pn,
-                track_val=int(track_val),
-                external_pn_add=external_pn_add,
-                bbat_mjd=phase_bbat_mjd,
-                torb_sec=phase_torb_sec,
-                use_native_bbat_phase5=False,
-                addsat_sec=addsat_sec,
-                mean_mode=phase_mean_mode,
-            )
-        else:
-            residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
-                dt_sec,
-                params,
-                weights_scaled,
-                subtract_mean=subtract_mean_in_phase,
-                tzr_phase=tzr_phase_for_residuals,
-                jump_phase=jump_phase,
-                mean_mode=phase_mean_mode,
-            )
+    use_taylor_host_spin = track_val is None or int(track_val) == -2
+    if use_taylor_host_spin:
+        residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
+            dt_sec,
+            params,
+            weights_scaled,
+            subtract_mean=subtract_mean_in_phase,
+            tzr_phase=tzr_phase_for_residuals,
+            jump_phase=jump_phase,
+            external_pulse_numbers=external_pn,
+            track_val=int(track_val) if track_val is not None else None,
+            external_pn_add=external_pn_add,
+            addsat_sec=addsat_sec,
+            mean_mode=phase_mean_mode,
+        )
     else:
         jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
         tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)
@@ -395,9 +385,8 @@ def finalize_tempo2_host_residuals(
             tzr_phase=tzr_j,
             subtract_mean=subtract_mean_in_phase,
             mean_mode=phase_mean_mode,
-            track_val=int(track_val) if track_val is not None else -2,
+            track_val=int(track_val),
             weights=jnp.asarray(weights_scaled, dtype=jnp.float64),
-            addsat_sec=addsat_sec,
         )
         residuals_sec = np.asarray(jax.device_get(residuals_sec_jax), dtype=np.float64)
         pulse_number = np.asarray(jax.device_get(pulse_number_jax), dtype=np.longdouble)

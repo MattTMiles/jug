@@ -38,14 +38,19 @@ from jug.residuals.tempo2_native.clock_jax import (
     compute_tempo2_correction_tt_tb_jax,
     compute_tempo2_get_correction_tt_jax,
 )
+from jug.residuals.tempo2_native.compensated import (
+    mjd_view_from_daysec,
+    split_mjd_to_daysec,
+)
 from jug.residuals.tempo2_native.formbats_jax import (
-    compute_formbats_jax,
-    compute_shklovskii_sec_jax_pure,
-    compute_torb_closure_jax,
+    compute_formbats_daysec,
+    compute_shklovskii_sec_jax_pure_daysec,
+    compute_torb_closure_daysec,
 )
 from jug.residuals.tempo2_native.probes import compute_formbats_effective_shapiro_sec
 from jug.residuals.tempo2_native.spin_jax import (
-    compute_tempo2_phase5_jax,
+    compute_tempo2_phase5_daysec,
+    pepoch_parts_from_value,
     spin_params_to_jax,
     track_minus2_frac_phase_jax,
 )
@@ -341,15 +346,35 @@ def _tempo2_residual_tail_jax(
     tzr_phase: jnp.float64 | None,
     pulse_numbers: jnp.ndarray | None,
     pn_add: jnp.ndarray | None,
+    sat_int_day: jnp.ndarray | None = None,
+    sat_sec_in_day: jnp.ndarray | None = None,
+    pep_int: jnp.ndarray | None = None,
+    pep_frac: jnp.ndarray | None = None,
 ) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
     """Shared formBats → Shklovskii → spin tail for all tempo2 TOA model modes."""
+    if sat_int_day is None or sat_sec_in_day is None:
+        sat_int_day, sat_sec_in_day = split_mjd_to_daysec(sat_mjd)
+    if pep_int is None or pep_frac is None:
+        _, pep_int, pep_frac = pepoch_parts_from_value(params_pepoch)
+    shk_posepoch = float(shk_posepoch_mjd if shk_posepoch_mjd is not None else params_pepoch)
+    shk_pep_int = jnp.floor(jnp.asarray(shk_posepoch, dtype=jnp.float64))
+    shk_pep_frac = jnp.asarray(shk_posepoch, dtype=jnp.float64) - shk_pep_int
+
     shap_delay = bclt.shapiro_sun_sec + jnp.where(
         planet_shapiro_enabled,
         bclt.shapiro_planets_sec,
         0.0,
     )
-    bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
-        sat_mjd,
+    (
+        bat_corr_day,
+        bat_corr_resid,
+        bat_int,
+        bat_sec,
+        _bbat_int,
+        _bbat_sec,
+    ) = compute_formbats_daysec(
+        sat_int_day,
+        sat_sec_in_day,
         tt,
         tt_tb,
         tropo,
@@ -359,17 +384,25 @@ def _tempo2_residual_tail_jax(
         bclt.tdis2_sec,
         jnp.zeros_like(sat_mjd),
     )
-    shk = compute_shklovskii_sec_jax_pure(
-        bat_mjd,
-        params_pepoch,
-        params_f_terms,
+    shk = compute_shklovskii_sec_jax_pure_daysec(
+        bat_int,
+        bat_sec,
+        shk_pep_int,
+        shk_pep_frac,
         dshk=dshk,
         pmra=pmra,
         pmdec=pmdec,
-        posepoch_mjd=shk_posepoch_mjd,
     )
-    _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
-        sat_mjd,
+    (
+        bat_corr_day,
+        bat_corr_resid,
+        bat_int,
+        bat_sec,
+        bbat_int,
+        bbat_sec,
+    ) = compute_formbats_daysec(
+        sat_int_day,
+        sat_sec_in_day,
         tt,
         tt_tb,
         tropo,
@@ -379,10 +412,14 @@ def _tempo2_residual_tail_jax(
         bclt.tdis2_sec,
         shk,
     )
+    bat_mjd = mjd_view_from_daysec(bat_int, bat_sec)
+    bbat_mjd = mjd_view_from_daysec(bbat_int, bbat_sec)
     dt_emit = jnp.asarray(dt_emission_sec, dtype=jnp.float64)
-    torb = compute_torb_closure_jax(bbat_mjd, dt_emit, params_pepoch)
+    torb = compute_torb_closure_daysec(bbat_int, bbat_sec, dt_emit, pep_int, pep_frac)
     terms = Tempo2NativeTerms(
         sat_mjd=sat_mjd,
+        sat_int_day=sat_int_day,
+        sat_sec_in_day=sat_sec_in_day,
         correction_tt_sec=tt,
         correction_tt_tb_sec=tt_tb,
         roemer_sec=bclt.roemer_sec,
@@ -397,6 +434,10 @@ def _tempo2_residual_tail_jax(
         bat_corr_day_residual=bat_corr_resid,
         bat_mjd=bat_mjd,
         bbat_mjd=bbat_mjd,
+        bat_int_day=bat_int,
+        bat_sec_in_day=bat_sec,
+        bbat_int_day=bbat_int,
+        bbat_sec_in_day=bbat_sec,
         shklovskii_sec=shk,
         torb_sec=torb,
         dt_emission_sec=dt_emit,
@@ -404,19 +445,35 @@ def _tempo2_residual_tail_jax(
         bclt_iterations=bclt.bclt_iterations,
         converged=bclt.converged,
     )
-    phase5 = compute_tempo2_phase5_jax(
-        bbat_mjd,
-        torb,
-        params_f_terms,
-        params_pepoch,
-        jump_phase=jump_phase,
-        tzr_phase=tzr_phase,
-    )
     if track_val == -2 and pulse_numbers is not None and pn_add is not None:
+        phase5 = compute_tempo2_phase5_daysec(
+            bbat_int,
+            bbat_sec,
+            torb,
+            params_f_terms,
+            pep_int,
+            pep_frac,
+            jump_phase=jump_phase,
+            tzr_phase=tzr_phase,
+        )
         frac, _pulse = track_minus2_frac_phase_jax(
-            phase5, bbat_mjd, params_f_terms[0], pulse_numbers, pn_add
+            phase5,
+            bbat_int,
+            params_f_terms[0],
+            pulse_numbers,
+            pn_add,
         )
     else:
+        phase5 = compute_tempo2_phase5_daysec(
+            bbat_int,
+            bbat_sec,
+            torb,
+            params_f_terms,
+            pep_int,
+            pep_frac,
+            jump_phase=jump_phase,
+            tzr_phase=tzr_phase,
+        )
         frac = phase5 - jnp.trunc(phase5)
     residual_sec = frac / params_f_terms[0]
     if subtract_mean:
@@ -502,6 +559,10 @@ def compute_tempo2_toa_model_jax(
     pn_add: jnp.ndarray | None = None,
     bootstrap_max_iter: int = 8,
     correct_troposphere: bool = False,
+    sat_int_day: jnp.ndarray | None = None,
+    sat_sec_in_day: jnp.ndarray | None = None,
+    pep_int: jnp.ndarray | None = None,
+    pep_frac: jnp.ndarray | None = None,
 ) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
     """Full Tempo2 delay/spin chain in one JIT graph.
 
@@ -609,6 +670,10 @@ def compute_tempo2_toa_model_jax(
         tzr_phase=tzr_phase,
         pulse_numbers=pulse_numbers,
         pn_add=pn_add,
+        sat_int_day=sat_int_day,
+        sat_sec_in_day=sat_sec_in_day,
+        pep_int=pep_int,
+        pep_frac=pep_frac,
     )
 
 
@@ -679,6 +744,10 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
     tzr_phase: jnp.float64 | None = None,
     pulse_numbers: jnp.ndarray | None = None,
     pn_add: jnp.ndarray | None = None,
+    sat_int_day: jnp.ndarray | None = None,
+    sat_sec_in_day: jnp.ndarray | None = None,
+    pep_int: jnp.ndarray | None = None,
+    pep_frac: jnp.ndarray | None = None,
 ) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
     """Production Tempo2 TOA model with host-frozen static inputs.
 
@@ -766,6 +835,10 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
         tzr_phase=tzr_phase,
         pulse_numbers=pulse_numbers,
         pn_add=pn_add,
+        sat_int_day=sat_int_day,
+        sat_sec_in_day=sat_sec_in_day,
+        pep_int=pep_int,
+        pep_frac=pep_frac,
     )
 
 
@@ -830,6 +903,10 @@ def compute_tempo2_toa_model_fixed_state_nonlinear_jax(
     tzr_phase: jnp.float64 | None = None,
     pulse_numbers: jnp.ndarray | None = None,
     pn_add: jnp.ndarray | None = None,
+    sat_int_day: jnp.ndarray | None = None,
+    sat_sec_in_day: jnp.ndarray | None = None,
+    pep_int: jnp.ndarray | None = None,
+    pep_frac: jnp.ndarray | None = None,
 ) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
     """Tempo2 TOA model with frozen reference BCLT epoch (one-pass nonlinear tail)."""
     if dm_vals is None:
@@ -892,6 +969,10 @@ def compute_tempo2_toa_model_fixed_state_nonlinear_jax(
         tzr_phase=tzr_phase,
         pulse_numbers=pulse_numbers,
         pn_add=pn_add,
+        sat_int_day=sat_int_day,
+        sat_sec_in_day=sat_sec_in_day,
+        pep_int=pep_int,
+        pep_frac=pep_frac,
     )
 
 
@@ -990,6 +1071,8 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     jump_phase: np.ndarray | None = None,
     tzr_phase: float | None = None,
     compute_residuals: bool = False,
+    sat_int_day: np.ndarray | None = None,
+    sat_sec_in_day: np.ndarray | None = None,
 ) -> tuple[Tempo2NativeTerms, np.ndarray | None]:
     """Run unified or staging JAX model.
 
@@ -1007,7 +1090,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     pos, vel, acc = build_tempo2_pulsar_vectors(
         params, use_native_ecliptic=use_native_ecliptic
     )
-    f_terms, pepoch = spin_params_to_jax(params)
+    f_terms, pepoch, pep_int, pep_frac = spin_params_to_jax(params)
     dm_epoch = float(params.get("DMEPOCH", params["PEPOCH"]))
     dm_coeffs = _dm_coeffs_from_params(params)
     units = parse_timescale(params)
@@ -1047,6 +1130,18 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
             None if pulse_numbers is None else jnp.asarray(pulse_numbers, dtype=jnp.int64)
         ),
         pn_add=None if pn_add is None else jnp.asarray(pn_add, dtype=jnp.int64),
+        sat_int_day=(
+            None
+            if sat_int_day is None
+            else jnp.asarray(sat_int_day, dtype=jnp.float64)
+        ),
+        sat_sec_in_day=(
+            None
+            if sat_sec_in_day is None
+            else jnp.asarray(sat_sec_in_day, dtype=jnp.float64)
+        ),
+        pep_int=pep_int,
+        pep_frac=pep_frac,
     )
     if ssb_obs_ls is not None or obs_sun_ls is not None:
         if ssb_obs_ls is None or obs_sun_ls is None:

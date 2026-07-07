@@ -44,6 +44,22 @@ if TYPE_CHECKING:
     from jug.fitting.optimized_fitter import GeneralFitSetup
 
 
+def sat_daysec_numpy_from_td_and_toas(td: dict, toas: list[Any] | None) -> tuple[np.ndarray, np.ndarray]:
+    """Exact ``(int_day, sec_in_day)`` SAT from term diagnostics or TOA reader."""
+    if "sat_int_day" in td and "sat_sec_in_day" in td:
+        return (
+            np.asarray(td["sat_int_day"], dtype=np.float64),
+            np.asarray(td["sat_sec_in_day"], dtype=np.float64),
+        )
+    if toas:
+        sat_int = np.array([t.mjd_int for t in toas], dtype=np.float64)
+        sat_sec = np.array([t.mjd_frac * SECS_PER_DAY for t in toas], dtype=np.float64)
+        return sat_int, sat_sec
+    sat_mjd = np.asarray(td["sat_mjd"], dtype=np.float64)
+    sat_int = np.floor(sat_mjd)
+    return sat_int, (sat_mjd - sat_int) * SECS_PER_DAY
+
+
 def _native_chain_mode() -> str:
     """Return the active tempo2-native JAX graph mode."""
     return tempo2_native_graph_mode()
@@ -75,6 +91,10 @@ class NativeDeltaPack:
     tzr_phase: Any | None
     pulse_numbers: Any | None
     pn_add: Any | None
+    sat_int_day: Any | None = None
+    sat_sec_in_day: Any | None = None
+    pep_int: Any | None = None
+    pep_frac: Any | None = None
     # staged_bclt / fixed_state_nonlinear (host-frozen staging)
     earth_ssb_km: Any | None = None
     observatory_earth_km: Any | None = None
@@ -408,57 +428,51 @@ def compute_tempo2_native_residuals_jax(
     subtract_mean: bool,
     mean_mode: str = "unweighted",
     track_val: int = -2,
-    addsat_sec=None,
-    emission_phase5=None,
-    emission_nphase=None,
 ):
     """Return residual seconds, pulse numbers, and native terms for tempo2 mode."""
     from jug.residuals.tempo2_native.spin_jax import (
-        apply_addsat_track2_frac_phase_jax,
-        compute_tempo2_phase5_jax,
-        fortran_nlong_jax,
+        compute_tempo2_phase5_daysec,
         spin_params_to_jax,
         track_minus2_frac_phase_jax,
     )
 
-    f_terms, pepoch = spin_params_to_jax(params)
+    f_terms, _pepoch, pep_int, pep_frac = spin_params_to_jax(params)
     jump_j = None if jump_phase is None else jnp.asarray(jump_phase, dtype=jnp.float64)
     tzr_j = None if tzr_phase is None else jnp.asarray(tzr_phase, dtype=jnp.float64)
-    phase5 = compute_tempo2_phase5_jax(
-        native_terms.bbat_mjd,
-        native_terms.torb_sec,
-        f_terms,
-        pepoch,
-        jump_phase=jump_j,
-        tzr_phase=tzr_j,
-    )
+    bbat_int = native_terms.bbat_int_day
+    bbat_sec = native_terms.bbat_sec_in_day
+    torb = native_terms.torb_sec
     if int(track_val) == -2 and pulse_numbers is not None and pn_add is not None:
+        phase5 = compute_tempo2_phase5_daysec(
+            bbat_int,
+            bbat_sec,
+            torb,
+            f_terms,
+            pep_int,
+            pep_frac,
+            jump_phase=jump_j,
+            tzr_phase=tzr_j,
+        )
         frac, pulse = track_minus2_frac_phase_jax(
             phase5,
-            native_terms.bbat_mjd,
+            bbat_int,
             f_terms[0],
             jnp.asarray(pulse_numbers, dtype=jnp.int64),
             jnp.asarray(pn_add, dtype=jnp.int64),
         )
-        if addsat_sec is not None and emission_phase5 is not None and emission_nphase is not None:
-            frac = apply_addsat_track2_frac_phase_jax(
-                frac,
-                emission_phase5,
-                emission_nphase,
-                addsat_sec,
-                f_terms[0],
-            )
     else:
-        pulse = jnp.zeros_like(phase5)
+        pulse = jnp.zeros_like(torb)
+        phase5 = compute_tempo2_phase5_daysec(
+            bbat_int,
+            bbat_sec,
+            torb,
+            f_terms,
+            pep_int,
+            pep_frac,
+            jump_phase=jump_j,
+            tzr_phase=tzr_j,
+        )
         frac = phase5 - jnp.trunc(phase5)
-        if addsat_sec is not None:
-            addsat = jnp.asarray(addsat_sec, dtype=jnp.float64)
-            if bool(jnp.any(addsat != 0.0)):
-                addsat_turns = f_terms[0] * addsat
-                addsat_int = fortran_nlong_jax(addsat_turns).astype(jnp.float64)
-                frac = frac + jnp.where(
-                    addsat != 0.0, addsat_turns - addsat_int, 0.0
-                )
     residual_sec = frac / f_terms[0]
     if subtract_mean:
         if mean_mode == "weighted":
@@ -546,6 +560,7 @@ def prepare_native_chain_from_simple_result(
     tropo = np.asarray(td.get("tropo_delay_sec", 0.0), dtype=np.float64)
     if tropo.ndim == 0:
         tropo = np.full(len(td["sat_mjd"]), float(tropo), dtype=np.float64)
+    sat_int, sat_sec = sat_daysec_numpy_from_td_and_toas(td, toas)
 
     mode = _native_chain_mode()
     if mode == TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR:
@@ -591,6 +606,8 @@ def prepare_native_chain_from_simple_result(
         ne_sw=float(ne_sw),
         planet_shapiro_enabled=bool(model_static.planet_shapiro_enabled),
         use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
+        sat_int_day=sat_int,
+        sat_sec_in_day=sat_sec,
     )
     return terms
 
@@ -728,6 +745,8 @@ def build_native_staged_delta_pack(
     td = static["term_diagnostics"]
     frozen = host_frozen_vectors_from_tempo2_obs_state(td)
     sat = np.asarray(td["sat_mjd"], dtype=np.float64)
+    sat_int, sat_sec = sat_daysec_numpy_from_td_and_toas(td, toas)
+    _f_terms, _pepoch, pep_int, pep_frac = spin_params_to_jax(params)
     tt_pre = np.asarray(
         jax.device_get(
             compute_tempo2_get_correction_tt_jax(
@@ -759,6 +778,10 @@ def build_native_staged_delta_pack(
     return NativeFrozenDeltaPack(
         mode=TEMPO2_NATIVE_GRAPH_STAGED_BCLT,
         sat_mjd=jnp.asarray(sat, dtype=jnp.float64),
+        sat_int_day=jnp.asarray(sat_int, dtype=jnp.float64),
+        sat_sec_in_day=jnp.asarray(sat_sec, dtype=jnp.float64),
+        pep_int=pep_int,
+        pep_frac=pep_frac,
         freq_mhz=jnp.asarray([t.freq_mhz for t in toas], dtype=jnp.float64),
         dt_emission_sec=jnp.asarray(static["dt_sec"], dtype=jnp.float64),
         earth_ssb_km=jnp.asarray(frozen["earth_ssb_km"], dtype=jnp.float64),
@@ -860,6 +883,8 @@ def _build_fixed_state_pack_from_host(
 
     td = jug_result["term_diagnostics"]
     sat = np.asarray(td["sat_mjd"], dtype=np.float64)
+    sat_int, sat_sec = sat_daysec_numpy_from_td_and_toas(td, toas)
+    _f_terms, _pepoch, pep_int, pep_frac = spin_params_to_jax(params)
     tt_pre = np.asarray(
         jax.device_get(
             compute_tempo2_get_correction_tt_jax(
@@ -888,6 +913,10 @@ def _build_fixed_state_pack_from_host(
     return NativeFixedStateNonlinearDeltaPack(
         mode=TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR,
         sat_mjd=jnp.asarray(sat, dtype=jnp.float64),
+        sat_int_day=jnp.asarray(sat_int, dtype=jnp.float64),
+        sat_sec_in_day=jnp.asarray(sat_sec, dtype=jnp.float64),
+        pep_int=pep_int,
+        pep_frac=pep_frac,
         freq_mhz=jnp.asarray([t.freq_mhz for t in toas], dtype=jnp.float64),
         dt_emission_sec=jnp.asarray(jug_result["dt_sec"], dtype=jnp.float64),
         earth_ssb_km=jnp.asarray(frozen["earth_ssb_km"], dtype=jnp.float64),
@@ -938,7 +967,7 @@ def _native_fixed_state_terms_from_pack(
     pos, vel, acc = build_tempo2_pulsar_vectors(
         params, use_native_ecliptic=pack.use_native_ecliptic
     )
-    f_terms, pepoch = spin_params_to_jax(params)
+    f_terms, pepoch, pep_int, pep_frac = spin_params_to_jax(params)
     dm_vals = compute_dm_vals_jax(
         pack.sat_mjd, dm_epoch=pack.dm_epoch, dm_coeffs=_dm_coeffs_jax(params)
     )
@@ -984,6 +1013,10 @@ def _native_fixed_state_terms_from_pack(
         tzr_phase=pack.tzr_phase,
         pulse_numbers=pack.pulse_numbers,
         pn_add=pack.pn_add,
+        sat_int_day=pack.sat_int_day,
+        sat_sec_in_day=pack.sat_sec_in_day,
+        pep_int=pack.pep_int,
+        pep_frac=pack.pep_frac,
     )
     return terms, residual_sec
 
@@ -1106,6 +1139,10 @@ def compute_native_residual_sec_jax(
         tzr_phase=pack.tzr_phase,
         pulse_numbers=pack.pulse_numbers,
         pn_add=pack.pn_add,
+        sat_int_day=pack.sat_int_day,
+        sat_sec_in_day=pack.sat_sec_in_day,
+        pep_int=pack.pep_int,
+        pep_frac=pack.pep_frac,
     )
     if pack.mode == TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR:
         _, residual_sec = compute_tempo2_toa_model_fixed_state_nonlinear_jax(
@@ -1245,26 +1282,12 @@ def compute_native_eval_residuals_jax(
     addsat_sec=None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, Tempo2NativeTerms]:
     """Production residuals: unified in-graph delay chain + spin/track."""
+    del addsat_sec  # -addsat is applied to SAT at timfile read (readTimfile.C)
     native = prepare_native_chain_from_simple_result(jug_result, params, toas)
     jump_j = None if jump_phase is None else jnp.asarray(jump_phase, dtype=jnp.float64)
     tzr_j = None if tzr_phase is None else jnp.asarray(tzr_phase, dtype=jnp.float64)
     pn_j = None if pulse_numbers is None else jnp.asarray(pulse_numbers, dtype=jnp.int64)
     pn_add_j = None if pn_add is None else jnp.asarray(pn_add, dtype=jnp.int64)
-    addsat_j = None if addsat_sec is None else jnp.asarray(addsat_sec, dtype=jnp.float64)
-    emission_p5_j = None
-    emission_nph_j = None
-    if addsat_j is not None and bool(np.any(np.asarray(addsat_sec) != 0.0)):
-        from jug.residuals.tempo2_spin import compute_emission_taylor_phase5_nphase
-
-        dt_host = np.asarray(jug_result.get("dt_sec"), dtype=np.float64)
-        p5_host, nph_host = compute_emission_taylor_phase5_nphase(
-            dt_host,
-            params,
-            jump_phase=jump_phase,
-            tzr_phase=tzr_phase,
-        )
-        emission_p5_j = jnp.asarray(p5_host, dtype=jnp.float64)
-        emission_nph_j = jnp.asarray(nph_host, dtype=jnp.float64)
     if weights is None:
         weights = jnp.ones(native.sat_mjd.shape[0], dtype=jnp.float64)
     return compute_tempo2_native_residuals_jax(
@@ -1278,7 +1301,4 @@ def compute_native_eval_residuals_jax(
         subtract_mean=subtract_mean,
         mean_mode=mean_mode,
         track_val=track_val,
-        addsat_sec=addsat_j,
-        emission_phase5=emission_p5_j,
-        emission_nphase=emission_nph_j,
     )

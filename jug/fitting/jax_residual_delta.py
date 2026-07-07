@@ -428,6 +428,8 @@ def make_residual_delta_jax_fn(
 def compute_autodiff_designmatrix_from_setup(
     setup: "GeneralFitSetup",
     fit_params: Sequence[str],
+    *,
+    include_offset_column: bool = False,
 ) -> np.ndarray:
     """Build JUG's public design matrix as ``-jacfwd(residual_delta)(0)``."""
     fit_params = tuple(str(name).upper() for name in fit_params)
@@ -445,5 +447,8 @@ def compute_autodiff_designmatrix_from_setup(
             )
         )
     n_toa = len(np.asarray(setup.tdb_mjd))
+    if include_offset_column:
+        offset = np.full((n_toa,), -1.0, dtype=np.float64)
+        return np.column_stack([offset] + cols) if cols else offset.reshape(-1, 1)
     return np.column_stack(cols) if cols else np.empty((n_toa, 0), dtype=np.float64)
 

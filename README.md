@@ -138,6 +138,16 @@ JUG exposes two compatibility families:
 - `compatibility="tempo2"`: tempo2-family runtime conventions and unweighted
   residual mean subtraction.
 
+> **On "picosecond agreement with PINT":** this holds for *host residuals at
+> fixed parameters with identical ephemeris/clock/timescale inputs* (a shared
+> phase-precision floor, ~5 ps; paper Fig. 7). It is **not** a claim of absolute
+> (vs-nature) accuracy, and it is distinct from the internal JAX-vs-NumPy
+> picosecond tests. With unmatched clock/ephemeris files (the CI default) the
+> difference is tens of ns, dominated by a DC phase-offset convention plus
+> clock-file drift — not a timing-model disagreement. See
+> [`TIMING_GRAPH_ACCURACY.md`](TIMING_GRAPH_ACCURACY.md) §"What 'picosecond
+> compatibility' means (and does not)".
+
 When evaluating Tempo2 parity, use **raw pre-fit residuals** only (no post-hoc
 mean centering). This is the acceptance metric used by
 `tests/test_tempo2_residual_parity.py`.

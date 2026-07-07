@@ -190,6 +190,7 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
             # Duplicate flag names (e.g. -j MEDUSA_58925 -j MEDUSA_59200) are
             # stored as lists so JUMP matching can check all values.
             flags = {}
+            mjd_modified = _state['time_offset'] != 0.0
             i = flag_start
             while i < len(parts):
                 if parts[i].startswith('-') and i + 1 < len(parts):
@@ -219,8 +220,12 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
                         shift = int(-mjd_frac) + 1
                         mjd_int -= shift
                         mjd_frac += shift
+                    mjd_modified = True
                 except (ValueError, TypeError):
                     pass
+
+            if mjd_modified:
+                mjd_str = _sync_toa_mjd_str(mjd_int, mjd_frac)
 
             toas.append(SimpleTOA(
                 mjd_str=mjd_str,
@@ -351,6 +356,18 @@ def _time_to_mjd_long(time_obj):
     """Extract Time MJD using compensated JD split, without PINT helpers."""
     mjd1, mjd2 = _day_frac(time_obj.jd1 - erfa.DJM0, time_obj.jd2)
     return np.asarray(mjd1, dtype=np.longdouble) + np.asarray(mjd2, dtype=np.longdouble)
+
+
+def _sync_toa_mjd_str(mjd_int: int, mjd_frac: float) -> str:
+    """Format flag-adjusted ``(mjd_int, mjd_frac)`` for TDB/TT construction.
+
+    TIM ``mjd_str`` is the on-disk value before ``TIME`` / ``-addsat`` etc.
+    Once those flags modify ``mjd_int``/``mjd_frac`` (readTimfile.C parity),
+    the stored string must match or ``compute_tdb_standalone_vectorized`` will
+    build UTC Time from the unshifted MJD while clocks use the shifted SAT.
+    """
+    total = float(mjd_int) + float(mjd_frac)
+    return f"{total:.17f}"
 
 
 def parse_mjd_string(mjd_str: str) -> tuple[int, float]:

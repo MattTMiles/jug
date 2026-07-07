@@ -6,6 +6,8 @@ import jax.numpy as jnp
 
 from jug.utils.constants import SECS_PER_DAY
 
+_SPLIT = 134217729.0  # 2**27 + 1, Veltkamp split for float64
+
 
 def two_sum(a, b):
     """Error-free transform of a + b for JAX float64 arrays."""
@@ -14,6 +16,46 @@ def two_sum(a, b):
     ea = x - eb
     err = (a - ea) + (b - eb)
     return x, err
+
+
+def _veltkamp_split(a):
+    c = _SPLIT * a
+    hi = c - (c - a)
+    return hi, a - hi
+
+
+def two_prod(a, b):
+    """Error-free transform: ``a * b == p + err`` (double-double product)."""
+    p = a * b
+    ah, al = _veltkamp_split(a)
+    bh, bl = _veltkamp_split(b)
+    err = ((ah * bh - p) + ah * bl + al * bh) + al * bl
+    return p, err
+
+
+def frac_of_int_times(n_int, x):
+    """Fractional part of ``n_int * x`` to ~1e-16 turn precision."""
+    p_hi, p_lo = two_prod(n_int, x)
+    k = jnp.round(p_hi)
+    return (p_hi - k) + p_lo
+
+
+def add_seconds_daysec(int_day, sec_in_day, correction_sec):
+    """Add seconds to a two-part MJD; normalize ``sec_in_day`` into [0, 86400)."""
+    sec = sec_in_day + correction_sec
+    carry = jnp.floor(sec / SECS_PER_DAY)
+    return int_day + carry, sec - carry * SECS_PER_DAY
+
+
+def split_mjd_to_daysec(mjd):
+    """Split float64 MJD into ``(int_day, sec_in_day)``."""
+    int_day = jnp.floor(mjd)
+    return int_day, (mjd - int_day) * SECS_PER_DAY
+
+
+def mjd_view_from_daysec(int_day, sec_in_day):
+    """Diagnostic single-float64 MJD view (not used for spin)."""
+    return int_day + sec_in_day / SECS_PER_DAY
 
 
 def kahan_sum(values, axis=0):

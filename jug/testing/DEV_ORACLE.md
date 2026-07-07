@@ -32,7 +32,7 @@ or `jug["obs_planet_pos_ls"]` for native parity probes — use
 | `tdis1_sec` / `tdis2_sec` | yes | yes | opt-in | |
 | `dt_ssb_sec` | yes | yes | opt-in | |
 | `bat_corr_days` | yes | yes | opt-in | Sub-1 ns after TCB implicit tropo + planet Shapiro fixes |
-| `bbat_mjd` | **deferred** | **deferred** | opt-in | ~304 ns long-double assembly debt — see `TEMPO2_PARITY.md` |
+| `bbat_mjd` | **two-part daysec in JAX tail** | opt-in | Host Taylor spin ~15.5 ns wsrt167; native ``phase5@bbat`` for fit Jacobian |
 | DILATEFREQ / DMX / ecliptic fixtures | **deferred** | **deferred** | opt-in | After wsrt167 green |
 
 Fast hybrid probes (~seconds compile; no full ephemeris/clock JIT):

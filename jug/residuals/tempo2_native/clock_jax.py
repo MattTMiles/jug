@@ -123,12 +123,20 @@ def compute_tempo2_correction_tt_tb_jax(
 
 
 def compute_einstein_rate_jax(mjd_tt: jnp.ndarray, *, si_units: bool = False) -> jnp.ndarray:
-    """Simplified ``einsteinRate`` when ``DILATEFREQ=Y`` (JAX wrapper)."""
-    from jug.delays.barycentric import compute_einstein_rate
-
+    """``einsteinRate`` inside JIT via ``pure_callback`` (no host pre-bake)."""
     scale = "TCB" if si_units else "TDB"
-    arr = np.asarray(jax.device_get(mjd_tt), dtype=np.float64)
-    return jnp.asarray(compute_einstein_rate(arr, units=scale), dtype=jnp.float64)
+
+    def _host_rate(mjd: np.ndarray) -> np.ndarray:
+        from jug.delays.barycentric import compute_einstein_rate
+
+        return np.asarray(compute_einstein_rate(mjd, units=scale), dtype=np.float64)
+
+    return jax.pure_callback(
+        _host_rate,
+        jax.ShapeDtypeStruct(mjd_tt.shape, jnp.float64),
+        mjd_tt,
+        vmap_method="expand_dims",
+    )
 
 
 def pack_clock_chain_jax(obs_chain: dict, bipm_clock: dict) -> tuple[tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray, jnp.ndarray]:

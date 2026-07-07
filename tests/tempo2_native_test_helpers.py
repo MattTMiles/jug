@@ -23,6 +23,9 @@ def load_wsrt167_fixture():
 
 def compute_native_terms_for_fixture(fixture: dict) -> Any:
     """Build native JAX terms from a tempo2 fixture par/tim pair."""
+    from jug.utils.jax_setup import ensure_jax_x64
+
+    ensure_jax_x64()
     par_path = Path(fixture["par_path"])
     tim_path = Path(fixture["tim_path"])
     params = parse_par_file(par_path)

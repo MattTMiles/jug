@@ -29,10 +29,9 @@ def compute_formbats_jax(
         - tdis2_sec
     )
     bat_corr_day, bat_corr_resid = two_sum(correction_sec / SECS_PER_DAY, 0.0)
-    bat_mjd, bat_resid = assemble_mjd_from_day_sec(sat_mjd, correction_sec)
-    bbat_mjd, bbat_resid = assemble_mjd_from_day_sec(bat_mjd, -shklovskii_sec)
-    bat_corr_total_resid = bat_corr_resid + bat_resid + bbat_resid
-    return bat_corr_day, bat_corr_total_resid, bat_mjd, bbat_mjd
+    bat_mjd, _bat_mjd_lo = assemble_mjd_from_day_sec(sat_mjd, correction_sec)
+    bbat_mjd, _bbat_mjd_lo = assemble_mjd_from_day_sec(bat_mjd, -shklovskii_sec)
+    return bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd
 
 
 def compute_shklovskii_sec_jax(bat_mjd, params):

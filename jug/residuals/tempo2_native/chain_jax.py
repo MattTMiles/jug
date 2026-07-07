@@ -43,12 +43,27 @@ def _load_model_static_for_native_chain(
     clk = _load_clock_corrections(
         observatory, all_obs_codes, clock_dir, params, mjd_utc, verbose=False
     )
-    td = jug_result["term_diagnostics"]
-    profile = resolve_engine_profile(params, jug_result.get("compatibility", "tempo2"))
+    from jug.residuals.diagnostic_conventions import default_conventions
+    from jug.residuals.engine_conventions import _flag_from_par
+
+    compatibility = jug_result.get("compatibility", "tempo2")
+    diagnostic_conv = default_conventions(compatibility)
+    profile = resolve_engine_profile(
+        params,
+        compatibility,
+        implicit_tempo2_defaults=diagnostic_conv.apply_tempo2_implicit_defaults(
+            compatibility
+        ),
+    )
+    correct_tropo = bool(profile.correct_troposphere)
+    if compatibility == "tempo2" and not correct_tropo:
+        if "CORRECT_TROPOSPHERE" in params:
+            correct_tropo = _flag_from_par(params, "CORRECT_TROPOSPHERE")
+        else:
+            correct_tropo = True
     return build_tempo2_model_static(
         params=params,
         toas=toas,
-        tropo_sec=np.asarray(td["tropo_delay_sec"], dtype=np.float64),
         dt_emission_sec=np.asarray(jug_result["dt_sec"], dtype=np.float64),
         obs_clocks=clk["obs_clocks"],
         obs_clock_default=clk["obs_clock"],
@@ -56,6 +71,7 @@ def _load_model_static_for_native_chain(
         obs_code=observatory.lower(),
         ephem_path=resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405")),
         obs_itrf_km=np.asarray(obs_itrf, dtype=np.float64),
+        correct_troposphere=correct_tropo,
         ne_sw=resolve_ne_sw_cm3(params, profile),
     )
 
@@ -115,13 +131,25 @@ def compute_tempo2_native_terms_jax(
         tdb_mjd,
         correction_tt_sec,
         correction_tt_tb_sec,
+        observatory_earth_km,
+        earth_ssb_km,
+        earth_ssb_vel_km_s,
+        site_vel_km_s,
+        obs_planets_ls_fixed,
+        formbats_tt_sec,
     )
 
-    if ssb_obs_ls_fixed is None or obs_sun_ls_fixed is None:
-        raise ValueError("tempo2-native BCLT requires fixed IFTE geometry arrays")
+    if ssb_obs_ls_fixed is not None or obs_sun_ls_fixed is not None:
+        raise ValueError(
+            "Unified Phase 4: ssb_obs_ls and obs_sun_ls must be None; "
+            "geometry computed in-graph. "
+            "For host-precomputed geometry use "
+            "compute_tempo2_toa_model_staging_with_host_inputs_jax."
+        )
     if model_static is None:
         raise ValueError(
-            "compute_tempo2_native_terms_jax requires model_static with clock and IFTE tables"
+            "compute_tempo2_native_terms_jax requires model_static with "
+            "clock, IFTE, and SPK tables"
         )
 
     if freq_mhz_topocentric is not None:
@@ -129,32 +157,11 @@ def compute_tempo2_native_terms_jax(
     else:
         freq = np.asarray(freq_mhz, dtype=np.float64)
 
-    planets = obs_planets_ls_fixed or {}
-    jup = planets.get("jupiter")
-    if jup is None:
-        jup = np.zeros((len(np.asarray(sat_mjd)), 3), dtype=np.float64)
-    else:
-        jup = np.asarray(jup, dtype=np.float64)
-
-    site_vel = (
-        np.zeros((len(np.asarray(sat_mjd)), 3), dtype=np.float64)
-        if site_vel_km_s is None
-        else np.asarray(site_vel_km_s, dtype=np.float64)
-    )
-
     terms, _ = run_tempo2_toa_model_with_fixed_ifte_geometry(
         params=params,
         sat_mjd=np.asarray(sat_mjd, dtype=np.float64),
         freq_mhz=freq,
-        tropo_sec=np.asarray(tropospheric_sec, dtype=np.float64),
         dt_emission_sec=np.asarray(dt_emission_sec, dtype=np.float64),
-        ssb_obs_ls=np.asarray(ssb_obs_ls_fixed, dtype=np.float64),
-        obs_sun_ls=np.asarray(obs_sun_ls_fixed, dtype=np.float64),
-        obs_jupiter_ls=jup,
-        earth_ssb_km=np.asarray(earth_ssb_km, dtype=np.float64),
-        observatory_earth_km=np.asarray(observatory_earth_km, dtype=np.float64),
-        site_vel_km_s=site_vel,
-        earth_ssb_vel_km_s=np.asarray(earth_ssb_vel_km_s, dtype=np.float64),
         model_static=model_static,
         ne_sw=float(ne_sw),
         planet_shapiro_enabled=planet_shapiro_enabled,
@@ -252,103 +259,40 @@ def prepare_native_chain_from_simple_result(
     params: dict,
     toas: list[Any],
     *,
-    observatory_earth_km: np.ndarray | None = None,
-    earth_ssb_km: np.ndarray | None = None,
-    earth_ssb_vel_km_s: np.ndarray | None = None,
-    ephem_path: str | None = None,
     use_model_epoch_batcorr: bool = False,
 ) -> Tempo2NativeTerms:
-    """Build native terms from ``compute_residuals_simple`` geometry exports."""
-    from jug.delays.tempo2_geometry import Tempo2ObservatoryState, tempo2_observatory_chain_vectors
+    """Build native terms through unified in-graph geometry (Phase 4)."""
     from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
     from jug.residuals.engine_conventions import resolve_engine_profile
 
+    del use_model_epoch_batcorr
     td = jug_result["term_diagnostics"]
-    tdis1 = np.asarray(td["dm_delay_sec"], dtype=np.float64) + np.asarray(
-        td.get("dmx_delay_sec", 0.0), dtype=np.float64
-    )
-    prebinary_jug = np.asarray(td["prebinary_delay_sec"], dtype=np.float64)
     profile = resolve_engine_profile(params, jug_result.get("compatibility", "tempo2"))
     ne_sw = resolve_ne_sw_cm3(params, profile)
     freq_topo = np.array([t.freq_mhz for t in toas], dtype=np.float64)
-    planets = jug_result.get("obs_planet_pos_ls")
-    formbats_tt = td.get("formbats_correction_tt_sec", td.get("correction_tt_sec"))
-    obs_state = td.get("tempo2_obs_state")
-    site_vel = None
-    ssb_obs_ls = jug_result.get("ssb_obs_pos_ls")
-    obs_sun_ls = jug_result.get("obs_sun_pos_ls")
-    if obs_state is not None:
-        site_vel = obs_state.get("site_vel_km_s")
-        if observatory_earth_km is None:
-            observatory_earth_km = np.asarray(
-                obs_state["observatory_earth_km"], dtype=np.float64
-            )[:, :3]
-        earth_ssb_arr = np.asarray(obs_state["earth_ssb_km"], dtype=np.float64)
-        if earth_ssb_km is None:
-            earth_ssb_km = earth_ssb_arr[:, :3]
-        if earth_ssb_vel_km_s is None:
-            earth_ssb_vel_km_s = earth_ssb_arr[:, 3:6]
-        sun_ssb = obs_state.get("sun_ssb_km")
-        planet_ssb = obs_state.get("planet_ssb_km", {})
-        if sun_ssb is None:
-            sun_ssb = np.zeros((len(toas), 6), dtype=np.float64)
-        else:
-            sun_ssb = np.asarray(sun_ssb, dtype=np.float64)
-        if isinstance(planet_ssb, dict):
-            planet_ssb = {
-                name: np.asarray(arr, dtype=np.float64) for name, arr in planet_ssb.items()
-            }
-        else:
-            planet_ssb = {}
-        state = Tempo2ObservatoryState(
-            earth_ssb_km=earth_ssb_arr,
-            observatory_earth_km=np.asarray(
-                obs_state["observatory_earth_km"], dtype=np.float64
-            ),
-            sun_ssb_km=sun_ssb,
-            planet_ssb_km=planet_ssb,
-            site_vel_km_s=np.asarray(site_vel, dtype=np.float64),
-        )
-        _, ssb_obs_ls, obs_sun_ls, planets_from_state = tempo2_observatory_chain_vectors(
-            state
-        )
-        if planets is None:
-            planets = planets_from_state
-    if observatory_earth_km is None or earth_ssb_km is None or earth_ssb_vel_km_s is None:
-        raise ValueError(
-            "prepare_native_chain_from_simple_result requires tempo2_obs_state "
-            "or explicit observatory_earth_km / earth_ssb_km / earth_ssb_vel_km_s"
-        )
     model_static = _load_model_static_for_native_chain(params, toas, jug_result)
     return compute_tempo2_native_terms_jax(
         sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
-        correction_tt_sec=jnp.asarray(formbats_tt, dtype=jnp.float64),
+        correction_tt_sec=jnp.asarray(
+            td.get("formbats_correction_tt_sec", td["correction_tt_sec"]), dtype=jnp.float64
+        ),
         correction_tt_tb_sec=jnp.asarray(td["correction_tt_tb_sec"], dtype=jnp.float64),
         params=params,
         toas=toas,
-        observatory_earth_km=jnp.asarray(observatory_earth_km, dtype=jnp.float64),
-        earth_ssb_km=jnp.asarray(earth_ssb_km, dtype=jnp.float64),
-        earth_ssb_vel_km_s=jnp.asarray(earth_ssb_vel_km_s, dtype=jnp.float64),
-        ephem_path=ephem_path or resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405")),
-        freq_mhz=jnp.asarray(jug_result.get("freq_bary_mhz", td.get("freq_bary_mhz", [])), dtype=jnp.float64),
-        tdis1_sec=jnp.asarray(tdis1, dtype=jnp.float64),
+        observatory_earth_km=jnp.zeros((len(toas), 3), dtype=jnp.float64),
+        earth_ssb_km=jnp.zeros((len(toas), 3), dtype=jnp.float64),
+        earth_ssb_vel_km_s=jnp.zeros((len(toas), 3), dtype=jnp.float64),
+        ephem_path=model_static.ephem_path,
+        freq_mhz=jnp.asarray(
+            jug_result.get("freq_bary_mhz", td.get("freq_bary_mhz", [])), dtype=jnp.float64
+        ),
+        tdis1_sec=jnp.asarray(td["dm_delay_sec"], dtype=jnp.float64),
         tdis2_sec=jnp.asarray(td["sw_delay_sec"], dtype=np.float64),
         tropospheric_sec=jnp.asarray(td["tropo_delay_sec"], dtype=np.float64),
-        dt_emission_sec=jnp.asarray(
-            np.asarray(jug_result["dt_sec"], dtype=np.float64), dtype=np.float64
-        ),
+        dt_emission_sec=jnp.asarray(jug_result["dt_sec"], dtype=np.float64),
         use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
-        utc_to_tdb_sec=jnp.asarray(td.get("utc_to_tdb_sec", 0.0), dtype=np.float64),
-        formbats_tt_sec=jnp.asarray(formbats_tt, dtype=np.float64),
-        ssb_obs_ls_fixed=jnp.asarray(ssb_obs_ls, dtype=np.float64),
-        obs_sun_ls_fixed=jnp.asarray(obs_sun_ls, dtype=np.float64),
-        obs_planets_ls_fixed=planets,
-        freq_mhz_topocentric=jnp.asarray(freq_topo, dtype=np.float64),
+        freq_mhz_topocentric=jnp.asarray(freq_topo, dtype=jnp.float64),
         ne_sw=ne_sw,
-        use_model_epoch_batcorr=use_model_epoch_batcorr,
-        model_mjd=jnp.asarray(jug_result["model_mjd"], dtype=np.float64),
-        prebinary_override_sec=jnp.asarray(prebinary_jug, dtype=np.float64),
-        site_vel_km_s=None if site_vel is None else jnp.asarray(site_vel, dtype=jnp.float64),
         model_static=model_static,
     )
 

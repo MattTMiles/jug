@@ -21,6 +21,14 @@ def _enable_numpy_native_chain(monkeypatch):
     monkeypatch.setenv("JUG_DEV_NUMPY_TEMPO2_CHAIN", "1")
 
 
+@pytest.mark.xfail(
+    reason=(
+        "NumPy reference uses host-fixed geometry (ssb_obs_ls_fixed); unified JAX "
+        "model computes geometry in-graph (Phase 4). See TEMPO2_PARITY.md "
+        "§ formBats bat_mjd / bbat_mjd assembly and chain_numpy deprecation."
+    ),
+    strict=True,
+)
 def test_numpy_reference_matches_jax_native_terms():
     fixture = load_wsrt167_fixture()
     from jug.io.par_reader import parse_par_file

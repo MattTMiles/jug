@@ -1,4 +1,4 @@
-"""DEV ORACLE — native chain residual delta smoke (Phase 5b)."""
+"""DEV ORACLE — native chain residual_delta smoke (Phase 5)."""
 
 from __future__ import annotations
 
@@ -15,11 +15,18 @@ def test_native_delta_module_importable():
     from jug.fitting import jax_residual_delta
 
     assert hasattr(jax_residual_delta, "make_residual_delta_jax_fn")
+    assert hasattr(jax_residual_delta, "compute_autodiff_designmatrix_from_setup")
 
 
 @pytest.mark.skipif(
     not USE_JAX_TEMPO2_NATIVE_CHAIN,
-    reason="Native delta path enabled with USE_JAX_TEMPO2_NATIVE_CHAIN",
+    reason="Native delta path requires USE_JAX_TEMPO2_NATIVE_CHAIN",
 )
-def test_native_delta_wsrt167_smoke():
-    pytest.skip("Native chain delta parity pending Phase 5b wiring")
+def test_native_delta_phase5_gates_documented():
+    """Full Phase 5 gates: tests/test_tempo2_native_residual_delta_jax.py."""
+    from pathlib import Path
+
+    gate_path = Path(__file__).with_name("test_tempo2_native_residual_delta_jax.py")
+    text = gate_path.read_text(encoding="utf-8")
+    assert "test_native_autodiff_designmatrix_f0_matches_libstempo" in text
+    assert "test_native_residual_delta_uses_full_chain_not_taylor" in text

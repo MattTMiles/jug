@@ -2,19 +2,193 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
 
 from jug.delays.tempo2_ephemeris import resolve_tempo2_ephemeris_path
+from jug.delays.tempo2_geometry import pmrv_rad_per_century, tempo2_dilate_freq_enabled
 from jug.utils.constants import SECS_PER_DAY
 from jug.residuals.tempo2_native.model_jax import (
     Tempo2ModelStatic,
+    _dm_coeffs_from_params,
+    _eop_to_jax,
+    _spk_to_jax,
     build_tempo2_model_static,
+    compute_dm_vals_jax,
+    compute_tempo2_toa_model_jax,
     run_tempo2_toa_model_with_fixed_ifte_geometry,
 )
 from jug.residuals.tempo2_native.types import Tempo2NativeTerms
+from jug.utils.timescales import is_tempo2_si_units, parse_timescale
+
+if TYPE_CHECKING:
+    from jug.fitting.optimized_fitter import GeneralFitSetup
+
+
+@dataclass(frozen=True)
+class NativeDeltaPack:
+    """Prepacked static inputs for tempo2-native full-chain residual evaluation."""
+
+    sat_mjd: Any
+    freq_mhz: Any
+    dt_emission_sec: Any
+    obs_itrf_km: Any
+    spk_packed: Any
+    eop_packed: Any
+    chain_mjd_tables: tuple[Any, ...]
+    chain_offset_tables: tuple[Any, ...]
+    bipm_mjd: Any
+    bipm_offset: Any
+    ifte_records: Any
+    ifte_start_jd: Any
+    ifte_end_jd: Any
+    ifte_step_jd: Any
+    ifte_coef_offset: int
+    ifte_ncf: int
+    ifte_na: int
+    ne_sw: float
+    correct_troposphere: bool
+    obs_site_latitude_rad: float
+    obs_site_longitude_rad: float
+    obs_site_height_m: float
+    obs_site_pressure_mbar: float
+    use_native_ecliptic: bool
+    dm_epoch: float
+    dm_coeffs_ref: tuple[float, ...]
+    posepoch_mjd: float
+    shk_posepoch: float
+    pmrv_rad_century: float
+    dilate_freq: bool
+    si_units: bool
+    units_tdb: bool
+    planet_shapiro_enabled: bool
+    track_val: int
+    subtract_mean: bool
+    dshk: float
+    jump_phase: Any | None
+    tzr_phase: Any | None
+    pulse_numbers: Any | None
+    pn_add: Any | None
+
+
+def _param_scalar_jax(params: dict, name: str, default: float = 0.0):
+    key = name.upper()
+    if key in params:
+        return params[key]
+    return default
+
+
+def _spin_f_terms_jax(params: dict) -> jnp.ndarray:
+    terms = []
+    for i in range(10):
+        key = f"F{i}"
+        if key in params:
+            terms.append(jnp.asarray(_param_scalar_jax(params, key), dtype=jnp.float64))
+        elif i == 0:
+            terms.append(jnp.asarray(_param_scalar_jax(params, "F0", 1.0), dtype=jnp.float64))
+        else:
+            break
+    return jnp.stack(terms)
+
+
+def _raj_decj_rad_jax(params: dict) -> tuple[jnp.ndarray, jnp.ndarray]:
+    if "_raj_rad" in params:
+        alpha = jnp.asarray(params["_raj_rad"], dtype=jnp.float64)
+    else:
+        alpha = jnp.asarray(params["RAJ"], dtype=jnp.float64)
+    if "_decj_rad" in params:
+        delta = jnp.asarray(params["_decj_rad"], dtype=jnp.float64)
+    else:
+        delta = jnp.asarray(params["DECJ"], dtype=jnp.float64)
+    return alpha, delta
+
+
+def pulsar_vectors_from_params_jax(
+    params: dict,
+    *,
+    use_native_ecliptic: bool,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """JAX port of ``build_tempo2_pulsar_vectors`` for traced fit parameters."""
+    if use_native_ecliptic:
+        lon = jnp.deg2rad(jnp.asarray(params["_ecliptic_lon_deg"], dtype=jnp.float64))
+        lat = jnp.deg2rad(jnp.asarray(params["_ecliptic_lat_deg"], dtype=jnp.float64))
+        pmra = jnp.asarray(
+            params.get("_ecliptic_pm_lon", params.get("PMRA", 0.0)), dtype=jnp.float64
+        )
+        pmdec = jnp.asarray(
+            params.get("_ecliptic_pm_lat", params.get("PMDEC", 0.0)), dtype=jnp.float64
+        )
+        lat_for_vel = lat
+    else:
+        alpha, delta = _raj_decj_rad_jax(params)
+        lon = alpha
+        lat = delta
+        pmra = jnp.asarray(_param_scalar_jax(params, "PMRA"), dtype=jnp.float64)
+        pmdec = jnp.asarray(_param_scalar_jax(params, "PMDEC"), dtype=jnp.float64)
+        lat_for_vel = delta
+
+    ca, sa = jnp.cos(lon), jnp.sin(lon)
+    cd, sd = jnp.cos(lat), jnp.sin(lat)
+    pos = jnp.stack([ca * cd, sa * cd, sd])
+    convert = jnp.asarray(np.pi / 180.0 / 3600.0 / 1000.0 * 100.0, dtype=jnp.float64)
+    cos_lat = jnp.cos(lat_for_vel)
+    vel = convert * jnp.stack(
+        [
+            -pmra / cos_lat * sa * cd - pmdec * ca * sd,
+            pmra / cos_lat * ca * cd - pmdec * sa * sd,
+            pmdec * cd,
+        ]
+    )
+    convert2 = convert * 100.0
+    pmra2 = jnp.asarray(_param_scalar_jax(params, "PMRA2"), dtype=jnp.float64)
+    pmdec2 = jnp.asarray(_param_scalar_jax(params, "PMDEC2"), dtype=jnp.float64)
+    acc = convert2 * jnp.stack(
+        [
+            -pmra2 / cos_lat * sa * cd - pmdec2 * ca * sd,
+            pmra2 / cos_lat * ca * cd - pmdec2 * sa * sd,
+            pmdec2 * cd,
+        ]
+    )
+    return pos, vel, acc
+
+
+def _dm_coeffs_jax(params: dict) -> tuple[jnp.ndarray, ...]:
+    coeffs: list[jnp.ndarray] = []
+    k = 0
+    while True:
+        key = "DM" if k == 0 else f"DM{k}"
+        if key not in params:
+            break
+        coeffs.append(jnp.asarray(_param_scalar_jax(params, key), dtype=jnp.float64))
+        k += 1
+    if not coeffs:
+        coeffs = [jnp.asarray(0.0, dtype=jnp.float64)]
+    return tuple(coeffs)
+
+
+def track2_pulse_arrays_from_toas(
+    toas: list[Any],
+    params: dict,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Extract TRACK−2 ``-pn`` / ``-pnadd`` arrays when present on all TOAs."""
+    track_val = params.get("TRACK", None)
+    if track_val is None or int(track_val) != -2:
+        return None, None
+    pn_flags = [toa.flags.get("pn") for toa in toas]
+    if not all(pn is not None for pn in pn_flags):
+        return None, None
+    pulse_numbers = np.array([int(pn) for pn in pn_flags], dtype=np.int64)
+    pn_add_running = np.int64(-1)
+    pn_add = np.empty(len(toas), dtype=np.int64)
+    for i, toa in enumerate(toas):
+        pn_add[i] = pn_add_running
+        pnadd_val = toa.flags.get("pnadd")
+        if pnadd_val is not None:
+            pn_add_running += np.int64(int(pnadd_val))
+    return pulse_numbers, pn_add
 
 
 def _load_model_static_for_native_chain(
@@ -23,6 +197,11 @@ def _load_model_static_for_native_chain(
     jug_result: dict,
     *,
     clock_dir=None,
+    pulse_numbers=None,
+    pn_add=None,
+    jump_phase=None,
+    tzr_phase=None,
+    track_val: int = -2,
 ) -> Tempo2ModelStatic:
     """Load clock tables and pack static inputs for the unified JIT model."""
     from pathlib import Path
@@ -76,6 +255,11 @@ def _load_model_static_for_native_chain(
         correct_troposphere=correct_tropo,
         ne_sw=resolve_ne_sw_cm3(params, profile),
         planet_shapiro_enabled=resolve_planet_shapiro_enabled(params, profile),
+        pulse_numbers=pulse_numbers,
+        pn_add=pn_add,
+        jump_phase=jump_phase,
+        tzr_phase=tzr_phase,
+        track_val=int(track_val),
     )
 
 
@@ -233,7 +417,7 @@ def compute_native_spin_residual_sec_jax(
     subtract_mean: bool = True,
     track_val: int = -2,
 ) -> jnp.ndarray:
-    """Spin/track residual from precomputed unified-model terms (JAX-safe)."""
+    """Spin/track-only residual from precomputed delay terms (diagnostics helper)."""
     residual_sec, _, _ = compute_tempo2_native_residuals_jax(
         native_terms=native_terms,
         params=params,
@@ -246,16 +430,6 @@ def compute_native_spin_residual_sec_jax(
         track_val=track_val,
     )
     return residual_sec
-
-
-def prepare_native_terms_for_setup(
-    jug_result: dict,
-    params: dict,
-    toas: list[Any],
-) -> Tempo2NativeTerms:
-    """Build unified native terms once for fit setup / residual_delta."""
-    return prepare_native_chain_from_simple_result(jug_result, params, toas)
-
 
 
 def prepare_native_chain_from_simple_result(
@@ -299,26 +473,16 @@ def prepare_native_chain_from_simple_result(
     )
 
 
-def compute_native_tempo2_residual_sec(
-    params: dict,
-    *,
-    static: dict,
-    weights,
-    jump_phase=None,
-    tzr_phase=None,
-    subtract_mean: bool = True,
-    track_val: int = -2,
-    pulse_numbers=None,
-    pn_add=None,
-) -> jnp.ndarray:
-    """Recompute tempo2-native residuals through the unified JAX model."""
-    del weights
+def build_native_delta_pack(setup: "GeneralFitSetup") -> NativeDeltaPack | None:
+    """Build JAX-static cache for full-chain native residual deltas."""
+    static = getattr(setup, "native_chain_static", None)
+    if static is None:
+        return None
     toas = static.get("toas")
     if not toas:
-        raise ValueError(
-            "native_chain_static must include TOAs; rebuild GeneralFitSetup with "
-            "USE_JAX_TEMPO2_NATIVE_CHAIN enabled"
-        )
+        return None
+
+    params = setup.params
     jug_result = {
         "term_diagnostics": static["term_diagnostics"],
         "dt_sec": static["dt_sec"],
@@ -327,20 +491,197 @@ def compute_native_tempo2_residual_sec(
         "ssb_obs_pos_ls": static.get("ssb_obs_pos_ls"),
         "obs_sun_pos_ls": static.get("obs_sun_pos_ls"),
         "obs_planet_pos_ls": static.get("obs_planet_pos_ls"),
-        "compatibility": "tempo2",
+        "compatibility": setup.compatibility,
     }
+    pulse_numbers, pn_add = track2_pulse_arrays_from_toas(toas, params)
+    model_static = _load_model_static_for_native_chain(
+        params,
+        toas,
+        jug_result,
+        pulse_numbers=pulse_numbers,
+        pn_add=pn_add,
+        jump_phase=getattr(setup, "jump_phase", None),
+        tzr_phase=getattr(setup, "tzr_phase", None),
+        track_val=int(params.get("TRACK", -2)) if params.get("TRACK") is not None else -2,
+    )
+    td = static["term_diagnostics"]
+    units = parse_timescale(params)
+    tropo = model_static.tropo_packed
+    jump = getattr(setup, "jump_phase", None)
+    tzr = getattr(setup, "tzr_phase", None)
+    return NativeDeltaPack(
+        sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
+        freq_mhz=jnp.asarray([t.freq_mhz for t in toas], dtype=jnp.float64),
+        dt_emission_sec=jnp.asarray(static["dt_sec"], dtype=jnp.float64),
+        obs_itrf_km=jnp.asarray(model_static.obs_itrf_km, dtype=jnp.float64),
+        spk_packed=_spk_to_jax(model_static.spk_packed),
+        eop_packed=_eop_to_jax(model_static.eop_packed),
+        chain_mjd_tables=tuple(
+            jnp.asarray(t, dtype=jnp.float64) for t in model_static.chain_mjd_tables
+        ),
+        chain_offset_tables=tuple(
+            jnp.asarray(t, dtype=jnp.float64) for t in model_static.chain_offset_tables
+        ),
+        bipm_mjd=jnp.asarray(model_static.bipm_mjd, dtype=jnp.float64),
+        bipm_offset=jnp.asarray(model_static.bipm_offset, dtype=jnp.float64),
+        ifte_records=jnp.asarray(model_static.ifte_records, dtype=jnp.float64),
+        ifte_start_jd=jnp.asarray(model_static.ifte_start_jd, dtype=jnp.float64),
+        ifte_end_jd=jnp.asarray(model_static.ifte_end_jd, dtype=jnp.float64),
+        ifte_step_jd=jnp.asarray(model_static.ifte_step_jd, dtype=jnp.float64),
+        ifte_coef_offset=int(model_static.ifte_coef_offset),
+        ifte_ncf=int(model_static.ifte_ncf),
+        ifte_na=int(model_static.ifte_na),
+        ne_sw=float(model_static.ne_sw),
+        correct_troposphere=bool(model_static.correct_troposphere),
+        obs_site_latitude_rad=(
+            float(tropo.latitude_rad) if tropo is not None else 0.0
+        ),
+        obs_site_longitude_rad=(
+            float(tropo.longitude_rad) if tropo is not None else 0.0
+        ),
+        obs_site_height_m=float(tropo.height_m) if tropo is not None else 0.0,
+        obs_site_pressure_mbar=(
+            float(tropo.pressure_mbar) if tropo is not None else 101.325
+        ),
+        use_native_ecliptic=bool(model_static.use_native_ecliptic),
+        dm_epoch=float(params.get("DMEPOCH", params["PEPOCH"])),
+        dm_coeffs_ref=_dm_coeffs_from_params(params),
+        posepoch_mjd=float(params.get("POSEPOCH", params["PEPOCH"])),
+        shk_posepoch=float(params.get("POSEPOCH", params["PEPOCH"])),
+        pmrv_rad_century=float(pmrv_rad_per_century(float(params.get("PMRV", 0.0)))),
+        dilate_freq=bool(tempo2_dilate_freq_enabled(params)),
+        si_units=bool(is_tempo2_si_units(units)),
+        units_tdb=units == "TDB",
+        planet_shapiro_enabled=bool(model_static.planet_shapiro_enabled),
+        track_val=int(model_static.track_val),
+        subtract_mean=True,
+        dshk=float(params.get("DSHK", 0.0)) if "DSHK" in params else 0.0,
+        jump_phase=None if jump is None else jnp.asarray(jump, dtype=jnp.float64),
+        tzr_phase=None if tzr is None else jnp.asarray(tzr, dtype=jnp.float64),
+        pulse_numbers=(
+            None
+            if model_static.pulse_numbers is None
+            else jnp.asarray(model_static.pulse_numbers, dtype=jnp.int64)
+        ),
+        pn_add=(
+            None
+            if model_static.pn_add is None
+            else jnp.asarray(model_static.pn_add, dtype=jnp.int64)
+        ),
+    )
+
+
+def compute_native_full_chain_residual_sec_jax(
+    params: dict,
+    pack: NativeDeltaPack,
+) -> jnp.ndarray:
+    """Recompute tempo2-native residuals through ``compute_tempo2_toa_model_jax``."""
+    pos, vel, acc = pulsar_vectors_from_params_jax(
+        params, use_native_ecliptic=pack.use_native_ecliptic
+    )
+    f_terms = _spin_f_terms_jax(params)
+    pepoch = jnp.asarray(_param_scalar_jax(params, "PEPOCH"), dtype=jnp.float64)
+    dm_vals = compute_dm_vals_jax(
+        pack.sat_mjd, dm_epoch=pack.dm_epoch, dm_coeffs=_dm_coeffs_jax(params)
+    )
+    _, residual_sec = compute_tempo2_toa_model_jax(
+        sat_mjd=pack.sat_mjd,
+        freq_mhz=pack.freq_mhz,
+        params_f_terms=f_terms,
+        params_pepoch=pepoch,
+        pos_pulsar=pos,
+        vel_pulsar=vel,
+        acc_pulsar=acc,
+        obs_itrf_km=pack.obs_itrf_km,
+        spk_packed=pack.spk_packed,
+        eop_packed=pack.eop_packed,
+        dm_vals=dm_vals,
+        dm_epoch=pack.dm_epoch,
+        dm_coeffs=pack.dm_coeffs_ref,
+        dt_emission_sec=pack.dt_emission_sec,
+        chain_mjd_tables=pack.chain_mjd_tables,
+        chain_offset_tables=pack.chain_offset_tables,
+        bipm_mjd=pack.bipm_mjd,
+        bipm_offset=pack.bipm_offset,
+        ifte_records=pack.ifte_records,
+        ifte_start_jd=pack.ifte_start_jd,
+        ifte_end_jd=pack.ifte_end_jd,
+        ifte_step_jd=pack.ifte_step_jd,
+        ifte_coef_offset=pack.ifte_coef_offset,
+        ifte_ncf=pack.ifte_ncf,
+        ifte_na=pack.ifte_na,
+        ne_sw=pack.ne_sw,
+        obs_site_latitude_rad=pack.obs_site_latitude_rad,
+        obs_site_longitude_rad=pack.obs_site_longitude_rad,
+        obs_site_height_m=pack.obs_site_height_m,
+        obs_site_pressure_mbar=pack.obs_site_pressure_mbar,
+        posepoch_mjd=pack.posepoch_mjd,
+        parallax_mas=jnp.asarray(_param_scalar_jax(params, "PX"), dtype=jnp.float64),
+        pmrv_rad_century=pack.pmrv_rad_century,
+        dilate_freq=pack.dilate_freq,
+        si_units=pack.si_units,
+        units_tdb=pack.units_tdb,
+        planet_shapiro_enabled=pack.planet_shapiro_enabled,
+        track_val=pack.track_val,
+        subtract_mean=False,
+        dshk=pack.dshk,
+        pmra=jnp.asarray(_param_scalar_jax(params, "PMRA"), dtype=jnp.float64),
+        pmdec=jnp.asarray(_param_scalar_jax(params, "PMDEC"), dtype=jnp.float64),
+        shk_posepoch=pack.shk_posepoch,
+        jump_phase=pack.jump_phase,
+        tzr_phase=pack.tzr_phase,
+        pulse_numbers=pack.pulse_numbers,
+        pn_add=pack.pn_add,
+        correct_troposphere=pack.correct_troposphere,
+    )
+    return residual_sec
+
+
+def compute_native_full_chain_residual_delta_jax(
+    params_ref: dict,
+    params_pert: dict,
+    pack: NativeDeltaPack,
+) -> jnp.ndarray:
+    """Full native-chain residual delta: ``res(θ+Δθ) − res(θ)`` with mean on delta."""
+    res_ref = compute_native_full_chain_residual_sec_jax(params_ref, pack)
+    res_pert = compute_native_full_chain_residual_sec_jax(params_pert, pack)
+    delta = res_pert - res_ref
+    if pack.subtract_mean:
+        delta = delta - jnp.mean(delta)
+    return delta
+
+
+def compute_native_eval_residuals_jax(
+    *,
+    params: dict,
+    toas: list[Any],
+    jug_result: dict,
+    pulse_numbers=None,
+    pn_add=None,
+    jump_phase=None,
+    tzr_phase=None,
+    subtract_mean: bool = True,
+    mean_mode: str = "unweighted",
+    track_val: int = -2,
+    weights=None,
+) -> tuple[jnp.ndarray, jnp.ndarray, Tempo2NativeTerms]:
+    """Production residuals: unified in-graph delay chain + spin/track."""
+    del mean_mode
     native = prepare_native_chain_from_simple_result(jug_result, params, toas)
     jump_j = None if jump_phase is None else jnp.asarray(jump_phase, dtype=jnp.float64)
     tzr_j = None if tzr_phase is None else jnp.asarray(tzr_phase, dtype=jnp.float64)
-    residual_sec, _, _ = compute_tempo2_native_residuals_jax(
+    pn_j = None if pulse_numbers is None else jnp.asarray(pulse_numbers, dtype=jnp.int64)
+    pn_add_j = None if pn_add is None else jnp.asarray(pn_add, dtype=jnp.int64)
+    if weights is None:
+        weights = jnp.ones(native.sat_mjd.shape[0], dtype=jnp.float64)
+    return compute_tempo2_native_residuals_jax(
         native_terms=native,
         params=params,
         weights=jnp.asarray(weights, dtype=jnp.float64),
-        pulse_numbers=pulse_numbers,
-        pn_add=pn_add,
+        pulse_numbers=pn_j,
+        pn_add=pn_add_j,
         jump_phase=jump_j,
         tzr_phase=tzr_j,
         subtract_mean=subtract_mean,
         track_val=track_val,
     )
-    return residual_sec

@@ -11,9 +11,13 @@ pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 import jax
 import jax.numpy as jnp
 
-from jug.fitting.jax_residual_delta import make_residual_delta_jax_fn
+from jug.fitting.jax_residual_delta import (
+    compute_autodiff_designmatrix_from_setup,
+    make_residual_delta_jax_fn,
+)
 from jug.fitting.optimized_fitter import _build_general_fit_setup_from_files
 from tempo2_native_test_helpers import load_wsrt167_fixture
+from test_tempo2_designmatrix_parity import _assert_column_matches
 
 
 @pytest.fixture
@@ -42,8 +46,6 @@ def test_native_residual_delta_uses_full_chain_not_taylor(wsrt167_setup, monkeyp
     setup = wsrt167_setup
     if setup.native_chain_static is None:
         pytest.skip("native_chain_static unavailable (USE_JAX_TEMPO2_NATIVE_CHAIN off?)")
-    if setup.native_tempo2_terms is None:
-        pytest.skip("native_tempo2_terms unavailable")
 
     calls = {"taylor": 0}
 
@@ -59,6 +61,28 @@ def test_native_residual_delta_uses_full_chain_not_taylor(wsrt167_setup, monkeyp
     delta = fn(jnp.zeros(1, dtype=jnp.float64))
     assert delta.shape[0] == setup.toas_mjd.shape[0]
     assert calls["taylor"] == 0
+
+
+def test_native_autodiff_designmatrix_f0_matches_libstempo(wsrt167_setup):
+    """Phase 5 gate: jacfwd(residual_delta) F0 column vs libstempo design matrix."""
+    pytest.importorskip("libstempo")
+    setup = wsrt167_setup
+    if setup.native_chain_static is None:
+        pytest.skip("native_chain_static unavailable")
+    fixture = load_wsrt167_fixture()
+    from jug.testing.tempo2_reference import tempo2_reference
+
+    matrix = compute_autodiff_designmatrix_from_setup(setup, ["F0"])
+    ref = tempo2_reference(
+        fixture["par_path"],
+        fixture["tim_path"],
+        fit_params=["F0"],
+        include_designmatrix=True,
+    )
+    assert ref.designmatrix is not None
+    assert ref.designmatrix_labels is not None
+    ref_col = ref.designmatrix[:, ref.designmatrix_labels.index("F0")]
+    _assert_column_matches("F0", matrix[:, 0], ref_col)
 
 
 def test_native_f0_jacfwd_finite_difference_spot_check(wsrt167_setup):

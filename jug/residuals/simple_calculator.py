@@ -2121,76 +2121,37 @@ def compute_residuals_simple(
 
     subtract_mean_in_phase = tzr_apply_mode != "post_wrap"
 
-    native_terms_export = None
     if is_tempo2_compat and USE_JAX_TEMPO2_NATIVE_CHAIN:
-        from jug.delays.tempo2_ephemeris import resolve_tempo2_ephemeris_path
-        from jug.delays.tempo2_geometry import tempo2_observatory_chain_vectors
-        from jug.residuals.tempo2_native.chain_jax import (
-            compute_tempo2_native_residuals_jax,
-            compute_tempo2_native_terms_jax,
-        )
-        from jug.residuals.tempo2_native.model_jax import build_tempo2_model_static
+        from jug.residuals.tempo2_native.chain_jax import compute_native_eval_residuals_jax
 
-        _, ssb_obs_ls_bclt, obs_sun_ls_bclt, planets_bclt = tempo2_observatory_chain_vectors(
-            tempo2_obs_state
-        )
-        tdis1_arr = np.asarray(dm_delay_sec, dtype=np.float64) + np.asarray(
-            dmx_delay_sec, dtype=np.float64
-        )
-        utc_to_tdb_native_sec = (
-            np.asarray(tdb_mjd, dtype=np.float64) - np.asarray(mjd_utc, dtype=np.float64)
-        ) * SECS_PER_DAY
-        native_model_static = build_tempo2_model_static(
-            params=params,
-            toas=toas,
-            tropo_sec=np.asarray(tropo_delay_sec, dtype=np.float64),
-            dt_emission_sec=np.asarray(dt_sec, dtype=np.float64),
-            obs_clocks=obs_clocks,
-            obs_clock_default=obs_clock,
-            bipm_clock=bipm_clock,
-            obs_code=observatory.lower(),
-            ephem_path=resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405")),
-            obs_itrf_km=np.asarray(obs_itrf_km, dtype=np.float64),
-            ne_sw=resolve_ne_sw_cm3(params, engine_profile),
-            planet_shapiro_enabled=planet_shapiro_enabled,
-        )
-        native = compute_tempo2_native_terms_jax(
-            sat_mjd=jnp.asarray(mjd_utc, dtype=jnp.float64),
-            correction_tt_sec=jnp.asarray(formbats_correction_tt, dtype=jnp.float64),
-            correction_tt_tb_sec=jnp.asarray(
-                tempo2_clock_terms.correction_tt_tb_sec, dtype=jnp.float64
+        _native_td = {
+            "sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64),
+            "correction_tt_sec": np.asarray(
+                tempo2_clock_terms.correction_tt_sec, dtype=np.float64
             ),
-            params=params,
-            toas=toas,
-            observatory_earth_km=jnp.asarray(obs_earth_km, dtype=jnp.float64),
-            earth_ssb_km=jnp.asarray(tempo2_obs_state.earth_ssb_km[:, :3], dtype=jnp.float64),
-            earth_ssb_vel_km_s=jnp.asarray(earth_ssb_vel_km_s, dtype=jnp.float64),
-            ephem_path=resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405")),
-            freq_mhz=jnp.asarray(freq_bary_mhz, dtype=jnp.float64),
-            tdis1_sec=jnp.asarray(tdis1_arr, dtype=jnp.float64),
-            tdis2_sec=jnp.asarray(sw_delay_sec, dtype=jnp.float64),
-            tropospheric_sec=jnp.asarray(tropo_delay_sec, dtype=jnp.float64),
-            dt_emission_sec=jnp.asarray(np.asarray(dt_sec, dtype=np.float64), dtype=jnp.float64),
-            use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
-            utc_to_tdb_sec=jnp.asarray(utc_to_tdb_native_sec, dtype=jnp.float64),
-            formbats_tt_sec=jnp.asarray(formbats_correction_tt, dtype=jnp.float64),
-            ssb_obs_ls_fixed=jnp.asarray(ssb_obs_ls_bclt, dtype=jnp.float64),
-            obs_sun_ls_fixed=jnp.asarray(obs_sun_ls_bclt, dtype=jnp.float64),
-            obs_planets_ls_fixed=planets_bclt,
-            freq_mhz_topocentric=jnp.asarray(
-                np.array([t.freq_mhz for t in toas], dtype=np.float64), dtype=jnp.float64
+            "correction_tt_tb_sec": np.asarray(
+                tempo2_clock_terms.correction_tt_tb_sec, dtype=np.float64
             ),
-            ne_sw=resolve_ne_sw_cm3(params, engine_profile),
-            site_vel_km_s=jnp.asarray(tempo2_obs_state.site_vel_km_s, dtype=jnp.float64),
-            planet_shapiro_enabled=planet_shapiro_enabled,
-            model_static=native_model_static,
-        )
+            "formbats_correction_tt_sec": np.asarray(
+                formbats_correction_tt, dtype=np.float64
+            ),
+            "tropo_delay_sec": np.asarray(tropo_delay_sec, dtype=np.float64),
+            "dm_delay_sec": np.asarray(dm_delay_sec, dtype=np.float64),
+            "sw_delay_sec": np.asarray(sw_delay_sec, dtype=np.float64),
+            "freq_bary_mhz": np.asarray(freq_bary_mhz, dtype=np.float64),
+        }
+        _jug = {
+            "term_diagnostics": _native_td,
+            "dt_sec": np.asarray(dt_sec, dtype=np.float64),
+            "freq_bary_mhz": freq_bary_mhz,
+            "compatibility": compatibility_mode,
+        }
         jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
         tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)
-        residuals_sec_jax, pulse_number_jax, native = compute_tempo2_native_residuals_jax(
-            native_terms=native,
+        residuals_sec_jax, pulse_number_jax, native = compute_native_eval_residuals_jax(
             params=params,
-            weights=jnp.asarray(weights_scaled, dtype=jnp.float64),
+            toas=toas,
+            jug_result=_jug,
             pulse_numbers=external_pn,
             pn_add=external_pn_add,
             jump_phase=jump_j,
@@ -2198,11 +2159,11 @@ def compute_residuals_simple(
             subtract_mean=subtract_mean_in_phase,
             mean_mode=delay_provider.phase_mean_mode,
             track_val=int(track_val) if track_val is not None else -2,
+            weights=jnp.asarray(weights_scaled, dtype=jnp.float64),
         )
         residuals_sec = np.asarray(jax.device_get(residuals_sec_jax), dtype=np.float64)
         pulse_number = np.asarray(jax.device_get(pulse_number_jax), dtype=np.longdouble)
         residuals_us = residuals_sec * 1e6
-        native_terms_export = native
         dm_delay_sec = np.asarray(jax.device_get(native.tdis1_sec), dtype=np.float64)
         sw_delay_sec = np.asarray(jax.device_get(native.tdis2_sec), dtype=np.float64)
     else:

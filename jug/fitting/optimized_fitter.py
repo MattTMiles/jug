@@ -372,8 +372,7 @@ class GeneralFitSetup:
     # Noise configuration (Phase 3 integration)
     noise_config: object  # NoiseConfig or None
     binary_plan: object = None  # BinaryDelayPlan (cached); built lazily if None
-    # Tempo2-native JAX chain cache (Phase 5b)
-    native_tempo2_terms: object | None = None
+    # Tempo2-native JAX chain cache (Phase 5)
     native_chain_static: dict | None = None
     native_bbat_mjd: np.ndarray | None = None
     native_torb_sec: np.ndarray | None = None
@@ -1727,7 +1726,6 @@ def _build_setup_common(
         )
     use_native = str(compatibility).lower().startswith("tempo2") and USE_JAX_TEMPO2_NATIVE_CHAIN
     native_chain_static = None
-    native_tempo2_terms = None
     if use_native and extras.get("term_diagnostics") is not None:
         native_chain_static = {
             "term_diagnostics": extras["term_diagnostics"],
@@ -1739,23 +1737,6 @@ def _build_setup_common(
             "obs_planet_pos_ls": obs_planet_pos_ls,
             "toas": extras.get("toas"),
         }
-        if extras.get("toas") is not None:
-            from jug.residuals.tempo2_native.chain_jax import prepare_native_terms_for_setup
-
-            native_tempo2_terms = prepare_native_terms_for_setup(
-                {
-                    "term_diagnostics": extras["term_diagnostics"],
-                    "dt_sec": extras.get("dt_sec", dt_sec_cached),
-                    "freq_bary_mhz": freq_mhz_bary,
-                    "model_mjd": extras.get("model_mjd", toas_mjd),
-                    "ssb_obs_pos_ls": ssb_obs_pos_ls,
-                    "obs_sun_pos_ls": obs_sun_pos_ls,
-                    "obs_planet_pos_ls": obs_planet_pos_ls,
-                    "compatibility": compatibility,
-                },
-                params,
-                extras["toas"],
-            )
     return GeneralFitSetup(
         params=dict(params),
         fit_param_list=fit_params,
@@ -1819,7 +1800,6 @@ def _build_setup_common(
         binary_plan=binary_plan,
         use_jax_tempo2_native_chain=use_native,
         native_chain_static=native_chain_static,
-        native_tempo2_terms=native_tempo2_terms,
     )
 
 

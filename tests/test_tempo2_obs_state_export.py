@@ -68,6 +68,5 @@ def test_cached_fit_setup_populates_native_chain_static():
         ["F0", "DM"],
         compatibility="tempo2",
     )
-    assert setup.use_jax_tempo2_native_chain is True
     assert setup.native_chain_static is not None
     assert "tempo2_obs_state" in setup.native_chain_static["term_diagnostics"]

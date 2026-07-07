@@ -1,4 +1,4 @@
-"""Quarantined experimental tempo2-native spin path and native-chain switch.
+"""Quarantined experimental tempo2-native spin path and graph-mode selector.
 
 **Not on the production parity route.** Production tempo2 mode uses emission-time
 Taylor spin at geometry ``model_mjd`` plus legacy TRACK −2 wrapping (~16 ns on
@@ -8,19 +8,16 @@ enable ``USE_NATIVE_BBAT_PHASE5`` alone for parity gates.
 
 See ``TEMPO2_NATIVE_CLOCK_STATUS.md`` § "Phase D Step 2".
 
-Native-chain flags (two independent switches)
----------------------------------------------
-``USE_JAX_TEMPO2_NATIVE_CHAIN`` (default **True**)
-    Master switch for tempo2-native **fitting** and ``residual_delta_jax``.
-    When True with tempo2 compatibility, ``GeneralFitSetup`` gets
-    ``use_jax_tempo2_native_chain`` and ``native_chain_static`` (requires
-    ``term_diagnostics`` in the residual cache). This is the production hybrid
-    path: host-frozen geometry/clocks + slim differentiable JAX tail.
+Tempo2-native JAX graph modes
+-----------------------------
+``JUG_TEMPO2_NATIVE_GRAPH_MODE`` selects the differentiable tempo2 timing graph:
 
-``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH`` (default **False**; env ``JUG_TEMPO2_NATIVE_FULL_INGRAPH=1``)
-    **Only** selects the slow unified in-graph model inside the native chain.
-    Leave off for interactive fitting. Enable only for dev_oracle cross-checks
-    against ``compute_tempo2_toa_model_jax`` (multi-minute first JIT).
+- ``fixed_state_nonlinear``: freeze host ephemeris/clocks and reference BCLT
+  ``dt_ssb``; recompute Roemer/Shapiro/DM/formBats/spin nonlinearly without a
+  BCLT fixed-point scan.
+- ``staged_bclt`` (default): freeze ephemeris/clocks/observer state; recompute
+  BCLT scan, formBats, Shklovskii, and spin in JAX.
+- ``full``: clocks/SPK/EOP/IFTE/tropo/BCLT all inside XLA (oracle/dev only).
 """
 
 from __future__ import annotations
@@ -31,19 +28,28 @@ import os
 # ``bbat`` with ``track_minus2_frac_phase``. Do not enable for parity gates.
 USE_NATIVE_BBAT_PHASE5 = False
 
-# Production tempo2 path: host-frozen geometry/clocks + slim JAX tail (BCLT → spin).
-USE_JAX_TEMPO2_NATIVE_CHAIN = True
+TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR = "fixed_state_nonlinear"
+TEMPO2_NATIVE_GRAPH_STAGED_BCLT = "staged_bclt"
+TEMPO2_NATIVE_GRAPH_FULL = "full"
 
-# Production default: host-frozen geometry/clocks + slim JAX tail (BCLT → spin).
-# Set True only for dev_oracle cross-checks against the unified in-graph model.
-# WARNING: first JIT compile of compute_tempo2_toa_model_jax can take minutes on
-# real TOA batches (SPK + EOP + IFTE bootstrap inside one graph). Do not enable
-# in interactive fitting sessions or CI fast loops.
-USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH = False
+_TEMPO2_NATIVE_GRAPH_MODE_DEFAULT = TEMPO2_NATIVE_GRAPH_STAGED_BCLT
+_TEMPO2_NATIVE_GRAPH_MODES = {
+    TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR,
+    TEMPO2_NATIVE_GRAPH_STAGED_BCLT,
+    TEMPO2_NATIVE_GRAPH_FULL,
+}
 
 
-def tempo2_native_full_ingraph_enabled() -> bool:
-    """Return True only when the slow unified in-graph JAX path is explicitly enabled."""
-    if os.environ.get("JUG_TEMPO2_NATIVE_FULL_INGRAPH", "").lower() in ("1", "true", "yes"):
-        return True
-    return USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH
+def tempo2_native_graph_mode() -> str:
+    """Return the active tempo2-native JAX graph mode."""
+    mode = os.environ.get(
+        "JUG_TEMPO2_NATIVE_GRAPH_MODE",
+        _TEMPO2_NATIVE_GRAPH_MODE_DEFAULT,
+    )
+    mode = mode.strip().lower().replace("-", "_")
+    if mode not in _TEMPO2_NATIVE_GRAPH_MODES:
+        allowed = ", ".join(sorted(_TEMPO2_NATIVE_GRAPH_MODES))
+        raise ValueError(
+            f"Unknown JUG_TEMPO2_NATIVE_GRAPH_MODE={mode!r}; expected one of {allowed}"
+        )
+    return mode

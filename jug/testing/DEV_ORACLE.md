@@ -6,11 +6,17 @@ marked pytest modules.
 
 ## Hybrid Tempo2 native parity (2026-07-07)
 
-Production tempo2-native fitting uses a **host-frozen** path by default:
+Production tempo2-native fitting uses a **host-frozen** path by default
+(``JUG_TEMPO2_NATIVE_GRAPH_MODE=staged_bclt``):
 `term_diagnostics['tempo2_obs_state']` geometry + one-time JAX clock + a slim
 differentiable JAX tail (BCLT → formBats → spin). The slow unified in-graph
 model (`compute_tempo2_toa_model_jax`) is **opt-in only** via
-`USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH` or `JUG_TEMPO2_NATIVE_FULL_INGRAPH=1`.
+``JUG_TEMPO2_NATIVE_GRAPH_MODE=full``.
+
+JAX BCLT uses a **fixed-length** `lax.scan` (default 12 iterations,
+`JUG_TEMPO2_BCLT_FIXED_ITER` override) so reverse-mode AD (NUTS/HMC) works.
+Host NumPy BCLT keeps dynamic convergence; convergence flags are diagnostics only
+on the JAX path.
 
 **Do not** use legacy top-level `jug["ssb_obs_pos_ls"]`, `jug["obs_sun_pos_ls"]`,
 or `jug["obs_planet_pos_ls"]` for native parity probes — use
@@ -43,7 +49,7 @@ Slow full-in-graph oracle (minutes compile; manual only):
 
 ```bash
 cd /workspaces/metapulsar/ref-packages/jug
-JUG_TEMPO2_NATIVE_FULL_INGRAPH=1 JAX_ENABLE_X64=1 PYTHONPATH=.:tests \
+JUG_TEMPO2_NATIVE_GRAPH_MODE=full JAX_ENABLE_X64=1 PYTHONPATH=.:tests \
   python3 -m pytest tests/test_tempo2_native_jax_no_host_roundtrip.py -q
 ```
 

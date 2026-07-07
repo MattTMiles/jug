@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -303,7 +304,21 @@ def bclt_terms_to_jax(terms: BcltTermsHost) -> dict[str, jnp.ndarray]:
     }
 
 
-# --- JAX production BCLT (vmap + while_loop) ---
+# --- JAX production BCLT (vmap + fixed-length scan) ---
+
+# Fixed iteration count for reverse-mode AD (NUTS/HMC). Host NumPy path keeps dynamic
+# while-loop convergence; JAX always runs exactly this many steps.
+DEFAULT_BCLT_JAX_FIXED_ITER = 12
+
+
+def bclt_jax_fixed_iter_count(max_iter: int | None = None) -> int:
+    """Return the fixed BCLT scan length for the JAX path."""
+    if max_iter is not None:
+        return int(max_iter)
+    env = os.environ.get("JUG_TEMPO2_BCLT_FIXED_ITER", "").strip()
+    if env:
+        return int(env)
+    return DEFAULT_BCLT_JAX_FIXED_ITER
 
 GM_C3_JAX = GM_C3
 GMJ_C3_JAX = GMJ_C3
@@ -404,6 +419,56 @@ def _sum_planet_shapiro_jax(
     return total
 
 
+def _bclt_step_jax(
+    dt: jnp.ndarray,
+    *,
+    sat,
+    posepoch_mjd,
+    tt,
+    tt_tb,
+    rca,
+    osun,
+    venus_rsa,
+    jup_rsa,
+    sat_rsa,
+    ura_rsa,
+    nep_rsa,
+    freq,
+    earth_vel,
+    site_vel,
+    dm_val,
+    einstein_i,
+    pos_pulsar,
+    vel_pulsar,
+    acc_pulsar,
+    parallax_mas,
+    pmrv_rad_century,
+    dilate_freq,
+    planet_shapiro_enabled,
+    ne_sw,
+):
+    """One BCLT fixed-point update: ``dt -> new_dt`` plus in-loop delay terms."""
+    planet_rsa = (venus_rsa, jup_rsa, sat_rsa, ura_rsa, nep_rsa)
+    sun_rsa = -osun
+    delt = _bclt_delt_jax(sat, posepoch_mjd, tt, tt_tb, dt)
+    psr_pos = _psr_pos_jax(pos_pulsar, vel_pulsar, delt)
+    roemer_ls = _roemer_ls_jax(
+        rca, pos_pulsar, vel_pulsar, acc_pulsar, delt, parallax_mas, pmrv_rad_century
+    )
+    shap_sun = _shapiro_jax(sun_rsa, psr_pos, GM_C3_JAX)
+    shap_jup = _shapiro_jax(jup_rsa, psr_pos, GMJ_C3_JAX)
+    tdis1_i, tdis2_i = _dm_jax(
+        freq, dm_val, psr_pos, osun, earth_vel, site_vel, einstein_i, dilate_freq, ne_sw
+    )
+    shap_update = shap_sun + jnp.where(
+        planet_shapiro_enabled & (jnp.linalg.norm(jup_rsa) > 1e-20),
+        shap_jup,
+        0.0,
+    )
+    new_dt = roemer_ls - (tdis1_i + tdis2_i) - shap_update
+    return new_dt, roemer_ls, tdis1_i, tdis2_i, shap_sun, shap_jup
+
+
 def compute_bclt_terms_jax(
     *,
     sat_mjd: jnp.ndarray,
@@ -427,10 +492,11 @@ def compute_bclt_terms_jax(
     planet_shapiro_enabled: bool = True,
     obs_jupiter_ls: jnp.ndarray | None = None,
     planet_obs_ls: tuple[jnp.ndarray, ...] | None = None,
-    max_iter: int = 100,
+    max_iter: int | None = None,
     tol: float = 1.0e-10,
 ) -> BcltTerms:
-    """JAX BCLT iteration: ``vmap`` over TOAs with ``lax.while_loop``."""
+    """JAX BCLT: ``vmap`` over TOAs with fixed-length ``lax.scan`` (reverse-mode safe)."""
+    fixed_iter = bclt_jax_fixed_iter_count(max_iter)
     n = sat_mjd.shape[0]
     einstein = jnp.ones(n, dtype=jnp.float64) if einstein_rate is None else einstein_rate
     if planet_obs_ls is None:
@@ -460,56 +526,87 @@ def compute_bclt_terms_jax(
         einstein_i,
     ):
         planet_rsa = (venus_rsa, jup_rsa, sat_rsa, ura_rsa, nep_rsa)
-        sun_rsa = -osun
 
-        def cond(state):
-            dt_old, dt, it, *_ = state
-            return (jnp.abs(dt - dt_old) > tol) & (it < max_iter)
-
-        def body(state):
-            dt_old, dt, it, roemer, tdis1, tdis2, shap_sun, shap_jup, shap_planets = state
-            del shap_planets
-            delt = _bclt_delt_jax(sat, posepoch_mjd, tt, tt_tb, dt)
-            psr_pos = _psr_pos_jax(pos_pulsar, vel_pulsar, delt)
-            roemer_ls = _roemer_ls_jax(
-                rca, pos_pulsar, vel_pulsar, acc_pulsar, delt, parallax_mas, pmrv_rad_century
+        def scan_body(carry, _):
+            dt_old, dt, it, first_converged, has_converged, roemer, tdis1, tdis2, shap_sun, shap_jup = (
+                carry
             )
-            shap_sun = _shapiro_jax(sun_rsa, psr_pos, GM_C3_JAX)
-            shap_jup = _shapiro_jax(jup_rsa, psr_pos, GMJ_C3_JAX)
-            tdis1_i, tdis2_i = _dm_jax(
-                freq, dm_val, psr_pos, osun, earth_vel, site_vel, einstein_i, dilate_freq, ne_sw
+            new_dt, roemer, tdis1, tdis2, shap_sun, shap_jup = _bclt_step_jax(
+                dt,
+                sat=sat,
+                posepoch_mjd=posepoch_mjd,
+                tt=tt,
+                tt_tb=tt_tb,
+                rca=rca,
+                osun=osun,
+                venus_rsa=venus_rsa,
+                jup_rsa=jup_rsa,
+                sat_rsa=sat_rsa,
+                ura_rsa=ura_rsa,
+                nep_rsa=nep_rsa,
+                freq=freq,
+                earth_vel=earth_vel,
+                site_vel=site_vel,
+                dm_val=dm_val,
+                einstein_i=einstein_i,
+                pos_pulsar=pos_pulsar,
+                vel_pulsar=vel_pulsar,
+                acc_pulsar=acc_pulsar,
+                parallax_mas=parallax_mas,
+                pmrv_rad_century=pmrv_rad_century,
+                dilate_freq=dilate_freq,
+                planet_shapiro_enabled=planet_shapiro_enabled,
+                ne_sw=ne_sw,
             )
-            shap_update = shap_sun + jnp.where(
-                planet_shapiro_enabled & (jnp.linalg.norm(jup_rsa) > 1e-20),
+            err = jnp.abs(new_dt - dt)
+            converged_now = err <= tol
+            first_converged = jnp.where(
+                (~has_converged) & converged_now,
+                it + 1,
+                first_converged,
+            )
+            has_converged = has_converged | converged_now
+            new_carry = (
+                dt,
+                new_dt,
+                it + 1,
+                first_converged,
+                has_converged,
+                roemer,
+                tdis1,
+                tdis2,
+                shap_sun,
                 shap_jup,
-                0.0,
             )
-            new_dt = roemer_ls - (tdis1_i + tdis2_i) - shap_update
-            return (dt, new_dt, it + 1, roemer_ls, tdis1_i, tdis2_i, shap_sun, shap_jup, shap_jup)
+            return new_carry, None
 
-        init = (
-            jnp.inf,
+        init_carry = (
+            jnp.array(jnp.inf, dtype=jnp.float64),
             jnp.array(0.0, dtype=jnp.float64),
             jnp.array(0, dtype=jnp.int32),
-            jnp.array(0.0, dtype=jnp.float64),
+            jnp.array(0, dtype=jnp.int32),
+            jnp.array(False),
             jnp.array(0.0, dtype=jnp.float64),
             jnp.array(0.0, dtype=jnp.float64),
             jnp.array(0.0, dtype=jnp.float64),
             jnp.array(0.0, dtype=jnp.float64),
             jnp.array(0.0, dtype=jnp.float64),
         )
-        final = jax.lax.while_loop(cond, body, init)
-        dt_old, dt, it, roemer, tdis1, tdis2, _shap_sun, shap_jup, _ = final
+        final, _ = jax.lax.scan(scan_body, init_carry, None, length=fixed_iter)
+        dt_old, dt, it, first_converged, has_converged, roemer, tdis1, tdis2, _shap_sun, shap_jup = (
+            final
+        )
         delt_final = _bclt_delt_jax(sat, posepoch_mjd, tt, tt_tb, dt)
         psr_pos_final = _psr_pos_jax(pos_pulsar, vel_pulsar, delt_final)
-        shap_sun_final = _shapiro_jax(sun_rsa, psr_pos_final, GM_C3_JAX)
+        shap_sun_final = _shapiro_jax(-osun, psr_pos_final, GM_C3_JAX)
         shap_jup_final = _shapiro_jax(jup_rsa, psr_pos_final, GMJ_C3_JAX)
         shap_planets_final = _sum_planet_shapiro_jax(
             psr_pos_final,
             planet_rsa,
             enabled=planet_shapiro_enabled,
         )
-        converged = jnp.abs(dt - dt_old) <= tol
+        iters = jnp.where(first_converged > 0, first_converged, jnp.int32(fixed_iter))
+        converged = has_converged | (jnp.abs(dt - dt_old) <= tol)
         return (
             roemer,
             tdis1,
@@ -518,7 +615,7 @@ def compute_bclt_terms_jax(
             shap_jup_final,
             shap_planets_final,
             dt,
-            it,
+            iters,
             converged,
         )
 
@@ -550,4 +647,111 @@ def compute_bclt_terms_jax(
         dt_ssb_sec=dt_ssb,
         bclt_iterations=iters.astype(jnp.int32),
         converged=converged,
+    )
+
+
+def compute_bclt_terms_fixed_state_jax(
+    *,
+    sat_mjd: jnp.ndarray,
+    correction_tt_sec: jnp.ndarray,
+    correction_tt_tb_sec: jnp.ndarray,
+    dt_ssb_ref_sec: jnp.ndarray,
+    ssb_obs_ls: jnp.ndarray,
+    obs_sun_ls: jnp.ndarray,
+    freq_mhz: jnp.ndarray,
+    earth_ssb_vel_km_s: jnp.ndarray,
+    site_vel_km_s: jnp.ndarray,
+    dm_vals: jnp.ndarray,
+    pos_pulsar: jnp.ndarray,
+    vel_pulsar: jnp.ndarray,
+    acc_pulsar: jnp.ndarray,
+    posepoch_mjd: float,
+    parallax_mas: float = 0.0,
+    pmrv_rad_century: float = 0.0,
+    ne_sw: float = 0.0,
+    einstein_rate: jnp.ndarray | None = None,
+    dilate_freq: bool = False,
+    planet_shapiro_enabled: bool = True,
+    obs_jupiter_ls: jnp.ndarray | None = None,
+    planet_obs_ls: tuple[jnp.ndarray, ...] | None = None,
+) -> BcltTerms:
+    """One-pass nonlinear tempo2 BCLT terms at frozen reference dt_ssb."""
+    n = sat_mjd.shape[0]
+    einstein = jnp.ones(n, dtype=jnp.float64) if einstein_rate is None else einstein_rate
+    if planet_obs_ls is None:
+        zeros = jnp.zeros((n, 3), dtype=jnp.float64)
+        jup_fill = -obs_jupiter_ls if obs_jupiter_ls is not None else zeros
+        planet_obs_ls = (zeros, jup_fill, zeros, zeros, zeros)
+    venus_rsa, jup_rsa, sat_rsa, ura_rsa, nep_rsa = planet_obs_ls
+
+    def single(
+        sat,
+        tt,
+        tt_tb,
+        dt_ref,
+        rca,
+        osun,
+        venus,
+        jup,
+        saturn,
+        ura,
+        nep,
+        freq,
+        earth_vel,
+        site_vel,
+        dm_val,
+        einstein_i,
+    ):
+        planet_rsa = (venus, jup, saturn, ura, nep)
+        delt = _bclt_delt_jax(sat, posepoch_mjd, tt, tt_tb, dt_ref)
+        psr_pos = _psr_pos_jax(pos_pulsar, vel_pulsar, delt)
+        roemer = _roemer_ls_jax(
+            rca, pos_pulsar, vel_pulsar, acc_pulsar, delt, parallax_mas, pmrv_rad_century
+        )
+        shap_sun = _shapiro_jax(-osun, psr_pos, GM_C3_JAX)
+        shap_jup = _shapiro_jax(jup, psr_pos, GMJ_C3_JAX)
+        shap_planets = _sum_planet_shapiro_jax(
+            psr_pos, planet_rsa, enabled=planet_shapiro_enabled
+        )
+        tdis1, tdis2 = _dm_jax(
+            freq, dm_val, psr_pos, osun, earth_vel, site_vel, einstein_i, dilate_freq, ne_sw
+        )
+        dt_ssb = update_dt_ssb(
+            roemer,
+            tdis1,
+            tdis2,
+            shap_sun,
+            shap_jup,
+            jnp.where(planet_shapiro_enabled, 1.0, 0.0),
+        )
+        return roemer, tdis1, tdis2, shap_sun, shap_jup, shap_planets, dt_ssb
+
+    roemer, tdis1, tdis2, shap_sun, shap_jup, shap_planets, dt_ssb = jax.vmap(single)(
+        sat_mjd,
+        correction_tt_sec,
+        correction_tt_tb_sec,
+        dt_ssb_ref_sec,
+        ssb_obs_ls,
+        obs_sun_ls,
+        venus_rsa,
+        jup_rsa,
+        sat_rsa,
+        ura_rsa,
+        nep_rsa,
+        freq_mhz,
+        earth_ssb_vel_km_s,
+        site_vel_km_s,
+        dm_vals,
+        einstein,
+    )
+    return BcltTerms(
+        roemer_sec=roemer,
+        tdis1_sec=tdis1,
+        tdis2_sec=tdis2,
+        shapiro_sun_sec=shap_sun,
+        shapiro_jupiter_sec=shap_jup,
+        shapiro_planets_sec=shap_planets,
+        dt_ssb_sec=dt_ssb,
+        bclt_iterations=jnp.ones(n, dtype=jnp.int32),
+        converged=jnp.ones(n, dtype=bool),
     )

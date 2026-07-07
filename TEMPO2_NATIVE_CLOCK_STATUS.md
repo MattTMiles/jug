@@ -70,7 +70,7 @@ End-to-end JAX matching libstempo/tempo2: ``calculate_bclt.C`` → ``formBats.C`
 pt ``torb_sec`` in JUG-composed spin — **172 ns** trap, Step 18).
 
 **Status:** temp probes promoted to `jug/residuals/tempo2_native/` and `jug/testing/`.
-`USE_JAX_TEMPO2_NATIVE_CHAIN = False` until Phase 4 gates pass.
+Tempo2 fitting always uses `JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
 
 **NumPy reference deprecation:** `chain_numpy.py` is dev-only, emits `DeprecationWarning`,
 and will be env-gated (`JUG_DEV_NUMPY_TEMPO2_CHAIN=1`) or deleted when native gates are green.

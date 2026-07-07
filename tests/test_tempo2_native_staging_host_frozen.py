@@ -17,12 +17,8 @@ from tempo2_native_test_helpers import load_wsrt167_fixture, native_batcorr_days
 
 
 @pytest.fixture(autouse=True)
-def _force_frozen_native_path(monkeypatch):
-    monkeypatch.setattr(
-        "jug.residuals.tempo2_native_quarantine.USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH",
-        False,
-    )
-    monkeypatch.delenv("JUG_TEMPO2_NATIVE_FULL_INGRAPH", raising=False)
+def _force_staged_native_path(monkeypatch):
+    monkeypatch.setenv("JUG_TEMPO2_NATIVE_GRAPH_MODE", "staged_bclt")
 
 
 def _staging_terms(fixture):

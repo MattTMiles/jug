@@ -55,10 +55,7 @@ from jug.residuals.tzr_geometry import (
     resolve_tempo2_tzr_apply_mode,
     resolve_tzrmjd_epochs,
 )
-from jug.residuals.tempo2_native_quarantine import (
-    USE_JAX_TEMPO2_NATIVE_CHAIN,
-    USE_NATIVE_BBAT_PHASE5,
-)
+from jug.residuals.tempo2_native_quarantine import USE_NATIVE_BBAT_PHASE5
 from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
@@ -2143,7 +2140,7 @@ def compute_residuals_simple(
 
     subtract_mean_in_phase = tzr_apply_mode != "post_wrap"
 
-    if is_tempo2_compat and USE_JAX_TEMPO2_NATIVE_CHAIN:
+    if is_tempo2_compat:
         from jug.residuals.tempo2_native.chain_jax import compute_native_eval_residuals_jax
 
         _native_td = {

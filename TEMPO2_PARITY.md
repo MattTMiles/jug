@@ -11,8 +11,8 @@ active work queue, and investigation log.
 the residual cache. IPTA DR2 workloads **partially green**. **Fix #1 (TZR, Phase C):** done.
 **Fix #2 (wsrt167, Phase D):** Steps 1–18 — production Taylor@``model_mjd`` + ``dt_sec_ld``
 remains best at **~16.4 ns** for scalar residuals; JAX native **fitting** uses host-frozen
-staging (not full in-graph). Do **not** wire ``phase5@bbat`` or enable
-``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH`` in interactive sessions. **Primary report:**
+staging (not full in-graph). Do **not** wire ``phase5@bbat`` or set
+``JUG_TEMPO2_NATIVE_GRAPH_MODE=full`` in interactive sessions. **Primary report:**
 [`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md).
 
 ---
@@ -50,7 +50,7 @@ not the JUG shortcut ``(model_mjd − sat)×86400 − prebinary``.
 
 **Status (2026-07-06):** scaffold implemented under
 ``jug/residuals/tempo2_native/`` (JAX ``chain_jax.py`` + dev ``chain_numpy.py``).
-``USE_JAX_TEMPO2_NATIVE_CHAIN = False`` — production unchanged (~16 ns wsrt167).
+``JUG_TEMPO2_NATIVE_GRAPH_MODE`` selects the traced graph (default ``staged_bclt``).
 
 | Gate | Interim (dev_oracle) | Strict target | Notes |
 |------|---------------------|---------------|-------|
@@ -493,7 +493,7 @@ approximates the modern IAU2000B path:
 
 **Related context:** production tempo2 mode already uses host jplephem SPK for planetary
 positions (`Tempo2DelayProvider`); the in-graph SPK path (`tempo2_spk_jax.py`) is for the
-quarantined unified JIT chain (`USE_JAX_TEMPO2_NATIVE_CHAIN = False`). Astropy ephemeris
+quarantined unified JIT chain (`JUG_TEMPO2_NATIVE_GRAPH_MODE=full`). Astropy ephemeris
 (PINT path) is **not** a substitute for tempo2-native site motion — wrong clock chain,
 Teph epoch coupling, and `get_obsCoord` conventions (see `TEMPO2_COMPATIBILITY.md` §2).
 

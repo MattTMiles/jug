@@ -55,7 +55,6 @@ import warnings
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.residuals.tempo2_native_quarantine import USE_JAX_TEMPO2_NATIVE_CHAIN
 from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.io.par_reader import parse_par_file, _parse_float
 from jug.io.tim_reader import parse_tim_file_mjds
@@ -377,7 +376,6 @@ class GeneralFitSetup:
     native_bbat_mjd: np.ndarray | None = None
     native_torb_sec: np.ndarray | None = None
     native_dt_emission_sec: np.ndarray | None = None
-    use_jax_tempo2_native_chain: bool = False
 
 
 # =============================================================================
@@ -1751,7 +1749,7 @@ def _build_setup_common(
             "design_matrix_method must be 'analytic' or 'autodiff'; "
             f"got {design_matrix_method!r}"
         )
-    use_native = str(compatibility).lower().startswith("tempo2") and USE_JAX_TEMPO2_NATIVE_CHAIN
+    use_native = str(compatibility).lower().startswith("tempo2")
     native_chain_static = None
     if use_native and extras.get("term_diagnostics") is not None:
         native_chain_static = {
@@ -1825,7 +1823,6 @@ def _build_setup_common(
         tzr_phase=tzr_phase,
         noise_config=noise_config,
         binary_plan=binary_plan,
-        use_jax_tempo2_native_chain=use_native,
         native_chain_static=native_chain_static,
     )
 

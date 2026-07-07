@@ -6,12 +6,12 @@ same nonlinear residual-delta function used for JAX-native timing likelihoods;
 there are no finite-difference perturbations and no hand-written derivative
 columns in this path.
 
-When ``use_jax_tempo2_native_chain=True``, tempo2-native fits recompute
-``residual_sec(θ+Δθ) − residual_sec(θ)`` through the host-frozen staging tail
-by default (BCLT, formBats, Shklovskii, spin / TRACK−2). Set
-``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH=True`` (or ``JUG_TEMPO2_NATIVE_FULL_INGRAPH=1``)
-only to differentiate through the full in-graph model; expect multi-minute JIT
-compile on first call. The Taylor ``dt_base + delay_change`` fallback is not used.
+For ``compatibility="tempo2"``, fits recompute
+``residual_sec(θ+Δθ) − residual_sec(θ)`` through the tempo2-native JAX graph
+selected by ``JUG_TEMPO2_NATIVE_GRAPH_MODE`` (default ``staged_bclt``). Set
+``JUG_TEMPO2_NATIVE_GRAPH_MODE=full`` only to differentiate through the unified
+in-graph model; expect multi-minute JIT compile on first call. The Taylor
+``dt_base + delay_change`` fallback is not used for tempo2 compatibility.
 """
 
 from __future__ import annotations
@@ -26,8 +26,10 @@ import numpy as np
 
 from jug.residuals.tempo2_native.chain_jax import (
     NativeDeltaPack,
+    NativeFixedStateNonlinearDeltaPack,
     NativeFrozenDeltaPack,
     build_native_delta_pack_for_setup,
+    compute_native_fixed_state_nonlinear_residual_delta_jax,
     compute_native_frozen_residual_delta_jax,
     compute_native_full_chain_residual_delta_jax,
 )
@@ -297,16 +299,15 @@ def _compute_residual_delta_jax(
     params_pert: dict,
     setup: "GeneralFitSetup",
     *,
-    native_pack: NativeDeltaPack | NativeFrozenDeltaPack | None,
+    native_pack: (
+        NativeDeltaPack | NativeFrozenDeltaPack | NativeFixedStateNonlinearDeltaPack | None
+    ),
     ref_f_terms: Sequence[float],
     phase_mean_mode: str,
     binary_plan=None,
 ):
     """Residual delta (perturbed - reference) through JUG's JAX forward model."""
-    if (
-        str(getattr(setup, "compatibility", "")).lower().startswith("tempo2")
-        and getattr(setup, "use_jax_tempo2_native_chain", False)
-    ):
+    if str(getattr(setup, "compatibility", "")).lower().startswith("tempo2"):
         if native_pack is None:
             static = getattr(setup, "native_chain_static", None)
             if static is None:
@@ -315,13 +316,16 @@ def _compute_residual_delta_jax(
                     "GeneralFitSetup. Rebuild from a residual cache that includes "
                     "term_diagnostics (e.g. call compute_residuals before "
                     "export_jax_timing_state). "
-                    "USE_JAX_TEMPO2_NATIVE_CHAIN enables the native fitting path; "
-                    "USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH is a separate slow in-graph "
-                    "compile opt-in (default off — production uses host-frozen staging)."
+                    "Set JUG_TEMPO2_NATIVE_GRAPH_MODE to staged_bclt (default), "
+                    "fixed_state_nonlinear, or full."
                 )
             raise ValueError(
                 "tempo2 native residual_delta could not build a native delta pack "
                 "(missing term_diagnostics['tempo2_obs_state'] or TOA list on setup)."
+            )
+        if isinstance(native_pack, NativeFixedStateNonlinearDeltaPack):
+            return compute_native_fixed_state_nonlinear_residual_delta_jax(
+                params_ref, params_pert, native_pack
             )
         if isinstance(native_pack, NativeFrozenDeltaPack):
             return compute_native_frozen_residual_delta_jax(
@@ -394,10 +398,7 @@ def make_residual_delta_jax_fn(
         ref_params
     )
     native_pack = None
-    if (
-        str(setup.compatibility).lower().startswith("tempo2")
-        and getattr(setup, "use_jax_tempo2_native_chain", False)
-    ):
+    if str(setup.compatibility).lower().startswith("tempo2"):
         native_pack = build_native_delta_pack_for_setup(setup)
 
     @jax.jit

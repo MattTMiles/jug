@@ -148,18 +148,21 @@ raw.
 
 **Nonlinear / autodiff / MetaPulsar:** green residual tests on curated fixtures
 do **not** mean tempo2 mode is ready for JAX-traced likelihoods or IPTA-scale
-workloads. See [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md) for policy and
+workloads. See [`TIMING_GRAPH_ACCURACY.md`](TIMING_GRAPH_ACCURACY.md) for what
+JAX-traced graphs actually guarantee (PINT-family fixed-state vs tempo2 graph
+modes), [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md) for policy, and
 [`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) for gap analysis, pytempo workflow, and usage guidance.
 
-### Tempo2-native JAX fitting (hybrid path, 2026-07-07)
+### Tempo2-native JAX fitting (graph modes, 2026-07-07)
 
-Production tempo2 `design_matrix_method="autodiff"` and `residual_delta_jax` use a
-**host-frozen** native chain by default:
+Production tempo2 `design_matrix_method="autodiff"` and `residual_delta_jax` always use
+the tempo2-native JAX graph. Select the graph with a single env var:
 
-| Switch | Default | Role |
-|--------|---------|------|
-| `USE_JAX_TEMPO2_NATIVE_CHAIN` | `True` | Master switch for tempo2-native fitting / JAX residual deltas |
-| `USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH` | `False` | Opt-in slow unified in-graph model (`JUG_TEMPO2_NATIVE_FULL_INGRAPH=1`) |
+| Mode | Env value | Role |
+|------|-----------|------|
+| `staged_bclt` | default (unset) | Freeze host ephemeris/clocks; recompute BCLT scan, formBats, Shklovskii, spin in JAX |
+| `fixed_state_nonlinear` | `JUG_TEMPO2_NATIVE_GRAPH_MODE=fixed_state_nonlinear` | Freeze host state + reference BCLT `dt_ssb`; one-pass nonlinear tail (no BCLT scan) |
+| `full` | `JUG_TEMPO2_NATIVE_GRAPH_MODE=full` | Unified in-graph clocks/SPK/EOP/IFTE/tropo/BCLT (oracle/dev only) |
 
 Requirements for MetaPulsar / `export_jax_timing_state`:
 

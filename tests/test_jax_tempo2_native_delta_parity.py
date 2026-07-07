@@ -8,8 +8,6 @@ pytest.importorskip("libstempo")
 
 pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 
-from jug.residuals.tempo2_native_quarantine import USE_JAX_TEMPO2_NATIVE_CHAIN
-
 
 def test_native_delta_module_importable():
     from jug.fitting import jax_residual_delta
@@ -18,10 +16,6 @@ def test_native_delta_module_importable():
     assert hasattr(jax_residual_delta, "compute_autodiff_designmatrix_from_setup")
 
 
-@pytest.mark.skipif(
-    not USE_JAX_TEMPO2_NATIVE_CHAIN,
-    reason="Native delta path requires USE_JAX_TEMPO2_NATIVE_CHAIN",
-)
 def test_native_delta_phase5_gates_documented():
     """Full Phase 5 gates: tests/test_tempo2_native_residual_delta_jax.py."""
     from pathlib import Path

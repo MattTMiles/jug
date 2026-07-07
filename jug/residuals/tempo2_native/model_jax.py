@@ -29,7 +29,10 @@ from jug.delays.tempo2_geometry_jax import (
 from jug.delays.tempo2_spk_jax import Tempo2SpkPacked, SpkSegmentPacked, pack_tempo2_spk_jax
 from jug.delays.tempo2_site_jax import IersEopPacked, pack_iers_eop_jax
 from jug.delays.tempo2_geometry import tempo2_dilate_freq_enabled
-from jug.residuals.tempo2_native.calculate_bclt_jax import compute_bclt_terms_jax
+from jug.residuals.tempo2_native.calculate_bclt_jax import (
+    compute_bclt_terms_fixed_state_jax,
+    compute_bclt_terms_jax,
+)
 from jug.residuals.tempo2_native.clock_jax import (
     compute_einstein_rate_jax,
     compute_tempo2_correction_tt_tb_jax,
@@ -405,7 +408,7 @@ def compute_tempo2_toa_model_jax(
         initial compile can take **minutes**. Production fitting and fast dev loops
         should use ``compute_tempo2_toa_model_staging_with_host_inputs_jax`` with
         host-frozen inputs instead. Enable only via
-        ``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH`` or ``JUG_TEMPO2_NATIVE_FULL_INGRAPH=1``.
+        ``JUG_TEMPO2_NATIVE_GRAPH_MODE=full``.
 
     Clock ``getCorrectionTT``, IFTE ``IF_deltaT``, ephemeris geometry
     (SPK + site motion + Teph bootstrap), troposphere, and ``einsteinRate``
@@ -635,7 +638,7 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
     Accepts precomputed geometry, clocks, and ``einsteinRate`` from
     ``term_diagnostics['tempo2_obs_state']``. Only the parameter-dependent tail
     (BCLT, formBats, Shklovskii, spin) runs inside JAX. This is the **default**
-    production path when ``USE_JAX_TEMPO2_NATIVE_FULL_INGRAPH`` is False.
+    production path when ``JUG_TEMPO2_NATIVE_GRAPH_MODE=staged_bclt`` (default).
 
     For the slow unified in-graph reference, see ``compute_tempo2_toa_model_jax``.
     """
@@ -720,6 +723,190 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
         pmra=pmra,
         pmdec=pmdec,
         posepoch_mjd=shk_posepoch,
+    )
+    _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
+        sat_mjd,
+        tt,
+        tt_tb,
+        tropo,
+        bclt.roemer_sec,
+        shap_delay,
+        bclt.tdis1_sec,
+        bclt.tdis2_sec,
+        shk,
+    )
+    dt_emit = jnp.asarray(dt_emission_sec, dtype=jnp.float64)
+    torb = compute_torb_closure_jax(bbat_mjd, dt_emit, params_pepoch)
+    terms = Tempo2NativeTerms(
+        sat_mjd=sat_mjd,
+        correction_tt_sec=tt,
+        correction_tt_tb_sec=tt_tb,
+        roemer_sec=bclt.roemer_sec,
+        tdis1_sec=bclt.tdis1_sec,
+        tdis2_sec=bclt.tdis2_sec,
+        shapiro_sun_sec=bclt.shapiro_sun_sec,
+        shapiro_planets_sec=bclt.shapiro_planets_sec,
+        shapiro_delay_sec=shap_delay,
+        tropospheric_sec=tropo,
+        prebinary_sec=jnp.zeros_like(sat_mjd),
+        bat_corr_day=bat_corr_day,
+        bat_corr_day_residual=bat_corr_resid,
+        bat_mjd=bat_mjd,
+        bbat_mjd=bbat_mjd,
+        shklovskii_sec=shk,
+        torb_sec=torb,
+        dt_emission_sec=dt_emit,
+        dt_ssb_sec=bclt.dt_ssb_sec,
+        bclt_iterations=bclt.bclt_iterations,
+        converged=bclt.converged,
+    )
+    phase5 = compute_tempo2_phase5_jax(
+        bbat_mjd,
+        torb,
+        params_f_terms,
+        params_pepoch,
+        jump_phase=jump_phase,
+        tzr_phase=tzr_phase,
+    )
+    if track_val == -2 and pulse_numbers is not None and pn_add is not None:
+        frac, _pulse = track_minus2_frac_phase_jax(
+            phase5, bbat_mjd, params_f_terms[0], pulse_numbers, pn_add
+        )
+    else:
+        frac = phase5 - jnp.trunc(phase5)
+    residual_sec = frac / params_f_terms[0]
+    if subtract_mean:
+        residual_sec = residual_sec - jnp.mean(residual_sec)
+    return terms, residual_sec
+
+
+@partial(
+    jax.jit,
+    static_argnames=(
+        "ne_sw",
+        "posepoch_mjd",
+        "pmrv_rad_century",
+        "dilate_freq",
+        "si_units",
+        "units_tdb",
+        "planet_shapiro_enabled",
+        "track_val",
+        "subtract_mean",
+        "dshk",
+        "shk_posepoch",
+        "dm_epoch",
+        "dm_coeffs",
+    ),
+)
+def compute_tempo2_toa_model_fixed_state_nonlinear_jax(
+    *,
+    sat_mjd: jnp.ndarray,
+    freq_mhz: jnp.ndarray,
+    params_f_terms: jnp.ndarray,
+    params_pepoch: jnp.float64,
+    pos_pulsar: jnp.ndarray,
+    vel_pulsar: jnp.ndarray,
+    acc_pulsar: jnp.ndarray,
+    tropo_sec: jnp.ndarray,
+    dt_emission_sec: jnp.ndarray,
+    earth_ssb_km: jnp.ndarray,
+    observatory_earth_km: jnp.ndarray,
+    site_vel_km_s: jnp.ndarray,
+    ssb_obs_ls: jnp.ndarray,
+    obs_sun_ls: jnp.ndarray,
+    obs_jupiter_ls: jnp.ndarray,
+    planet_obs_ls: dict[str, jnp.ndarray] | None = None,
+    correction_tt_sec_pre: jnp.ndarray,
+    correction_tt_tb_sec_pre: jnp.ndarray,
+    einstein_rate: jnp.ndarray,
+    dt_ssb_ref_sec: jnp.ndarray,
+    dm_vals: jnp.ndarray | None = None,
+    dm_epoch: float = 0.0,
+    dm_coeffs: tuple[float, ...] = (0.0,),
+    ne_sw: float = 0.0,
+    posepoch_mjd: float = 0.0,
+    parallax_mas: float = 0.0,
+    pmrv_rad_century: float = 0.0,
+    dilate_freq: bool = False,
+    si_units: bool = False,
+    units_tdb: bool = True,
+    planet_shapiro_enabled: bool = True,
+    track_val: int = -2,
+    subtract_mean: bool = True,
+    dshk: float = 0.0,
+    pmra: float = 0.0,
+    pmdec: float = 0.0,
+    shk_posepoch: float | None = None,
+    jump_phase: jnp.ndarray | None = None,
+    tzr_phase: jnp.float64 | None = None,
+    pulse_numbers: jnp.ndarray | None = None,
+    pn_add: jnp.ndarray | None = None,
+) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+    """Tempo2 TOA model with frozen reference BCLT epoch (one-pass nonlinear tail)."""
+    if dm_vals is None:
+        dm_vals = compute_dm_vals_jax(sat_mjd, dm_epoch=dm_epoch, dm_coeffs=dm_coeffs)
+    tt = jnp.asarray(correction_tt_sec_pre, dtype=jnp.float64)
+    tt_tb = jnp.asarray(correction_tt_tb_sec_pre, dtype=jnp.float64)
+    einstein = jnp.asarray(einstein_rate, dtype=jnp.float64)
+    if planet_obs_ls is None:
+        planet_obs_ls = {"jupiter": obs_jupiter_ls}
+    planet_rsa = planet_rsa_tuple_jax_from_dict(
+        planet_obs_ls,
+        n_toa=int(sat_mjd.shape[0]),
+        obs_jupiter_ls=obs_jupiter_ls,
+    )
+    bclt = compute_bclt_terms_fixed_state_jax(
+        sat_mjd=sat_mjd,
+        correction_tt_sec=tt,
+        correction_tt_tb_sec=tt_tb,
+        dt_ssb_ref_sec=dt_ssb_ref_sec,
+        ssb_obs_ls=ssb_obs_ls,
+        obs_sun_ls=obs_sun_ls,
+        freq_mhz=freq_mhz,
+        earth_ssb_vel_km_s=earth_ssb_km[:, 3:6],
+        site_vel_km_s=site_vel_km_s,
+        dm_vals=dm_vals,
+        pos_pulsar=pos_pulsar,
+        vel_pulsar=vel_pulsar,
+        acc_pulsar=acc_pulsar,
+        posepoch_mjd=posepoch_mjd,
+        parallax_mas=parallax_mas,
+        pmrv_rad_century=pmrv_rad_century,
+        ne_sw=ne_sw,
+        einstein_rate=einstein,
+        dilate_freq=dilate_freq,
+        planet_shapiro_enabled=planet_shapiro_enabled,
+        obs_jupiter_ls=obs_jupiter_ls,
+        planet_obs_ls=planet_rsa,
+    )
+    tropo = jnp.asarray(tropo_sec, dtype=jnp.float64)
+    shap_delay = bclt.shapiro_sun_sec + jnp.where(
+        planet_shapiro_enabled,
+        bclt.shapiro_planets_sec,
+        0.0,
+    )
+    bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd = compute_formbats_jax(
+        sat_mjd,
+        tt,
+        tt_tb,
+        tropo,
+        bclt.roemer_sec,
+        shap_delay,
+        bclt.tdis1_sec,
+        bclt.tdis2_sec,
+        jnp.zeros_like(sat_mjd),
+    )
+    shk_posepoch_val = (
+        float(shk_posepoch) if shk_posepoch is not None else float(posepoch_mjd)
+    )
+    shk = compute_shklovskii_sec_jax_pure(
+        bat_mjd,
+        params_pepoch,
+        params_f_terms,
+        dshk=dshk,
+        pmra=pmra,
+        pmdec=pmdec,
+        posepoch_mjd=shk_posepoch_val,
     )
     _, _, bat_mjd, bbat_mjd = compute_formbats_jax(
         sat_mjd,

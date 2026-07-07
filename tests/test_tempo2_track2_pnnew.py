@@ -93,14 +93,20 @@ def test_track2_frac_matches_legacy_plus_one_wsrt167():
 def test_track2_phase5_spin_matches_pytempo_nphase_wsrt167():
     """``compute_tempo2_phase5`` at pytempo ``bbat`` must match tempo2 ``nphase``."""
     pytest.importorskip("pytempo")
+    from pytempo.sandbox import tempopulsar
+
     ctx = load_track2_oracle_context(
         _WSRT167["par_path"], _WSRT167["tim_path"], use_pytempo=True
     )
-    assert ctx.pytempo_diag is not None
     phase5 = _phase5_at_oracle(ctx)
     phas1 = float(_fortran_mod(phase5[0], 1.0))
     nph_jug = _fortran_nlong(phase5 - phas1).astype(np.float64)
-    nph_pt = np.asarray(ctx.pytempo_diag["nphase"], dtype=np.float64)
+    psr = tempopulsar(
+        parfile=str(_WSRT167["par_path"]),
+        timfile=str(_WSRT167["tim_path"]),
+        dofit=False,
+    )
+    nph_pt = np.asarray(psr.phase_diagnostics()["nphase"], dtype=np.float64)
     np.testing.assert_array_equal(nph_jug, nph_pt)
 
 
@@ -116,5 +122,5 @@ def test_track2_pnnew_residual_floor_documented_wsrt167():
     ref = tempo2_reference(ctx.par_path, ctx.tim_path)
     delta_ns = (res_us - ref.residuals_us) * 1000.0
     rms = float(np.sqrt(np.mean(np.square(delta_ns))))
-    assert rms < 25.0, f"phase5+pnNew rms={rms:.2f} ns (production ~16.4 ns is better)"
+    assert rms < 25.0, f"phase5+pnNew rms={rms:.2f} ns (production ~15.5 ns is better)"
     assert rms > 5.0, "unexpected pass before WSRT padd / wrap fixes"

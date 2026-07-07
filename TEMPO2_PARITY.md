@@ -9,11 +9,50 @@ active work queue, and investigation log.
 (wsrt167 pytempo gates **< 1 ns** on delay terms; production fitting default) is wired for
 `design_matrix_method="autodiff"` when `term_diagnostics['tempo2_obs_state']` is present in
 the residual cache. IPTA DR2 workloads **partially green**. **Fix #1 (TZR, Phase C):** done.
-**Fix #2 (wsrt167, Phase D):** Steps 1–18 — production Taylor@``model_mjd`` + ``dt_sec_ld``
-remains best at **~16.4 ns** for scalar residuals; JAX native **fitting** uses host-frozen
-staging (not full in-graph). Do **not** wire ``phase5@bbat`` or set
+**Fix #2 (wsrt167, Phase D):** Steps 1–18 — production **Taylor emission spin @ model epoch**
++ legacy TRACK −2 wrapping remains best at **~15.5 ns** wsrt167 / **~31 ns** full EPTA RMS
+(vs libstempo); JAX ``phase5@bbat`` + ``track_minus2_frac_phase`` quarantined (breaks
+``-addsat`` at ~±1 s). Do **not** wire ``phase5@bbat`` or set
 ``JUG_TEMPO2_NATIVE_GRAPH_MODE=full`` in interactive sessions. **Primary report:**
 [`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md).
+
+### J0613 fast gates (2026-07-07)
+
+Inner-loop tests (no full 1369-TOA libstempo in the default loop):
+
+| Gate | File | Measured debt | Strict target |
+|------|------|---------------|---------------|
+| No TRACK / no ``-pn`` | ``tests/test_tempo2_j0613_fast_gates.py`` | nrt1400 ~4.4 ns | 1 ns |
+| TRACK −2 ``-addsat`` mini | ``epta_j0613_addsat_min`` (11 TOAs) | ~0.3–0.7 µs on addsat TOAs | 1 ns |
+| wsrt167 bulk spin | same + ``test_dev_oracle_wsrt167_parity.py`` | ~15.5 ns RMS | 5 ns |
+| Full EPTA | ``test_tempo2_ipta_dr2_j0613_parity.py`` (xfail) | ~31 ns RMS | 5 ns |
+
+**Production fix (2026-07-07):** Hybrid tempo2 residual routing in
+``compute_residuals_simple``:
+
+| Condition | Route | Notes |
+|-----------|-------|-------|
+| ``TRACK -2`` | ``compute_phase_residuals`` (Taylor + legacy TRACK −2) | wsrt167 ~15.5 ns RMS; do not use ``track_minus2_frac_phase`` on Taylor phase |
+| ``TRACK`` absent (tempo2 default 0) | ``compute_phase_residuals`` (Taylor sequential) | Fixes stripped no-TRACK nrt1400 (~6 ns); native ``phase5@bbat`` trunc was ~1.4 ms wrong |
+| Explicit non-``-2`` ``TRACK`` | ``compute_native_eval_residuals_jax`` | Autodiff / native delay chain staging |
+
+Strict probe harness (``/tmp/jug_tempo2_strict/``, not in repo) measured on 2026-07-07:
+
+| wsrt167 term | Raw vs pytempo | Residual after substitution |
+|--------------|----------------|----------------------------|
+| ``torb_sec`` | ~27 ns RMS | — |
+| ``bbat_mjd`` | ~304 ns RMS (documented assembly debt) | substituting pytempo **worsens** residuals to ~5.6 µs |
+| ``acceptance_residual`` baseline | — | **15.5 ns** RMS (unchanged) |
+
+**Conclusion:** do **not** promote split longdouble ``formBats`` or ``phase5@bbat`` into production
+for wsrt167; the ~15.5 ns floor is not delay-chain assembly. ``addsat`` mini fixture remains
+~283 ns bulk / ~566 ns max on addsat TOAs (shifted-``sat`` + ``addsat_track2_turn_delta``).
+
+**Environment-only failures (not code regressions):** libstempo parity tests that require
+``DE440`` ephemeris fail in this container (`FileNotFoundError`). NG5 TDB broad parity remains
+~5.3 µs vs libstempo in this environment (native JAX path); document separately from J0613 debt.
+
+Component oracle gates: ``tests/test_tempo2_j0613_delay_terms.py`` (`dev_oracle`, pytempo).
 
 ---
 

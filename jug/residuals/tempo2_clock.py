@@ -221,6 +221,50 @@ def compute_correction_tt_tb_sec(
     return linear + IFTE_K * (correction_teph - IFTE_TEPH0_SEC), correction_teph
 
 
+def compute_formbats_arrival_from_components(
+    sat_mjd,
+    correction_tt_sec,
+    correction_tt_teph_sec,
+    correction_tt_tb_sec,
+    einstein_rate,
+    model_clock_mjd,
+    tropo_sec,
+    roemer_sec,
+    shapiro_delay_sec,
+    tdis1_sec,
+    tdis2_sec,
+    params,
+) -> tuple[Tempo2ClockTerms, np.ndarray]:
+    """Split longdouble ``formBats.C`` assembly (diagnostic / strict path)."""
+    SECS_PER_DAY_LD = np.longdouble(86400.0)
+    tt = np.asarray(correction_tt_sec, dtype=np.longdouble)
+    rest = (
+        np.asarray(correction_tt_tb_sec, dtype=np.longdouble)
+        - np.asarray(tropo_sec, dtype=np.longdouble)
+        + np.asarray(roemer_sec, dtype=np.longdouble)
+        - np.asarray(shapiro_delay_sec, dtype=np.longdouble)
+        - np.asarray(tdis1_sec, dtype=np.longdouble)
+        - np.asarray(tdis2_sec, dtype=np.longdouble)
+    )
+    sat = np.asarray(sat_mjd, dtype=np.longdouble)
+    bat_corr = tt / SECS_PER_DAY_LD + rest / SECS_PER_DAY_LD
+    bat = sat + tt / SECS_PER_DAY_LD + rest / SECS_PER_DAY_LD
+    shk = compute_shklovskii_sec(np.asarray(bat, dtype=np.float64), params)
+    bbat = bat - np.asarray(shk, dtype=np.longdouble) / SECS_PER_DAY_LD
+    terms = Tempo2ClockTerms(
+        sat_mjd=np.asarray(sat, dtype=np.float64),
+        correction_tt_sec=np.asarray(correction_tt_sec, dtype=np.float64),
+        correction_tt_teph_sec=np.asarray(correction_tt_teph_sec, dtype=np.float64),
+        correction_tt_tb_sec=np.asarray(correction_tt_tb_sec, dtype=np.float64),
+        einstein_rate=np.asarray(einstein_rate, dtype=np.float64),
+        model_clock_mjd=np.asarray(model_clock_mjd, dtype=np.float64),
+        bat_mjd=np.asarray(bat, dtype=np.float64),
+        bbat_mjd=np.asarray(bbat, dtype=np.float64),
+        shklovskii_sec=np.asarray(shk, dtype=np.float64),
+    )
+    return terms, np.asarray(bat_corr, dtype=np.float64)
+
+
 def compute_formbats_arrival(
     sat_mjd: np.ndarray,
     correction_tt_sec: np.ndarray,

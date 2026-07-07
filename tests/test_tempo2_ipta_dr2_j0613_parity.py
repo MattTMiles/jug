@@ -22,9 +22,9 @@ from test_tempo2_residual_parity import (
 # IPTA DR2 EPTA single-PTA dataset (J0613-0200.par + J0613-0200_all.tim).
 FIXTURE_ID = "epta_j0613_t2_ipta_all"
 
-# Measured 2026-07-04 after per-TOA -addsat int(F0) pnNew coupling fix.
-MEASURED_RMS_NS = 6.083258e2
-MEASURED_MAX_NS = 4.514432e3
+# Measured 2026-07-07 after restoring Taylor emission spin + legacy TRACK -2 production route.
+MEASURED_RMS_NS = 3.132765e1
+MEASURED_MAX_NS = 7.298316e2
 ADDSAT_MAX_DELTA_US = 1.0
 
 
@@ -32,7 +32,7 @@ ADDSAT_MAX_DELTA_US = 1.0
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "IPTA DR2 EPTA J0613: TRACK -2 + -addsat fixed (~608 ns RMS); "
+        "IPTA DR2 EPTA J0613: Taylor TRACK -2 production ~31 ns RMS; "
         f"remaining bulk gap vs {FINAL_RMS_DELTA_NS} ns gate"
     ),
 )

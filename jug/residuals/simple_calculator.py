@@ -718,12 +718,18 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         if np.any(addsat_arr != 0.0):
             f0_f64 = float(F0)
             if has_track_minus2_pn:
-                from jug.residuals.tempo2_spin import addsat_track2_turn_delta
+                from jug.residuals.tempo2_spin import (
+                    addsat_track2_turn_delta,
+                    compute_emission_taylor_phase5_nphase,
+                )
 
                 if use_tempo2_bbat_phase5:
-                    phas1_addsat = _fortran_mod(phase[0], np.longdouble(1.0))
-                    p5_f64 = np.asarray(phase, dtype=np.float64) - float(phas1_addsat)
-                    nph_f64 = _fortran_nlong(p5_f64)
+                    p5_f64, nph_f64 = compute_emission_taylor_phase5_nphase(
+                        dt_sec_ld,
+                        params,
+                        jump_phase=jump_phase,
+                        tzr_phase=tzr_phase,
+                    )
                 else:
                     p5_f64 = np.asarray(phase5, dtype=np.float64)
                     nph_f64 = np.asarray(nphase, dtype=np.float64)
@@ -2141,7 +2147,10 @@ def compute_residuals_simple(
     subtract_mean_in_phase = tzr_apply_mode != "post_wrap"
 
     if is_tempo2_compat:
-        from jug.residuals.tempo2_native.chain_jax import compute_native_eval_residuals_jax
+        from jug.residuals.tempo2_native.chain_jax import (
+            compute_native_eval_residuals_jax,
+            prepare_native_chain_from_simple_result,
+        )
 
         _native_td = {
             "sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64),
@@ -2166,24 +2175,60 @@ def compute_residuals_simple(
             "freq_bary_mhz": freq_bary_mhz,
             "compatibility": compatibility_mode,
         }
-        jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
-        tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)
-        residuals_sec_jax, pulse_number_jax, native = compute_native_eval_residuals_jax(
-            params=params,
-            toas=toas,
-            jug_result=_jug,
-            pulse_numbers=external_pn,
-            pn_add=external_pn_add,
-            jump_phase=jump_j,
-            tzr_phase=tzr_j,
-            subtract_mean=subtract_mean_in_phase,
-            mean_mode=delay_provider.phase_mean_mode,
-            track_val=int(track_val) if track_val is not None else -2,
-            weights=jnp.asarray(weights_scaled, dtype=jnp.float64),
-        )
-        residuals_sec = np.asarray(jax.device_get(residuals_sec_jax), dtype=np.float64)
-        pulse_number = np.asarray(jax.device_get(pulse_number_jax), dtype=np.longdouble)
-        residuals_us = residuals_sec * 1e6
+        native = prepare_native_chain_from_simple_result(_jug, params, toas)
+        use_taylor_track2_spin = track_val is not None and int(track_val) == -2
+        use_taylor_nontrack_spin = track_val is None
+        if use_taylor_track2_spin or use_taylor_nontrack_spin:
+            # TRACK -2: Taylor emission spin + legacy TRACK −2 wrapping.
+            # TRACK absent: Taylor sequential wrapping (tempo2 default TRACK=0).
+            # Native phase5@bbat trunc is wrong for TRACK-absent TDB/TCB fixtures.
+            if use_taylor_track2_spin:
+                residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
+                    dt_sec,
+                    params,
+                    weights_scaled,
+                    subtract_mean=subtract_mean_in_phase,
+                    tzr_phase=tzr_phase_for_residuals,
+                    jump_phase=jump_phase,
+                    external_pulse_numbers=external_pn,
+                    track_val=int(track_val),
+                    external_pn_add=external_pn_add,
+                    bbat_mjd=phase_bbat_mjd,
+                    torb_sec=phase_torb_sec,
+                    use_native_bbat_phase5=False,
+                    addsat_sec=addsat_sec,
+                    mean_mode=delay_provider.phase_mean_mode,
+                )
+            else:
+                residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
+                    dt_sec,
+                    params,
+                    weights_scaled,
+                    subtract_mean=subtract_mean_in_phase,
+                    tzr_phase=tzr_phase_for_residuals,
+                    jump_phase=jump_phase,
+                    mean_mode=delay_provider.phase_mean_mode,
+                )
+        else:
+            jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
+            tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)
+            residuals_sec_jax, pulse_number_jax, native = compute_native_eval_residuals_jax(
+                params=params,
+                toas=toas,
+                jug_result=_jug,
+                pulse_numbers=external_pn,
+                pn_add=external_pn_add,
+                jump_phase=jump_j,
+                tzr_phase=tzr_j,
+                subtract_mean=subtract_mean_in_phase,
+                mean_mode=delay_provider.phase_mean_mode,
+                track_val=int(track_val) if track_val is not None else -2,
+                weights=jnp.asarray(weights_scaled, dtype=jnp.float64),
+                addsat_sec=addsat_sec,
+            )
+            residuals_sec = np.asarray(jax.device_get(residuals_sec_jax), dtype=np.float64)
+            pulse_number = np.asarray(jax.device_get(pulse_number_jax), dtype=np.longdouble)
+            residuals_us = residuals_sec * 1e6
         dm_delay_sec = np.asarray(jax.device_get(native.tdis1_sec), dtype=np.float64)
         sw_delay_sec = np.asarray(jax.device_get(native.tdis2_sec), dtype=np.float64)
     else:

@@ -18,6 +18,68 @@ import numpy as np
 from jug.io.par_reader import get_longdouble
 
 
+def compute_emission_taylor_phase5_nphase(
+    dt_sec,
+    params,
+    *,
+    jump_phase=None,
+    tzr_phase=None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Emission-time Taylor ``phase5`` / ``nphase`` for TRACK -2 ``-addsat`` coupling.
+
+    Tempo2 applies ``-addsat`` at read time (site MJD shift) but evaluates the
+    TRACK -2 integer-turn correction against emission-time spin phase, not the
+    ``phase5@bbat`` used for ``pnNew`` wrapping.
+    """
+    from jug.utils.constants import SECS_PER_DAY
+
+    f0 = get_longdouble(params, "F0")
+    pepoch = get_longdouble(params, "PEPOCH")
+    dt = np.asarray(dt_sec, dtype=np.longdouble)
+    f_coeffs = [f0]
+    k = 1
+    while f"F{k}" in params:
+        f_coeffs.append(get_longdouble(params, f"F{k}", default=0.0))
+        k += 1
+
+    phase = np.longdouble(0.0)
+    for i in range(len(f_coeffs) - 1, -1, -1):
+        phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
+
+    glitch_idx = 1
+    while f"GLEP_{glitch_idx}" in params:
+        glep = get_longdouble(params, f"GLEP_{glitch_idx}")
+        glph = get_longdouble(params, f"GLPH_{glitch_idx}", default=0.0)
+        glf0 = get_longdouble(params, f"GLF0_{glitch_idx}", default=0.0)
+        glf1 = get_longdouble(params, f"GLF1_{glitch_idx}", default=0.0)
+        glf0d = get_longdouble(params, f"GLF0D_{glitch_idx}", default=0.0)
+        gltd = get_longdouble(params, f"GLTD_{glitch_idx}", default=0.0)
+        glep_dt = (glep - pepoch) * np.longdouble(SECS_PER_DAY)
+        active = dt > glep_dt
+        dt_since = np.where(active, dt - glep_dt, np.longdouble(0.0))
+        glitch_phase = (
+            glph + glf0 * dt_since + np.longdouble(0.5) * glf1 * dt_since**2
+        )
+        if gltd != 0.0 and glf0d != 0.0:
+            gltd_sec = gltd * np.longdouble(SECS_PER_DAY)
+            glitch_phase = glitch_phase + glf0d * gltd_sec * (
+                np.longdouble(1.0) - np.exp(-dt_since / gltd_sec)
+            )
+        phase = phase + np.where(active, glitch_phase, np.longdouble(0.0))
+        glitch_idx += 1
+
+    if jump_phase is not None:
+        phase = phase + np.asarray(jump_phase, dtype=np.longdouble)
+    if tzr_phase is not None:
+        phase = phase - np.longdouble(tzr_phase)
+
+    phase_f64 = np.asarray(phase, dtype=np.float64)
+    phas1 = float(_fortran_mod(phase_f64[0], 1.0))
+    phase5 = phase_f64 - phas1
+    nphase = _fortran_nlong(phase5).astype(np.float64)
+    return phase5, nphase
+
+
 def compute_tempo2_bbat_mjd(
     model_mjd: np.ndarray,
     prebinary_delay_sec: np.ndarray,
@@ -357,3 +419,77 @@ def addsat_frac_turn_correction(
     for i in np.where(addsat != 0.0)[0]:
         out[i] = addsat_track2_turn_delta(p5[i], float(nph[i]), addsat[i], f0)
     return out
+
+
+def form_residuals_tempo2_numpy(
+    *,
+    bbat_mjd: np.ndarray,
+    torb_sec: np.ndarray,
+    params,
+    jump_phase: np.ndarray | None,
+    tzr_phase=None,
+    track_val: int,
+    pn_tim: np.ndarray | None,
+    pn_add: np.ndarray | None,
+    addsat_sec: np.ndarray | None = None,
+    emission_phase5: np.ndarray | None = None,
+    subtract_mean: bool = True,
+    mean_mode: str = "unweighted",
+    first_in_range_idx: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """NumPy tempo2 ``formResiduals.C`` semantics for strict probes."""
+    del first_in_range_idx  # START/FINISH masks not wired in fixture path yet
+    f0 = float(get_longdouble(params, "F0"))
+    if emission_phase5 is not None:
+        phase5_full = np.asarray(emission_phase5, dtype=np.float64)
+        if jump_phase is not None:
+            phase5_full = phase5_full + np.asarray(jump_phase, dtype=np.float64)
+        if tzr_phase is not None:
+            phase5_full = phase5_full - np.float64(tzr_phase)
+    else:
+        jump_arr = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
+        phase5_full = compute_tempo2_phase5(
+            bbat_mjd,
+            torb_sec,
+            params,
+            jump_phase=jump_arr,
+            tzr_phase=tzr_phase,
+        )
+
+    if int(track_val) == -2 and pn_tim is not None and pn_add is not None:
+        frac_turns, pulse_number = track_minus2_frac_phase(
+            phase5_full,
+            bbat_mjd,
+            f0,
+            np.asarray(pn_tim, dtype=np.int64),
+            np.asarray(pn_add, dtype=np.int64),
+        )
+        if addsat_sec is not None and np.any(np.asarray(addsat_sec) != 0.0):
+            phas1 = float(_fortran_mod(phase5_full[0], 1.0))
+            p5_after = phase5_full - phas1
+            nph = _fortran_nlong(p5_after).astype(np.float64)
+            for i in np.where(np.asarray(addsat_sec) != 0.0)[0]:
+                frac_turns[i] += addsat_track2_turn_delta(
+                    float(p5_after[i]), float(nph[i]), float(addsat_sec[i]), f0
+                )
+        nphase = _fortran_nlong(phase5_full - float(_fortran_mod(phase5_full[0], 1.0))).astype(
+            np.float64
+        )
+        residual_turns = frac_turns
+    else:
+        phas1 = float(_fortran_mod(phase5_full[0], 1.0))
+        p5 = phase5_full - phas1
+        nphase = _fortran_nlong(p5).astype(np.float64)
+        pulse_number = np.zeros_like(p5)
+        residual_turns = p5 - nphase
+        if addsat_sec is not None and np.any(np.asarray(addsat_sec) != 0.0):
+            addsat_turns = f0 * np.asarray(addsat_sec, dtype=np.float64)
+            addsat_int = _fortran_nlong(addsat_turns).astype(np.float64)
+            residual_turns = residual_turns + (addsat_turns - addsat_int)
+
+    residual_sec = residual_turns / f0
+    if subtract_mean:
+        if mean_mode != "unweighted":
+            raise ValueError("form_residuals_tempo2_numpy supports unweighted mean only")
+        residual_sec = residual_sec - np.mean(residual_sec)
+    return residual_sec, np.asarray(pulse_number, dtype=np.float64), nphase

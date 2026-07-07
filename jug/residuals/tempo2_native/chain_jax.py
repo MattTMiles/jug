@@ -465,11 +465,15 @@ def compute_tempo2_native_residuals_jax(
     subtract_mean: bool,
     mean_mode: str = "unweighted",
     track_val: int = -2,
+    addsat_sec=None,
+    emission_phase5=None,
+    emission_nphase=None,
 ):
     """Return residual seconds, pulse numbers, and native terms for tempo2 mode."""
-    del weights, mean_mode
     from jug.residuals.tempo2_native.spin_jax import (
+        apply_addsat_track2_frac_phase_jax,
         compute_tempo2_phase5_jax,
+        fortran_nlong_jax,
         spin_params_to_jax,
         track_minus2_frac_phase_jax,
     )
@@ -493,12 +497,32 @@ def compute_tempo2_native_residuals_jax(
             jnp.asarray(pulse_numbers, dtype=jnp.int64),
             jnp.asarray(pn_add, dtype=jnp.int64),
         )
+        if addsat_sec is not None and emission_phase5 is not None and emission_nphase is not None:
+            frac = apply_addsat_track2_frac_phase_jax(
+                frac,
+                emission_phase5,
+                emission_nphase,
+                addsat_sec,
+                f_terms[0],
+            )
     else:
         pulse = jnp.zeros_like(phase5)
         frac = phase5 - jnp.trunc(phase5)
+        if addsat_sec is not None:
+            addsat = jnp.asarray(addsat_sec, dtype=jnp.float64)
+            if bool(jnp.any(addsat != 0.0)):
+                addsat_turns = f_terms[0] * addsat
+                addsat_int = fortran_nlong_jax(addsat_turns).astype(jnp.float64)
+                frac = frac + jnp.where(
+                    addsat != 0.0, addsat_turns - addsat_int, 0.0
+                )
     residual_sec = frac / f_terms[0]
     if subtract_mean:
-        residual_sec = residual_sec - jnp.mean(residual_sec)
+        if mean_mode == "weighted":
+            w = jnp.asarray(weights, dtype=jnp.float64)
+            residual_sec = residual_sec - jnp.sum(residual_sec * w) / jnp.sum(w)
+        else:
+            residual_sec = residual_sec - jnp.mean(residual_sec)
     return residual_sec, pulse, native_terms
 
 
@@ -1327,14 +1351,29 @@ def compute_native_eval_residuals_jax(
     mean_mode: str = "unweighted",
     track_val: int = -2,
     weights=None,
+    addsat_sec=None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, Tempo2NativeTerms]:
     """Production residuals: unified in-graph delay chain + spin/track."""
-    del mean_mode
     native = prepare_native_chain_from_simple_result(jug_result, params, toas)
     jump_j = None if jump_phase is None else jnp.asarray(jump_phase, dtype=jnp.float64)
     tzr_j = None if tzr_phase is None else jnp.asarray(tzr_phase, dtype=jnp.float64)
     pn_j = None if pulse_numbers is None else jnp.asarray(pulse_numbers, dtype=jnp.int64)
     pn_add_j = None if pn_add is None else jnp.asarray(pn_add, dtype=jnp.int64)
+    addsat_j = None if addsat_sec is None else jnp.asarray(addsat_sec, dtype=jnp.float64)
+    emission_p5_j = None
+    emission_nph_j = None
+    if addsat_j is not None and bool(np.any(np.asarray(addsat_sec) != 0.0)):
+        from jug.residuals.tempo2_spin import compute_emission_taylor_phase5_nphase
+
+        dt_host = np.asarray(jug_result.get("dt_sec"), dtype=np.float64)
+        p5_host, nph_host = compute_emission_taylor_phase5_nphase(
+            dt_host,
+            params,
+            jump_phase=jump_phase,
+            tzr_phase=tzr_phase,
+        )
+        emission_p5_j = jnp.asarray(p5_host, dtype=jnp.float64)
+        emission_nph_j = jnp.asarray(nph_host, dtype=jnp.float64)
     if weights is None:
         weights = jnp.ones(native.sat_mjd.shape[0], dtype=jnp.float64)
     return compute_tempo2_native_residuals_jax(
@@ -1346,5 +1385,9 @@ def compute_native_eval_residuals_jax(
         jump_phase=jump_j,
         tzr_phase=tzr_j,
         subtract_mean=subtract_mean,
+        mean_mode=mean_mode,
         track_val=track_val,
+        addsat_sec=addsat_j,
+        emission_phase5=emission_p5_j,
+        emission_nphase=emission_nph_j,
     )

@@ -102,6 +102,28 @@ def track_minus2_frac_phase_jax(
     return frac, pulse
 
 
+def apply_addsat_track2_frac_phase_jax(
+    frac,
+    emission_phase5,
+    emission_nphase,
+    addsat_sec,
+    f0,
+):
+    """Vectorized JAX port of :func:`jug.residuals.tempo2_spin.addsat_track2_turn_delta`."""
+    p5 = jnp.asarray(emission_phase5, dtype=jnp.float64)
+    nph = jnp.asarray(emission_nphase, dtype=jnp.float64)
+    addsat = jnp.asarray(addsat_sec, dtype=jnp.float64)
+    f0f = jnp.asarray(f0, dtype=jnp.float64)
+    f0_frac = f0f - jnp.trunc(f0f)
+    frac0 = p5 - nph
+    spin_s = f0f * addsat
+    eps = addsat * f0_frac * f0_frac * (1.0 / 7.13 - 0.759 * frac0 * frac0)
+    p5_shifted = p5 + spin_s + eps
+    nph_new = fortran_nlong_jax(p5_shifted).astype(jnp.float64)
+    delta = (p5_shifted - nph_new) - frac0
+    return frac + jnp.where(addsat != 0.0, delta, 0.0)
+
+
 def spin_params_to_jax(params):
     """Collect F coefficients and PEPOCH as JAX float64."""
     from jug.io.par_reader import get_longdouble

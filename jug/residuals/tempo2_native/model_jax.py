@@ -536,6 +536,7 @@ def prepare_ephemeris_inputs_jax(
     obs_itrf_km: np.ndarray,
     ephem_path: str,
     *,
+    site_mjd: np.ndarray | None = None,
     site_time_scale: str = "tt",
 ) -> dict[str, jnp.ndarray]:
     """Host ephemeris setup → JAX arrays for ``compute_tempo2_toa_model_jax``."""
@@ -543,6 +544,7 @@ def prepare_ephemeris_inputs_jax(
         np.asarray(ephem_mjd, dtype=np.float64),
         np.asarray(obs_itrf_km, dtype=np.float64).reshape(3),
         ephem_path=ephem_path,
+        site_mjd=site_mjd,
         site_time_scale=site_time_scale,
     )
     ssb_obs_km, ssb_obs_ls, obs_sun_ls, planets = tempo2_observatory_chain_vectors(state)
@@ -575,7 +577,6 @@ def run_tempo2_toa_model(
     f_terms, pepoch = spin_params_to_jax(params)
     dm_epoch = float(params.get("DMEPOCH", params["PEPOCH"]))
     dm_coeffs = _dm_coeffs_from_params(params)
-    eph = prepare_ephemeris_inputs_jax(ephem_mjd, static.obs_itrf_km, static.ephem_path)
     sat = np.asarray(sat_mjd, dtype=np.float64)
     tt_pre = np.asarray(
         jax.device_get(
@@ -592,6 +593,13 @@ def run_tempo2_toa_model(
             )
         ),
         dtype=np.float64,
+    )
+    site_mjd = sat + tt_pre / SECS_PER_DAY
+    eph = prepare_ephemeris_inputs_jax(
+        ephem_mjd,
+        static.obs_itrf_km,
+        static.ephem_path,
+        site_mjd=site_mjd,
     )
     ifte_delta = np.asarray(ifte_delta_t_mjd(sat + tt_pre / SECS_PER_DAY), dtype=np.float64)
     units = parse_timescale(params)

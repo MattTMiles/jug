@@ -1882,12 +1882,10 @@ def compute_residuals_simple(
             time_offsets=time_offsets,
         )
         from jug.delays.tempo2_ephemeris import (
-            compute_tempo2_observatory_state,
+            bootstrap_tempo2_observatory_state,
             resolve_tempo2_ephemeris_path,
-            tempo2_read_ephemeris_mjd,
         )
         from jug.residuals.tempo2_clock import (
-            compute_correction_tt_tb_sec,
             compute_formbats_arrival,
         )
 
@@ -1896,34 +1894,20 @@ def compute_residuals_simple(
         formbats_tt_arr = np.asarray(formbats_correction_tt, dtype=np.float64)
         obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
 
-        # Bootstrap ephemeris at sat+TT, then apply Teph for readEphemeris epoch.
-        ephem_boot = tempo2_read_ephemeris_mjd(sat_arr, formbats_tt_arr)
-        obs_boot = compute_tempo2_observatory_state(
-            ephem_boot, obs_itrf, ephem_path=ephem_path
-        )
-        mjd_tt = sat_arr + formbats_tt_arr / SECS_PER_DAY
-        _, tt_teph = compute_correction_tt_tb_sec(
-            mjd_tt,
-            observatory_earth_km=obs_boot.observatory_earth_km[:, :3],
-            earth_ssb_vel_km_s=obs_boot.earth_ssb_km[:, 3:6],
-            params=params,
-        )
-        ephemeris_mjd = tempo2_read_ephemeris_mjd(
+        geo_boot = bootstrap_tempo2_observatory_state(
             sat_arr,
             formbats_tt_arr,
-            correction_tt_teph_sec=tt_teph,
-        )
-        tempo2_obs_state = compute_tempo2_observatory_state(
-            ephemeris_mjd, obs_itrf, ephem_path=ephem_path
-        )
-        earth_ssb_vel_km_s = tempo2_obs_state.earth_ssb_km[:, 3:6]
-        obs_earth_km = tempo2_obs_state.observatory_earth_km[:, :3]
-        tt_tb, tt_teph = compute_correction_tt_tb_sec(
-            mjd_tt,
-            observatory_earth_km=obs_earth_km,
-            earth_ssb_vel_km_s=earth_ssb_vel_km_s,
+            obs_itrf,
+            ephem_path=ephem_path,
             params=params,
         )
+        tempo2_obs_state = geo_boot.state
+        mjd_tt = geo_boot.site_mjd
+        ephemeris_mjd = geo_boot.ephemeris_mjd
+        tt_tb = geo_boot.correction_tt_tb_sec
+        tt_teph = geo_boot.correction_tt_teph_sec
+        earth_ssb_vel_km_s = tempo2_obs_state.earth_ssb_km[:, 3:6]
+        obs_earth_km = tempo2_obs_state.observatory_earth_km[:, :3]
         from jug.utils.ifteph import ifte_delta_t_mjd
 
         ifte_delta_t_sec = np.asarray(ifte_delta_t_mjd(mjd_tt), dtype=np.float64)

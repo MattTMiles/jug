@@ -86,3 +86,16 @@ def delta_ns(a, b, *, is_mjd: bool = False) -> np.ndarray:
     if is_mjd:
         x = x * SECS_PER_DAY
     return x * 1e9
+
+
+def rms_ns(a, b, *, is_mjd: bool = False) -> float:
+    """RMS difference in nanoseconds."""
+    return float(np.sqrt(np.mean(delta_ns(a, b, is_mjd=is_mjd) ** 2)))
+
+
+def rms_cm(a_ls, b_ls) -> float:
+    """RMS vector difference in centimetres (inputs in light-seconds)."""
+    from jug.utils.constants import C_KM_S
+
+    diff = np.asarray(a_ls, dtype=np.float64) - np.asarray(b_ls, dtype=np.float64)
+    return float(np.sqrt(np.mean(np.sum(diff**2, axis=-1))) * C_KM_S * 100)

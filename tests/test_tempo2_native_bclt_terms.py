@@ -16,6 +16,7 @@ from tempo2_native_test_helpers import (
     compute_native_terms_for_fixture,
     delta_ns,
     load_wsrt167_fixture,
+    rms_ns,
 )
 
 
@@ -27,5 +28,9 @@ def test_native_roemer_wsrt167_vs_pytempo():
     )
     roemer = np.asarray(jax.device_get(native.roemer_sec), dtype=np.float64)
     delta = delta_ns(roemer, oracle.fields["roemer_sec"])
+    roemer_rms = rms_ns(roemer, oracle.fields["roemer_sec"])
     # BCLT roemer uses fixed posPulsar + explicit PM terms (tempo2 calculate_bclt.C).
-    assert np.sqrt(np.mean(delta**2)) < 5.0
+    assert roemer_rms < 1.0, (
+        f"roemer_sec RMS is {roemer_rms:.3f} ns "
+        "(geometry ~0.1 cm; remaining gap is tt2tb/Teph coupling — Phase 2)"
+    )

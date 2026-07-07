@@ -21,7 +21,7 @@ from jug.delays.tempo2_geometry import (
 from jug.io.par_reader import parse_par_file
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.utils.constants import C_KM_S, SECS_PER_DAY
-from tempo2_native_test_helpers import compute_native_terms_for_fixture, load_wsrt167_fixture
+from tempo2_native_test_helpers import compute_native_terms_for_fixture, load_wsrt167_fixture, rms_cm, rms_ns
 
 TRACE = [0, 42, 85, 166]
 
@@ -101,6 +101,7 @@ def test_roemer_term_probe_writes_report():
         f"pos_pulsar={pos.tolist()}",
         f"vel_pulsar={vel.tolist()}",
         f"acc_pulsar={acc.tolist()}",
+        f"IFTE_K ephemeris scale={float(__import__('jug.utils.timescales', fromlist=['IFTE_K']).IFTE_K)}",
         "",
     ]
     for i in TRACE:
@@ -112,9 +113,12 @@ def test_roemer_term_probe_writes_report():
             [
                 f"=== TOA index {i} sat={sat[i]:.12f} ===",
                 f"  delt_centuries={delt:.12e}",
-                f"  JUG rca_ls norm={np.linalg.norm(jug_rca_ls[i]):.12e} "
+                f"  pos_pulsar={pos.tolist()}",
+                f"  vel_pulsar={vel.tolist()}",
+                f"  acc_pulsar={acc.tolist()}",
+                f"  JUG rca_ls={jug_rca_ls[i].tolist()} norm={np.linalg.norm(jug_rca_ls[i]):.12e} "
                 f"dot(pos,rca)={jug_terms['rcos1_ls']:.12e}",
-                f"  PT  rca_ls norm={np.linalg.norm(pt_rca[i]):.12e} "
+                f"  PT  rca_ls={pt_rca[i].tolist()} norm={np.linalg.norm(pt_rca[i]):.12e} "
                 f"dot(pos,rca)={pt_terms['rcos1_ls']:.12e}",
                 f"  rca delta norm (ls)={np.linalg.norm(rca_delta_ls):.6e}",
                 f"  rca delta norm (cm)={np.linalg.norm(rca_delta_ls) * C_KM_S * 100:.3f}",
@@ -125,4 +129,22 @@ def test_roemer_term_probe_writes_report():
                 "",
             ]
         )
+    jug_earth_ls = np.asarray(obs_state["earth_ssb_km"], dtype=np.float64)[:, :3] / C_KM_S
+    jug_obs_ls = np.asarray(obs_state["observatory_earth_km"], dtype=np.float64)[:, :3] / C_KM_S
+    pt_earth = np.asarray(psr.earth_ssb[:, :3], dtype=np.float64)
+    pt_obs = np.asarray(psr.observatory_earth[:, :3], dtype=np.float64)
+    pt_dt_ssb = np.asarray(diag.get("dt_ssb_sec", []), dtype=np.float64)
+    lines.extend(
+        [
+            "=== decomposition RMS vs pytempo ===",
+            f"earth_ssb_cm={rms_cm(jug_earth_ls, pt_earth):.4f}",
+            f"observatory_earth_cm={rms_cm(jug_obs_ls, pt_obs):.4f}",
+            f"rca_cm={rms_cm(jug_earth_ls + jug_obs_ls, pt_earth + pt_obs):.4f}",
+            f"roemer_ns={rms_ns(jug_roemer, pt_roemer):.4f}",
+            f"dt_ssb_ns={rms_ns(dt_ssb, pt_dt_ssb):.4f}"
+            if pt_dt_ssb.size
+            else "dt_ssb_ns=(not in diag)",
+            "",
+        ]
+    )
     Path("/tmp/jug_roemer_term_probe.txt").write_text("\n".join(lines))

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("pytempo")
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow, pytest.mark.probe]
 
 import jax
 

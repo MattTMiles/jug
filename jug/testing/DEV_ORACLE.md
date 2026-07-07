@@ -55,11 +55,26 @@ PYTHONPATH=/workspaces/metapulsar/ref-packages/jug:/workspaces/metapulsar/ref-pa
 # writes /tmp/jug_wsrt167_parity_probe.txt
 ```
 
-Full suite:
+Fast native gate path (skips ``@pytest.mark.slow`` modules — ~45 s vs ~2.5 min full):
 
 ```bash
 cd ref-packages/jug
-PYTHONPATH=.:tests pytest tests/test_tempo2_native_*.py -m dev_oracle -q
+PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
+  pytest tests/test_tempo2_native_*.py -m 'dev_oracle and not slow' --no-cov -q
+```
+
+Slow modules (tagged ``slow``): ``residual_delta_jax``, ``geometry_parity``,
+``clock_jax``, ``jax_no_host_roundtrip``, ``numpy_reference_parity``,
+``spin_phase5``, ``roemer_probe``. Primary delay gates stay on the fast path:
+``formbats_closure``, ``bclt_terms``, ``bbat_parity``, ``batcorr_parity``,
+``torb_closure``.
+
+Full suite (sprint sign-off only):
+
+```bash
+cd ref-packages/jug
+PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
+  pytest tests/test_tempo2_native_*.py -m dev_oracle --no-cov -q
 ```
 
 Exit criteria: all ``test_tempo2_native_*.py`` gates at **1 ns**; production path uses

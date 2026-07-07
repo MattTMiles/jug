@@ -204,15 +204,14 @@ def _load_model_static_for_native_chain(
     track_val: int = -2,
 ) -> Tempo2ModelStatic:
     """Load clock tables and pack static inputs for the unified JIT model."""
-    from pathlib import Path
-
+    from jug.io.clock import resolve_clock_dir
     from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
     from jug.residuals.engine_conventions import resolve_engine_profile
     from jug.residuals.simple_calculator import _load_clock_corrections
     from jug.utils.constants import OBSERVATORIES
 
-    if clock_dir is None:
-        clock_dir = Path(__file__).resolve().parents[3] / "data" / "clock"
+    compatibility = jug_result.get("compatibility", "tempo2")
+    clock_dir = resolve_clock_dir(clock_dir, compatibility=compatibility)
     observatory = toas[0].observatory if toas else "wsrt"
     obs_itrf = OBSERVATORIES.get(observatory.lower())
     if obs_itrf is None:
@@ -225,7 +224,6 @@ def _load_model_static_for_native_chain(
     from jug.residuals.diagnostic_conventions import default_conventions
     from jug.residuals.engine_conventions import _flag_from_par
 
-    compatibility = jug_result.get("compatibility", "tempo2")
     diagnostic_conv = default_conventions(compatibility)
     profile = resolve_engine_profile(
         params,

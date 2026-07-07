@@ -8,7 +8,7 @@ import warnings
 import numpy as np
 import pytest
 
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
 import jax
 

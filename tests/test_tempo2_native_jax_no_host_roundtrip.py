@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 pytest.importorskip("pytempo")
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
 import jax
 

@@ -13,8 +13,38 @@ from functools import lru_cache
 from pathlib import Path
 from bisect import bisect_left
 import heapq
+import os
 import warnings
 import numpy as np
+
+
+def resolve_clock_dir(
+    clock_dir: Path | str | None = None,
+    *,
+    compatibility: str | None = None,
+) -> Path:
+    """Resolve the clock file directory for tempo2-style chain discovery.
+
+    For ``compatibility='tempo2'``, prefer ``$TEMPO2/clock`` when the
+    environment variable is set. JUG's bundled ``data/clock`` includes extra
+    files (e.g. ``gps2utc.clk``) that are absent from a stock Tempo2 install.
+    Tempo2 routes ``UTC(GPS) -> UTC`` through ``gps2gpst`` + ``gpst2utc``; the
+    direct ``gps2utc`` shortcut can differ by a few ns on some epochs.
+    """
+    if clock_dir is not None:
+        return Path(clock_dir)
+    tempo2_compat = str(compatibility or "").lower() in (
+        "tempo2",
+        "tempo2-compatible",
+        "tempo2_compatible",
+    )
+    t2_env = os.environ.get("TEMPO2")
+    if tempo2_compat and t2_env:
+        t2_clock = Path(t2_env) / "clock"
+        if t2_clock.is_dir():
+            return t2_clock
+    module_dir = Path(__file__).resolve().parent
+    return module_dir.parent.parent / "data" / "clock"
 
 
 # ---------------------------------------------------------------------------

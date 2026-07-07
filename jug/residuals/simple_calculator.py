@@ -1363,12 +1363,10 @@ def compute_residuals_simple(
         print("JUG Simple Residual Calculator")
         print("=" * 60)
 
-    # Set default clock directory relative to package installation
-    if clock_dir is None:
-        # Get the directory where this module is located
-        module_dir = Path(__file__).parent
-        # Navigate to the JUG root directory and then to data/clock
-        clock_dir = module_dir.parent.parent / "data" / "clock"
+    # Tempo2 parity: use $TEMPO2/clock when set (matches libstempo/pytempo hops).
+    from jug.io.clock import resolve_clock_dir
+
+    clock_dir = resolve_clock_dir(clock_dir, compatibility=compatibility)
 
     # Parse files
     if verbose: print(f"\n1. Loading files...")

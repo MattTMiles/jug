@@ -15,5 +15,5 @@ from __future__ import annotations
 # ``bbat`` with ``track_minus2_frac_phase``. Do not enable for parity gates.
 USE_NATIVE_BBAT_PHASE5 = False
 
-# New production candidate. Keep False until Phase 4 wsrt167 and IPTA gates pass.
-USE_JAX_TEMPO2_NATIVE_CHAIN = False
+# Production tempo2 path: unified JAX native chain (Phase 6 delay gates green on wsrt167).
+USE_JAX_TEMPO2_NATIVE_CHAIN = True

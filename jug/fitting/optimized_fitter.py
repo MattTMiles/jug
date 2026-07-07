@@ -2383,7 +2383,19 @@ def _run_general_fit_iterations(
         if not has_offset:
             col_means = (weights @ M) / sum_weights
             M -= col_means[np.newaxis, :]
-        
+
+        # Seed the saved design matrix on the first build so callers always get a
+        # design_matrix, even when NO step is ever accepted (an already-optimal or
+        # very stiff fit — e.g. B1937+21 — where every trial step marginally
+        # worsens the RMS).  Without this, _saved_M stays None and the returned
+        # 'design_matrix' is None, breaking downstream consumers (ATLAS
+        # setup_timing_model, PINT-comparison scripts).  Accept-path saves below
+        # overwrite this with the design at the accepted point.
+        if _saved_M is None:
+            _saved_M = M.copy()
+            _saved_M_labels = (['OFFSET'] if has_offset else []) + list(fit_params)
+            _saved_M_n_timing = n_timing_cols
+
         # Solve WLS to get step direction
         # When ECORR whitener is present AND no noise augmentation, pre-whiten
         # residuals and M so the standard WLS solver recovers the GLS solution.

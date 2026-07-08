@@ -60,9 +60,9 @@ def sat_daysec_numpy_from_td_and_toas(td: dict, toas: list[Any] | None) -> tuple
     return sat_int, (sat_mjd - sat_int) * SECS_PER_DAY
 
 
-def _native_chain_mode() -> str:
+def _native_chain_mode(config=None) -> str:
     """Return the active tempo2-native JAX graph mode."""
-    return tempo2_native_graph_mode()
+    return tempo2_native_graph_mode(config)
 
 
 @dataclass(frozen=True)
@@ -1081,8 +1081,9 @@ def build_native_fixed_state_nonlinear_delta_pack(
 def build_native_delta_pack_for_setup(
     setup: "GeneralFitSetup",
 ) -> NativeDeltaPack | NativeFrozenDeltaPack | NativeFixedStateNonlinearDeltaPack | None:
-    """Select native delta pack by ``JUG_TEMPO2_NATIVE_GRAPH_MODE``."""
-    mode = _native_chain_mode()
+    """Select native delta pack from ``setup.tempo2_native`` (or env fallback)."""
+    config = getattr(setup, "tempo2_native", None)
+    mode = _native_chain_mode(config)
     if mode == TEMPO2_NATIVE_GRAPH_FULL:
         return build_native_delta_pack(setup)
     if mode == TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR:

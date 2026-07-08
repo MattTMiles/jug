@@ -18,6 +18,11 @@ probes: worse than Taylor on wsrt167). See ``PARITY_ROADMAP.md``.
 from __future__ import annotations
 
 import os
+import warnings
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jug.timing import Tempo2NativeConfig
 
 # When True, ``compute_phase_residuals`` uses ``compute_tempo2_phase5`` at formBats
 # ``bbat`` with ``track_minus2_frac_phase``. Do not enable for parity gates.
@@ -35,16 +40,31 @@ _TEMPO2_NATIVE_GRAPH_MODES = {
 }
 
 
-def tempo2_native_graph_mode() -> str:
-    """Return the active tempo2-native JAX graph mode."""
-    mode = os.environ.get(
-        "JUG_TEMPO2_NATIVE_GRAPH_MODE",
-        _TEMPO2_NATIVE_GRAPH_MODE_DEFAULT,
-    )
-    mode = mode.strip().lower().replace("-", "_")
+def tempo2_native_graph_mode(
+    config: "Tempo2NativeConfig | None" = None,
+) -> str:
+    """Return the active tempo2-native JAX graph mode.
+
+    Precedence: explicit ``config.graph_mode``, then ``JUG_TEMPO2_NATIVE_GRAPH_MODE`` env
+    (deprecated), then default ``staged_bclt``.
+    """
+    if config is not None:
+        mode = str(config.graph_mode).strip().lower().replace("-", "_")
+    else:
+        env_mode = os.environ.get("JUG_TEMPO2_NATIVE_GRAPH_MODE")
+        if env_mode is not None:
+            warnings.warn(
+                "JUG_TEMPO2_NATIVE_GRAPH_MODE is deprecated; pass tempo2_native= "
+                "to TimingSession or store Tempo2NativeConfig on GeneralFitSetup.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            mode = env_mode.strip().lower().replace("-", "_")
+        else:
+            mode = _TEMPO2_NATIVE_GRAPH_MODE_DEFAULT
     if mode not in _TEMPO2_NATIVE_GRAPH_MODES:
         allowed = ", ".join(sorted(_TEMPO2_NATIVE_GRAPH_MODES))
         raise ValueError(
-            f"Unknown JUG_TEMPO2_NATIVE_GRAPH_MODE={mode!r}; expected one of {allowed}"
+            f"Unknown tempo2-native graph mode={mode!r}; expected one of {allowed}"
         )
     return mode

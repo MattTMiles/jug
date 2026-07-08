@@ -940,8 +940,10 @@ def _probe_iers_gcrs_transform(mjd: float) -> None:
     loc.get_gcrs_posvel(obstime=times)
 
 
-def iers_strict_enabled() -> bool:
+def iers_strict_enabled(*, iers_policy: str | None = None) -> bool:
     """Return True when IERS preflight should hard-fail (parity/dev), not warn."""
+    if iers_policy is not None:
+        return str(iers_policy).lower() == "strict"
     if os.environ.get("JUG_IERS_STRICT", "").lower() in ("1", "true", "yes"):
         return True
     return "pytest" in sys.modules

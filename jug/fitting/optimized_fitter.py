@@ -376,6 +376,7 @@ class GeneralFitSetup:
     native_bbat_mjd: np.ndarray | None = None
     native_torb_sec: np.ndarray | None = None
     native_dt_emission_sec: np.ndarray | None = None
+    tempo2_native: object | None = None
 
 
 # =============================================================================
@@ -1241,6 +1242,7 @@ def _build_setup_common(
     design_matrix_method: str = "analytic",
     verbose: bool = False,
     subtract_noise_sec: Optional[np.ndarray] = None,
+    tempo2_native: object | None = None,
 ) -> GeneralFitSetup:
     """Shared setup builder for both file-based and cache-based paths.
 
@@ -1826,6 +1828,7 @@ def _build_setup_common(
         noise_config=noise_config,
         binary_plan=binary_plan,
         native_chain_static=native_chain_static,
+        tempo2_native=tempo2_native,
     )
 
 
@@ -3328,6 +3331,7 @@ def _build_general_fit_setup_from_cache(
     compatibility: str = "pint",
     fd_column_mode: str | None = None,
     design_matrix_method: str = "analytic",
+    tempo2_native: object | None = None,
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -3449,6 +3453,7 @@ def _build_general_fit_setup_from_cache(
         design_matrix_method=design_matrix_method,
         verbose=False,
         subtract_noise_sec=subtract_noise_sec,
+        tempo2_native=tempo2_native,
     )
 
 

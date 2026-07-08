@@ -18,10 +18,13 @@ Performance Impact:
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 
 import numpy as np
 from astropy.time import Time
+
+if TYPE_CHECKING:
+    from jug.timing import Tempo2NativeConfig
 
 from jug.residuals.engine_conventions import (
     EngineConventionProfile,
@@ -77,6 +80,7 @@ class TimingSession:
         verbose: bool = False,
         compatibility: str = "pint",
         engine_conventions: EngineConventionProfile | None = None,
+        tempo2_native: "str | Tempo2NativeConfig | None" = None,
     ):
         """
         Initialize a timing session.
@@ -98,6 +102,11 @@ class TimingSession:
         self.verbose = verbose
         self.compatibility = compatibility
         self.engine_conventions = engine_conventions
+        from jug.timing import normalize_tempo2_native
+
+        self.tempo2_native = normalize_tempo2_native(
+            tempo2_native, compatibility=compatibility
+        )
         if engine_conventions is not None:
             validate_engine_profile_matches_compatibility(
                 compatibility, engine_conventions
@@ -331,6 +340,11 @@ class TimingSession:
                 geometry_cache=self._geometry_cache,
                 compatibility=self.compatibility,
                 engine_conventions=self.engine_conventions,
+                iers_policy=(
+                    None
+                    if self.tempo2_native is None
+                    else self.tempo2_native.iers_policy
+                ),
             )
         finally:
             tmp_par_path.unlink()
@@ -421,6 +435,11 @@ class TimingSession:
                 geometry_cache=self._geometry_cache,
                 compatibility=self.compatibility,
                 engine_conventions=self.engine_conventions,
+                iers_policy=(
+                    None
+                    if self.tempo2_native is None
+                    else self.tempo2_native.iers_policy
+                ),
             )
         
         # Cache the result (only for original params), keyed by subtract_tzr
@@ -532,6 +551,7 @@ class TimingSession:
             self.params,
             list(params.keys()),
             compatibility=self.compatibility,
+            tempo2_native=self.tempo2_native,
         )
 
         eval_params = dict(self.params)
@@ -714,6 +734,7 @@ class TimingSession:
                 noise_config=noise_config,
                 subtract_noise_sec=subtract_noise_sec,
                 compatibility=self.compatibility,
+                tempo2_native=self.tempo2_native,
             )
             
             # Run cached fit

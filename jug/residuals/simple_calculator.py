@@ -179,7 +179,7 @@ def _load_obs_chain(clock_dir, obs_code: str, verbose: bool = False,
     return chain
 
 
-def _validate_clock_and_iers(mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose):
+def _validate_clock_and_iers(mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose, *, iers_policy=None):
     from jug.io.clock import (
         check_clock_files,
         check_iers_coverage,
@@ -194,7 +194,7 @@ def _validate_clock_and_iers(mjd_start, mjd_end, obs_clock, bipm_clock, clock_di
         verbose=verbose, clock_dir=str(clock_dir),
     )
     iers_ok, iers_issues = check_iers_coverage(mjd_start, mjd_end, verbose=verbose)
-    if iers_strict_enabled():
+    if iers_strict_enabled(iers_policy=iers_policy):
         raise_on_iers_failure(iers_ok, iers_issues)
     else:
         warn_on_iers_failure(iers_ok, iers_issues)
@@ -202,7 +202,7 @@ def _validate_clock_and_iers(mjd_start, mjd_end, obs_clock, bipm_clock, clock_di
 
 
 def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
-                            mjd_utc, verbose):
+                            mjd_utc, verbose, *, iers_policy=None):
     """Load observatory and BIPM clock corrections using a graph-based chain.
 
     The UTC(obs) → UTC correction is computed by Dijkstra shortest-path over
@@ -262,7 +262,8 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
         mjd_start = np.min(mjd_utc)
         mjd_end = np.max(mjd_utc)
         clock_ok, clock_issues = _validate_clock_and_iers(
-            mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose
+            mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose,
+            iers_policy=iers_policy,
         )
         return {
             'obs_clock': obs_clock, 'obs_clocks': obs_clocks,
@@ -292,7 +293,8 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
     if verbose:
         print(f"\n   Validating clock file coverage (MJD {mjd_start:.1f} - {mjd_end:.1f})...")
     clock_ok, clock_issues = _validate_clock_and_iers(
-        mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose
+        mjd_start, mjd_end, obs_clock, bipm_clock, clock_dir, verbose,
+        iers_policy=iers_policy,
     )
 
     return {
@@ -1335,6 +1337,7 @@ def compute_residuals_simple(
     diagnostic_conventions: DiagnosticConventions | None = None,
     engine_conventions: EngineConventionProfile | None = None,
     skip_native_bclt_overlay: bool = False,
+    iers_policy: str | None = None,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -1472,7 +1475,10 @@ def compute_residuals_simple(
         obs_clocks = geometry_cache.get('obs_clocks', {})
         bipm_clock = geometry_cache.get('bipm_clock')
     else:
-        clk = _load_clock_corrections(observatory, all_obs_codes, clock_dir, params, mjd_utc, verbose)
+        clk = _load_clock_corrections(
+            observatory, all_obs_codes, clock_dir, params, mjd_utc, verbose,
+            iers_policy=iers_policy,
+        )
         obs_clock = clk['obs_clock']
         obs_clocks = clk['obs_clocks']
         bipm_clock = clk['bipm_clock']

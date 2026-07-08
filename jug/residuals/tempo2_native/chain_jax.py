@@ -1096,11 +1096,11 @@ def build_native_delta_pack_for_setup(
 build_native_frozen_delta_pack = build_native_staged_delta_pack
 
 
-def compute_native_residual_sec_jax(
+def compute_native_terms_and_residual_sec_jax(
     params: dict,
     pack: NativeDeltaPack,
-) -> jnp.ndarray:
-    """Recompute tempo2-native residuals for any graph mode pack."""
+) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+    """Recompute tempo2-native terms and residuals for any graph mode pack."""
     pos, vel, acc = pulsar_vectors_from_params_jax(
         params, use_native_ecliptic=pack.use_native_ecliptic
     )
@@ -1145,7 +1145,7 @@ def compute_native_residual_sec_jax(
         pep_frac=pack.pep_frac,
     )
     if pack.mode == TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR:
-        _, residual_sec = compute_tempo2_toa_model_fixed_state_nonlinear_jax(
+        terms, residual_sec = compute_tempo2_toa_model_fixed_state_nonlinear_jax(
             tropo_sec=pack.tropo_sec,
             earth_ssb_km=pack.earth_ssb_km,
             observatory_earth_km=pack.observatory_earth_km,
@@ -1161,7 +1161,7 @@ def compute_native_residual_sec_jax(
             **common,
         )
     elif pack.mode == TEMPO2_NATIVE_GRAPH_FULL:
-        _, residual_sec = compute_tempo2_toa_model_jax(
+        terms, residual_sec = compute_tempo2_toa_model_jax(
             obs_itrf_km=pack.obs_itrf_km,
             spk_packed=pack.spk_packed,
             eop_packed=pack.eop_packed,
@@ -1184,7 +1184,7 @@ def compute_native_residual_sec_jax(
             **common,
         )
     else:
-        _, residual_sec = compute_tempo2_toa_model_staging_with_host_inputs_jax(
+        terms, residual_sec = compute_tempo2_toa_model_staging_with_host_inputs_jax(
             tropo_sec=pack.tropo_sec,
             earth_ssb_km=pack.earth_ssb_km,
             observatory_earth_km=pack.observatory_earth_km,
@@ -1198,7 +1198,39 @@ def compute_native_residual_sec_jax(
             einstein_rate=pack.einstein_rate,
             **common,
         )
+    return terms, residual_sec
+
+
+def compute_native_residual_sec_jax(
+    params: dict,
+    pack: NativeDeltaPack,
+) -> jnp.ndarray:
+    """Recompute tempo2-native residuals for any graph mode pack."""
+    _, residual_sec = compute_native_terms_and_residual_sec_jax(params, pack)
     return residual_sec
+
+
+def compute_native_bbat_delay_change_sec_jax(
+    params_ref: dict,
+    params_pert: dict,
+    pack: NativeDeltaPack,
+) -> jnp.ndarray:
+    """Return delay change from native bbat motion for local phase deltas.
+
+    The tempo2 ``phase5`` closure uses ``torb = dt_emit - (bbat - PEPOCH)``.
+    With ``dt_emit`` frozen in the fitting setup, absolute native residuals are
+    parity values, but delay changes cancel out of the forward residual.  For
+    nonlinear fitting we recover the small local timing perturbation from the
+    native bbat displacement.  A later bbat is equivalent to a smaller emission
+    delay, hence the sign flip.
+    """
+    terms_ref, _ = compute_native_terms_and_residual_sec_jax(params_ref, pack)
+    terms_pert, _ = compute_native_terms_and_residual_sec_jax(params_pert, pack)
+    bbat_delta_sec = (
+        (terms_pert.bbat_int_day - terms_ref.bbat_int_day) * SECS_PER_DAY
+        + (terms_pert.bbat_sec_in_day - terms_ref.bbat_sec_in_day)
+    )
+    return -bbat_delta_sec
 
 
 def compute_native_residual_delta_jax(

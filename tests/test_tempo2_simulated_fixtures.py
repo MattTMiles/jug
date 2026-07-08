@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 from jug.testing.fingerprint import extract_fingerprint, validate_tempo2_compatible
 from tempo2_fixtures import (
     CANONICAL_SIM_FIXTURE_IDS,
+    get_tempo2_fixture,
     list_tempo2_sim_fixtures,
 )
 
@@ -180,3 +182,27 @@ def test_simulated_tempo2_designmatrix_parity(fixture):
         assert param in ref_label_to_idx
         ref_col = ref.designmatrix[:, ref_label_to_idx[param]] * tempo2_to_pint_vela_scale(param)
         assert_column_matches(param, jug.matrix[:, jug_idx], ref_col)
+
+
+@pytest.mark.tempo2
+def test_simulated_tempo2_autodiff_designmatrix_astrometry_nonzero():
+    from jug.fitting.optimized_fitter import compute_designmatrix
+
+    fixture = get_tempo2_fixture("sim_isolated_tcb")
+    fit_params = ["F0", "F1", "RAJ", "DECJ", "DM"]
+    jug = compute_designmatrix(
+        fixture["par_path"],
+        fixture["tim_path"],
+        fit_params,
+        compatibility="tempo2",
+        design_matrix_method="autodiff",
+    )
+
+    assert jug.labels == fit_params
+    assert np.all(np.isfinite(jug.matrix))
+    col_norms = {
+        param: float(np.linalg.norm(jug.matrix[:, idx]))
+        for idx, param in enumerate(jug.labels)
+    }
+    assert col_norms["RAJ"] > 0.0
+    assert col_norms["DECJ"] > 0.0

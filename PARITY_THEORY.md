@@ -114,14 +114,9 @@ graph uses `phase5@bbat` for autodiff. Environment preflight:
 ### Layer 2 — JAX traced graph (every fit step / MCMC sample)
 
 `make_residual_delta_jax_fn()` (used by `export_jax_timing_state`, MetaPulsar
-`JugEngine`, and `design_matrix_method="autodiff"`) evaluates
-
-```text
-residual_delta(Δθ) = residual_sec(θ_ref + Δθ) − residual_sec(θ_ref)
-```
-
-through a **fixed-state nonlinear** forward model. It does **not** re-run the
-full host barycentric / time-transfer machinery inside XLA on every call.
+`JugEngine`, and `design_matrix_method="autodiff"`) evaluates a **local residual
+delta** around frozen reference state. It does **not** re-run the full host
+barycentric / time-transfer machinery inside XLA on every call.
 
 Instead it:
 
@@ -130,13 +125,43 @@ Instead it:
    `term_diagnostics`, etc.).
 2. **Recomputes nonlinearly in JAX** only the delay/phase pieces that depend on
    fitted parameters (astrometry, DM, binary, FD, spin).
-3. Forms the residual delta via the same spin + delay Taylor machinery in both
-   NumPy (`_compute_full_model_residuals`) and JAX.
+3. Forms the residual delta through spin + delay machinery (see below).
 
 This is **not linearized** astrometry — proper motion, parallax, and Shapiro
 geometry update with the perturbed pulsar direction. What is frozen is the
 **reference emission/arrival epoch and observer vectors**, not the fitted
 parameters themselves.
+
+#### PINT-family path (`compatibility="pint"`)
+
+```text
+delay_change = compute_total_delay_change(θ_ref + Δθ, …)
+residual_delta(Δθ) = _phase_residual_delta_jax(dt_sec, delay_change, F_ref, F_pert, …)
+```
+
+#### Tempo2-family path (`compatibility="tempo2"`)
+
+Absolute native residuals use `phase5@bbat` with `torb = dt_emit − (bbat − PEPOCH)`.
+With host `dt_emit` frozen in the fit setup, delay changes **cancel** in
+`res(θ+Δθ) − res(θ)` even when geometry/DM move `bbat`. The fitting tangent
+therefore does **not** use that subtraction. Instead (2026-07-08):
+
+```text
+native_delay_change = −Δbbat_sec   # from two native JAX evals (ref + pert)
+binary_delay_change = …            # when binary params are fitted
+total_delay_change = native_delay_change + binary_delay_change
+residual_delta(Δθ) = _phase_residual_delta_jax(dt_sec, total_delay_change, F_ref, F_pert, …)
+```
+
+Implementation: `compute_native_bbat_delay_change_sec_jax()` in
+`jug/residuals/tempo2_native/chain_jax.py`; dispatch in
+`jug/fitting/jax_residual_delta.py`.
+
+**Performance note (deferred):** each call still runs the **full** native tail twice
+(BCLT → formBats → Shklovskii → `phase5`) but only reads `bbat` day/sec from the
+result. A future **`bbat`-only subgraph** (stop after formBats, skip spin) would
+preserve the tangent while avoiding redundant `phase5` work. Tracked in
+[`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) Phase 4.
 
 ---
 
@@ -308,10 +333,30 @@ flowchart TB
   Staged --> Scan["BCLT fixed-point scan in JAX"]
   Full --> FullGraph["full in-graph timing chain"]
 
-  OnePass --> Delta["res(θ+Δθ) − res(θ)"]
+  OnePass --> Delta["bbat delay change\n+ Taylor phase delta"]
   Scan --> Delta
   FullGraph --> Delta
 ```
+
+#### Tempo2 autodiff residual delta (2026-07-08)
+
+Host parity residuals and JAX fitting tangents are **different contracts**:
+
+| Layer | Goal | Spin epoch | Delay sensitivity |
+|-------|------|------------|-------------------|
+| Host (`compute_residuals_simple`) | Match libstempo pre-fit δ | Taylor at emission `model_mjd` (TRACK −2: legacy wrap) | Full host delay chain |
+| JAX fit (`residual_delta_jax`) | Correct nonlinear tangent for NUTS / autodiff DM | Taylor via `_phase_residual_delta_jax` | Native **`bbat` displacement** + binary |
+
+Why not `res(θ+Δθ) − res(θ)` on absolute native residuals? The traced graph keeps
+host `dt_emit` fixed while recomputing `bbat` from perturbed BCLT/formBats. The
+tempo2 closure `torb = dt_emit − (bbat − PEPOCH)` then cancels delay motion in
+the forward `phase5@bbat` value — giving **zero geometry columns** even when
+autodiff is finite. The fix extracts `−Δbbat` from two native evaluations and
+feeds the same precision-safe Taylor machinery the PINT path uses.
+
+**Deferred optimization:** stop the native eval after formBats when only delay
+tangents are needed (skip `phase5` in the ref/pert pair). Same BCLT cost, less
+per-sample spin work. See [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) Phase 4.
 
 #### `fixed_state_nonlinear` — fast PTA / NUTS path
 
@@ -365,6 +410,7 @@ in the delay terms themselves.
 |-----------|----------|
 | Mode selector | `jug/residuals/tempo2_graph_config.py` → `tempo2_native_graph_mode()` |
 | Pack types | `jug/residuals/tempo2_native/chain_jax.py` — `NativeDeltaPack` |
+| Bbat delay change | `chain_jax.py` → `compute_native_bbat_delay_change_sec_jax()` |
 | One-pass BCLT | `jug/residuals/tempo2_native/calculate_bclt_jax.py` → `compute_bclt_terms_fixed_state_jax()` |
 | Residual kernel | `jug/residuals/tempo2_native/model_jax.py` → `compute_tempo2_toa_model_fixed_state_nonlinear_jax()` |
 | JAX dispatch | `jug/fitting/jax_residual_delta.py` → `_compute_residual_delta_jax()` |

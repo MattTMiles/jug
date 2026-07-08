@@ -330,6 +330,24 @@ _PLANET_SHAP_JAX = _PLANET_SHAP
 PX_CONV_JAX = 1.74532925199432958e-2 / 3600.0e3
 AULTSC_JAX = 499.00478364
 K_DM_SEC_JAX = K_DM_SEC
+_SAFE_NORM2_JAX = jnp.asarray(1.0e-60, dtype=jnp.float64)
+_SOLAR_WIND_COS_EPS_JAX = jnp.asarray(1.0e-12, dtype=jnp.float64)
+
+
+def _safe_norm_jax(x):
+    """Norm with a finite derivative at the zero vector."""
+    return jnp.sqrt(jnp.maximum(jnp.dot(x, x), _SAFE_NORM2_JAX))
+
+
+def _solar_wind_angular_factor_jax(ctheta):
+    """Return acos(c) / sqrt(1 - c**2) without singular AD tangents."""
+    c_safe = jnp.clip(
+        ctheta,
+        -1.0 + _SOLAR_WIND_COS_EPS_JAX,
+        1.0 - _SOLAR_WIND_COS_EPS_JAX,
+    )
+    sin_theta = jnp.sqrt(jnp.maximum(1.0 - c_safe * c_safe, _SAFE_NORM2_JAX))
+    return jnp.arccos(c_safe) / sin_theta
 
 
 def _bclt_delt_jax(sat, posepoch, tt, tt_tb, dt):
@@ -339,14 +357,14 @@ def _bclt_delt_jax(sat, posepoch, tt, tt_tb, dt):
 
 def _psr_pos_jax(pos, vel, delt):
     p = pos + delt * vel
-    return p / jnp.maximum(jnp.linalg.norm(p), 1e-30)
+    return p / jnp.maximum(_safe_norm_jax(p), 1e-30)
 
 
 def _roemer_ls_jax(rca, pos, vel, acc, delt, parallax_mas, pmrv):
     rcos1 = jnp.dot(pos, rca)
     rr = jnp.dot(rca, rca)
     pmtrans_rcos2 = jnp.dot(vel, rca)
-    pmtrans = jnp.linalg.norm(vel)
+    pmtrans = _safe_norm_jax(vel)
     dt_pm = delt * pmtrans_rcos2
     dt_pmtt = -0.5 * pmtrans * pmtrans * delt * delt * rcos1
     dt_acctrans = 0.5 * delt * delt * jnp.dot(acc, rca)
@@ -360,7 +378,7 @@ def _roemer_ls_jax(rca, pos, vel, acc, delt, parallax_mas, pmrv):
 
 
 def _shapiro_jax(rsa, psr_pos, gm_c3):
-    r = jnp.linalg.norm(rsa)
+    r = _safe_norm_jax(rsa)
     ctheta = jnp.dot(psr_pos, rsa) / jnp.maximum(r, 1e-30)
     return -2.0 * gm_c3 * jnp.log(jnp.maximum(r / AULTSC_JAX * (1.0 + ctheta), 1e-30))
 
@@ -378,12 +396,13 @@ def _dm_jax(
 ):
     rsa = -obs_sun_ls
     vobs = earth_vel / 299792.458 + site_vel / 299792.458
-    r = jnp.linalg.norm(rsa)
+    r = _safe_norm_jax(rsa)
     ctheta = jnp.dot(psr_pos, rsa) / jnp.maximum(r, 1e-30)
     voverc = jnp.dot(psr_pos, vobs)
     freqf = freq_mhz * 1.0e6 * (1.0 - voverc)
     freqf = jnp.where(dilate_freq & (einstein != 0.0), freqf / einstein, freqf)
     tdis1 = jnp.where(freqf > 1.0, dm_val * K_DM_SEC_JAX / ((freqf / 1.0e6) ** 2), 0.0)
+    solar_wind_angle = _solar_wind_angular_factor_jax(ctheta)
     tdis2 = jnp.where(
         (ne_sw != 0.0) & (freqf > 1.0) & (r > 0.0),
         ne_sw
@@ -392,8 +411,7 @@ def _dm_jax(
         * 1.49598e11
         / 299792458.0
         / 7.436e6
-        * jnp.arccos(jnp.clip(ctheta, -1.0, 1.0))
-        / jnp.maximum(jnp.sqrt(jnp.maximum(1.0 - ctheta * ctheta, 0.0)), 1e-30)
+        * solar_wind_angle
         / r
         / freqf
         / freqf,
@@ -413,7 +431,7 @@ def _sum_planet_shapiro_jax(
     if not enabled:
         return total
     for (_, gm), rsa in zip(_PLANET_SHAP_JAX, planet_rsa_ls):
-        r = jnp.linalg.norm(rsa)
+        r = _safe_norm_jax(rsa)
         contrib = _shapiro_jax(rsa, psr_pos, gm)
         total = total + jnp.where(r > 1e-20, contrib, 0.0)
     return total
@@ -461,7 +479,7 @@ def _bclt_step_jax(
         freq, dm_val, psr_pos, osun, earth_vel, site_vel, einstein_i, dilate_freq, ne_sw
     )
     shap_update = shap_sun + jnp.where(
-        planet_shapiro_enabled & (jnp.linalg.norm(jup_rsa) > 1e-20),
+        planet_shapiro_enabled & (_safe_norm_jax(jup_rsa) > 1e-20),
         shap_jup,
         0.0,
     )

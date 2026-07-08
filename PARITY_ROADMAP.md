@@ -165,6 +165,14 @@ The path to production-ready tempo2 parity:
 - [ ] Polish epta_j0030 p99 (~11 ns on 2×1999 TOAs).
 - [ ] Alternate PPTA ~16 ns export budget.
 - [ ] Fitter TRACK −2 / `-addsat` wiring in `optimized_fitter.py`.
+- [ ] **`bbat`-only native tail for tempo2 autodiff** — today each
+  `residual_delta_jax` / autodiff design-matrix call runs the full native chain
+  twice (ref + pert) through BCLT → formBats → Shklovskii → `phase5@bbat`, but
+  the fitting tangent only consumes **`bbat` displacement** plus the shared Taylor
+  phase delta (`_phase_residual_delta_jax`). Add a subgraph that stops after
+  formBats (skip spin/`phase5`) when building delay changes. Same BCLT cost,
+  less spin-tail work per NUTS grad eval. See [`PARITY_THEORY.md`](PARITY_THEORY.md)
+  §5 “Tempo2 autodiff residual delta”.
 - [ ] `DMASSPLANET` reflex correction (G8 — deferred, no fixture coverage).
 - [ ] Full `get_obsCoord` port (G9 — deferred, sub-cm already on wsrt167).
 
@@ -225,6 +233,7 @@ The path to production-ready tempo2 parity:
 | **Ruled out** | **Phase D Step 3 — `-padd` / `jump_phase`** | pytempo `phase_offset_turns` | **Exact match** |
 | **Ruled out** | **clkcorr feedback delta on merged IPTA chains** | Track B diagnostic | **Zero effect** — chains converge in one iter |
 | **Defer** | formBats `bbat` diagnostic fix | ~65 s off oracle | — |
+| **Defer** | **`bbat`-only native tail for tempo2 autodiff** | 2× full chain per grad eval | Phase 4; theory §5 |
 | **Defer** | **G8 — `DMASSPLANET`** | no fixture coverage | Recorded §G8 |
 | **Defer** | **G9 — full `get_obsCoord` port** | wsrt167 `< 0.01 cm` | Recorded §G9 |
 
@@ -312,6 +321,17 @@ of `bbat` is unchanged.
   split summation (or equivalent compensated float64) in `formbats_jax.py`.
 - **End-to-end:** `acceptance_residual_sec` vs libstempo/tempo2 — the only gate
   that ultimately matters for production parity.
+
+### Tempo2 autodiff performance (deferred)
+
+Fitting / NUTS uses `make_residual_delta_jax_fn()` (not absolute host residuals).
+With frozen host `dt_emit`, the native `phase5@bbat` closure cancels delay
+sensitivity in `res(θ+Δθ) − res(θ)`; the **correct tangent** is built from native
+**`bbat` displacement** + `_phase_residual_delta_jax` (see
+[`PARITY_THEORY.md`](PARITY_THEORY.md) §5). That path still pays for **two full
+native tails per call** (ref + pert) even though only `bbat` day/sec is consumed.
+A **`bbat`-only subgraph** (stop after formBats/Shklovskii, skip spin) is the
+natural optimization — tracked in Phase 4 above. Not a parity blocker.
 
 ---
 

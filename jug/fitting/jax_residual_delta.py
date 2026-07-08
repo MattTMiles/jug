@@ -31,8 +31,9 @@ import numpy as np
 from jug.residuals.tempo2_native.chain_jax import (
     NativeDeltaPack,
     build_native_delta_pack_for_setup,
-    compute_native_residual_delta_jax,
+    compute_native_bbat_delay_change_sec_jax,
 )
+from jug.utils.constants import SECS_PER_DAY
 from jug.utils.units import native_derivative_to_fit_column
 
 if TYPE_CHECKING:
@@ -251,6 +252,10 @@ def _build_params_from_delta(
                 pm_lat = new_val
         else:
             params[param_upper] = new_val
+            if param_upper == "RAJ":
+                params["_raj_rad"] = new_val
+            elif param_upper == "DECJ":
+                params["_decj_rad"] = new_val
 
     if ecliptic_coords and lon_deg is not None:
         ra_rad, dec_rad, pmra, pmdec = ecliptic_deg_to_equatorial_rad(
@@ -294,6 +299,30 @@ def _spin_terms_from_params(params: dict) -> list:
     return terms
 
 
+def _binary_delay_change_jax(params: dict, setup: "GeneralFitSetup", *, binary_plan):
+    """Traceable binary-delay change, matching the shared Taylor delay path."""
+    if not setup.binary_params or setup.initial_binary_delay is None:
+        return None
+    if setup.prebinary_delay_sec is None:
+        raise ValueError("Binary delay-change requires prebinary_delay_sec in setup.")
+    plan = binary_plan
+    if plan is None:
+        from jug.fitting.binary_delay_plan import resolve_binary_structure
+
+        plan = resolve_binary_structure(
+            setup.params, setup.fit_param_list, obs_pos_ls=setup.ssb_obs_pos_ls
+        )
+    tdb_mjd = jnp.asarray(setup.tdb_mjd, dtype=jnp.float64)
+    toas_prebinary = tdb_mjd - (
+        jnp.asarray(setup.prebinary_delay_sec, dtype=jnp.float64) / SECS_PER_DAY
+    )
+    new_binary = jnp.asarray(
+        plan.evaluate(toas_prebinary, params, setup.ssb_obs_pos_ls, jnp),
+        dtype=jnp.float64,
+    )
+    return new_binary - jnp.asarray(setup.initial_binary_delay, dtype=jnp.float64)
+
+
 def _compute_residual_delta_jax(
     params_ref: dict,
     params_pert: dict,
@@ -321,7 +350,25 @@ def _compute_residual_delta_jax(
                 "tempo2 native residual_delta could not build a native delta pack "
                 "(missing term_diagnostics['tempo2_obs_state'] or TOA list on setup)."
             )
-        return compute_native_residual_delta_jax(params_ref, params_pert, native_pack)
+        native_delay_change = compute_native_bbat_delay_change_sec_jax(
+            params_ref, params_pert, native_pack
+        )
+        binary_delay_change = _binary_delay_change_jax(
+            params_pert, setup, binary_plan=binary_plan
+        )
+        total_delay_change = native_delay_change
+        if binary_delay_change is not None:
+            total_delay_change = total_delay_change + binary_delay_change
+        f_terms = _spin_terms_from_params(params_pert)
+        return _phase_residual_delta_jax(
+            np.asarray(setup.dt_sec_cached, dtype=np.float64),
+            total_delay_change,
+            ref_f_terms,
+            f_terms,
+            jnp.asarray(setup.weights, dtype=jnp.float64),
+            mean_mode=phase_mean_mode,
+            f0=_param_scalar(params_pert, "F0", f_terms[0]),
+        )
 
     del native_pack
     from jug.fitting.forward_delay import compute_total_delay_change

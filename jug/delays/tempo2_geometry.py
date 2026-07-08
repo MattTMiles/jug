@@ -38,6 +38,8 @@ SPEED_LIGHT_M = 299792458.0
 
 # tempo2 hard-coded ecliptic obliquity (``ECLIPTIC_OBLIQUITY`` in tempo2.h)
 TEMPO2_ECLIPTIC_OBLIQUITY_ARCSEC = 84381.4059
+# tempo1-emulation override (``preProcessSimple.C``, EPHVER<5)
+TEMPO1_ECLIPTIC_OBLIQUITY_ARCSEC = 84381.412
 
 _PLANET_GM = {
     "jupiter": GMJ_C3,
@@ -349,6 +351,11 @@ def ssb_obs_light_seconds(ssb_obs_pos_km: np.ndarray) -> np.ndarray:
 def ecliptic_obliquity_rad(params: dict[str, Any], use_native_ecliptic: bool) -> float:
     if not use_native_ecliptic:
         return 0.0
+    from jug.residuals.engine_conventions import is_tempo1_emulation
+
+    if is_tempo1_emulation(params):
+        # preProcessSimple.C: ECLIPTIC_OBLIQUITY = 84381.412 in tempo1 mode.
+        return TEMPO1_ECLIPTIC_OBLIQUITY_ARCSEC * np.pi / (180.0 * 3600.0)
     frame = str(params.get("_ecliptic_frame", "IERS2003")).upper()
     if frame in ("IERS2003", "DEFAULT"):
         return TEMPO2_ECLIPTIC_OBLIQUITY_ARCSEC * np.pi / (180.0 * 3600.0)

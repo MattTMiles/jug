@@ -31,6 +31,7 @@ from jug.delays.barycentric import (
 from jug.delays.tempo2_ephemeris import (
     compute_tempo2_ephemeris_state,
     compute_tempo2_observatory_state,
+    per_toa_obs_itrf_km,
     resolve_tempo2_ephemeris_path,
 )
 from jug.delays.tempo2_geometry import (
@@ -511,10 +512,25 @@ def _compute_tempo2_tdb_geometry_terms(
     if verbose:
         print(f"   Tempo2-native ephemeris: {ephem_path}")
 
+    # TDB pulsars: readEphemeris.C does not apply the IFTE_K one_au scaling.
+    # For T2CMETHOD TEMPO the UT1 argument needs SAT and the UTC->TT chain;
+    # (tdb - sat) folds in tt_tb (±1.6 ms → sub-metre site error), acceptable
+    # here because the native BCLT overlay recomputes Roemer from the exact
+    # bootstrap geometry.
+    sat_arr = np.array(
+        [t.mjd_int + t.mjd_frac for t in toas], dtype=np.float64
+    )
+    approx_tt_sec = (np.asarray(tdb_mjd, dtype=np.float64) - sat_arr) * 86400.0
     obs_state = compute_tempo2_observatory_state(
         np.asarray(tdb_mjd, dtype=np.float64),
-        np.asarray(obs_itrf_km, dtype=np.float64).reshape(3),
+        per_toa_obs_itrf_km(
+            toas, np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
+        ),
         ephem_path=ephem_path,
+        si_units=False,
+        t2c_method=str(getattr(provider.profile, "t2cmethod", "IAU2000B")),
+        sat_mjd=sat_arr,
+        correction_tt_sec=approx_tt_sec,
     )
     ssb_obs_pos_km, _, obs_sun_ls_raw, planets_obs_raw = tempo2_observatory_chain_vectors(
         obs_state

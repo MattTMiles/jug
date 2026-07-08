@@ -246,6 +246,24 @@ def close_ephemeris_cache() -> None:
     _open_spk.cache_clear()
 
 
+def per_toa_obs_itrf_km(
+    toas: list[Any],
+    default_obs_itrf_km: np.ndarray,
+) -> np.ndarray:
+    """Per-TOA observatory ITRF positions ``(n, 3)`` for multi-observatory data.
+
+    Falls back to ``default_obs_itrf_km`` for codes missing from the
+    observatory table (mirrors ``_tempo2_tt2tb_geometry``).
+    """
+    from jug.utils.constants import OBSERVATORIES
+
+    default = np.asarray(default_obs_itrf_km, dtype=np.float64).reshape(3)
+    out = np.zeros((len(toas), 3), dtype=np.float64)
+    for i, toa in enumerate(toas):
+        out[i] = OBSERVATORIES.get(toa.observatory.lower(), default)
+    return out
+
+
 @dataclass(frozen=True)
 class Tempo2GeometryBootstrap:
     """Converged Tempo2 host geometry after ``readEphemeris`` / ``tt2tb`` coupling."""
@@ -268,6 +286,7 @@ def bootstrap_tempo2_observatory_state(
     max_iter: int = 8,
     tol: float = 1.0e-15,
     si_units: bool = True,
+    t2c_method: str = "IAU2000B",
 ) -> Tempo2GeometryBootstrap:
     """Fixed-point bootstrap: ``tt2tb`` Teph ↔ ``readEphemeris`` epoch ↔ SPK state.
 
@@ -278,7 +297,7 @@ def bootstrap_tempo2_observatory_state(
 
     sat = np.asarray(sat_mjd, dtype=np.float64)
     tt = np.asarray(correction_tt_sec, dtype=np.float64)
-    obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
+    obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64)
     site_mjd, ephemeris_mjd = tempo2_geometry_epochs(sat, tt)
     tt_teph = np.zeros_like(sat, dtype=np.float64)
     state = compute_tempo2_observatory_state(
@@ -287,6 +306,9 @@ def bootstrap_tempo2_observatory_state(
         ephem_path=ephem_path,
         site_mjd=site_mjd,
         si_units=si_units,
+        t2c_method=t2c_method,
+        sat_mjd=sat,
+        correction_tt_sec=tt,
     )
     tt_tb = np.zeros_like(sat, dtype=np.float64)
     delta = np.inf
@@ -312,6 +334,9 @@ def bootstrap_tempo2_observatory_state(
             ephem_path=ephem_path,
             site_mjd=site_mjd,
             si_units=si_units,
+            t2c_method=t2c_method,
+            sat_mjd=sat,
+            correction_tt_sec=tt,
         )
     else:
         raise RuntimeError(
@@ -345,6 +370,9 @@ def compute_tempo2_observatory_state(
     site_mjd: np.ndarray | None = None,
     site_time_scale: str = "tt",
     si_units: bool = True,
+    t2c_method: str = "IAU2000B",
+    sat_mjd: np.ndarray | None = None,
+    correction_tt_sec: np.ndarray | None = None,
     planet_names: tuple[str, ...] = (
         "mercury",
         "venus",
@@ -361,10 +389,22 @@ def compute_tempo2_observatory_state(
     ``calculate_bclt.C`` L108–110.
 
     Ephemeris vectors (Earth/Sun/planets) are sampled at ``ephem_mjd`` and scaled
-    per ``readEphemeris.C`` SI_UNITS (``IFTE_K`` on SPK km).  The site transform
-    uses Astropy ``EarthLocation.get_gcrs_posvel`` at ``site_mjd`` (``sat+TT``);
-    this approximates ``get_obsCoord_IAU2000B`` and is **not** a line-by-line C
-    port — pass ``site_mjd`` explicitly when ``ephem_mjd`` includes Teph.
+    per ``readEphemeris.C`` SI_UNITS (``IFTE_K`` on SPK km).
+
+    Site transform (``get_obsCoord.C``):
+
+    * ``t2c_method="IAU2000B"`` (default): Astropy
+      ``EarthLocation.get_gcrs_posvel`` at ``site_mjd`` (``sat+TT``); this
+      approximates ``get_obsCoord_IAU2000B`` and is **not** a line-by-line C
+      port — pass ``site_mjd`` explicitly when ``ephem_mjd`` includes Teph.
+    * ``t2c_method="TEMPO"``: line-by-line port of the legacy TEMPO branch
+      (LMST + IAU1976 precession + 1980 nutation), which tempo2 uses for
+      tempo1-emulation (``EPHVER<5``) and ``T2CMETHOD TEMPO`` par files.
+      Requires ``sat_mjd`` and ``correction_tt_sec`` for the ``tai2ut1``
+      UT1 argument.
+
+    ``obs_itrf_km`` may be a single site ``(3,)`` or per-TOA sites ``(n, 3)``
+    for multi-observatory datasets.
     """
     from astropy import units as u
     from astropy.coordinates import EarthLocation
@@ -399,22 +439,44 @@ def compute_tempo2_observatory_state(
         si_units=si_units,
     )
 
-    obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
-    site_epochs = np.asarray(
-        ephem_mjd if site_mjd is None else site_mjd, dtype=np.float64
-    )
-    times = Time(site_epochs, format="mjd", scale=site_time_scale)
-    obs_loc = EarthLocation.from_geocentric(
-        obs_itrf[0] * u.km, obs_itrf[1] * u.km, obs_itrf[2] * u.km
-    )
-    gcrs_pos, gcrs_vel = obs_loc.get_gcrs_posvel(obstime=times)
-    observatory_earth = np.zeros((n, 6), dtype=np.float64)
-    observatory_earth[:, 0] = gcrs_pos.x.to(u.km).value
-    observatory_earth[:, 1] = gcrs_pos.y.to(u.km).value
-    observatory_earth[:, 2] = gcrs_pos.z.to(u.km).value
-    observatory_earth[:, 3] = gcrs_vel.x.to(u.km / u.s).value
-    observatory_earth[:, 4] = gcrs_vel.y.to(u.km / u.s).value
-    observatory_earth[:, 5] = gcrs_vel.z.to(u.km / u.s).value
+    obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64)
+    if obs_itrf.ndim == 1:
+        obs_itrf = np.broadcast_to(obs_itrf.reshape(1, 3), (n, 3))
+
+    if str(t2c_method).upper() == "TEMPO":
+        from jug.delays.tempo_t2c import (
+            compute_correction_ut1_sec,
+            compute_tempo_t2c_observatory_earth,
+        )
+
+        if sat_mjd is None or correction_tt_sec is None:
+            raise ValueError(
+                "t2c_method='TEMPO' requires sat_mjd and correction_tt_sec "
+                "for the tai2ut1 UT1 argument"
+            )
+        correction_ut1 = compute_correction_ut1_sec(sat_mjd, correction_tt_sec)
+        observatory_earth = compute_tempo_t2c_observatory_earth(
+            sat_mjd,
+            obs_itrf,
+            correction_ut1_sec=correction_ut1,
+            nutation_mjd=np.asarray(ephem_mjd, dtype=np.float64),
+        )
+    else:
+        site_epochs = np.asarray(
+            ephem_mjd if site_mjd is None else site_mjd, dtype=np.float64
+        )
+        times = Time(site_epochs, format="mjd", scale=site_time_scale)
+        obs_loc = EarthLocation.from_geocentric(
+            obs_itrf[:, 0] * u.km, obs_itrf[:, 1] * u.km, obs_itrf[:, 2] * u.km
+        )
+        gcrs_pos, gcrs_vel = obs_loc.get_gcrs_posvel(obstime=times)
+        observatory_earth = np.zeros((n, 6), dtype=np.float64)
+        observatory_earth[:, 0] = gcrs_pos.x.to(u.km).value
+        observatory_earth[:, 1] = gcrs_pos.y.to(u.km).value
+        observatory_earth[:, 2] = gcrs_pos.z.to(u.km).value
+        observatory_earth[:, 3] = gcrs_vel.x.to(u.km / u.s).value
+        observatory_earth[:, 4] = gcrs_vel.y.to(u.km / u.s).value
+        observatory_earth[:, 5] = gcrs_vel.z.to(u.km / u.s).value
     site_vel = observatory_earth[:, 3:6].copy()
 
     return Tempo2ObservatoryState(

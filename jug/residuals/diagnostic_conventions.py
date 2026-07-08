@@ -114,7 +114,13 @@ def resolve_ne_sw_cm3(
     Tempo2 ``initialise.C`` sets ``NE_SW_DEFAULT = 4`` even when the par file
     omits ``NE_SW``.  That default enters ``tdis2`` in ``formBats`` and must be
     included in pre-binary delay for tempo2 spin ``bbat`` parity.
+
+    In tempo1-emulation mode (``EPHVER < 5``), ``preProcessSimple.C``
+    unconditionally overrides ``ne_sw`` to 9.961 cm^-3 — even when the par
+    file explicitly sets ``NE_SW`` (as the IPTA DR2 TDB pars do).
     """
+    if getattr(profile, "tempo1_emulation", False):
+        return 9.961
     if "NE_SW" in params:
         return float(params["NE_SW"])
     if profile.is_tempo2 and profile.implicit_tempo2_defaults:

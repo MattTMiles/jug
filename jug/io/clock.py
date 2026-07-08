@@ -178,37 +178,30 @@ class ClockGraph:
             # that aren't on the path to UTC.
             self._edges.append((from_scale, to_scale, clk_file, weight))
 
-    def correction_chain(self, obs_scale: str) -> dict | None:
-        """Return the merged clock correction from ``obs_scale`` to ``self.target``.
+    def _edge_coverage(self, edge_idx: int) -> tuple[float, float]:
+        """(start, end) MJD covered by the clock file of *edge_idx*."""
+        clk = parse_clock_file(self._edges[edge_idx][2])
+        mjds = clk['mjd']
+        if len(mjds) == 0:
+            return (np.inf, -np.inf)
+        return (float(mjds[0]), float(mjds[-1]))
 
-        Uses Dijkstra's algorithm over the graph of clock files, choosing the
-        path with the fewest hops (each file = 1 hop, matching Tempo2).
+    def _shortest_path(self, src: str, mjd: float | None = None) -> list[int] | None:
+        """Dijkstra from *src* to the target; returns edge indices or None.
 
-        Parameters
-        ----------
-        obs_scale : str
-            Starting timescale, e.g. ``"UTC(meerkat)"`` or ``"UTC(AO)"``.
-            Case-insensitive.
-
-        Returns
-        -------
-        dict or None
-            A merged clock dict ``{'mjd': array, 'offset': array}`` representing
-            the sum of corrections along the shortest path, or ``None`` if no
-            path exists.  Also sets ``dict['chain']`` to the list of file names
-            used, for diagnostic purposes.
+        When *mjd* is given, only edges whose clock file covers that epoch are
+        traversable — mirroring tempo2 ``makeClockCorrectionSequence``, which
+        rebuilds the chain per epoch from the files valid at that SAT.
         """
-        src = obs_scale.upper()
         dst = self.target
-
-        if src in self._target_set:
-            # Already at target — zero correction
-            return {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0]),
-                    'chain': []}
 
         # Build adjacency: node → list of (neighbour, edge_index, weight)
         adj: dict[str, list[tuple[str, int, int]]] = {}
         for i, (frm, to, _, weight) in enumerate(self._edges):
+            if mjd is not None:
+                lo, hi = self._edge_coverage(i)
+                if not (lo <= mjd <= hi):
+                    continue
             adj.setdefault(frm, []).append((to, i, weight))
             # Edges are directed; Tempo2 also supports reverse traversal when
             # the path can be inverted (additive inverse), but we only support
@@ -253,10 +246,134 @@ class ClockGraph:
             edge_indices.append(eidx)
             node = parent
         edge_indices.reverse()
+        return edge_indices
 
-        # Load and merge corrections along the path
-        chain_files = [self._edges[i][2] for i in edge_indices]
-        return self._merge_chain(chain_files)
+    def correction_chain(self, obs_scale: str,
+                         mjd_min: float | None = None,
+                         mjd_max: float | None = None) -> dict | None:
+        """Return the merged clock correction from ``obs_scale`` to ``self.target``.
+
+        Uses Dijkstra's algorithm over the graph of clock files, choosing the
+        path with the lowest total hop weight (matching Tempo2).
+
+        When ``mjd_min``/``mjd_max`` are given, the chain is resolved
+        *per epoch* the way tempo2 ``getClockCorrectionSequence`` does: only
+        files covering a given epoch are usable, so different MJD ranges may
+        route through different files (e.g. UTC(AO) goes via UTC(NIST) before
+        MJD 50155 and via UTC(GPS) after).  The result is a piecewise merged
+        table spanning ``[mjd_min, mjd_max]``.
+
+        Parameters
+        ----------
+        obs_scale : str
+            Starting timescale, e.g. ``"UTC(meerkat)"`` or ``"UTC(AO)"``.
+            Case-insensitive.
+        mjd_min, mjd_max : float, optional
+            Data MJD range for epoch-aware chain resolution.  When omitted,
+            a single epoch-blind chain is used (previous behaviour).
+
+        Returns
+        -------
+        dict or None
+            A merged clock dict ``{'mjd': array, 'offset': array}`` representing
+            the sum of corrections along the shortest path, or ``None`` if no
+            path exists.  Also sets ``dict['chain']`` to the list of file names
+            used, for diagnostic purposes.
+        """
+        src = obs_scale.upper()
+
+        if src in self._target_set:
+            # Already at target — zero correction
+            return {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0]),
+                    'chain': []}
+
+        if mjd_min is None or mjd_max is None:
+            edge_indices = self._shortest_path(src)
+            if edge_indices is None:
+                return None
+            chain_files = [self._edges[i][2] for i in edge_indices]
+            return self._merge_chain(chain_files)
+
+        return self._correction_chain_piecewise(src, float(mjd_min), float(mjd_max))
+
+    def _correction_chain_piecewise(self, src: str, mjd_min: float,
+                                    mjd_max: float) -> dict | None:
+        """Epoch-aware chain: re-run Dijkstra on each coverage interval."""
+        # Pad the data range slightly so interpolation at the exact endpoints
+        # stays inside the table.
+        lo_all = mjd_min - 1.0
+        hi_all = mjd_max + 1.0
+
+        # Interval breakpoints: coverage boundaries of every file, clipped
+        # to the data range.
+        cuts = {lo_all, hi_all}
+        for i in range(len(self._edges)):
+            for b in self._edge_coverage(i):
+                if lo_all < b < hi_all:
+                    cuts.add(b)
+        bounds = sorted(cuts)
+
+        seg_mjd: list[np.ndarray] = []
+        seg_off: list[np.ndarray] = []
+        chain_names: list[str] = []
+        prev_path: tuple[int, ...] | None = None
+
+        for lo, hi in zip(bounds[:-1], bounds[1:]):
+            mid = 0.5 * (lo + hi)
+            edge_indices = self._shortest_path(src, mjd=mid)
+            if edge_indices is None:
+                # tempo2 CLK4: "Trying assuming UTC = <obs>" → zero correction
+                grid = np.array([lo, hi])
+                offs = np.zeros(2)
+                path_key: tuple[int, ...] = ()
+            else:
+                files = [self._edges[i][2] for i in edge_indices]
+                clocks = [parse_clock_file(f) for f in files]
+                grid_pts = [c['mjd'][(c['mjd'] >= lo) & (c['mjd'] <= hi)]
+                            for c in clocks]
+                grid = np.unique(np.concatenate(grid_pts + [np.array([lo, hi])]))
+                grid_cont = utc_mjd_to_continuous(grid)
+                offs = np.zeros_like(grid)
+                for clk in clocks:
+                    # Clamped linear interpolation (files cover the interval by
+                    # construction; clamping only matters at exact boundaries,
+                    # where interpolate_clock_vectorized would zero the value).
+                    offs += np.interp(
+                        grid_cont,
+                        utc_mjd_to_continuous(clk['mjd']),
+                        clk['offset'],
+                    )
+                path_key = tuple(edge_indices)
+                for f in files:
+                    if f.name not in chain_names:
+                        chain_names.append(f.name)
+
+            if seg_mjd and prev_path != path_key:
+                # Chain switch: duplicate the boundary so the merged table has
+                # a step there instead of interpolating across the switch.
+                eps = 1e-8  # ~0.9 ms on the MJD axis; clock tables vary slowly
+                last = seg_mjd[-1]
+                if last[-1] >= grid[0]:
+                    grid = grid.copy()
+                    grid[0] = last[-1] + eps
+            elif seg_mjd:
+                # Same chain continuing: drop the duplicated boundary sample.
+                grid = grid[1:]
+                offs = offs[1:]
+            seg_mjd.append(grid)
+            seg_off.append(offs)
+            prev_path = path_key
+
+        if not seg_mjd:
+            return None
+        mjd_all = np.concatenate(seg_mjd)
+        off_all = np.concatenate(seg_off)
+        order = np.argsort(mjd_all, kind="stable")
+        return {
+            'mjd': mjd_all[order],
+            'offset': off_all[order],
+            'chain': chain_names,
+        }
 
     @staticmethod
     def _merge_chain(files: list[Path]) -> dict:

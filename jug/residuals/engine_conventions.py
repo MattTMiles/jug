@@ -72,6 +72,24 @@ def _keyword(params: dict[str, Any], key: str, default: str) -> str:
     return str(params[key]).upper().strip()
 
 
+def is_tempo1_emulation(params: dict[str, Any]) -> bool:
+    """Tempo2 ``preProcessSimple.C`` tempo1-emulation trigger.
+
+    Tempo2 enables full tempo1 emulation whenever ``EPHVER < 5`` (or the
+    ``TEMPO1`` keyword is present).  In that mode it *unconditionally*
+    overrides: units→TDB, TIMEEPH→FB90, DILATEFREQ→N, PLANET_SHAPIRO→N,
+    T2CMETHOD→TEMPO, CORRECT_TROPOSPHERE→N, ``ne_sw``→9.961 and
+    ``ECLIPTIC_OBLIQUITY``→84381.412 — even when the par file sets other
+    values (e.g. ``NE_SW 4``).
+    """
+    if "TEMPO1" in params:
+        return True
+    try:
+        return int(float(params.get("EPHVER", 5))) < 5
+    except (TypeError, ValueError):
+        return False
+
+
 @dataclass(frozen=True)
 class EngineConventionProfile:
     """Resolved runtime conventions for delay and residual computation.
@@ -113,6 +131,7 @@ class EngineConventionProfile:
     correct_troposphere: bool = False
     phase_mean_mode: PhaseMeanMode = "weighted"
     implicit_tempo2_defaults: bool = False
+    tempo1_emulation: bool = False
     ephem: str = "de440"
     _sources: dict[str, str] = field(default_factory=dict, repr=False)
 
@@ -136,6 +155,7 @@ class EngineConventionProfile:
             "correct_troposphere": self.correct_troposphere,
             "phase_mean_mode": self.phase_mean_mode,
             "implicit_tempo2_defaults": self.implicit_tempo2_defaults,
+            "tempo1_emulation": self.tempo1_emulation,
             "ephem": self.ephem,
             "sources": dict(self._sources),
         }
@@ -206,6 +226,28 @@ class EngineConventionProfile:
         if "NO_SS_SHAPIRO" in params:
             sources["NO_SS_SHAPIRO"] = "par"
 
+        # Tempo2 tempo1-emulation (EPHVER<5) overrides par keywords
+        # unconditionally in preProcessSimple.C; mirror that here.
+        tempo1_emulation = tempo2_mode and is_tempo1_emulation(params)
+        if tempo1_emulation:
+            units = "TDB"
+            timeeph = "FB90"
+            t2cmethod = "TEMPO"
+            dilatefreq = False
+            planet_shapiro = False
+            correct_tropo = False
+            for key in (
+                "UNITS",
+                "TIMEEPH",
+                "T2CMETHOD",
+                "DILATEFREQ",
+                "PLANET_SHAPIRO",
+                "CORRECT_TROPOSPHERE",
+                "NE_SW",
+                "ECLIPTIC_OBLIQUITY",
+            ):
+                sources[key] = "tempo1_emulation"
+
         if phase_mean_mode is None:
             phase_mean: PhaseMeanMode = "unweighted" if tempo2_mode else "weighted"
         else:
@@ -224,6 +266,7 @@ class EngineConventionProfile:
             correct_troposphere=correct_tropo,
             phase_mean_mode=phase_mean,
             implicit_tempo2_defaults=use_implicit and tempo2_mode,
+            tempo1_emulation=tempo1_emulation,
             ephem=ephem,
             _sources=sources,
         )
@@ -241,6 +284,7 @@ class EngineConventionProfile:
             "correct_troposphere",
             "phase_mean_mode",
             "implicit_tempo2_defaults",
+            "tempo1_emulation",
             "ephem",
         }
         clean = {k: v for k, v in kwargs.items() if k in allowed}

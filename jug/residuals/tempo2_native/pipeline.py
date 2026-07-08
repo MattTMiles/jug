@@ -100,6 +100,7 @@ def compute_tempo2_host_setup(
     from jug.delays.barycentric import compute_einstein_rate
     from jug.delays.tempo2_ephemeris import (
         bootstrap_tempo2_observatory_state,
+        per_toa_obs_itrf_km,
         resolve_tempo2_ephemeris_path,
     )
     from jug.delays.tempo2_geometry import (
@@ -159,14 +160,19 @@ def compute_tempo2_host_setup(
     sat_sec_arr = np.array([t.mjd_frac * SECS_PER_DAY for t in toas], dtype=np.float64)
     sat_arr = sat_int_arr + sat_sec_arr / SECS_PER_DAY
     formbats_tt_arr = np.asarray(formbats_correction_tt, dtype=np.float64)
-    obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
+    obs_itrf = per_toa_obs_itrf_km(
+        toas, np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
+    )
 
+    # readEphemeris.C scales one_au by IFTE_K only for SI_UNITS (TCB) pulsars.
     geo_boot = bootstrap_tempo2_observatory_state(
         sat_arr,
         formbats_tt_arr,
         obs_itrf,
         ephem_path=ephem_path,
         params=params,
+        si_units=is_tempo2_si_units(parse_timescale(params)),
+        t2c_method=str(getattr(engine_profile, "t2cmethod", "IAU2000B")),
     )
     tempo2_obs_state = geo_boot.state
     mjd_tt = geo_boot.site_mjd
@@ -223,13 +229,18 @@ def compute_tempo2_host_setup(
     if correct_troposphere:
         from jug.delays.tropo_jax import compute_tempo2_tropo_delay_host
 
-        tropo_delay_sec = compute_tempo2_tropo_delay_host(
-            sat_arr,
-            formbats_tt_arr,
-            obs_itrf_km=obs_itrf,
-            pos_pulsar=pos_pulsar,
-            mapping_clock_sec=correction_tt,
-        )
+        # Tropo mapping is site-specific; evaluate per observatory group.
+        tropo_delay_sec = np.zeros(len(toas), dtype=np.float64)
+        obs_codes_per_toa = [t.observatory.lower() for t in toas]
+        for code in sorted(set(obs_codes_per_toa)):
+            idxs = [i for i, c in enumerate(obs_codes_per_toa) if c == code]
+            tropo_delay_sec[idxs] = compute_tempo2_tropo_delay_host(
+                sat_arr[idxs],
+                formbats_tt_arr[idxs],
+                obs_itrf_km=obs_itrf[idxs[0]],
+                pos_pulsar=pos_pulsar,
+                mapping_clock_sec=correction_tt[idxs],
+            )
 
     if not skip_native_bclt_overlay:
         _overlay_td = {

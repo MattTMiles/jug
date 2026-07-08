@@ -108,6 +108,8 @@ _OBS_CLOCK_SCALE = {
     # name / alias → UTC(name) as it appears in .clk headers (case-insensitive)
     'meerkat':   'UTC(meerkat)', 'mk': 'UTC(meerkat)',
     'ao':        'UTC(AO)', 'arecibo': 'UTC(AO)', '3': 'UTC(AO)',
+    # oldcodes.dat: clock_name UTC → TOAs already on UTC, zero obs correction
+    'aoutc':     'UTC',
     'gbt':       'UTC(GBT)', '1': 'UTC(GBT)', 'gb': 'UTC(GBT)',
     'parkes':    'UTC(PKS)', 'pks': 'UTC(PKS)', 'pk': 'UTC(PKS)', '7': 'UTC(PKS)',
     'jb':        'UTC(JB)', 'jodrell': 'UTC(JB)', '8': 'UTC(JB)',
@@ -115,7 +117,7 @@ _OBS_CLOCK_SCALE = {
     'effix':     'UTC(EFFIX)',
     'leap':      'UTC(LEAP)',
     'nc':        'UTC(NCY)', 'ncy': 'UTC(NCY)', 'nancay': 'UTC(NCY)', 'f': 'UTC(NCY)',
-    'ncyobs':    'UTC(NCYOBS)',
+    'ncyobs':    'UTC(NCYOBS)', 'w': 'UTC(NCYOBS)',
     'wsrt':      'UTC(wsrt)', 'we': 'UTC(wsrt)', 'i': 'UTC(wsrt)',
     'vla':       'UTC(VLA)', 'vl': 'UTC(VLA)',
     'jbroach':   'UTC(JBROACH)',
@@ -138,13 +140,19 @@ def _get_clock_graph(clock_dir) -> 'ClockGraph':
     return _clock_graph_cache[key]
 
 
-def _load_obs_chain(clock_dir, obs_code: str, verbose: bool = False) -> dict:
+def _load_obs_chain(clock_dir, obs_code: str, verbose: bool = False,
+                    mjd_min: float | None = None,
+                    mjd_max: float | None = None) -> dict:
     """Load the merged UTC(obs) → UTC clock chain for *obs_code*.
 
     Uses the graph-based Dijkstra path finder (matching Tempo2's algorithm):
     reads all .clk headers in *clock_dir*, builds a directed graph, and finds
     the shortest path from UTC(obs) to UTC.  Returns a merged clock dict
     (sum of corrections along the path).
+
+    When ``mjd_min``/``mjd_max`` are given, the chain is resolved per epoch
+    (tempo2 rebuilds the sequence from the files covering each SAT, so e.g.
+    UTC(AO) routes via UTC(NIST) before MJD 50155 and via UTC(GPS) after).
 
     Falls back to a zero correction if no path is found or the observatory
     is unknown.
@@ -157,7 +165,7 @@ def _load_obs_chain(clock_dir, obs_code: str, verbose: bool = False) -> dict:
         return {'mjd': np.array([0.0, 100000.0]), 'offset': np.array([0.0, 0.0]),
                 'chain': []}
 
-    chain = graph.correction_chain(obs_scale)
+    chain = graph.correction_chain(obs_scale, mjd_min=mjd_min, mjd_max=mjd_max)
     if chain is None:
         if verbose:
             print(f"   [!] No clock path found for {obs_scale} → UTC; "
@@ -263,14 +271,19 @@ def _load_clock_corrections(observatory, all_obs_codes, clock_dir, params,
         }
 
     # ---- Default path: graph-based chain discovery ----
-    obs_clock = _load_obs_chain(clock_dir, observatory.lower(), verbose=verbose)
+    _mjd_min = float(np.min(mjd_utc))
+    _mjd_max = float(np.max(mjd_utc))
+    obs_clock = _load_obs_chain(clock_dir, observatory.lower(), verbose=verbose,
+                                mjd_min=_mjd_min, mjd_max=_mjd_max)
 
     obs_clocks = {observatory.lower(): obs_clock}
     if len(all_obs_codes) > 1:
         for obs_code in all_obs_codes:
             if obs_code == observatory.lower():
                 continue
-            obs_clocks[obs_code] = _load_obs_chain(clock_dir, obs_code, verbose=verbose)
+            obs_clocks[obs_code] = _load_obs_chain(
+                clock_dir, obs_code, verbose=verbose,
+                mjd_min=_mjd_min, mjd_max=_mjd_max)
 
     bipm_clock, bipm_version = _load_bipm_clock(clock_dir, params, verbose)
 
@@ -799,11 +812,14 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
             if has_tasc or has_eps:
                 model_id = 1  # ELL1
             elif has_kin_kom:
-                model_id = 5  # DDK
-                # Tempo2 mode preserves native IAU KIN/KOM semantics; the PINT
-                # path converts to the DT92-style convention expected by the
-                # existing DDK kernel implementation.
-                if not is_tempo2_mode:
+                if is_tempo2_mode:
+                    # T2model.C port: IAU KIN/KOM with additive DAOP/DSR/DOP
+                    # Kopeikin delays (branch 6 in the combined kernel).
+                    model_id = 6
+                else:
+                    model_id = 5  # DDK
+                    # PINT path converts to the DT92-style convention expected
+                    # by the existing DDK kernel implementation.
                     from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
                     convert_t2_kin_kom_to_ddk_convention(params)
             else:
@@ -948,7 +964,7 @@ def _prepare_ddk_kopeikin(params, model_id, is_ecliptic, ssb_obs_pos_km,
     ecl_obl_cos = 1.0
     ecl_obl_sin = 0.0
 
-    if is_ecliptic and model_id == 5:
+    if is_ecliptic and model_id in (5, 6):
         from jug.io.par_reader import OBLIQUITY_ARCSEC
         ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010')).upper()
         _obl_rad = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC['IERS2010']) * np.pi / (180.0 * 3600.0)
@@ -965,7 +981,7 @@ def _prepare_ddk_kopeikin(params, model_id, is_ecliptic, ssb_obs_pos_km,
     px_jax = jnp.array(parallax_mas)
 
     # Pulsar coordinates (ecliptic lon/lat for ecliptic pulsars, RA/DEC otherwise)
-    if is_ecliptic and model_id == 5:
+    if is_ecliptic and model_id in (5, 6):
         _ecl_lon_rad = np.radians(params['_ecliptic_lon_deg'])
         _ecl_lat_rad = np.radians(params['_ecliptic_lat_deg'])
         sin_ra_jax = jnp.array(np.sin(_ecl_lon_rad))
@@ -992,7 +1008,7 @@ def _prepare_ddk_kopeikin(params, model_id, is_ecliptic, ssb_obs_pos_km,
 
     # Proper motion in radians/second
     MAS_PER_YR_TO_RAD_PER_SEC = 1.0 / (MAS_PER_RAD * SECS_PER_YEAR)
-    if is_ecliptic and model_id == 5:
+    if is_ecliptic and model_id in (5, 6):
         pmra_mas_yr = float(params.get('_ecliptic_pm_lon', 0.0))
         pmdec_mas_yr = float(params.get('_ecliptic_pm_lat', 0.0))
     else:
@@ -1002,7 +1018,7 @@ def _prepare_ddk_kopeikin(params, model_id, is_ecliptic, ssb_obs_pos_km,
     pmra_rad_per_sec_jax = jnp.array(pmra_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC)
     pmdec_rad_per_sec_jax = jnp.array(pmdec_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC)
 
-    if verbose and model_id == 5:
+    if verbose and model_id in (5, 6):
         _pm_label = "PMELONG/PMELAT" if is_ecliptic else "PMRA/PMDEC"
         print(f"   DDK model with Kopeikin corrections (frame: {'ecliptic' if is_ecliptic else 'equatorial'}):")
         print(f"     KIN={float(params.get('KIN',0)):.3f}deg, KOM={float(params.get('KOM',0)):.3f}deg, PX={parallax_mas:.3f} mas")
@@ -1167,7 +1183,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
 
     # TZR DDK observer position
     model_id = bp['model_id']
-    if is_ecliptic and model_id == 5:
+    if is_ecliptic and model_id in (5, 6):
         _x = tzr_ssb_obs_pos[:, 0]
         _y = tzr_ssb_obs_pos[:, 1] * ddk['ecl_obl_cos'] + tzr_ssb_obs_pos[:, 2] * ddk['ecl_obl_sin']
         _z = -tzr_ssb_obs_pos[:, 1] * ddk['ecl_obl_sin'] + tzr_ssb_obs_pos[:, 2] * ddk['ecl_obl_cos']
@@ -1790,15 +1806,21 @@ def compute_residuals_simple(
 
     # Apply -padd (phase offset, cycles) and -radd (time offset, seconds → cycles)
     # flags from TIM files, matching TEMPO2's formResiduals.C behaviour.
+    # Repeated flags are stored as lists; formResiduals.C adds every occurrence.
+    def _flag_values_ld(val):
+        if isinstance(val, list):
+            return [np.longdouble(v) for v in val]
+        return [np.longdouble(val)]
+
     n_padd = 0
     for i, toa in enumerate(toas):
         if 'padd' in toa.flags:
-            padd_val = np.longdouble(toa.flags['padd'])
-            jump_phase[i] += padd_val
+            for padd_val in _flag_values_ld(toa.flags['padd']):
+                jump_phase[i] += padd_val
             n_padd += 1
         if 'radd' in toa.flags:
-            radd_val = np.longdouble(toa.flags['radd'])
-            jump_phase[i] += radd_val * F0_jump
+            for radd_val in _flag_values_ld(toa.flags['radd']):
+                jump_phase[i] += radd_val * F0_jump
             n_padd += 1
     if verbose and n_padd:
         print(f"   Applied -padd/-radd phase offsets to {n_padd} TOAs")
@@ -1893,6 +1915,14 @@ def compute_residuals_simple(
     if is_tempo2_compat:
         from jug.residuals.tempo2_native.pipeline import compute_tempo2_host_setup
 
+        # Keep the kernel-time delay terms so the native-overlay delta can be
+        # folded into the total delay below (the kernel ran with the provider
+        # geometry; the overlay recomputes Roemer/DM/SW from the exact
+        # bootstrap chain).
+        _pre_overlay_roemer_shapiro = np.asarray(roemer_shapiro, dtype=np.float64)
+        _pre_overlay_dm = np.asarray(dm_delay_sec, dtype=np.float64)
+        _pre_overlay_sw = np.asarray(sw_delay_sec, dtype=np.float64)
+
         _t2_setup = compute_tempo2_host_setup(
             mjd_utc=mjd_utc,
             obs_clocks=obs_clocks,
@@ -1937,6 +1967,23 @@ def compute_residuals_simple(
         bbat_mjd = _t2_setup.bbat_mjd
         torb_sec = _t2_setup.torb_sec
         model_mjd = _t2_setup.model_mjd
+
+        # The JAX kernel summed the provider-geometry Roemer/DM/SW; the native
+        # BCLT overlay recomputes them from the exact bootstrap chain (fixed
+        # POSEPOCH direction + dt_pm/dt_px terms, dt_SSB iteration).  Fold the
+        # difference into the total so residuals use the native terms (for
+        # high-PM/PX binaries like J0437-4715 the provider-vs-native gap is
+        # ~20 ns and otherwise leaks into the residuals).
+        _overlay_delta_sec = (
+            (np.asarray(roemer_shapiro, dtype=np.float64) - _pre_overlay_roemer_shapiro)
+            + (np.asarray(dm_delay_sec, dtype=np.float64) - _pre_overlay_dm)
+            + (np.asarray(sw_delay_sec, dtype=np.float64) - _pre_overlay_sw)
+        )
+        if np.any(_overlay_delta_sec != 0.0):
+            _overlay_delta_ld = np.asarray(_overlay_delta_sec, dtype=np.longdouble)
+            total_delay_sec = total_delay_sec + _overlay_delta_ld
+            delay_sec = total_delay_sec
+            dt_sec = dt_sec - _overlay_delta_ld
 
         # formBats.C subtracts troposphericDelay inside ``bat``, so tempo2's
         # spin argument includes the troposphere.  The kernel stage above ran

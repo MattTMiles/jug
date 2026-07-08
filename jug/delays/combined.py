@@ -20,6 +20,7 @@ from jug.delays.binary_dd import (
 # Note: Kopeikin corrections (K96 proper motion, annual orbital parallax) are
 # implemented inline in branch_ddk() below, not as separate importable functions.
 from jug.delays.binary_t2 import t2_binary_delay
+from jug.delays.binary_t2_tempo2 import t2_tempo2_binary_delay
 
 
 @jax.jit
@@ -375,10 +376,26 @@ def combined_delays(
                 sini_eff, m2, h3, h4, stig
             )
 
-        # Switch logic (6 branches: 0=None, 1=ELL1, 2=DD, 3=T2, 4=BT, 5=DDK)
+        # Branch 6: tempo2-native T2 DD branch with additive Kopeikin terms
+        # (T2model.C port; KIN/KOM stay in tempo2's IAU convention)
+        def branch_t2_tempo2(t):
+            use_kop = (kin != 0.0) & (
+                (pmra_rad_per_sec != 0.0) | (pmdec_rad_per_sec != 0.0)
+            )
+            return t2_tempo2_binary_delay(
+                t, pb, a1, ecc, om, t0, gamma, pbdot, omdot, xdot, edot,
+                sini, m2, kin, kom, px,
+                pmra_rad_per_sec, pmdec_rad_per_sec,
+                obs_pos_ls_val,
+                sin_ra, cos_ra, sin_dec, cos_dec,
+                use_kop,
+            )
+
+        # Switch logic (0=None, 1=ELL1, 2=DD, 3=T2, 4=BT, 5=DDK, 6=T2-tempo2)
         return jax.lax.switch(
             binary_model_id,
-            [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt, branch_ddk],
+            [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt,
+             branch_ddk, branch_t2_tempo2],
             t_prebinary
         )
 

@@ -506,6 +506,7 @@ def _tempo2_residual_tail_jax(
         "obs_site_longitude_rad",
         "obs_site_height_m",
         "obs_site_pressure_mbar",
+        "ecl_obl_rad",
     ),
 )
 def compute_tempo2_toa_model_jax(
@@ -559,6 +560,7 @@ def compute_tempo2_toa_model_jax(
     pn_add: jnp.ndarray | None = None,
     bootstrap_max_iter: int = 8,
     correct_troposphere: bool = False,
+    ecl_obl_rad: float = 0.0,
     sat_int_day: jnp.ndarray | None = None,
     sat_sec_in_day: jnp.ndarray | None = None,
     pep_int: jnp.ndarray | None = None,
@@ -601,9 +603,22 @@ def compute_tempo2_toa_model_jax(
             pressure_mbar=obs_site_pressure_mbar,
         )
         zenith_gcrs = compute_tempo2_zenith_gcrs_jax(sat_mjd, tt, site)
+        # tropo.C uses posPulsarEquatorial; undo the ecliptic frame if needed.
+        if ecl_obl_rad != 0.0:
+            ce = jnp.cos(ecl_obl_rad)
+            se = jnp.sin(ecl_obl_rad)
+            pos_pulsar_equ = jnp.stack(
+                [
+                    pos_pulsar[0],
+                    ce * pos_pulsar[1] - se * pos_pulsar[2],
+                    se * pos_pulsar[1] + ce * pos_pulsar[2],
+                ]
+            )
+        else:
+            pos_pulsar_equ = pos_pulsar
         elevation_rad = tempo2_source_elevation_rad_jax(
             zenith_gcrs,
-            pos_pulsar,
+            pos_pulsar_equ,
             obs_site_height_m,
         )
         tropo = tempo2_tropo_delay_jax(sat_mjd, tt, elevation_rad, site)
@@ -625,6 +640,7 @@ def compute_tempo2_toa_model_jax(
         si_units=si_units,
         units_tdb=units_tdb,
         max_iter=bootstrap_max_iter,
+        ecl_obl_rad=ecl_obl_rad,
     )
     bclt = compute_bclt_terms_jax(
         sat_mjd=sat_mjd,
@@ -1219,8 +1235,11 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
             ifte_na=int(model_static.ifte_na),
         )
     else:
+        from jug.delays.tempo2_geometry import ecliptic_obliquity_rad
+
         terms, residual_sec = compute_tempo2_toa_model_jax(
             **common,
+            ecl_obl_rad=float(ecliptic_obliquity_rad(params, use_native_ecliptic)),
             obs_itrf_km=jnp.asarray(model_static.obs_itrf_km, dtype=jnp.float64),
             spk_packed=_spk_to_jax(model_static.spk_packed),
             eop_packed=_eop_to_jax(model_static.eop_packed),

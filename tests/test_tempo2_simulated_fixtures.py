@@ -15,19 +15,10 @@ from tempo2_fixtures import (
 )
 
 # Documented relaxed gates for known debt classes (see PARITY_ROADMAP.md).
+# sim_dd_tdb (TDB spin-epoch) closed by 8a1a34d; sim_dd_ecliptic_tcb (ecliptic
+# frame rotation) closed by the ecliptic obsn[] equ2ecl fix — both now run
+# under the strict default gate.
 RELAXED_RESIDUAL_GATES = {
-    "sim_dd_tdb": {
-        "rms_delta_ns": 10_000.0,
-        "max_delta_ns": 20_000.0,
-        "p99_delta_ns": 20_000.0,
-        "reason": "TDB spin-epoch / TDB-TCB map debt (NG5-class)",
-    },
-    "sim_dd_ecliptic_tcb": {
-        "rms_delta_ns": 300.0,
-        "max_delta_ns": 600.0,
-        "p99_delta_ns": 600.0,
-        "reason": "ecliptic LAMBDA/BETA coordinate path debt",
-    },
     "sim_t2_track2_addsat": {
         "rms_delta_ns": 100.0,
         "max_delta_ns": 200.0,

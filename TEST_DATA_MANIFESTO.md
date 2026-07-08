@@ -119,8 +119,8 @@ PYTHONPATH=.:tests python tools/generate_tempo2_sim_fixtures.py --check
 | `sim_ddh_tcb` | DDH | 8 | TCB | F0, PB, A1 |
 | `sim_bt_tcb` | BT | 8 | TCB | F0, PB, A1 |
 | `sim_ddk_tcb` | DDK | 8 | TCB | F0, PB, A1 |
-| `sim_dd_tdb` | DD | 8 | TDB | F0 (TDB spin-epoch debt gate) |
-| `sim_dd_ecliptic_tcb` | DD | 8 | ecliptic coords | F0, PB (relaxed gate) |
+| `sim_dd_tdb` | DD | 8 | TDB | F0 (strict gate; TDB spin-epoch debt closed) |
+| `sim_dd_ecliptic_tcb` | DD | 8 | ecliptic coords | F0, PB (strict gate; ecliptic frame debt closed) |
 | `sim_t2_track2_pn` | T2 | 8 | TRACK=-2, TIM=-pn | — |
 | `sim_t2_track2_addsat` | T2 | 10 | TRACK=-2, TIM=-pn, TIM=-addsat | — |
 | `sim_t2_multisys` | T2 | 8 | TIM=multi-sys | — |

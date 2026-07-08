@@ -378,6 +378,18 @@ def rotate_equatorial_to_ecliptic(vectors: np.ndarray, obliquity_rad: float) -> 
     ])
 
 
+def rotate_ecliptic_to_equatorial(vectors: np.ndarray, obliquity_rad: float) -> np.ndarray:
+    """Rotate Cartesian vectors from ecliptic to equatorial coordinates (tempo2 ``ecl2equ``)."""
+    vectors = np.asarray(vectors)
+    cos_obl = np.cos(obliquity_rad)
+    sin_obl = np.sin(obliquity_rad)
+    return np.column_stack([
+        vectors[:, 0],
+        vectors[:, 1] * cos_obl - vectors[:, 2] * sin_obl,
+        vectors[:, 1] * sin_obl + vectors[:, 2] * cos_obl,
+    ])
+
+
 def compute_ecliptic_pulsar_direction(
     lon_deg: float,
     lat_deg: float,

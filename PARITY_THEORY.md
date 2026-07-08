@@ -112,6 +112,17 @@ and `longdouble` SAT/TT feedback arithmetic. The remaining IPTA validation debt 
 be handled as targeted per-pulsar follow-up, not by defaulting to a full all-pulsar
 oracle campaign.
 
+**Ecliptic coordinate frame (2026-07-08):** for ELONG/ELAT (LAMBDA/BETA) pulsars,
+tempo2 works in the ecliptic frame end-to-end: `readEphemeris.C` and `get_obsCoord.C`
+rotate all `obsn[]` vectors with `equ2ecl` (Earth position+velocity, Sun/planet
+positions, site position/velocity) and `vectorPulsar.C` builds `posPulsar` directly
+from ecliptic angles. JUG mirrors this via `ecl_obl_rad` on
+`compute_tempo2_observatory_state` (host) and `bootstrap_tempo2_geometry_jax`
+(in-graph), using `ecliptic_obliquity_rad` (tempo1-emulation aware: 84381.412 vs
+84381.4059 arcsec). Troposphere elevation uses `posPulsarEquatorial` (`tropo.C`).
+The `tt2tb` obs term `dot(observatory_earth, earth_vel)` is rotation-invariant, so
+the Teph bootstrap converges identically in either frame.
+
 **Two-part barycentric time (2026-07-07):** the tempo2-native JAX tail represents
 `sat`/`bat`/`bbat` as `(int_day, sec_in_day)` float64 pairs
 (`jug/residuals/tempo2_native/compensated.py`). This removes the ~630 ns ULP
@@ -559,8 +570,8 @@ Do not conflate these cases. Full paths and sizes: [`TEST_DATA_MANIFESTO.md`](TE
 | Case | Description | CI status |
 |------|-------------|-----------|
 | **A. TCB regression** | `tests/data_tempo2/*` with `UNITS=TCB`, IF99, DILATEFREQ, equatorial astrometry | Green (~1–2 ns) |
-| **B. NG5 equatorial TDB** | NG5 J1600 after `T2CMETHOD` removal only | **~5.3 µs** (spin-epoch / TDB-TCB map — see roadmap) |
-| **C. NG5 ecliptic cross-engine** | Layer-B harmonized par (LAMBDA/BETA, `ECL IERS2003`, DD, TZRMJD) | **~5.3 µs** (same class as Case B) |
+| **B. NG5 equatorial TDB** | NG5 J1600 after `T2CMETHOD` removal only | Green (~1.7 ns) — TDB host path, `8a1a34d` |
+| **C. NG5 ecliptic cross-engine** | Layer-B harmonized par (LAMBDA/BETA, `ECL IERS2003`, DD, TZRMJD) | Green (~1.1 ns) — ecliptic `equ2ecl` obsn[] rotation (see roadmap) |
 | **IPTA DR2 J0613** | `epta_j0613_t2_ipta_all` (1369 TOAs), `epta_j0613_t2_nrt1400` (120 TOAs), ad hoc PPTA pairs | Partial — see roadmap |
 
 Case C par keywords (reference):

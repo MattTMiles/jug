@@ -287,11 +287,17 @@ def bootstrap_tempo2_observatory_state(
     tol: float = 1.0e-15,
     si_units: bool = True,
     t2c_method: str = "IAU2000B",
+    ecl_obl_rad: float = 0.0,
 ) -> Tempo2GeometryBootstrap:
     """Fixed-point bootstrap: ``tt2tb`` Teph ↔ ``readEphemeris`` epoch ↔ SPK state.
 
     Raises ``RuntimeError`` if ``correction_tt_teph_sec`` does not converge within
     ``max_iter`` iterations (internal loop tolerance ``tol`` seconds).
+
+    ``ecl_obl_rad`` != 0 rotates the state to ecliptic coordinates for
+    ELONG/ELAT pulsars (tempo2 ``eclCoord``); the ``tt2tb`` obs term
+    ``dot(observatory_earth, earth_vel)`` is rotation-invariant, so the
+    bootstrap converges identically in either frame.
     """
     from jug.residuals.tempo2_clock import compute_correction_tt_tb_sec
 
@@ -309,6 +315,7 @@ def bootstrap_tempo2_observatory_state(
         t2c_method=t2c_method,
         sat_mjd=sat,
         correction_tt_sec=tt,
+        ecl_obl_rad=ecl_obl_rad,
     )
     tt_tb = np.zeros_like(sat, dtype=np.float64)
     delta = np.inf
@@ -337,6 +344,7 @@ def bootstrap_tempo2_observatory_state(
             t2c_method=t2c_method,
             sat_mjd=sat,
             correction_tt_sec=tt,
+            ecl_obl_rad=ecl_obl_rad,
         )
     else:
         raise RuntimeError(
@@ -373,6 +381,7 @@ def compute_tempo2_observatory_state(
     t2c_method: str = "IAU2000B",
     sat_mjd: np.ndarray | None = None,
     correction_tt_sec: np.ndarray | None = None,
+    ecl_obl_rad: float = 0.0,
     planet_names: tuple[str, ...] = (
         "mercury",
         "venus",
@@ -405,6 +414,12 @@ def compute_tempo2_observatory_state(
 
     ``obs_itrf_km`` may be a single site ``(3,)`` or per-TOA sites ``(n, 3)``
     for multi-observatory datasets.
+
+    ``ecl_obl_rad`` != 0 rotates the returned vectors to ecliptic coordinates
+    for ELONG/ELAT pulsars, matching tempo2 ``equ2ecl`` in ``readEphemeris.C``
+    and ``get_obsCoord.C``: Earth position+velocity, Sun/planet positions,
+    observatory position, and site velocity (Sun/planet velocities stay
+    equatorial exactly as in tempo2).
     """
     from astropy import units as u
     from astropy.coordinates import EarthLocation
@@ -478,6 +493,21 @@ def compute_tempo2_observatory_state(
         observatory_earth[:, 4] = gcrs_vel.y.to(u.km / u.s).value
         observatory_earth[:, 5] = gcrs_vel.z.to(u.km / u.s).value
     site_vel = observatory_earth[:, 3:6].copy()
+
+    if ecl_obl_rad != 0.0:
+        from jug.delays.barycentric import rotate_equatorial_to_ecliptic
+
+        def _rot(vec3: np.ndarray) -> np.ndarray:
+            return rotate_equatorial_to_ecliptic(vec3, ecl_obl_rad)
+
+        earth_ssb[:, :3] = _rot(earth_ssb[:, :3])
+        earth_ssb[:, 3:] = _rot(earth_ssb[:, 3:])
+        sun_ssb[:, :3] = _rot(sun_ssb[:, :3])
+        for arr in planet_ssb.values():
+            arr[:, :3] = _rot(arr[:, :3])
+        observatory_earth[:, :3] = _rot(observatory_earth[:, :3])
+        observatory_earth[:, 3:] = _rot(observatory_earth[:, 3:])
+        site_vel = _rot(site_vel)
 
     return Tempo2ObservatoryState(
         earth_ssb_km=earth_ssb,

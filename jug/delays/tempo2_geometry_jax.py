@@ -37,6 +37,20 @@ def _scale_ephemeris_km(arr: jnp.ndarray, *, si_units: bool) -> jnp.ndarray:
     return arr * scale
 
 
+def _equ2ecl_jax(vec3: jnp.ndarray, obl_rad: float) -> jnp.ndarray:
+    """Rotate ``(n, 3)`` equatorial vectors to ecliptic (tempo2 ``equ2ecl``)."""
+    ce = jnp.cos(obl_rad)
+    se = jnp.sin(obl_rad)
+    return jnp.stack(
+        [
+            vec3[:, 0],
+            ce * vec3[:, 1] + se * vec3[:, 2],
+            -se * vec3[:, 1] + ce * vec3[:, 2],
+        ],
+        axis=1,
+    )
+
+
 def _stack_planet_shapiro_rsa_jax(
     geom: "Tempo2ObservatoryStateJax",
     names: tuple[str, ...] = ("venus", "jupiter", "saturn", "uranus", "neptune"),
@@ -92,6 +106,7 @@ def compute_tempo2_observatory_state_jax(
     spk: Tempo2SpkPacked,
     eop: IersEopPacked,
     si_units: bool = True,
+    ecl_obl_rad: float = 0.0,
     planet_names: tuple[str, ...] = (
         "mercury",
         "venus",
@@ -102,7 +117,11 @@ def compute_tempo2_observatory_state_jax(
         "neptune",
     ),
 ) -> Tempo2ObservatoryStateJax:
-    """Compute Earth/Sun/planet and site vectors inside the JIT graph."""
+    """Compute Earth/Sun/planet and site vectors inside the JIT graph.
+
+    ``ecl_obl_rad`` != 0 rotates the state to ecliptic coordinates for
+    ELONG/ELAT pulsars (see host ``compute_tempo2_observatory_state``).
+    """
     jd = mjd_to_jd_jax(ephem_mjd)
 
     def one_epoch(jd_i):
@@ -126,6 +145,32 @@ def compute_tempo2_observatory_state_jax(
         planet_ssb[name] = _scale_ephemeris_km(jax.vmap(one_planet)(jd), si_units=si_units)
 
     observatory_earth = observatory_earth_state_jax(site_mjd, obs_itrf_km, eop=eop)
+
+    if ecl_obl_rad != 0.0:
+        earth_ssb = jnp.concatenate(
+            [
+                _equ2ecl_jax(earth_ssb[:, :3], ecl_obl_rad),
+                _equ2ecl_jax(earth_ssb[:, 3:], ecl_obl_rad),
+            ],
+            axis=1,
+        )
+        sun_ssb = jnp.concatenate(
+            [_equ2ecl_jax(sun_ssb[:, :3], ecl_obl_rad), sun_ssb[:, 3:]], axis=1
+        )
+        planet_ssb = {
+            name: jnp.concatenate(
+                [_equ2ecl_jax(pv[:, :3], ecl_obl_rad), pv[:, 3:]], axis=1
+            )
+            for name, pv in planet_ssb.items()
+        }
+        observatory_earth = jnp.concatenate(
+            [
+                _equ2ecl_jax(observatory_earth[:, :3], ecl_obl_rad),
+                _equ2ecl_jax(observatory_earth[:, 3:], ecl_obl_rad),
+            ],
+            axis=1,
+        )
+
     site_vel = observatory_earth[:, 3:6]
     ssb_obs_ls, obs_sun_ls, obs_jupiter_ls = observatory_chain_vectors_jax(
         earth_ssb, observatory_earth, sun_ssb, planet_ssb
@@ -160,6 +205,7 @@ def bootstrap_tempo2_geometry_jax(
     units_tdb: bool = True,
     max_iter: int = 8,
     tol: float = 1.0e-15,
+    ecl_obl_rad: float = 0.0,
 ) -> tuple[jnp.ndarray, Tempo2ObservatoryStateJax]:
     """Fixed-point Teph ↔ ephemeris bootstrap inside the JIT graph."""
     from jug.residuals.tempo2_native.clock_jax import compute_tempo2_correction_tt_tb_jax
@@ -175,6 +221,7 @@ def bootstrap_tempo2_geometry_jax(
             spk=spk,
             eop=eop,
             si_units=si_units,
+            ecl_obl_rad=ecl_obl_rad,
         )
         tt_tb, tt_teph_new = compute_tempo2_correction_tt_tb_jax(
             mjd_tt,

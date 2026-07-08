@@ -106,6 +106,7 @@ def compute_tempo2_host_setup(
     from jug.delays.tempo2_geometry import (
         build_tempo2_pulsar_vectors,
         compute_tempo2_dm_delays_sec,
+        ecliptic_obliquity_rad,
         psr_pos_at_delt,
         tempo2_dilate_freq_enabled,
         tempo2_observatory_chain_vectors,
@@ -165,6 +166,11 @@ def compute_tempo2_host_setup(
     )
 
     # readEphemeris.C scales one_au by IFTE_K only for SI_UNITS (TCB) pulsars.
+    # For ELONG/ELAT pulsars tempo2 rotates the whole obsn[] geometry to
+    # ecliptic (readEphemeris.C / get_obsCoord.C equ2ecl); posPulsar is built
+    # in the ecliptic frame, so every dot product downstream needs the same.
+    use_native_ecliptic = bool(params.get("_ecliptic_coords", False))
+    ecl_obl_rad = ecliptic_obliquity_rad(params, use_native_ecliptic)
     geo_boot = bootstrap_tempo2_observatory_state(
         sat_arr,
         formbats_tt_arr,
@@ -173,6 +179,7 @@ def compute_tempo2_host_setup(
         params=params,
         si_units=is_tempo2_si_units(parse_timescale(params)),
         t2c_method=str(getattr(engine_profile, "t2cmethod", "IAU2000B")),
+        ecl_obl_rad=ecl_obl_rad,
     )
     tempo2_obs_state = geo_boot.state
     mjd_tt = geo_boot.site_mjd
@@ -190,8 +197,18 @@ def compute_tempo2_host_setup(
     _, _, obs_sun_ls_dm, _ = tempo2_observatory_chain_vectors(tempo2_obs_state)
     pos_pulsar, vel_pulsar, _ = build_tempo2_pulsar_vectors(
         params,
-        use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
+        use_native_ecliptic=use_native_ecliptic,
     )
+    # tropo.C uses posPulsarEquatorial against the GCRS zenith regardless of
+    # the pulsar coordinate frame.
+    if use_native_ecliptic:
+        from jug.delays.barycentric import rotate_ecliptic_to_equatorial
+
+        pos_pulsar_equatorial = rotate_ecliptic_to_equatorial(
+            pos_pulsar[None, :], ecl_obl_rad
+        )[0]
+    else:
+        pos_pulsar_equatorial = pos_pulsar
     posepoch = float(params.get("POSEPOCH", params["PEPOCH"]))
     delt_formbats = (
         sat_arr - posepoch + (formbats_tt_arr + tt_tb) / SECS_PER_DAY
@@ -238,7 +255,7 @@ def compute_tempo2_host_setup(
                 sat_arr[idxs],
                 formbats_tt_arr[idxs],
                 obs_itrf_km=obs_itrf[idxs[0]],
-                pos_pulsar=pos_pulsar,
+                pos_pulsar=pos_pulsar_equatorial,
                 mapping_clock_sec=correction_tt[idxs],
             )
 

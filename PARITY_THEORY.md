@@ -44,11 +44,17 @@ delay kernels, native phase bookkeeping).
 
 | Package | Runtime JUG | Test / debug only |
 |---------|-------------|-------------------|
-| **libstempo** + tempo2 | **Must not** | pytest acceptance oracle (`jug/testing/tempo2_reference.py`, vendored `jug/testing/sandbox_tempo2.py`) |
+| **libstempo** + tempo2 | **Must not** | pytest acceptance oracle (`jug/testing/tempo2_reference.py`, vendored `jug/testing/sandbox_tempo2.py`); **maintainer-only fixture generation** (`tools/generate_tempo2_sim_fixtures.py`) |
 | **pytempo** | **Must not** | per-TOA diagnostic oracle (`ref-packages/pytempo`, external repo) |
 
 Parity is **defined** by matching tempo2/libstempo on identical par+tim inputs, but
 **implemented** without calling them at runtime.
+
+**Simulated committed fixtures (2026-07-08):** libstempo may be used offline to generate
+ideal noiseless par/tim pairs under `tests/data_tempo2_sim/`. The generated `.par` and
+`.tim` files are committed; normal pytest collection does not invoke libstempo except in
+`@pytest.mark.tempo2` oracle tests. Regenerate with
+`tools/generate_tempo2_sim_fixtures.py --check`.
 
 ---
 
@@ -94,8 +100,8 @@ convention offset plus clock/ephemeris data drift.* See `tests/test_pint_parity.
 and `tests/data_golden/J1909_proper_golden.json`.
 
 **Tempo2-family (`compatibility="tempo2"`):** host residuals vs libstempo are
-gated on raw pre-fit δ with ns-scale targets on curated fixtures; IPTA-scale
-debt is tracked in [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
+gated on raw pre-fit δ with ns-scale targets on **curated real and simulated fixtures**;
+larger debt is tracked in [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
 
 **Two-part barycentric time (2026-07-07):** the tempo2-native JAX tail represents
 `sat`/`bat`/`bbat` as `(int_day, sec_in_day)` float64 pairs

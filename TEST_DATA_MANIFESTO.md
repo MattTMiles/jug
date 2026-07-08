@@ -1,6 +1,6 @@
 # JUG test data manifesto
 
-**Status:** draft for later review (2026-07-03)
+**Status:** active policy (2026-07-08)
 
 This document inventories what timing test data JUG currently ships, where it came
 from, and the principles we should use when adding or trimming fixtures. It is **not**
@@ -23,15 +23,15 @@ Full multi-thousand-TOA datasets are useful for integration stress tests and
 historical parity with PINT/libstempo, but they are **unnecessary for most unit and
 regression tests** and slow CI unnecessarily.
 
-**Working policy (2026-07-03, pending final review):**
+**Working policy (2026-07-08):**
 
 1. Prefer **synthetic** setups for new engine tests (autodiff, dispatch, traceability).
-2. For real par/tim tests, prefer **single-PTA MPTA DR2** fixtures, **trimmed to at
-   most a few hundred TOAs** unless a test explicitly needs more.
-3. **J0613-0200** (`j0613_ell1h`, ELL1H binary) is the primary real-data anchor for
-   binary autodiff and MetaPulsar-style whitening — not IPTA DR2 composite sessions.
-4. Keep tempo2/libstempo parity fixtures (`data_tempo2`) as-is for now; they are already
-   small excerpts (10–625 TOAs for EPTA/PPTA rows).
+2. For tempo2 par/tim parity, prefer **`tests/data_tempo2_sim/`** — libstempo-generated,
+   ideal-noiseless fixtures with **5–12 TOAs** each.
+3. Keep **`tests/data_tempo2/`** real excerpts as **transitional anchors** for TIM-format
+   edge cases (multi-`-sys`, large NG5/TDB debt probes, historical IPTA layouts).
+4. For other real par/tim tests, prefer **single-PTA MPTA DR2** fixtures trimmed to at
+   most a few hundred TOAs unless a test explicitly needs more.
 5. Revisit whether large bundled MPTA files (~3k–7k TOAs) should be replaced by trimmed
    variants in-repo, with full files optional via env vars.
 
@@ -42,15 +42,17 @@ regression tests** and slow CI unnecessarily.
 | Directory | Role | Typical size | Primary author / date |
 |-----------|------|--------------|------------------------|
 | `tests/data_golden/` | Fast CI, golden JSON, synthetic/hand-trimmed | 21–2800 TOA lines | Matt Miles, Feb 2026 |
+| **`tests/data_tempo2_sim/`** | **Default tempo2 parity: libstempo-simulated par/tim** | **6–10 TOAs** | **Generated, Jul 2026** |
+| `tests/data_tempo2/` | Tempo2/libstempo parity (real EPTA/PPTA/IPTA excerpts + NG5) | 10–1369 TOAs | Rutger, May–Jul 2026 |
 | `tests/data_mpta/` | Bundled **MPTA DR2** par/tim | ~1.3k–7.2k TOA lines | Rutger, May 2026 |
-| `tests/data_tempo2/` | Tempo2/libstempo parity (EPTA/PPTA excerpts + NG5) | 10–625 TOAs | Rutger, May–Jun 2026 |
 | `data/pulsars/` | Demo pars, NG15yr J1909 PINT partim | up to ~35k TOA lines | Matt / various |
 
 Loaders:
 
 - `tests/test_paths.py` — MPTA fixtures + env overrides + legacy Matt paths
-- `tests/tempo2_fixtures.py` — `data_tempo2/manifest.json`
-- `tests/data_mpta/manifest.json`, `tests/data_tempo2/manifest.json` — provenance records
+- `tests/tempo2_fixtures.py` — **`data_tempo2_sim/manifest.json`** and `data_tempo2/manifest.json`
+- `tools/generate_tempo2_sim_fixtures.py` — maintainer-only generator for simulated fixtures
+- `tests/data_mpta/manifest.json`, `tests/data_tempo2/manifest.json`, `tests/data_tempo2_sim/manifest.json` — provenance records
 
 ---
 
@@ -74,7 +76,51 @@ collaboration release bundles.
 
 ---
 
-## 2. `tests/data_mpta/` — MPTA DR2 (preferred real-data source)
+## 2. `tests/data_tempo2_sim/` — simulated tempo2 parity (default)
+
+**Added:** 2026-07-08 — libstempo `fakepulsar` generator at
+`tools/generate_tempo2_sim_fixtures.py`.
+
+**Purpose:** Fast, comprehensive tempo2 parity on **ideal noiseless TOAs** with
+orthogonal option coverage. These fixtures are **hand-authored template pars**, not
+collaboration release excerpts.
+
+**Manifest:** `tests/data_tempo2_sim/manifest.json`  
+**Loader:** `tests/tempo2_fixtures.py` (`list_tempo2_sim_fixtures()`)  
+**Tests:** `tests/test_tempo2_simulated_fixtures.py`
+
+Regenerate committed artifacts (maintainer only):
+
+```bash
+cd ref-packages/jug
+PYTHONPATH=.:tests python tools/generate_tempo2_sim_fixtures.py
+PYTHONPATH=.:tests python tools/generate_tempo2_sim_fixtures.py --check
+```
+
+| Fixture ID | Binary | TOAs | Option tags (summary) | Design-matrix params |
+|------------|--------|------|------------------------|----------------------|
+| `sim_isolated_tcb` | isolated | 6 | TCB, DILATEFREQ=Y | F0, F1, DM |
+| `sim_t2_tcb` | T2 | 8 | TCB | F0, PB, A1, EPS1, EPS2 |
+| `sim_ell1_tcb` | ELL1 | 8 | TCB | F0, PB, A1, EPS1, EPS2 |
+| `sim_ell1h_tcb` | ELL1H | 8 | TCB | F0, PB, A1, EPS1, EPS2 |
+| `sim_dd_tcb` | DD | 8 | TCB | F0, PB, A1 |
+| `sim_ddh_tcb` | DDH | 8 | TCB | F0, PB, A1 |
+| `sim_bt_tcb` | BT | 8 | TCB | F0, PB, A1 |
+| `sim_ddk_tcb` | DDK | 8 | TCB | F0, PB, A1 |
+| `sim_dd_tdb` | DD | 8 | TDB | F0 (TDB spin-epoch debt gate) |
+| `sim_dd_ecliptic_tcb` | DD | 8 | ecliptic coords | F0, PB (relaxed gate) |
+| `sim_t2_track2_pn` | T2 | 8 | TRACK=-2, TIM=-pn | — |
+| `sim_t2_track2_addsat` | T2 | 10 | TRACK=-2, TIM=-pn, TIM=-addsat | — |
+| `sim_t2_multisys` | T2 | 8 | TIM=multi-sys | — |
+| `sim_fd_tcb` | T2 | 8 | FD | F0, FD1 |
+| `sim_dilatefreq_no` | isolated | 6 | DILATEFREQ=N | F0, DM |
+
+Most simulated fixtures gate at **5 ns RMS** vs libstempo. Known debt classes use
+fixture-specific relaxed gates documented in `tests/test_tempo2_simulated_fixtures.py`.
+
+---
+
+## 3. `tests/data_mpta/` — MPTA DR2 (legacy real-data source)
 
 **Added by:** Rutger van Haasteren (`074413b`, 2026-05-29 — “Bundle MPTA DR2 test
 fixtures and remove hard-coded local paths”).
@@ -103,7 +149,7 @@ Pars are TDB-converted (`*_tdb.par`) except J0437.
 
 ---
 
-## 3. `tests/data_tempo2/` — tempo2 / libstempo parity
+## 4. `tests/data_tempo2/` — tempo2 / libstempo parity (transitional real excerpts)
 
 **Added by:** Rutger — `6dcb732` (2026-05-29) EPTA/PPTA excerpts; `dc17cfb` (2026-06-02)
 NG5 Case B/C.
@@ -124,12 +170,12 @@ NG5 Case B/C.
 | **`epta_j0613_t2_nrt1400`** | **IPTA DR2 EPTA J0613 (NRT.BON.1400 excerpt)** | **T2** | **120** |
 | **`epta_j0613_t2_ipta_all`** | **IPTA DR2 EPTA J0613 (full INCLUDE collection)** | **T2** | **1369** |
 
-**IPTA DR2 EPTA J0613 (added 2026-07-03):** mirrors MetaPulsar notebook
-`single_epta` (`nlt_ipta_dr2_compare*.ipynb`). The full INCLUDE fixture reproduces the
-notebook's multi-backend TIM layout; single-backend excerpt is for narrow parity probes.
+**IPTA DR2 EPTA J0613 (added 2026-07-03):** multi-backend TIM layouts used for TRACK −2
+and `-addsat` regression gates. Prefer the simulated `sim_t2_track2_*` fixtures for
+fast CI; keep these excerpts for real TIM-format probes.
 
-Manifest `source_*` fields point at EPTA_DR2 / PPTA_DR3 / MetaPulsar notebook paths;
-the repo holds **reduced TIM copies**, not full collaboration releases.
+Manifest `source_*` fields point at external collaboration paths; the repo holds
+**reduced TIM copies**, not full collaboration releases.
 
 **Used by:** `@pytest.mark.tempo2` — residual, design matrix, fit, TZR parity (Phase C),
 TRACK −2 pnNew parity (Phase D). Parity status:
@@ -137,7 +183,7 @@ TRACK −2 pnNew parity (Phase D). Parity status:
 
 ---
 
-## 4. `data/pulsars/` — demos and large optional assets
+## 5. `data/pulsars/` — demos and large optional assets
 
 | Path | Notes |
 |------|-------|
@@ -157,16 +203,15 @@ infrastructure (hashed in `data/manifest.json`).
 | 2026-05-29 | Rutger van Haasteren | `data_tempo2` (EPTA/PPTA excerpts), tempo2 parity infra |
 | 2026-05-29 | Rutger | `data_mpta` (full MPTA DR2 bundles) |
 | 2026-06-02 | Rutger | NG5 Case B/C in `data_tempo2` |
-| 2026-07-03 | Parity investigation | IPTA DR2 EPTA J0613 fixtures + `test_tempo2_ipta_dr2_j0613_parity.py` |
+| 2026-07-03 | Parity investigation | IPTA DR2 EPTA J0613 fixtures + fast gates |
+| 2026-07-08 | Simulated tempo2 suite | `data_tempo2_sim` + generator + structural/parity tests |
 
 ---
 
 ## What we do *not* ship
 
-- **Full IPTA DR2 multi-PTA composite** sessions (EPTA+PPTA+ng9 on one host) — used in
-  MetaPulsar notebooks but not bundled in JUG.
-- **Full** EPTA/PPTA release TOA sets — only excerpts in `data_tempo2` (including the
-  bundled J0613 EPTA INCLUDE tree under `epta_j0613_t2_ipta_all/`).
+- **Full IPTA DR2 multi-PTA composite** sessions — not bundled in JUG.
+- **Full** EPTA/PPTA release TOA sets — only excerpts in `data_tempo2`.
 
 ---
 
@@ -174,24 +219,21 @@ infrastructure (hashed in `data/manifest.json`).
 
 | Tier | Data | Use for |
 |------|------|---------|
-| **A — Synthetic** | `GeneralFitSetup` in pytest | Dispatch, traceability, zero-delta, family coverage |
-| **B — Mini real** | `J1909_mini` (21 TOAs), tempo2 excerpts (10–120 TOAs) | Fast CI smoke |
-| **C — Trimmed MPTA** | **`j0613_ell1h` trimmed to ~300 TOAs** (proposed) | Binary autodiff, design matrix, MetaPulsar JUG backend |
-| **D — Full MPTA** | Current `data_mpta` files | Legacy fit/parity tests; consider demoting over time |
-| **E — Notebooks / local** | IPTA DR2, full MPTA via env vars | Manual integration only |
+| **A — Synthetic in-memory** | `GeneralFitSetup` in pytest | Dispatch, traceability, zero-delta |
+| **B — Simulated tempo2 par/tim** | **`tests/data_tempo2_sim/`** (6–10 TOAs) | **Default tempo2 parity CI** |
+| **C — Mini real tempo2** | `data_tempo2` excerpts (10–167 TOAs) | TIM-format anchors, TRACK/NG5 debt |
+| **D — Trimmed MPTA** | `j0613_ell1h_trim300` (~300 TOAs) | Legacy binary autodiff / whitening |
+| **E — Full MPTA** | Current `data_mpta` files | Legacy fit tests |
+| **F — Local / env var** | Full IPTA/MPTA via `JUG_TEST_*` | Manual integration only |
 
 ---
 
 ## Open decisions (revisit later)
 
-1. Should **`data_mpta` full TIM files** stay in-repo, or should trimmed variants become
-   the default with full files via `JUG_TEST_*` env vars?
-2. Should **`data_tempo2` EPTA/PPTA excerpts** remain, or be regenerated from a single
-   canonical trimmed set?
-3. Keep **`tests/data_mpta/j0613_ell1h/J0613-0200_trim300.tim`** (par unchanged,
-   tim evenly subsampled) as the standard autodiff/whitening anchor?
-4. Document redistribution expectations per collaboration in `CONTRIBUTING.md` when we
-   finalize the policy.
+1. Which **`data_tempo2` real excerpts** should remain after simulated coverage is green?
+2. Should **`data_mpta` full TIM files** stay in-repo, or become env-var-only?
+3. Keep **`j0613_ell1h_trim300`** as the MPTA autodiff anchor?
+4. Document redistribution expectations per collaboration in `CONTRIBUTING.md`.
 
 ---
 

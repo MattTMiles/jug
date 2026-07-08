@@ -9,6 +9,30 @@ active work queue, and condensed investigation history.
 
 ---
 
+## Simulated tempo2 fixture suite (2026-07-08)
+
+**Default CI path:** `tests/data_tempo2_sim/` — 15 libstempo-generated fixtures, 6–10
+TOAs each, covering binary models (isolated, T2, ELL1, ELL1H, DD, DDH, BT, DDK) and
+option overlays (TDB, ecliptic, TRACK −2, `-pn`, `-addsat`, multi-`-sys`, FD,
+`DILATEFREQ=N`).
+
+| Item | Detail |
+|------|--------|
+| Generator | `tools/generate_tempo2_sim_fixtures.py` |
+| Loader | `tests/tempo2_fixtures.py` → `list_tempo2_sim_fixtures()` |
+| Tests | `tests/test_tempo2_simulated_fixtures.py` |
+| Default gate | 5 ns RMS vs libstempo on green fixtures |
+| Known sim debt | `sim_dd_tdb` (TDB spin-epoch), `sim_dd_ecliptic_tcb` (ecliptic coords), `sim_t2_track2_addsat` (addsat scatter) — relaxed gates |
+
+Green simulated tests **verify option coverage and isolate regressions**; they do **not**
+imply production readiness outside curated par+tim tests.
+
+**Transitional real excerpts** in `tests/data_tempo2/` remain for TIM-format edge cases
+(NG5 TDB debt, IPTA multi-backend layouts, wsrt167 spin gates). Prefer simulated
+fixtures for new tempo2 parity work.
+
+---
+
 ## Executive summary (2026-07-08)
 
 Three investigations are complete: failing tests, JAX paths, and derivatives.
@@ -103,7 +127,7 @@ Treat tempo2 mode as **experimental** outside curated par+tim tests. Do not use
 
 ## 2. Canonical roadmap
 
-The path to production-ready tempo2 parity for MetaPulsar / IPTA workloads:
+The path to production-ready tempo2 parity:
 
 ### Phase 1 — Canonical tangent (current priority)
 

@@ -1,0 +1,19 @@
+MODE 1
+PSRJ            J0000+0000
+F0              200.0              1
+F1              -1e-15             1
+PEPOCH          56000
+POSEPOCH        56000
+DM              10.0               1
+DMEPOCH         56000
+EPHEM           DE440
+CLK             TT(BIPM2021)
+TIMEEPH         IF99
+T2CMETHOD       IAU2000B
+TZRMJD          56000
+TZRFRQ          1400
+TZRSITE         ao
+RAJ             00:00:00
+DECJ            +00:00:00
+UNITS           TCB
+DILATEFREQ      N

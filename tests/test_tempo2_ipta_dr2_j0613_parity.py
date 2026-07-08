@@ -24,24 +24,13 @@ pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
 # IPTA DR2 EPTA single-PTA dataset (J0613-0200.par + J0613-0200_all.tim).
 FIXTURE_ID = "epta_j0613_t2_ipta_all"
 
-# Measured 2026-07-07 after the tropo-in-dt + longdouble phase-wrap fixes
-# (was 31.3 ns / 730 ns with the float64 wrap and missing troposphere).
-MEASURED_RMS_NS = 1.007974e1
-MEASURED_MAX_NS = 2.179068e2
+# Measured 2026-07-08 vs live libstempo (post `8a1a34d` + `7ec96fb`).
+MEASURED_RMS_NS = 1.2171675226204746
+MEASURED_MAX_NS = 6.937776967660625
 ADDSAT_MAX_DELTA_US = 1.0
 
 
 @pytest.mark.tempo2
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "IPTA DR2 EPTA J0613: ~10 ns RMS after clkcorr feedback fix (zero delta on "
-        "merged chains); naive dt_jug−deltaT(pytempo) correlates weakly (~0.07) "
-        "with residual — Taylor spin partially absorbs tempo2 deltaT. "
-        f"Non-addsat bulk ~5.4 ns; addsat TOAs ~200 ns site/backend debt. "
-        f"Gate {FINAL_RMS_DELTA_NS} ns."
-    ),
-)
 def test_tempo2_mode_epta_j0613_ipta_dr2_residual_parity():
     """JUG(tempo2) pre-fit residuals must match libstempo on the full EPTA dataset."""
     fixture = get_tempo2_fixture(FIXTURE_ID)
@@ -71,7 +60,7 @@ def test_epta_j0613_ipta_dr2_track_minus2_debt_reduced():
     stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
 
     assert stats["rms"] < 1.0e4  # < 10 µs (was ~47 ms)
-    assert stats["rms"] > FINAL_RMS_DELTA_NS  # still above sub-µs gate
+    assert stats["rms"] < FINAL_RMS_DELTA_NS  # strict gate green (2026-07-08)
 
     np.testing.assert_allclose(stats["rms"], MEASURED_RMS_NS, rtol=0.05)
     np.testing.assert_allclose(stats["max_abs"], MEASURED_MAX_NS, rtol=0.05)

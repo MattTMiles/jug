@@ -486,7 +486,7 @@ fast graph mode for IPTA-scale traced likelihoods.
 | Design matrix in tempo2 mode | Use `design_matrix_method="autodiff"`. **Do not** use `"analytic"` on tempo2 sessions (known broken). |
 | Tempo2-native JAX fitting | **Graph modes** (default `staged_bclt`): `JUG_TEMPO2_NATIVE_GRAPH_MODE={fixed_state_nonlinear,staged_bclt,full}`. Requires `term_diagnostics['tempo2_obs_state']` in residual cache for `native_chain_static`. |
 | IERS preflight | **Warn** in notebooks / offline use; **strict fail** under pytest or `JUG_IERS_STRICT=1`. |
-| Canonical tangent for fitting | tempo2 autodiff / native `residual_delta_jax` is the **canonical tangent** for fitting; validate against libstempo two-parameter perturbation oracles across all three graph modes. |
+| Canonical tangent for fitting | tempo2 autodiff / `residual_delta_jax` is the **production tangent** for NUTS/WLS when `design_matrix_method="autodiff"` (wired; IPTA notebook uses it). Remaining work: broaden libstempo design-matrix oracle gates beyond wsrt167 F0 and all graph modes. |
 
 ### Tempo2-native graph mode
 
@@ -557,9 +557,9 @@ Key `toa_diagnostics()` fields for parity work:
 4. **Subset tim pitfall** — tim ``-pn`` values are offsets relative to **full-tim**
    ``obsn[0]`` (``pn[i]−pn[0]`` equals tempo2 ``pnNew``). Using raw ``-pn`` in ``pnAct``
    breaks TRACK −2 on IPTA exports. Prefer full-tim oracle pull + mask on filtered
-   subsets. See Phase D in [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
+   subsets. See TRACK −2 in [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) § Production behavior.
 
-Diagnostic workflow (step-by-step): [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) §0.
+Diagnostic workflow: [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) § Debugging workflow.
 
 ---
 
@@ -657,7 +657,7 @@ handling, binary param normalization, and mean subtraction (weighted vs unweight
 ## 12. FAQ
 
 **Q: Which oracle for debugging?**  
-A: **pytempo** `toa_diagnostics()` for per-TOA term dumps. See [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) §0.
+A: **pytempo** `toa_diagnostics()` for per-TOA term dumps. See [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) § Debugging workflow.
 
 **Q: Which oracle for CI green?**  
 A: **libstempo** raw residuals via `tempo2_reference()` — unchanged acceptance gates.

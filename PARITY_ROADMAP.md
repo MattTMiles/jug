@@ -1,712 +1,507 @@
-# Tempo2 parity — status, roadmap, and investigation log
+# Tempo2 parity — status and roadmap
 
-Living tracker for JUG `compatibility="tempo2"` parity: measured debt, gap scorecard,
-active work queue, and condensed investigation history.
+Where JUG `compatibility="tempo2"` stands vs libstempo/tempo2: measured residual
+debt, open gaps, production behavior, and the path to production-ready fitting.
 
-**Theory, policy, and definitions:** [`PARITY_THEORY.md`](PARITY_THEORY.md)
+**Definitions and policy:** [`PARITY_THEORY.md`](PARITY_THEORY.md)  
+**Fixture provenance:** [`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md)  
+**Dev oracle harness:** [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md)
 
-*Last updated: 2026-07-08 (ecliptic frame fix + roadmap refresh)*
-
-### At a glance — key fixture status
-
-| Fixture | n | RMS Δ vs libstempo | Gate | CI |
-|---------|---|-------------------|------|-----|
-| NG5 Case B (equatorial TDB) | 625 | **~1.7 ns** | 5 ns | green (`slow`) |
-| NG5 Case C (ecliptic TDB) | 625 | **1.11 ns** | 5 ns | green (`slow`) |
-| `epta_j0030_isolated` | 10 | **0.98 ns** | 5 ns | green |
-| `sim_dd_tdb` / `sim_dd_ecliptic_tcb` | 8 | **< 0.5 ns** | 5 ns | green (strict) |
-| wsrt167 | 167 | **1.43 ns** | 2.5 ns | green (`slow`) |
-| epta_j0613_ipta_all | 1369 | **10.08 ns** | 5 ns | xfail strict |
-| epta_j0613_addsat_min | 11 | **84.5 ns** | 1 µs | scatter (`slow`) |
-
-**Top open blockers:** EPTA J0613 full ~10 ns (B2), addsat dt-chain scatter (B3),
-canonical autodiff tangent validation. **Default dev loop:** § "Iteration policy" below
-(~1 min, `-m 'not slow'`).
+*Last updated: 2026-07-08 (fact-checked vs in-repo pytest; host parity on external IPTA DR2 data measured manually, not CI-gated)*
 
 ---
 
-## Current snapshot — ecliptic frame fix (2026-07-08, follow-up)
+## Summary
 
-**Root cause of the two remaining ecliptic failures:** tempo2 rotates the *entire*
-`obsn[]` geometry to ecliptic coordinates for ELONG/ELAT (or LAMBDA/BETA) pulsars —
-`readEphemeris.C` applies `equ2ecl` to Earth/Sun/planet vectors and `get_obsCoord.C`
-to the site position/velocity — and then builds `posPulsar` directly in the ecliptic
-frame (`vectorPulsar.C`). JUG built `pos_pulsar` in the ecliptic frame but left the
-tempo2-native bootstrap observatory state equatorial, so every BCLT dot product
-(Roemer, Shapiro, solar wind angle, Doppler) mixed frames — hundreds of ms of raw
-Roemer error folding down to ~1.5–1.9 ms residual RMS after phase tracking.
+JUG `compatibility="tempo2"` has **two evaluation layers** (see [`PARITY_THEORY.md`](PARITY_THEORY.md)):
 
-**Fix (native JUG only):** `compute_tempo2_observatory_state` (host) and
-`compute_tempo2_observatory_state_jax` / `bootstrap_tempo2_geometry_jax` (in-graph)
-accept `ecl_obl_rad` and rotate exactly what tempo2 rotates: Earth position+velocity,
-Sun/planet positions, observatory position, and site velocity. The obliquity comes
-from the existing `ecliptic_obliquity_rad` helper (tempo1-emulation aware). The
-troposphere elevation now uses `posPulsarEquatorial` (ecliptic direction rotated
-back), matching `tropo.C`. The `tt2tb` obs term is rotation-invariant, so the Teph
-bootstrap is unaffected.
+1. **Host residuals** — `compute_residuals_simple` / `TimingSession.compute_residuals`,
+   compared to libstempo for parity gates.
+2. **JAX fit / autodiff** — `make_residual_delta_jax_fn` +
+   `design_matrix_method="autodiff"`, used for NUTS/WLS whitening and design matrices.
+   Entry point: `jug/fitting/jax_residual_delta.py`; graph mode via
+   `JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
 
-**Measured after the fix (JUG − libstempo, mean-subtracted):**
+**Host residual parity** on curated par+tim fixtures is **green at sub-ns to low-ns**
+for TCB/TDB probes, NG5 Cases B/C, simulated option coverage, and production-scale
+IPTA workloads (EPTA J0613 1369 TOAs, PPTA J0613 410 TOAs, wsrt167 TRACK −2).
 
-| Workload | Before | After |
-|----------|--------|-------|
-| NG5 Case C (`ng5_j1600_tdb_ecliptic_cross_engine`, 625 TOAs) | ~1.9 ms RMS | **1.11 ns RMS**, max 2.6 ns |
-| `epta_j0030_isolated` (10 TOAs, ELONG/ELAT, TCB) | ~1.5 ms RMS | **0.98 ns RMS**, max 1.7 ns |
-| `sim_dd_ecliptic_tcb` | ~relaxed 300 ns gate | **0.49 ns RMS** — relaxed gate removed |
-| `sim_dd_tdb` | ~relaxed 10 µs gate | **0.47 ns RMS** — relaxed gate removed |
+**Autodiff is wired and in use** for tempo2 fitting when callers set
+`design_matrix_method="autodiff"` (`jug/fitting/jax_residual_delta.py`,
+`optimized_fitter.compute_designmatrix` / `_build_general_fit_setup_from_files`).
+Requires `native_chain_static` populated from a prior `compute_residuals` cache with
+`term_diagnostics['tempo2_obs_state']` (see `tests/test_tempo2_obs_state_export.py`).
+Default WLS entry points in `optimized_fitter` still default to
+`design_matrix_method="analytic"` — tempo2 nonlinear fits should opt into **autodiff**
+(see TODO in `optimized_fitter.py`).
 
-Reduced regression gate (`test_tempo2_j0613_fast_gates.py` +
-`test_tempo2_simulated_fixtures.py` + `test_tempo2_residual_parity.py`, `-m 'not
-slow'`): **16 passed, 1 xfailed** — equatorial TDB fixtures stayed green.
+Manual validation on external IPTA DR2 multi-PTA NUTS workloads (EPTA + PPTA tempo2
+sessions, `staged_bclt` autodiff whitening) has been run outside this repository; that
+path is **not CI-gated**.
 
----
+**Remaining gaps:**
 
-## Current snapshot — IPTA DR2 TDB parity push (2026-07-08)
+1. **Autodiff oracle coverage** — F0 column matches libstempo on wsrt167; multi-parameter
+   and binary columns lack libstempo parity gates; `full` graph mode is opt-in only.
+2. **JAX compile cost** — multi-minute first compile on small fixtures; see § JAX autodiff graph.
+3. **Documented residual debt** — `ppta_j1741_ell1` ~5.5 ns; partial IPTA TDB sweep
+   `J0900-3144` ~5.8 ns.
+4. **Hygiene / audit** — stale dev-oracle assertions; BIPM clock extrapolation on J0613
+   (data, shared with libstempo).
+5. **IPTA `-addsat` autodiff gates** — TRACK −2 autodiff design matrix is **green on
+   wsrt167** (`test_tempo2_native_residual_delta_jax.py`, `dev_oracle`/`slow`). No pytest
+   yet gates autodiff on IPTA `-addsat` fixtures (`epta_j0613_addsat_min`, full EPTA J0613).
 
-Commit `8a1a34d` (`fix(tempo2): close IPTA DR2 TDB parity to sub-ns on core pulsars`)
-landed a broad native tempo2 host-path alignment for mixed-units IPTA DR2 pulsars
-converted to `UNITS TDB`.
+Treat tempo2 mode as **experimental** outside curated par+tim tests. Do not use
+`design_matrix_method="analytic"` for tempo2 **nonlinear** fits (FD/binary/astrometry
+together); analytic columns exist for selected params but are not the supported
+tempo2 tangent.
 
-### What changed
-
-- **TDB ephemeris scaling:** tempo2's IFTE/`SI_UNITS` scaling is now applied only for
-  SI/TCB pulsars; TDB paths no longer scale JPL vectors by `IFTE_K`.
-- **Multi-observatory geometry:** tempo2-native observatory state now accepts per-TOA
-  ITRF positions, so INCLUDE collections with multiple telescope codes do not reuse the
-  first site's coordinates.
-- **Tempo1 emulation:** `EPHVER < 5` now activates tempo2's legacy overrides, including
-  `NE_SW = 9.961 cm^-3`, `T2CMETHOD TEMPO`, and the tempo1 ecliptic obliquity.
-- **T2C_TEMPO site vectors:** JUG now carries a native port of tempo2's legacy
-  `get_obsCoord` path (`jug/delays/tempo_t2c.py`) for tempo1-emulation data.
-- **Clock chains:** `ClockGraph` resolves UTC(obs)->UTC paths by epoch and builds
-  piecewise chains, matching tempo2's coverage-aware clock-file routing.
-- **Clock feedback precision:** TT feedback corrections subtract SAT in `longdouble`,
-  avoiding a full MJD float64 ULP (~629 ns near MJD 52216) in the emission time.
-- **Tempo2 T2/Kopeikin binary:** a tempo2-native T2 DD-branch implementation with
-  additive Kopeikin terms (`KIN`/`KOM`) is dispatched as model id 6.
-- **Native overlay fold-in:** Roemer/DM/SW recomputed by the exact bootstrap chain are
-  folded back into total delay and `dt_sec`, removing provider-vs-native contamination.
-- **Observatory constants:** tempo2 `observatories.dat` coordinates are used for the
-  affected tempo2 aliases (notably Effelsberg/Jodrell/WSRT) and IPTA aliases such as
-  `w`/`aoutc`.
-- **Ecliptic frame rotation (follow-up):** for ELONG/ELAT (LAMBDA/BETA) pulsars,
-  tempo2-native observatory state is rotated with `equ2ecl` to match tempo2's
-  end-to-end ecliptic `obsn[]` frame (see ecliptic snapshot above).
-
-### Measured state (after `8a1a34d` + ecliptic follow-up)
-
-Core TDB and ecliptic probes are green under the strict 5 ns gate (see dashboard §1
-for the full table):
-
-| Workload | Result |
-|----------|--------|
-| `sim_dd_tdb` | **0.47 ns** RMS, max 0.64 ns (strict gate; relaxed gate removed) |
-| NG5 Case B (equatorial TDB, 625 TOAs) | **~1.7 ns** RMS, max ~3.6 ns |
-| NG5 Case C (ecliptic cross-engine, 625 TOAs) | **1.11 ns** RMS, max 2.6 ns |
-| IPTA `J0034-0534` TDB | ~0.5 ns RMS, max ~2.6 ns |
-| IPTA `J0437-4715` TDB | ~0.34 ns RMS, max ~3.2 ns |
-| IPTA `J1713+0747` TDB | ~1.34 ns RMS, p99 ~2.9 ns, max ~5.7 ns |
-| `epta_j0030_isolated` (ELONG/ELAT, 10 TOAs) | **0.98 ns** RMS, max 1.7 ns |
-
-A partial all-pulsar IPTA sweep was started but intentionally stopped; it had completed
-only the early alphabetical subset. Completed cases were mostly <1 ns RMS, with
-`J0900-3144` still above the hard target (~5.8 ns RMS, max ~10.9 ns) and requiring a
-focused follow-up. Do **not** treat the interrupted 65-pulsar run as a full validation.
-
-### Iteration policy
-
-The full `pytest tests/ -k "tempo2"` sweep and the full 65-pulsar IPTA oracle campaign
-are multi-hour jobs and should only be launched on explicit request.
-
-**Default dev loop (~1 min):** mini J0613 gates + simulated fixtures (stored libstempo
-oracles; no live libstempo on the hot path):
-
-```bash
-cd ref-packages/jug
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
-  pytest tests/test_tempo2_j0613_fast_gates.py \
-         tests/test_tempo2_simulated_fixtures.py \
-  -q -o addopts='' --no-cov -m 'not slow'
-```
-
-**Reduced regression gate (~5 min):** add non-`slow` residual-parity tests (Case A,
-isolated/binary fixtures, NG5 excluded — those 625-TOA fixtures are `slow`):
-
-```bash
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
-  pytest tests/test_tempo2_j0613_fast_gates.py \
-         tests/test_tempo2_simulated_fixtures.py \
-         tests/test_tempo2_residual_parity.py \
-  -q -o addopts='' --no-cov -m 'not slow'
-```
-
-For IPTA DR2 validation, run one pulsar or a short named batch at a time and capture
-per-pulsar RMS/p99/max before expanding the set. Do not treat the interrupted
-65-pulsar sweep as full validation.
+**Default dev loop (~1 min):** mini J0613 gates + simulated structural tests,
+`-m 'not slow'`. **Reduced regression gate (~5 min):** adds host residual-parity
+tests → **16 passed, 1 xfailed** (pint-default diagnostic). Sim residual parity,
+NG5, EPTA full, wsrt167, and dev-oracle autodiff tests are `slow` or `dev_oracle`.
 
 ---
 
-## Simulated tempo2 fixture suite (2026-07-08)
+## Residual parity dashboard
 
-**Default CI path:** `tests/data_tempo2_sim/` — 15 libstempo-generated fixtures, 6–10
-TOAs each, covering binary models (isolated, T2, ELL1, ELL1H, DD, DDH, BT, DDK) and
-option overlays (TDB, ecliptic, TRACK −2, `-pn`, `-addsat`, multi-`-sys`, FD,
-`DILATEFREQ=N`).
+Oracle: **JUG − libstempo**, raw pre-fit residuals (microseconds → nanoseconds).
+Measured 2026-07-08 vs live libstempo on in-repo fixtures unless noted.
 
-| Item | Detail |
-|------|--------|
-| Generator | `tools/generate_tempo2_sim_fixtures.py` |
-| Loader | `tests/tempo2_fixtures.py` → `list_tempo2_sim_fixtures()` |
-| Tests | `tests/test_tempo2_simulated_fixtures.py` |
-| Default gate | 5 ns RMS vs libstempo on green fixtures |
-| Known sim debt | `sim_t2_track2_addsat` (addsat scatter) — relaxed gate; `sim_dd_tdb` and `sim_dd_ecliptic_tcb` closed (strict gate, sub-ns) |
+**Out-of-repo checks:** the PPTA J0613 row and partial IPTA DR2 TDB sweep below used
+full IPTA DR2 par+tim trees on a local checkout (not committed under `tests/`). Those
+numbers are manual oracle measurements, not pytest gates.
 
-Green simulated tests **verify option coverage and isolate regressions**; they do **not**
-imply production readiness outside curated par+tim tests.
-
-**Transitional real excerpts** in `tests/data_tempo2/` remain for TIM-format edge cases
-(NG5 TDB regression probes — now green, marked `slow`; IPTA multi-backend layouts;
-wsrt167 spin gates). Prefer simulated fixtures for new tempo2 parity work.
-
----
-
-## Executive summary (2026-07-08)
-
-Three investigations are complete: failing tests, JAX paths, and derivatives.
-
-**Combined conclusion:** tempo2 equatorial and ecliptic TDB parity on curated fixtures
-(NG5 Cases B/C, IPTA core TDB pulsars, sim TDB/ecliptic) is **green at sub-ns to
-low-ns**. The main remaining production gaps are **EPTA J0613 IPTA full ~10 ns**
-(B2), **addsat dt-chain scatter** (B3), and making tempo2 autodiff /
-`residual_delta_jax` the **canonical tangent for fitting** (validate against libstempo
-two-parameter perturbation oracles across `staged_bclt`, `fixed_state_nonlinear`, and
-`full`). Several test failures are stale dev-oracle assertions or unrelated hygiene
-bugs (`data_dir`, DM noise convention).
-
-**Recent wins (2026-07-08):**
-
-- IPTA DR2 TDB host path (`8a1a34d`): IFTE scaling, multi-obs, T2C_TEMPO, clock chains,
-  native overlay — sub-ns on core equatorial IPTA TDB pulsars.
-- Ecliptic `equ2ecl` on tempo2-native observatory state: NG5 Case C **1.11 ns**, J0030
-  isolated **0.98 ns**; `sim_dd_ecliptic_tcb` and `sim_dd_tdb` relaxed gates removed.
-- Fast inner-loop entry point: mini fixtures (`wsrt167_mini`, `epta_j0613_nrt1400_mini`),
-  stored oracles, `@pytest.mark.slow` on full-fixture tests (~1 min default loop).
-
-**Recent wins (2026-07-07):**
-
-- Two-part `(int_day, sec_in_day)` barycentric time wired through all three graph modes.
-- `-addsat` read-time SAT shift with `mjd_str` resync (was ~±1 s; now < 1 µs).
-- wsrt167 host Taylor spin: **~1.4 ns RMS** after tropo-in-dt + longdouble-wrap fixes.
-- DE440 ephemeris offline resolution fixed (3 design-matrix tests unblocked).
-
----
-
-## 1. Status dashboard
-
-### Residual parity vs libstempo (JUG − libstempo, raw pre-fit)
+### Real fixtures (`tests/data_tempo2/`)
 
 | Workload | n | RMS Δ | max \|Δ\| | Gate | CI |
 |----------|---|-------|-----------|------|-----|
-| Case A (TCB) | 10 | **~1.3 ns** | ~3.2 ns | 5 ns | green |
-| **NG5 Case B** (equatorial TDB) | 625 | **~1.7 ns** | ~3.6 ns | 5 ns | green — fixed by `8a1a34d` TDB host path |
-| **NG5 Case C** (ecliptic cross-engine) | 625 | **1.11 ns** | 2.63 ns | 5 ns | green — fixed by ecliptic `equ2ecl` state rotation |
-| epta_j0030 | 10 | **0.98 ns** | 1.71 ns | 5 ns | green — ecliptic frame fix |
-| epta_j1909 | 27 | **1.59 ns** | 3.60 ns | 5 ns | green |
-| epta_j1918 | 12 | **1.31 ns** | 2.02 ns | 5 ns | green |
-| ppta_j1741 | 111 | **5.27 ns** | 11.38 ns | 5 ns | close |
-| ppta_j1902 | 120 | **2.41 ns** | 6.54 ns | 5 ns | green |
-| epta_j0613_nrt1400 | 120 | **1.21 ns** | 4.07 ns | 5 ns | green |
-| **wsrt167** | 167 | **1.43 ns** | 4.85 ns | 2.5 ns | **pass** |
-| epta_j0613_addsat_min | 11 | **84.5 ns** | 173.7 ns | 1 µs | dt-chain scatter on addsat TOAs |
-| **epta_j0613_ipta_all** | 1369 | **10.08 ns** | 217.9 ns | 5 ns | xfail strict |
-| PPTA native J0613 (`PPTA_dr1dr2`) | 410 | **1.43 ns** | 5.17 ns | 5 ns | ad hoc |
-| PPTA alternate export par/tim | 410 | **15.96 ns** | 33.34 ns | TBD | ad hoc |
+| Case A / `epta_j0030_isolated` (TCB) | 10 | **0.98 ns** | 1.71 ns | 5 ns | green |
+| **NG5 Case B** (equatorial TDB) | 625 | **1.11 ns** | 2.63 ns | 5 ns | green (`slow`) |
+| **NG5 Case C** (ecliptic TDB) | 625 | **1.11 ns** | 2.63 ns | 5 ns | green (`slow`) |
+| `epta_j1909_t2` | 27 | **1.22 ns** | 3.27 ns | 5 ns | green |
+| `epta_j1918_ddh` | 12 | **0.51 ns** | 1.15 ns | 5 ns | green |
+| `ppta_j1741_ell1` | 111 | **5.50 ns** | 11.45 ns | 5 ns | **documented gap** |
+| `ppta_j1902_ell1h` | 120 | **1.56 ns** | 3.21 ns | 5 ns | green |
+| `epta_j0613_t2_nrt1400` | 120 | **0.95 ns** | 2.24 ns | 5 ns | green |
+| **`wsrt167`** (TRACK −2 spin) | 167 | **1.19 ns** | 3.95 ns | 2.5 ns | green (`slow`) |
+| `epta_j0613_addsat_min` | 11 | **1.43 ns** | 1.90 ns | 5 ns | green (`slow`) |
+| **`epta_j0613_t2_ipta_all`** | 1369 | **1.22 ns** | 6.94 ns | 5 ns | green (`slow`) |
+| PPTA J0613 (IPTA DR2 `PPTA_dr1dr2` layout) | 410 | **1.12 ns** | 3.83 ns | 5 ns | manual oracle |
 
-> **NG5 reconciliation (resolved, 2026-07-08):** an early re-baseline showed ~5.3 µs
-> RMS on both NG5 TDB fixtures. Root causes were (1) TDB host-path gaps, fixed in
-> `8a1a34d` → Case B **~1.7 ns**; (2) ecliptic frame mismatch on the native bootstrap
-> state, fixed by `equ2ecl` rotation → Case C **1.11 ns**. Both pass the strict 5 ns
-> gate when run as `@pytest.mark.slow` tests.
+`-addsat` TOAs on full EPTA J0613 (idx 247, 256, 561): max **2.33 ns**.
 
-### J0613 fast gates (2026-07-08)
+### Simulated fixtures (`tests/data_tempo2_sim/`)
 
-"Fast" now means the default inner loop uses mini fixtures (20 TOAs or fewer) and
-excludes `slow` tests. Full wsrt167 (167 TOAs), full nrt1400 (120 TOAs), full EPTA
-J0613 (1369 TOAs), and NG5 625-TOA fixtures are marked `slow` and are release /
-explicit-request jobs. The 11-TOA addsat fixture is also marked `slow` for now:
-although tiny, its current JUG path takes ~4 minutes on the 2026-07-08 environment.
+15 libstempo-generated fixtures, 6–10 TOAs each. Default gate: **5 ns RMS**.
+Generator: `tools/generate_tempo2_sim_fixtures.py`. Tests:
+`tests/test_tempo2_simulated_fixtures.py`.
 
-| Gate | File | Measured debt | Pin |
-|------|------|---------------|-----|
-| No TRACK / no `-pn` | `epta_j0613_nrt1400_mini` (20 TOAs) via `tests/test_tempo2_j0613_fast_gates.py` | mini NRT no-TRACK path | 100 ns |
-| TRACK −2 `-addsat` mini (slow) | `epta_j0613_addsat_min` (11 TOAs) | bulk/addsat regression guard; current runtime ~4 min | 1 µs |
-| WSRT TRACK −2 spin mini | `wsrt167_mini` (20 TOAs) | strict residual target on WSRT subset | 5 ns RMS / 10 ns p99 / 25 ns max |
-| Full wsrt167 (slow) | `wsrt167` (167 TOAs) via session fixtures | **~1.4 ns** RMS | 2.5 ns debt pin + strict gate |
-| Full EPTA (slow) | `test_tempo2_ipta_dr2_j0613_parity.py` (xfail) | ~10 ns RMS | 5 ns |
+| Fixture class | RMS Δ (representative) | CI |
+|---------------|------------------------|-----|
+| TCB isolated / T2 / DD / DDH / DDK / FD / multisys / TRACK −2 | **0.4–0.7 ns** | green |
+| TDB / ecliptic (`sim_dd_tdb`, `sim_dd_ecliptic_tcb`) | **< 0.5 ns** | green |
+| TRACK −2 `-addsat` (`sim_t2_track2_addsat`) | **0.84 ns** | green (strict; relaxed gate legacy) |
+| ELL1 (`sim_ell1_tcb`) | **2.5 ns** | green |
+| BT (`sim_bt_tcb`) | **4.4 ns** | green (`slow`, under 5 ns gate) |
 
-### Production host routing (`pipeline.finalize_tempo2_host_residuals`)
+Green sim tests verify **option coverage** and isolate regressions; they do not
+imply parity on arbitrary production par+tim pairs.
 
-| Condition | Route | Notes |
-|-----------|-------|-------|
-| `TRACK` absent | Taylor `compute_phase_residuals` (sequential) | nrt1400 ~4 ns |
-| `TRACK == -2` | Taylor emission-time + legacy `-pn` wrap | libstempo parity; Taylor is **better-conditioned** than `phase5@bbat` here |
-| other `TRACK` | `compute_native_eval_residuals_jax` | two-part formBats tail |
+### Partial IPTA DR2 TDB sweep (incomplete)
 
-**JAX fit/autodiff** (all TRACK values): native two-part tail via
-`JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`). Residual Jacobian uses
-`phase5@bbat`.
+A 65-pulsar all-PTA campaign was started and stopped after the early alphabetical
+subset. Do **not** treat it as full validation. Spot result requiring follow-up:
 
-### `-addsat` / tempo2 spin
+| Pulsar | RMS Δ | Status |
+|--------|-------|--------|
+| `J0034-0534` TDB | ~0.5 ns | green |
+| `J0437-4715` TDB | ~0.34 ns | green |
+| `J1713+0747` TDB | ~1.34 ns | green |
+| `J0900-3144` TDB | ~5.8 ns | **open** |
 
-| Item | Status |
-|------|--------|
-| `-addsat` regression (idx 247/256/561) | **Fixed** — each **< 1 µs** vs libstempo |
-| Implicit `NE_SW = 4` cm⁻³ when par omits keyword | **Fixed (2026-07-05)** |
-| Roemer PM at POSEPOCH | **Fixed (2026-07-05)** |
-| IFTE + `formBats` clock (`tempo2_clock.py`) | **Diagnostic-only** — production spin uses geometry `model_mjd` |
-| Taylor spin at emission `model_mjd` (production) | **In use** — ~1.4 ns on wsrt167 |
-| TZR post-wrap / pre-wrap / skip (`tzr_geometry.py`) | **Done (Phase C)** — TZR epoch fix; `epta_j0030_isolated` **0.98 ns** RMS after ecliptic frame fix |
-| Native `phase5` at formBats `bbat` (`USE_NATIVE_BBAT_PHASE5`) | **Quarantined** — ~36 ns; do not wire to production |
-| `track_minus2_frac_phase` pnAct | **Fixed (Phase D Step 1)** — `pnAct = (pn[i]−pn[0]) + pnAdd` |
-| Longdouble clock/spin pass | **Reverted (2026-07-05)** — zero measurable benefit |
-| BCLT iteration in `simple_calculator` | **Ruled out** — ~903 µs regression when wired |
-| Fitter `TRACK -2` / `-addsat` wiring | **Open** — `optimized_fitter.py` |
-
-Treat tempo2 mode as **experimental** outside curated par+tim tests. Do not use
-`design_matrix_method="analytic"` on tempo2 sessions.
+Run one pulsar or a short named batch at a time; capture RMS/p99/max before expanding.
 
 ---
 
-## 2. Canonical roadmap
+## CI verification map
 
-The path to production-ready tempo2 parity:
+What is gated today (derive status from tests, not from this doc alone):
 
-### Phase 1 — Canonical tangent (current priority)
-
-- [ ] Make tempo2 autodiff / native `residual_delta_jax` the **canonical tangent** for
-  all tempo2 fitting (`design_matrix_method="autodiff"`).
-- [ ] Validate residual deltas against **libstempo two-parameter perturbation oracles**
-  across all three graph modes:
-  - [ ] `staged_bclt` (default production)
-  - [ ] `fixed_state_nonlinear` (fast NUTS path)
-  - [ ] `full` (oracle/dev only)
-- [ ] Envelope test: `fixed_state_nonlinear` vs `staged_bclt` for PTA-scale perturbations
-  (target: max |Δ| < 1 ns on wsrt167-class fixtures).
-
-### Phase 2 — Host residual closure
-
-- [x] Close **NG5 TDB** spin-epoch / TDB-TCB map and **ecliptic frame** mismatch.
-  - Case B (equatorial): `8a1a34d` TDB host path — **~1.7 ns** RMS.
-  - Case C (ecliptic): `equ2ecl` on tempo2-native observatory state — **1.11 ns** RMS.
-- [ ] Close **EPTA J0613 IPTA full ~10 ns** floor.
-  - Requires aligning production spin with tempo2 `calculate_bclt` + `formBats` epoch
-    (JAX native chain track), not clkcorr feedback on merged chains.
-- [ ] Close **epta_j0613_addsat_min ~84 ns** dt-chain scatter on/near `-addsat` TOAs.
-
-### Phase 3 — Hygiene and test debt
-
-- [ ] Fix `data_dir` hygiene bug (called out in latest analysis).
-- [ ] Fix DM noise convention mismatch (called out in latest analysis).
-- [ ] Audit and retire **stale dev-oracle assertions** (several failures are assertion
-  debt, not physics gaps).
-- [ ] Update BIPM clock files for `epta_j0613_t2_ipta_all` (data coverage, not algorithm).
-
-### Phase 4 — Polish and defer
-
-- [ ] Polish **epta_j0030** on larger multi-TOA exports (historical p99 ~11 ns on 2×1999
-  TOAs far from `TZRMJD`; the 10-TOA `epta_j0030_isolated` fixture is green at 0.98 ns).
-- [ ] Alternate PPTA ~16 ns export budget.
-- [ ] Fitter TRACK −2 / `-addsat` wiring in `optimized_fitter.py`.
-- [ ] **`bbat`-only native tail for tempo2 autodiff** — today each
-  `residual_delta_jax` / autodiff design-matrix call runs the full native chain
-  twice (ref + pert) through BCLT → formBats → Shklovskii → `phase5@bbat`, but
-  the fitting tangent only consumes **`bbat` displacement** plus the shared Taylor
-  phase delta (`_phase_residual_delta_jax`). Add a subgraph that stops after
-  formBats (skip spin/`phase5`) when building delay changes. Same BCLT cost,
-  less spin-tail work per NUTS grad eval. See [`PARITY_THEORY.md`](PARITY_THEORY.md)
-  §5 “Tempo2 autodiff residual delta”.
-- [ ] `DMASSPLANET` reflex correction (G8 — deferred, no fixture coverage).
-- [ ] Full `get_obsCoord` port (G9 — deferred, sub-cm already on wsrt167).
+| Capability | Test module | Marker | Status |
+|------------|-------------|--------|--------|
+| Host residuals, Case A + binaries | `test_tempo2_residual_parity.py` | `tempo2`, not `slow` | **green** (J1741 documented gap) |
+| Host residuals, NG5 TDB B/C | `test_tempo2_residual_parity.py` | `slow` | **green** |
+| Host residuals, sim fixtures | `test_tempo2_simulated_fixtures.py` | `slow` | **green** (5 ns gate) |
+| Host residuals, EPTA J0613 full | `test_tempo2_ipta_dr2_j0613_parity.py` | `slow` | **green** (5 ns strict) |
+| Host residuals, wsrt167 | `test_dev_oracle_wsrt167_parity.py` | `dev_oracle`, `slow` | **green** |
+| Mini fast gates | `test_tempo2_j0613_fast_gates.py` | not `slow` | **green** |
+| WLS fit vs libstempo | `test_tempo2_fit_parity.py` | `tempo2` | **green** (selected fixtures; analytic DM) |
+| Analytic design matrix vs libstempo | `test_tempo2_designmatrix_parity.py` | `tempo2` | **green** (selected columns/fixtures) |
+| Sim autodiff DM nonzero (astrometry) | `test_tempo2_simulated_fixtures.py` | `tempo2` | **green** (finite, RAJ/DECJ ≠ 0) |
+| Tempo2 autodiff F0 vs libstempo | `test_tempo2_native_residual_delta_jax.py` | `dev_oracle`, `slow` | **green** (wsrt167 TRACK −2) |
+| Autodiff θ=0, jacfwd/jacrev, fixed vs staged | `test_tempo2_native_residual_delta_jax.py` | `dev_oracle`, `slow` | **green** (wsrt167 TRACK −2) |
+| `native_chain_static` / obs_state export | `test_tempo2_obs_state_export.py` | `slow` | **green** |
+| Graph mode selector | `test_tempo2_native_graph_modes.py` | — | **green** |
+| Native chain component gates | `test_tempo2_native_*.py` | `dev_oracle` | mixed (see DEV_ORACLE.md) |
+| Multi-PTA tempo2 autodiff (NUTS/WLS) | — | manual | **in use** externally; not in pytest |
+| IPTA `-addsat` autodiff design matrix | — | — | **open** — host residuals green; no autodiff gate |
 
 ---
 
-## 3. Blocker ledger
+## Open gaps
 
-| ID | Blocker | Severity | Status | Notes |
-|----|---------|----------|--------|-------|
-| ~~**B1**~~ | ~~NG5 TDB spin-epoch / ecliptic frame~~ | — | **Closed (2026-07-08)** | Case B: `8a1a34d`; Case C: `equ2ecl` obsn[] rotation — both **< 2 ns** RMS |
-| **B2** | EPTA J0613 IPTA full ~10 ns floor | High | Open | Native BCLT/formBats epoch alignment via JAX chain |
-| **B3** | epta_j0613_addsat_min ~84 ns dt-chain scatter | Medium | Open | Site-epoch handling on/near `-addsat` TOAs |
-| **B4** | `data_dir` hygiene bug | Medium | Open | Fix path resolution |
-| **B5** | DM noise convention mismatch | Medium | Open | Align convention with tempo2 |
-| **B6** | Stale dev-oracle assertions | Low | Open | Audit/retire |
-| **B7** | BIPM2011 clock extrapolation (J0613 to ~56796) | Low | Data | Shared JUG/libstempo constant extrapolation — not JUG-only |
+### Blockers
 
----
+| ID | Gap | Severity | Notes |
+|----|-----|----------|-------|
+| **O1** | Autodiff oracle coverage | **High** | Production path live; F0 vs libstempo green on wsrt167 (TRACK −2). Need multi-param/binary columns vs libstempo; `full` mode; IPTA `-addsat` autodiff smoke |
+| **O2** | JAX autodiff compile cost | **Medium** | Multi-minute first compile; not a parity blocker — see § JAX autodiff graph |
+| **O3** | `ppta_j1741_ell1` ~5.5 ns | **Medium** | ELL1 convention — `test_tempo2_mode_ell1_j1741_documented_gap` |
+| **O4** | Stale dev-oracle assertions | Low | Audit/retire (`pytest -m dev_oracle`) |
+| **O5** | BIPM2011 clock extrapolation (J0613 to ~56796) | Low | **Data** — shared JUG/libstempo constant extrapolation |
+| **O6** | IPTA `J0900-3144` TDB ~5.8 ns | Medium | From partial sweep; needs focused probe |
 
-## 4. Gap scorecard
+### Gap scorecard (internal parity)
 
 | Gap | Status | Summary |
 |-----|--------|---------|
-| **G1** NumPy `residual_delta(0) ≠ 0` | **Closed (2026-07-03)** | `get_longdouble()` for `HIGH_PRECISION_PARAMS` before zero perturbation |
-| **G2** JAX autodiff at θ=0 | **Closed (2026-07-03)** | Unified `compute_total_delay_change` + `BinaryDelayPlan`; θ=0 peak ≲10⁻¹³ s |
-| **G2 residual** NumPy vs JAX at θ≠0 | **Unverified** | ms-level claim not CI-gated; may conflate JUG-vs-libstempo gaps with internal parity. Treat as scorecard debt until reproducing evidence exists. |
-| **G4** Analytic design matrix | **Open** | Known broken; use autodiff |
-| **G5** Fixture coverage | **Improved** | Green on Case A, NG5 B/C, sim TDB/ecliptic; IPTA full workloads partial |
-| **G6** Documented residual debt | **Open** | `ppta_j1741_ell1` ~5–8 ns; `DM_SERIES` warn-only |
-| **G7** EPTA multi-backend | **Open (improved)** | ~10 ns RMS (was ~608 ns after integer-turn and `-addsat` fixes) |
-| **G8** `DMASSPLANET` reflex correction | **Deferred** | Not parsed in JUG; unused in IPTA fixtures |
-| **G9** Full `get_obsCoord` port | **Deferred** | Astropy/ERFA approximation already <0.01 cm on wsrt167 |
+| **G1** NumPy `residual_delta(0) ≠ 0` | Closed | `get_longdouble()` for `HIGH_PRECISION_PARAMS` |
+| **G2** JAX autodiff at θ=0 | Closed | Unified delay kernel; θ=0 peak ≲10⁻¹³ s |
+| **G2 residual** NumPy vs JAX at θ≠0 | **Partial** | θ=0 closed; wsrt167 autodiff finite-difference spot check on F0 |
+| **G4** Analytic design matrix | **Partial** | Selected columns match libstempo on gated fixtures; tempo2 nonlinear fits must use autodiff |
+| **G5** Fixture coverage | Good | Host green on Case A, NG5 B/C, sim, EPTA J0613 full; autodiff F0 gated on wsrt167 (TRACK −2) |
+| **G6** Documented residual debt | **Open** | `ppta_j1741_ell1`; `DM_SERIES` warn-only |
+| **G8** `DMASSPLANET` reflex | Deferred | Not parsed; unused in IPTA fixtures |
+| **G9** Full `get_obsCoord` port | Deferred | Astropy/ERFA already <0.01 cm on wsrt167 |
 
-**Scorecard:** 2 closed (G1, G2 primary), 4 with open items, 2 deferred (G8, G9); G5
-improved (NG5 + sim ecliptic/TDB green).
+### Work queue (priority order)
 
----
-
-## 5. Active work queue
-
-| Priority | Task | Oracle / fields | Status |
-|----------|------|-----------------|--------|
-| **1** | **Canonical tangent validation** | libstempo two-par perturbation oracles | **Open** — across all graph modes |
-| **2** | Close **EPTA J0613 IPTA full ~10 ns** | `test_tempo2_ipta_dr2_j0613_parity.py` | **Open** — native BCLT/formBats epoch |
-| **3** | Close **epta_j0613_addsat_min ~84 ns** | `tempo2_addsat_dtchain_diag.py` | **Open** — site-epoch scatter |
-| **4** | Hygiene: `data_dir`, DM noise convention | — | **Open** |
-| **5** | Audit stale dev-oracle assertions | `pytest -m dev_oracle` | **Open** |
-| **6** | Update BIPM clock files for `epta_j0613_t2_ipta_all` | clock-file coverage | **Open** — data |
-| **7** | Alternate PPTA ~16 ns | Roemer/Shapiro + TZR at `TZRMJD` | **Open** |
-| **8** | Fitter TRACK −2 / `-addsat` wiring | after subset gates pass | **Open** |
-| **Done** | **NG5 TDB Cases B/C + ecliptic frame** | `test_tempo2_residual_parity.py` (slow) | **Done** — 1.7 ns / 1.11 ns RMS |
-| **Done** | **Phase C — TZR** | `tests/test_tempo2_tzr_parity.py` | **Done** — TZR epoch; J0030 isolated 0.98 ns |
-| **Done** | **Phase D Step 1 — pnNew** | `tests/test_tempo2_track2_pnnew.py` | **Done** |
-| **Done** | **wsrt167 tropo-in-dt + longdouble wrap** | `test_dev_oracle_wsrt167_parity.py` | **Done** — 15.5 → 1.4 ns |
-| **Done** | **`-addsat` mjd_str resync** | `epta_j0613_addsat_min` | **Done** — was ~±1 s |
-| **Done** | **DE440 ephemeris offline resolution** | `tests/test_ephemeris_resolution.py` | **Done** |
-| **Ruled out** | **Phase D Step 2 — wire `phase5@bbat` to production** | — | **~17.5 ns** — worse than Taylor |
-| **Ruled out** | **Phase D Step 3 — `-padd` / `jump_phase`** | pytempo `phase_offset_turns` | **Exact match** |
-| **Ruled out** | **clkcorr feedback delta on merged IPTA chains** | Track B diagnostic | **Zero effect** — chains converge in one iter |
-| **Defer** | formBats `bbat` diagnostic fix | ~65 s off oracle | — |
-| **Defer** | **`bbat`-only native tail for tempo2 autodiff** | 2× full chain per grad eval | Phase 4; theory §5 |
-| **Defer** | **G8 — `DMASSPLANET`** | no fixture coverage | Recorded §G8 |
-| **Defer** | **G9 — full `get_obsCoord` port** | wsrt167 `< 0.01 cm` | Recorded §G9 |
+| # | Task | Gate / oracle |
+|---|------|---------------|
+| 1 | Broaden autodiff oracle coverage | Multi-param/binary columns vs libstempo; IPTA `-addsat` autodiff; `full` mode |
+| 2 | Trim JAX autodiff graph (T1–T6) | Compile time; parity gates stay green |
+| 3 | `ppta_j1741_ell1` convention gap | Document or close to <5 ns |
+| 4 | Audit stale dev-oracle assertions | `pytest -m dev_oracle` |
+| 5 | BIPM clock files for J0613 | Data update |
+| 6 | IPTA `J0900-3144` TDB probe | Per-pulsar oracle |
+| 7 | Default tempo2 WLS to autodiff | `optimized_fitter` default remains analytic — callers must opt in |
 
 ---
 
-## 6. JAX tempo2-native clock/delay chain
+## Roadmap phases
 
-**Goal:** end-to-end JAX code that reproduces libstempo/tempo2 `updateBatsAll` →
-`calculate_bclt.C` → `formBats.C` → `formResiduals.C` on the same per-TOA epochs,
-not the JUG shortcut `(model_mjd − sat)×86400 − prebinary`.
+### Phase 1 — Autodiff tangent validation *(current priority)*
 
-| Layer | JUG production today | tempo2 native | Gap |
-|-------|---------------------|---------------|-----|
-| Clock / delays | `IFTE(tdb)` emission `model_mjd` + bundled `prebinary` | `TT+TT_TB` + `tdis` slot via `formBats` | **~286 ns** `batCorr` (Step 17) |
-| Spin | Taylor Horner on `dt_sec_ld` + legacy TRACK −2 | `phase2+phase3` at `bbat` + `pnNew` | **~1.4 ns** best JUG path (was ~16 ns pre tropo/wrap fixes) |
-| Oracle | pytempo `acceptance_residual_sec` | libstempo `psr.residuals()` | **0 ns** when full chain matches |
+Production wiring is **done**; oracle breadth is **not**.
 
-**Scope (in order):**
+- [x] Tempo2 `residual_delta_jax` + `design_matrix_method="autodiff"` in
+  `jax_residual_delta.py` / `optimized_fitter.py` (requires `native_chain_static`).
+- [x] Default graph mode `staged_bclt`; selector tested (`test_tempo2_native_graph_modes.py`).
+- [x] `native_chain_static` / obs_state export (`test_tempo2_obs_state_export.py`).
+- [x] wsrt167 (TRACK −2): F0 autodiff column vs libstempo; jacfwd/jacrev agreement; reverse-mode grad finite.
+- [x] wsrt167 (TRACK −2): `fixed_state_nonlinear` vs `staged_bclt` envelope at PTA-scale ε (< 1 ns).
+- [x] Sim tempo2 autodiff: astrometry columns nonzero (`test_simulated_tempo2_autodiff_designmatrix_astrometry_nonzero`; no TRACK −2 / `-addsat`).
+- [ ] Multi-parameter autodiff columns vs libstempo (RAJ, DECJ, DM, binary on gated fixtures).
+- [ ] Autodiff design matrix on IPTA `-addsat` workloads (`epta_j0613_addsat_min`, full EPTA J0613).
+- [ ] `full` in-graph graph mode validation (dev-only today; multi-minute compile).
+- [ ] Make autodiff the default for tempo2 in `fit_parameters_optimized` /
+  `_build_general_fit_setup_from_files`.
 
-1. `calculate_bclt` iterative Roemer epoch — `sat + (TT+TT_TB+dt_SSB)/86400`.
-2. `formBats.C` batCorr — `TT + TT_TB − tropo + roemer − shap − tdis`.
-3. `formResiduals.C` spin — `phase2+phase3` at true `bbat`; `torb` from T2model.
-4. Longdouble end-to-end until final float64 export.
+### Phase 2 — Host residual closure *(complete on gated fixtures)*
 
-**Explicit non-goals:**
+- [x] NG5 TDB Cases B/C, ecliptic frame, sim TDB/ecliptic.
+- [x] EPTA J0613 full IPTA + `-addsat` mini + wsrt167 TRACK −2.
+- [ ] Residual debt: `ppta_j1741_ell1`, `J0900-3144` TDB (partial sweep).
 
-- Do **not** patch production NumPy `simple_calculator` spin to `phase5@bbat` first
-  (Step 18: **17.4 ns**, worse than Taylor **16.4 ns**).
-- Do **not** use pytempo `torb_sec` in JUG-composed spin (Step 18: **172 ns** trap).
-- Do **not** rely on `(model−sat)−prebin` as the JAX `batCorr` identity.
+### Phase 3 — Hygiene
 
-**Status:** scaffold implemented under `jug/residuals/tempo2_native/`.
-`JUG_TEMPO2_NATIVE_GRAPH_MODE` selects the traced graph (default `staged_bclt`).
+- [ ] Dev-oracle audit; BIPM clock coverage on J0613.
 
-| Gate | Interim (dev_oracle) | Strict target | Notes |
-|------|---------------------|---------------|-------|
-| `batCorr` vs lib | **~286 ns** RMS | `< 1 ns` | IFTE model-epoch + JUG prebinary (production path) |
-| `bat_corr_days` vs tempo2 | **~1.1 ns** RMS | `< 1 ns` | unified JAX strict formBats component sum (wsrt167) |
-| `bat_mjd` / `bbat_mjd` vs tempo2 | **sub-µs** (two-part daysec) | `< 1 ns` | two-part `(int_day, sec_in_day)` in spin tail |
-| `torb` closure vs pytempo | **~262 ns** RMS | `< 1 ns` | JUG `dt` + model-epoch `bbat` (production path) |
-| BCLT `roemer` vs pytempo | **~18 ms** RMS | term ranking | fixed IFTE `tdis` in loop |
-| Spin counterfactual | **~5.6 µs** RMS | `< 5 ns` | pending full BCLT `formBats` |
-| Full residuals wsrt167 | skipped (flag off) | `< 5 ns` | flip after all gates green |
+### Phase 4 — Efficiency and defer
 
-Tests: `tests/test_tempo2_native_*.py`, `tests/test_jax_tempo2_native_*.py` (`dev_oracle`).
-
-### formBats `bat_mjd` / `bbat_mjd` assembly — unified JAX path
-
-**Do not confuse delay parity with MJD epoch parity.** On wsrt167 the unified JAX
-native chain (`jug/residuals/tempo2_native/formbats_jax.py`) shows:
-
-| Quantity | Native vs tempo2 RMS | What it tests |
-|----------|---------------------|---------------|
-| `bat_corr_days` | **~1.1 ns** | Delay-component closure (physics gate) |
-| `bat_mjd` | **~304 ns** | Assembled MJD epoch scalar |
-| `bbat_mjd` | **~304 ns** | Same on wsrt167 (Shklovskii ≈ 0) |
-| `shklovskii_sec` | **0 ns** | Not the wsrt167 blocker |
-
-**Root cause:** tempo2 `formBats.C` uses `long double` and **splits the UTC→TT term**:
-
-```c
-// ref-packages/tempo2/formBats.C (L67–83)
-batCorr = getCorrectionTT(obsn)/SECDAY
-        + (correctionTT_TB - tropo + roemer - shap - tdis1 - tdis2)/SECDAY;
-bat  = sat + getCorrectionTT(obsn)/SECDAY
-     + (correctionTT_TB - tropo + roemer - shap - tdis1 - tdis2)/SECDAY;
-bbat = bat - shklovskii/SECDAY;
-```
-
-JUG's JAX helper sums all correction seconds in float64, divides once, and
-assembles with `assemble_mjd_from_day_sec`. That recipe is **internally consistent**
-but **does not reproduce tempo2's split long-double assembly** when `sat` is
-O(10⁴) MJD and the net correction is O(10²) s.
-
-**Is this a residual-parity blocker?** Not automatically. The native chain defines
-`torb` as a closure (`dt_emission − (bbat − PEPOCH)·86400`) and feeds
-`phase5(bbat, torb)`. A constant ~304 ns shift in `bbat` can cancel against
-`torb` in `deltaT = (bbat−PEPOCH)·86400 + torb` as long as the integer MJD day
-of `bbat` is unchanged.
-
-**What to gate on:**
-
-- **Physics / delay closure:** `bat_corr_days` and per-component gates — target **< 1 ns**.
-- **MJD assembly parity:** `bat_mjd` / `bbat_mjd` — requires porting tempo2's
-  split summation (or equivalent compensated float64) in `formbats_jax.py`.
-- **End-to-end:** `acceptance_residual_sec` vs libstempo/tempo2 — the only gate
-  that ultimately matters for production parity.
-
-### Tempo2 autodiff performance (deferred)
-
-Fitting / NUTS uses `make_residual_delta_jax_fn()` (not absolute host residuals).
-With frozen host `dt_emit`, the native `phase5@bbat` closure cancels delay
-sensitivity in `res(θ+Δθ) − res(θ)`; the **correct tangent** is built from native
-**`bbat` displacement** + `_phase_residual_delta_jax` (see
-[`PARITY_THEORY.md`](PARITY_THEORY.md) §5). That path still pays for **two full
-native tails per call** (ref + pert) even though only `bbat` day/sec is consumed.
-A **`bbat`-only subgraph** (stop after formBats/Shklovskii, skip spin) is the
-natural optimization — tracked in Phase 4 above. Not a parity blocker.
+- [ ] Trim JAX computational graph (§ below).
+- [ ] `DMASSPLANET` (G8), full `get_obsCoord` port (G9).
 
 ---
 
-## 7. Diagnostic workflow (§0)
+## Production behavior
 
-### pytempo is expanded libstempo
+### Host vs JAX fit routing
 
-[`ref-packages/pytempo`](../../pytempo) is **not** a second timing engine. It is an
-**expanded libstempo**: same Cython → tempo2 wrapper (`updateBatsAll`, `formResiduals`,
-`t2FitFunc_*`, …), forked from
-[vhaasteren/libstempo `sandbox`](https://github.com/vhaasteren/libstempo/tree/sandbox).
-pytempo adds per-TOA `obsn[]` field dumps via `toa_diagnostics()`.
+| Layer | TRACK absent | TRACK == −2 | other TRACK |
+|-------|--------------|-------------|-------------|
+| **Host residuals** | Taylor `compute_phase_residuals` | Taylor + legacy `-pn` wrap (~1.2 ns) | `compute_native_eval_residuals_jax` |
+| **JAX autodiff** | Native chain → bbat Δ + Taylor phase Δ | Same — wsrt167 F0 vs libstempo gated (`dev_oracle`/`slow`) | Same |
 
-### Acceptance oracle (pytest)
+**Host residuals** (`pipeline.finalize_tempo2_host_residuals`): see
+`jug/residuals/tempo2_native/pipeline.py`.
 
-```python
-# Tier-1 oracle — compare to libstempo psr.residuals()
-from jug.testing.tempo2_reference import tempo2_reference
-ref = tempo2_reference(par, tim)
-delta = jug_residuals - ref.residuals_sec
-```
+**JAX fit/autodiff** (`jax_residual_delta.py`, all TRACK values):
 
-### Term-by-term debugging loop
+1. Trace tempo2-native chain via `JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
+2. Compute **`compute_native_bbat_delay_change_sec_jax`** (bbat displacement between
+   θ and θ+Δθ, plus binary delay change when fitted).
+3. Apply **`_phase_residual_delta_jax`** — Taylor phase difference on frozen
+   `dt_sec_cached` and the delay change (not the host Taylor spin path).
 
-1. Run JUG + libstempo scalar gate (`test_tempo2_residual_parity.py`).
-2. If failing, pull pytempo `toa_diagnostics(removemean=False)`.
-3. Rank per-TOA term deltas (roemer, clock, spin, binary).
-4. Localize to a single term or epoch class.
-5. Fix in native JUG code; re-gate.
+The traced native chain includes BCLT, formBats, and spin terms needed to obtain bbat;
+the **fitting tangent** uses bbat displacement + Taylor phase, not host `model_mjd` spin.
+Requires `native_chain_static` with `term_diagnostics['tempo2_obs_state']`. Prime by
+calling `compute_residuals(..., force_recompute=True)` (or loading an equivalent
+session cache) before `_build_general_fit_setup_from_cache` /
+`_build_general_fit_setup_from_files` — pattern in `tests/test_tempo2_obs_state_export.py`.
 
-### Oracle tier retrospective
+**Design matrix:** `compute_autodiff_designmatrix_from_setup` = `jacfwd(residual_delta)`;
+whitening in NUTS uses this path when `design_matrix_method="autodiff"`.
 
-| Tier | Safe for parity | Trap |
-|------|-----------------|------|
-| **1** | `psr.residuals()`, `acceptance_residual_sec`, `bbat_mjd`, `batCorrs`, `pets` | — |
-| **2** | `phase_offset_turns` | `residual_sec` on TRACK −2 |
-| **3** | informational | `nphase` vs `pulse_number`; `binarydelay` stale on fresh construct |
+### TRACK −2 and spin
 
-Naïve float64 recompositions `sat + bat_corr → bat` (~304 ns on wsrt167) are
-**assembly-recipe mismatches**, not delay disagreements. `bat_corr_days` is the
-delay gate. libstempo `binarydelay` reads **zeros** on fresh construct — use
-`torb_sec` or `prebinary − total` (0.17 ns on wsrt167).
-
----
-
-## 8. J0613 three parity budgets
-
-### 1. EPTA full multi-backend (~10 ns) — dominant
-
-1369 TOAs, multi-backend mix. Bulk non-addsat RMS ~5.4 ns; `-addsat` TOAs at
-idx 247/256/561 ~200 ns. Closing requires native BCLT/formBats epoch alignment.
-
-### 2. Alternate PPTA export (~16 ns)
-
-Roemer/Shapiro + TZR at `TZRMJD` budget on alternate par/tim export.
-
-### 3. Native PPTA (~1.4 ns) — essentially done
-
-`PPTA_dr1dr2` native export passes strict gate.
-
----
-
-## 9. Phase and TRACK −2 semantics
-
-### Comparison table
-
-| Aspect | tempo2 `formResiduals.C` | JUG production (TRACK −2) |
-|--------|--------------------------|---------------------------|
-| Spin formulation | `phase2+phase3` at `bbat` | Taylor Horner at `model_mjd` |
-| TRACK −2 bookkeeping | `pnNew` / `pnAct` / `addPhase` | `track_minus2_frac_phase` + legacy wrap |
+| Aspect | tempo2 `formResiduals.C` | JUG production |
+|--------|--------------------------|----------------|
+| Spin | `phase2+phase3` at `bbat` | Taylor Horner at `model_mjd` |
+| TRACK −2 | `pnNew` / `pnAct` / `addPhase` | `track_minus2_frac_phase` + legacy wrap |
 | Emission epoch | `calculate_bclt` + `formBats` | IFTE `model_mjd` + `dt_sec_ld` |
-| Best measured RMS | 0 ns (pytempo acceptance) | **1.4 ns** (wsrt167, post-fix) |
+| Measured RMS | 0 ns (acceptance) | **~1.2 ns** on gated fixtures |
 
-### Subset pitfall
+**Subset pitfall:** tim `-pn` values are offsets relative to **full-tim** `obsn[0]`.
+Using raw `-pn` in `pnAct` breaks TRACK −2 on filtered subsets. Prefer full-tim
+oracle pull + mask.
 
-tim `-pn` values are offsets relative to **full-tim** `obsn[0]`. Using raw `-pn` in
-`pnAct` breaks TRACK −2 on IPTA exports. Prefer full-tim oracle pull + mask on
-filtered subsets.
+**Do not wire to production:** native `phase5@bbat` host spin (`USE_NATIVE_BBAT_PHASE5`,
+~36 ns); BCLT iteration in `simple_calculator` (~903 µs regression).
 
----
+### `-addsat` and tempo2 options
 
-## 10. Appendix — investigation log (condensed)
+| Item | Status |
+|------|--------|
+| `-addsat` SAT shift + `mjd_str` resync | Closed — idx 247/256/561 max **2.33 ns** (host residuals) |
+| `-addsat` autodiff design matrix | **Open** — no pytest gate on IPTA `-addsat` fixtures |
+| `track_minus2_frac_phase` pnAct | Closed — `pnAct = (pn[i]−pn[0]) + pnAdd` |
+| TZR geometry (`tzr_geometry.py`) | Closed — e.g. `epta_j0030_isolated` 0.98 ns |
+| Implicit `NE_SW = 4` cm⁻³ when par omits keyword | Closed |
+| Roemer PM at POSEPOCH | Closed |
+| IFTE + `formBats` clock (`tempo2_clock.py`) | Diagnostic-only — production host uses `model_mjd` |
 
-### Phase C — TZR reference phase (2026-07-05) — DONE
+### Native host-path capabilities (tempo2 mode)
 
-- **Goal:** close epta_j0030_isolated (~15.9 ns RMS dominated by 2×1999 TOAs far from `TZRMJD`).
-- **Root cause:** TZR geometry applied at wrong epoch / with wrong clock chain.
-- **Fix:** `tzr_geometry.py` — mode-specific TZR apply modes.
-- **Result:** TZR epoch fix brought J0030 from 15.9 ns toward ~4.7 ns on the TZR probe;
-  the **ecliptic frame fix (2026-07-08)** closed the remaining ELONG/ELAT geometry gap on
-  `epta_j0030_isolated` to **0.98 ns** RMS.
-- **Tests:** `tests/test_tempo2_tzr_parity.py`.
+These are implemented in the native JUG host path and underpin current parity:
 
-### Phase D — wsrt167 TRACK −2 (2026-07-05 to 2026-07-07)
-
-| Step | Investigation | Verdict |
-|------|---------------|---------|
-| 1 | pnNew / tim `-pn` convention | **Done** — `pnAct = (pn[i]−pn[0]) + pnAdd` |
-| 2 | Wire `phase5@bbat` to production | **Ruled out** — ~17.5 ns vs production ~16.4 ns |
-| 3 | `-padd` / `jump_phase` | **Ruled out** — exact match to pytempo `phase_offset_turns` |
-| 4 | Taylor vs tempo2 `phase2+phase3` | **Ruled out** — 0.02 ns fractional |
-| 5 | Per-TOA term diff | **Done** — ~330 ns `bbat` gap localized |
-| 6 | `model_mjd` vs `pet`/`torb` | **Done** — `pt_torb ≈ prebin−total` (0.17 ns) |
-| 7 | `dt_sec` precision + `deltaT(pt)` counterfactual | **Done** — float64 inputs cap `dt_sec`; swap worsens |
-| 8 | JAX two-part dt + compensated Taylor | **Done** — no gain (Horner ruled out again) |
-| 9 | Production `IFTE(tdb_ld)` + `dt_sec_ld` best path | **Done** — 16.4 ns best JUG-composed |
-| 10 | formBats signed-term probe | **Done** — +65 s JUG TT/batCorr baseline mismatch |
-| 11 | getCorrectionTT / correctionTT_TB | **Done** — true `correction_tt_tb` ~14 s matches `tt2tdb.C` |
-| 12 | `batCorrs` vs production `model_mjd` epoch chain | **Done** — 286 ns `batCorr` model-chain error |
-| 13 | Model-epoch batCorr/bbat diagnostic rebuild | **Done** — closes libstempo `batCorrs` at 286 ns |
-| 14 | `torb` closed; `bbat` epoch mismatch | **Done** — `torb` 0.17 ns; `bbat` 330 ns open |
-| 15 | `model_mjd` vs `obsn.bbat` decomposition | **Done** — 286 ns `batCorr` primary lever |
-| 16 | Longdouble `model_mjd` / `batCorr` replay | **Done** — 286 ns does not collapse; best ld 214 ns |
-| 17 | formBats / calculate_bclt Roemer epoch | **Done** — formBats replay 0 ns; 286 ns = IFTE scatter |
-| 18 | Taylor / `formResiduals.C` spin bookkeeping | **Done** — production Taylor 16.43 ns best; 0 ns needs JAX chain |
-
-### wsrt167 15.5 ns floor — SOLVED (2026-07-07)
-
-Two independent JUG bugs, both now fixed:
-
-1. **Missing troposphere in the emission dt (13.1 ns of the 15.5).** Host-setup
-   tropo went into `prebinary_delay_sec`/`bbat` but was **never folded into
-   `total_delay_sec`/`dt_sec`** used by the Taylor spin path. Fix: fold native tropo
-   into `total_delay_sec`/`dt_sec` right after host setup.
-2. **float64 phase downcast in the Taylor wrap (~6 ns).** `compute_phase_residuals`
-   cast longdouble Taylor phase to float64 before wrapping. Fix: keep longdouble
-   through wrapping and round `nphase` in longdouble.
-
-After both fixes: wsrt167 **1.43 ns RMS**; wrap exact (substituting tempo2 deltaT
-reproduces tempo2 residuals bit-for-bit modulo mean).
-
-### Parity-closure plan outcome (2026-07-08)
-
-| Check | EPTA full (1369 TOA) | Verdict |
-|-------|----------------------|---------|
-| `feedback_delta` (clkcorr iters 3−1) | **0 ns** RMS | Merged IPTA chains converge in one iter — **not** the residual driver |
-| `corr(residual, feedback_delta)` | NaN | Track B gate **not met**; fix applied anyway (no-op) |
-| `corr(residual, dt_jug − deltaT_pt)` | **r ≈ 0.07** | Weak — Taylor host spin partially absorbs tempo2 `bbat+torb` |
-| `sat_mjd` vs pytempo (incl `-addsat`) | **< 1 ns** | `-addsat` read-time application **closed** |
-| Non-addsat bulk RMS | **~5.4 ns** | Just above 5 ns gate |
-| `-addsat` TOAs (idx 247/256/561) | **~200 ns** | dt-chain / site-epoch debt |
-
-**Track B (clkcorr feedback delta):** zero effect on IPTA DR2.
-**Track E (strict gate flip):** rollback applied — EPTA full stays `xfail(strict=True)`.
-
-### Ruled out / do-not-do list
-
-| Action | Verdict | Why |
-|--------|---------|-----|
-| Wire `phase5@bbat` to production spin | **Ruled out** | ~17.5 ns — worse than Taylor ~16.4 ns |
-| Change `-padd` / `jump_phase` handling | **Ruled out** | exact match to pytempo |
-| Horner / compensated float64 spin alone | **Ruled out** | no gain (Step 8) |
-| Pair pytempo `torb_sec` in JUG-composed `phase5` | **Trap** | **172 ns** (Step 18) |
-| Longdouble clock/spin pass | **Reverted** | bit-identical RMS |
-| BCLT iteration in `simple_calculator` | **Ruled out** | ~903 µs regression |
-| clkcorr feedback delta on merged IPTA chains | **Ruled out** | zero effect |
-| idx 85 as isolated pnNew bug | **Red herring** | tail of spin error; pytempo exact at idx 85 |
-| Enable `USE_NATIVE_BBAT_PHASE5` | **Quarantined** | ~36 ns; formBats `bbat` ~65 s off |
-
-### Phase 2 IFTE / `tt_tb` (2026-07-07) — DONE
-
-Root cause: `jug/utils/ifteph.py` `IFTEinterp` used `frac(t[0])` where Tempo2 C
-uses `modf(t[0], &dt1)` integer part in `tc` computation. Fix: line-accurate `tc`/`l`
-in host port; static IFTE coefficient table in `Tempo2ModelStatic`; `ifte_delta_t_sec_jax`
-evaluated inside `compute_tempo2_correction_tt_tb_jax`.
-
-Gates (wsrt167, pytempo oracle): `tt_jax`, `teph_jax`, `tt_tb_jax` all **< 1 ns RMS**.
+- TDB vs TCB ephemeris scaling (IFTE/`SI_UNITS` only for SI/TCB)
+- Per-TOA multi-observatory ITRF geometry
+- Tempo1 emulation (`EPHVER < 5`, T2C_TEMPO, legacy obliquity)
+- Coverage-aware clock chains (`ClockGraph`)
+- Longdouble SAT subtraction in clock feedback
+- Tempo2-native T2/Kopeikin binary (model id 6)
+- Native overlay fold-in (Roemer/DM/SW → `total_delay_sec` / `dt_sec`)
+- Tempo2 `observatories.dat` aliases (Effelsberg, Jodrell, WSRT, IPTA `w`/`aoutc`)
+- Ecliptic `equ2ecl` on tempo2-native observatory state for ELONG/ELAT pulsars
 
 ---
 
-## 11. Commands and tests
+## Fast gates and CI tiers
+
+### J0613 inner loop
+
+| Gate | Fixture | n | Measured | Pin |
+|------|---------|---|----------|-----|
+| No TRACK / no `-pn` | `epta_j0613_nrt1400_mini` | 20 | stored oracle | 100 ns |
+| TRACK −2 `-addsat` | `epta_j0613_addsat_min` | 11 | **1.43 ns** RMS | 5 ns / 1 µs anti-wrap | host only |
+| WSRT TRACK −2 spin | `wsrt167_mini` | 20 | strict | 5 ns RMS |
+| Full wsrt167 | `wsrt167` | 167 | **1.19 ns** RMS | 2.5 ns + 5 ns strict |
+| Full EPTA | `epta_j0613_t2_ipta_all` | 1369 | **1.22 ns** RMS | 5 ns strict |
+
+Mini fixtures run in ~1 min. Full fixtures and the 11-TOA addsat **host-residual**
+gate are `slow` (release / explicit-request jobs).
+
+### Test commands
 
 ```bash
-cd ref-packages/jug
+# From the jug repository root (directory containing tests/ and jug/)
 
-# Default dev loop (~1 min; stored oracles, no slow tests)
+# Default dev loop (~1 min)
 PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
   pytest tests/test_tempo2_j0613_fast_gates.py \
          tests/test_tempo2_simulated_fixtures.py \
   -q -o addopts='' --no-cov -m 'not slow'
 
-# Reduced regression gate (~5 min; adds non-slow residual-parity tests)
+# Reduced regression gate (~5 min)
 PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
   pytest tests/test_tempo2_j0613_fast_gates.py \
          tests/test_tempo2_simulated_fixtures.py \
          tests/test_tempo2_residual_parity.py \
   -q -o addopts='' --no-cov -m 'not slow'
 
-# NG5 TDB + ecliptic (slow — 625 TOAs each; run on explicit request)
+# Slow acceptance (NG5, EPTA full, wsrt167 — explicit request)
 PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
-  pytest tests/test_tempo2_residual_parity.py::test_tempo2_mode_ng5_tdb_residual_parity \
-  -q -o addopts='' --no-cov
+  pytest tests/test_tempo2_residual_parity.py -k ng5 -q -o addopts='' --no-cov
+PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
+  pytest tests/test_tempo2_ipta_dr2_j0613_parity.py -q -o addopts='' --no-cov
 
-# Full tempo2 acceptance oracle suite (multi-hour — not for inner loop)
-JUG_TEST_TEMPO2=1 pytest tests/test_tempo2_residual_parity.py -q -o addopts=''
-
-# wsrt167 debt pin (dev oracle — requires libstempo + $TEMPO2)
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 pytest tests/test_dev_oracle_wsrt167_parity.py -m dev_oracle -q
-
-# TZR parity (Phase C)
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 pytest tests/test_tempo2_tzr_parity.py -q
-
-# TRACK −2 pnNew (Phase D Step 1)
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 pytest tests/test_tempo2_track2_pnnew.py -q
-
-# All tempo2 oracle tests
-JUG_TEST_TEMPO2=1 pytest tests/test_tempo2_*.py -q -o addopts=''
-
-# JUG-only CI path (no libstempo)
-pytest -m 'not dev_oracle' -q
-
-# J0613 EPTA debt pins
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 pytest tests/test_tempo2_ipta_dr2_j0613_parity.py -q
-
-# Fast hybrid regression probes
-JAX_ENABLE_X64=1 PYTHONPATH=.:tests python3 -m pytest \
-  tests/test_tempo2_obs_state_export.py \
-  tests/test_tempo2_native_staging_host_frozen.py \
-  tests/test_tempo2_native_residual_delta_jax.py -q
-
-# Fast native gate path (skips @pytest.mark.slow)
+# Dev-oracle native chain (requires libstempo)
 PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
   pytest tests/test_tempo2_native_*.py -m 'dev_oracle and not slow' --no-cov -q
+
+# JUG-only CI (no libstempo)
+pytest -m 'not dev_oracle' -q
 ```
 
-See [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) for the full parity table
-and delete checklist.
+Full `pytest -k tempo2` and 65-pulsar IPTA campaigns are multi-hour — launch only on
+explicit request.
+
+---
+
+## JAX native delay chain
+
+**Goal:** JAX code reproducing libstempo/tempo2 `updateBatsAll` → `calculate_bclt` →
+`formBats` → `formResiduals` on the same per-TOA epochs.
+
+| Layer | JUG production | tempo2 native | Dev-oracle gap |
+|-------|----------------|---------------|----------------|
+| Clock / delays | IFTE `model_mjd` + `prebinary` | `TT+TT_TB` + `tdis` via `formBats` | ~286 ns `batCorr` |
+| Spin | Taylor on `dt_sec_ld` + TRACK −2 | `phase2+phase3` at `bbat` | **~1.2 ns** host residuals on gated fixtures |
+| End-to-end residuals | libstempo oracle | `psr.residuals()` | **< 7 ns** on gated fixtures |
+
+Scaffold: `jug/residuals/tempo2_native/`. Graph mode:
+`JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
+
+### Dev-oracle gates (component-level)
+
+| Gate | Current | Target | Notes |
+|------|---------|--------|-------|
+| `bat_corr_days` vs tempo2 | ~1.1 ns RMS | < 1 ns | Delay physics gate |
+| `bat_mjd` / `bbat_mjd` vs tempo2 | ~304 ns RMS | < 1 ns | MJD assembly recipe — see below |
+| `batCorr` vs lib | ~286 ns RMS | < 1 ns | Model-epoch chain |
+| `torb` vs pytempo | ~262 ns RMS | < 1 ns | Production path |
+| Full residuals wsrt167 | **1.19 ns** | < 5 ns | **Green** |
+
+Component gaps can coexist with green end-to-end residuals when Taylor spin at
+`model_mjd` absorbs epoch-scalar offsets.
+
+### formBats MJD assembly
+
+**Do not confuse delay parity with MJD epoch parity.**
+
+| Quantity | vs tempo2 RMS | What it tests |
+|----------|---------------|---------------|
+| `bat_corr_days` | ~1.1 ns | Delay-component closure |
+| `bat_mjd` / `bbat_mjd` | ~304 ns | Assembled MJD scalar |
+| End-to-end residuals | ~1.2 ns | Production gate |
+
+tempo2 `formBats.C` splits the UTC→TT term in `long double`:
+
+```c
+batCorr = getCorrectionTT(obsn)/SECDAY
+        + (correctionTT_TB - tropo + roemer - shap - tdis1 - tdis2)/SECDAY;
+```
+
+JUG JAX sums all correction seconds in float64, divides once. Internally consistent
+but does not reproduce tempo2's split assembly when `sat` is O(10⁴) MJD. A constant
+~304 ns `bbat` shift can cancel in `deltaT = (bbat−PEPOCH)·86400 + torb` if the
+integer MJD day is unchanged.
+
+**Gate on:** `bat_corr_days` and end-to-end `acceptance_residual_sec`. MJD scalar
+parity requires porting split summation in `formbats_jax.py` — not a current
+residual blocker.
+
+### Graph modes (`staged_bclt` vs `fixed_state_nonlinear`)
+
+| Layer | `staged_bclt` (default) | `fixed_state_nonlinear` |
+|-------|-------------------------|-------------------------|
+| Ephemeris / clocks / obs vectors | Host-frozen from `tempo2_obs_state` | Same |
+| BCLT iteration | **Recomputed in JAX** (`lax.scan` × 12/TOA) | **Frozen** at reference BCLT |
+| formBats / Shklovskii / spin tail | In JAX | In JAX |
+
+`NativeFrozenDeltaPack` = frozen **host inputs**, not frozen BCLT output.
+See [`PARITY_THEORY.md`](PARITY_THEORY.md) §5.
+
+### JAX autodiff graph — compile debt
+
+Fitting uses `make_residual_delta_jax_fn()` + `jax.jacfwd` at bind time. Tempo2
+`staged_bclt` traces a much larger graph than PINT-family sessions. **Not a parity
+blocker** — host residuals are green; this is compile/runtime debt.
+
+Each `residual_delta_jax` call runs **two** native chains (θ=0 and θ+Δθ). Each chain
+traces pulsar vectors, per-TOA DM, BCLT `lax.scan` (12 iter/TOA), formBats ×2,
+Shklovskii, and native spin terms to obtain **bbat**. The returned delta uses only
+**bbat displacement + Taylor `_phase_residual_delta_jax`** on frozen host `dt_sec_cached`.
+
+**Trim targets (priority order):**
+
+| # | Trim | Saves | Validation |
+|---|------|-------|------------|
+| **T1** | `bbat`-only subgraph — skip native spin trace where only bbat Δ is consumed | Largest compile win | `jacfwd(0)` vs libstempo; NUTS smoke |
+| **T2** | Host-precomputed reference bbat at pack build | Halves BCLT+formBats per call | θ=0 delta exactly zero |
+| **T3** | Skip second formBats when Shklovskii absent | Most IPTA pulsars | Envelope on PX/PMRA/PMDEC |
+| **T4** | `fixed_state_nonlinear` for NUTS after envelope | Drops BCLT scan | vs `staged_bclt` < 1 ns |
+| **T5** | Do not trim compensated two-part day/sec without envelope | — | Required for TDB parity |
+| **T6** | XLA cache, mini fixtures in dev loop | Amortize compile | Operational |
+
+**Do not trim:** host-frozen ephemeris/clocks; BCLT in `staged_bclt` (use
+`fixed_state_nonlinear` to freeze); Taylor `_phase_residual_delta_jax` wrapper.
+
+**Implementation anchors:**
+
+| Component | Location |
+|-----------|----------|
+| JIT residual factory | `jug/fitting/jax_residual_delta.py` |
+| Bbat delay change | `jug/residuals/tempo2_native/chain_jax.py` |
+| Full tail (trim candidate) | `jug/residuals/tempo2_native/model_jax.py` |
+| BCLT scan | `jug/residuals/tempo2_native/calculate_bclt_jax.py` |
+| Compensated formBats | `formbats_jax.py`, `compensated.py` |
+
+---
+
+## Debugging workflow
+
+### Oracles
+
+**Tier 1 (acceptance):** `psr.residuals()`, `acceptance_residual_sec`, `batCorrs`,
+`pets`, `bbat_mjd`.
+
+**Tier 2:** `phase_offset_turns`. Trap: `residual_sec` on TRACK −2.
+
+**Tier 3 (informational):** `nphase` vs `pulse_number`; libstempo `binarydelay` is
+**zero** on fresh construct — use `torb_sec` or `prebinary − total`.
+
+```python
+from jug.testing.tempo2_reference import tempo2_reference
+ref = tempo2_reference(par, tim)
+delta_ns = (jug_residuals_us - ref.residuals_us) * 1000.0
+```
+
+### pytempo (optional external dev oracle)
+
+**pytempo** is an expanded libstempo fork (same tempo2 wrapper + per-TOA
+`toa_diagnostics()` dumps). It is **not** part of this repository and is **not** a
+runtime dependency; use it only for term-by-term debugging when libstempo scalar gates fail:
+
+1. Run `test_tempo2_residual_parity.py` gate.
+2. Pull `toa_diagnostics(removemean=False)`.
+3. Rank roemer / clock / spin / binary deltas.
+4. Fix in native JUG code; re-gate.
+
+Naïve `sat + bat_corr → bat` float64 recomposition (~304 ns on wsrt167) is an
+**assembly-recipe mismatch**, not a delay disagreement. Use `bat_corr_days` for
+delay physics.
+
+### Design constraints (do not retry)
+
+| Approach | Outcome | Why |
+|----------|---------|-----|
+| Wire `phase5@bbat` to production host spin | ~17 ns | Worse than Taylor ~1.2 ns |
+| pytempo `torb_sec` in JUG-composed spin | ~172 ns | Trap |
+| BCLT iteration in `simple_calculator` | ~903 µs | Regression |
+| clkcorr feedback delta on merged IPTA chains | 0 effect | Chains converge in one iter |
+| `USE_NATIVE_BBAT_PHASE5` | ~36 ns | Quarantined |
+
+---
+
+## Related docs
+
+| Doc | Contents |
+|-----|----------|
+| [`PARITY_THEORY.md`](PARITY_THEORY.md) | Parity definition, two evaluation layers, graph modes |
+| [`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md) | Fixture sizes, provenance, regeneration |
+| [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) | Oracle harness, hybrid gates, delete checklist |

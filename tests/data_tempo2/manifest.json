@@ -170,7 +170,7 @@
       "NTOA": "1167",
       "TRACK": "-2",
       "PULSE_NUMBERS": "tempo2 add_pulseNumber plugin (2026-07-03)",
-      "NOTES": "Single-backend NRT.BON.1400 excerpt; ~62 ns RMS vs libstempo (unchanged with TRACK -2)"
+      "NOTES": "Single-backend NRT.BON.1400 excerpt; ~0.95 ns RMS vs libstempo (2026-07-08)"
     },
     "notes": "Trimmed single-backend IPTA DR2 excerpt for narrow tempo2 parity probes"
   },
@@ -214,7 +214,7 @@
       "NTOA": "1167",
       "TRACK": "-2",
       "PULSE_NUMBERS": "tempo2 add_pulseNumber plugin (2026-07-03)",
-      "NOTES": "Full EPTA TIM flat with -pn; ~2 µs RMS vs libstempo with TRACK -2 (2026-07-03)"
+      "NOTES": "Full EPTA TIM flat with -pn; ~1.2 ns RMS vs libstempo (2026-07-08 re-baseline)"
     },
     "notes": "Notebook single_epta layout: par + flat pn-expanded tim (1369 TOAs). Legacy INCLUDE tree kept under tims/ for provenance."
   },
@@ -233,7 +233,7 @@
       "BINARY": "T2",
       "TRACK": "-2",
       "FILTER": "TOA 0 + three -addsat TOAs (orig idx 247/256/561) + neighbors",
-      "NOTES": "Fast TRACK -2 -addsat gate; ~0.3–0.7 µs addsat deltas vs libstempo (2026-07-07)"
+      "NOTES": "Fast TRACK -2 -addsat gate; ~1.4 ns RMS vs libstempo (2026-07-08 re-baseline)"
     },
     "notes": "Mini fixture extracted once from epta_j0613_t2_ipta_all for fast -addsat regression gates"
   },
@@ -252,7 +252,7 @@
       "BINARY": "T2",
       "TRACK": "-2",
       "FILTER": "WSRT sys, freq < 1000 MHz from epta_j0613_t2_ipta_all",
-      "NOTES": "Isolated TRACK -2 phase unit test; ~16 ns RMS vs libstempo post IFTE/formBats (2026-07-05); strict 5 ns gate not met"
+      "NOTES": "Isolated TRACK -2 phase unit test; ~1.2 ns RMS vs libstempo (2026-07-08 re-baseline)"
     },
     "notes": "WSRT low-band subset for TRACK -2 phase debugging (328/382 MHz bands)"
   },

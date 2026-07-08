@@ -72,13 +72,13 @@ This file is the oracle-harness guide. The authoritative theory/policy document 
 
 | Workstream | Tests / oracle | Status |
 |------------|----------------|--------|
-| **Canonical tangent** | libstempo two-parameter perturbation oracles across `staged_bclt`, `fixed_state_nonlinear`, `full` | **Open** — main roadmap item |
+| **Autodiff oracle breadth** | libstempo design-matrix columns beyond F0; IPTA TRACK −2; `full` mode | **Open** — production path wired; wsrt167 F0 green |
 | **NG5 TDB** | pytempo `deltaT`; F0 design-matrix column | **Open** — ~5.3 µs spin-epoch / TDB-TCB map |
-| **EPTA J0613 full** | `tests/test_tempo2_ipta_dr2_j0613_parity.py` | **Open** — ~10 ns floor; strict xfail |
+| **EPTA J0613 full** | `tests/test_tempo2_ipta_dr2_j0613_parity.py` | **Done** — **1.22 ns** RMS vs live libstempo (2026-07-08 re-baseline) |
 | **wsrt167 host parity** | `tests/test_dev_oracle_wsrt167_parity.py` | **Done** — ~1.4 ns RMS after tropo-in-dt + longdouble wrap |
 | **TRACK −2 pnNew** | `tests/test_tempo2_track2_pnnew.py` | **Done** |
 | **TZR** | `tests/test_tempo2_tzr_parity.py` | **Done** — J0030 ~4.7 ns RMS |
-| **`-addsat` SAT resync** | `epta_j0613_addsat_min` / dt-chain diag | **Done** — was ~±1 s; residual dt-chain scatter remains |
+| **`-addsat` SAT resync** | `epta_j0613_addsat_min` / dt-chain diag | **Done** — was ~±1 s; residual scatter **1.43 ns** mini / **2.33 ns** max addsat (2026-07-08) |
 | **Stale dev-oracle assertions** | `pytest -m dev_oracle` | **Open** — audit/retire assertion debt |
 
 ## Native delay-chain notes
@@ -93,7 +93,7 @@ Gate policy remains **1 ns RMS** for formBats component comparisons vs pytempo
 | `bat_mjd`, `bbat_mjd` | MJD assembly recipe mismatch can show ~304 ns even when delay physics is ~1 ns |
 | `torb_sec` | Use pytempo `torb_sec` or `prebinary - total`; libstempo `binarydelay` is stale on fresh construct |
 
-See `PARITY_ROADMAP.md` § "formBats `bat_mjd` / `bbat_mjd` assembly" before
+See `PARITY_ROADMAP.md` § formBats MJD assembly before
 treating epoch-scalar gaps as delay-physics bugs.
 
 Fast native gate path (skips ``@pytest.mark.slow`` modules — ~45 s vs ~2.5 min full):

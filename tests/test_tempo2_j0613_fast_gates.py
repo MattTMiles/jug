@@ -2,7 +2,7 @@
 
 The default ``-m 'not slow'`` path uses mini fixtures (20 TOAs or fewer) plus
 the existing 11-TOA addsat gate.  Full-fixture debt pins stay in this module but
-are marked ``slow``.  See ``PARITY_ROADMAP.md`` § J0613 fast gates.
+are marked ``slow``.  See ``PARITY_ROADMAP.md`` § Fast gates and CI tiers.
 """
 
 from __future__ import annotations

@@ -33,6 +33,7 @@ def open_session(
     verbose: bool = False,
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
+    tempo2_native: object | None = None,
 ) -> TimingSession:
     """
     Open a timing session for repeated operations.
@@ -75,6 +76,7 @@ def open_session(
         verbose=verbose,
         compatibility=compatibility,
         engine_conventions=engine_conventions,
+        tempo2_native=tempo2_native,
     )
 
 

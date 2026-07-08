@@ -9,6 +9,8 @@ import pytest
 
 pytest.importorskip("libstempo")
 
+pytestmark = pytest.mark.slow
+
 from jug.residuals.compatibility_providers import get_delay_provider
 from jug.residuals.diagnostic_conventions import DiagnosticConventions
 from jug.residuals.simple_calculator import compute_residuals_simple

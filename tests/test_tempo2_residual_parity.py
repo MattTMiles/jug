@@ -97,6 +97,7 @@ def test_tempo2_mode_binary_residual_parity(fixture_id):
 
 
 @pytest.mark.tempo2
+@pytest.mark.slow
 @pytest.mark.parametrize("fixture_id", NG5_TDB_FIXTURES)
 def test_tempo2_mode_ng5_tdb_residual_parity(fixture_id):
     """Case B/C NG5 TDB fixtures (TZR + DD + DMX) vs libstempo."""
@@ -112,6 +113,7 @@ def test_tempo2_mode_ng5_tdb_residual_parity(fixture_id):
 
 
 @pytest.mark.tempo2
+@pytest.mark.slow
 @pytest.mark.parametrize("fixture_id", NG5_TDB_FIXTURES)
 def test_ng5_tdb_pint_mode_remains_separate_from_tempo2_acceptance(fixture_id):
     """Guardrail: Case B/C acceptance is defined on tempo2 mode, not pint mode."""

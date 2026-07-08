@@ -8,7 +8,7 @@ import warnings
 import numpy as np
 import pytest
 
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
 from jug.residuals.tempo2_native.chain_numpy import (
     compute_tempo2_native_terms_numpy_from_simple_result,

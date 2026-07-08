@@ -24,6 +24,10 @@ def pytest_configure(config):
         "markers",
         "probe: diagnostic-only test (writes reports, no assertions); skip in normal CI",
     )
+    config.addinivalue_line(
+        "markers",
+        "slow: oracle-heavy or full-fixture test; skip in fast inner-loop runs",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -77,6 +81,17 @@ def wsrt167_jug(wsrt167_fixture):
         wsrt167_fixture["tim_path"],
         verbose=False,
         compatibility="tempo2",
+    )
+
+
+@pytest.fixture(scope="session")
+def wsrt167_libstempo(wsrt167_fixture):
+    pytest.importorskip("libstempo")
+    from jug.testing.tempo2_reference import tempo2_reference
+
+    return tempo2_reference(
+        wsrt167_fixture["par_path"],
+        wsrt167_fixture["tim_path"],
     )
 
 

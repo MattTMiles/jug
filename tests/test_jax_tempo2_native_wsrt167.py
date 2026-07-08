@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("libstempo")
 
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
 from jug.testing.tempo2_reference import tempo2_reference
 from tempo2_fixtures import get_tempo2_fixture

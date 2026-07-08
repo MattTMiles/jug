@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("libstempo")
 
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.testing.tempo2_reference import tempo2_reference

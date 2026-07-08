@@ -7,6 +7,8 @@ import pytest
 
 pytest.importorskip("libstempo")
 
+pytestmark = pytest.mark.slow
+
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.testing.tempo2_reference import tempo2_reference
 

@@ -9,6 +9,73 @@ active work queue, and condensed investigation history.
 
 ---
 
+## Current snapshot — IPTA DR2 TDB parity push (2026-07-08)
+
+Commit `8a1a34d` (`fix(tempo2): close IPTA DR2 TDB parity to sub-ns on core pulsars`)
+landed a broad native tempo2 host-path alignment for mixed-units IPTA DR2 pulsars
+converted to `UNITS TDB`.
+
+### What changed
+
+- **TDB ephemeris scaling:** tempo2's IFTE/`SI_UNITS` scaling is now applied only for
+  SI/TCB pulsars; TDB paths no longer scale JPL vectors by `IFTE_K`.
+- **Multi-observatory geometry:** tempo2-native observatory state now accepts per-TOA
+  ITRF positions, so INCLUDE collections with multiple telescope codes do not reuse the
+  first site's coordinates.
+- **Tempo1 emulation:** `EPHVER < 5` now activates tempo2's legacy overrides, including
+  `NE_SW = 9.961 cm^-3`, `T2CMETHOD TEMPO`, and the tempo1 ecliptic obliquity.
+- **T2C_TEMPO site vectors:** JUG now carries a native port of tempo2's legacy
+  `get_obsCoord` path (`jug/delays/tempo_t2c.py`) for tempo1-emulation data.
+- **Clock chains:** `ClockGraph` resolves UTC(obs)->UTC paths by epoch and builds
+  piecewise chains, matching tempo2's coverage-aware clock-file routing.
+- **Clock feedback precision:** TT feedback corrections subtract SAT in `longdouble`,
+  avoiding a full MJD float64 ULP (~629 ns near MJD 52216) in the emission time.
+- **Tempo2 T2/Kopeikin binary:** a tempo2-native T2 DD-branch implementation with
+  additive Kopeikin terms (`KIN`/`KOM`) is dispatched as model id 6.
+- **Native overlay fold-in:** Roemer/DM/SW recomputed by the exact bootstrap chain are
+  folded back into total delay and `dt_sec`, removing provider-vs-native contamination.
+- **Observatory constants:** tempo2 `observatories.dat` coordinates are used for the
+  affected tempo2 aliases (notably Effelsberg/Jodrell/WSRT) and IPTA aliases such as
+  `w`/`aoutc`.
+
+### Measured state
+
+Small targeted checks after the commit showed the intended TDB path is now in the
+sub-ns to low-ns regime on the core probes:
+
+| Workload | Result |
+|----------|--------|
+| `sim_dd_tdb` | ~1.8 ns RMS, max ~2.9 ns after TDB `IFTE_K` fix |
+| NG5 J1600 TDB equatorial/ecliptic | ~1.7 ns RMS, max ~3.6 ns |
+| IPTA `J0034-0534` TDB | ~0.5 ns RMS, max ~2.6 ns |
+| IPTA `J0437-4715` TDB | ~0.34 ns RMS, max ~3.2 ns |
+| IPTA `J1713+0747` TDB | ~1.34 ns RMS, p99 ~2.9 ns, max ~5.7 ns after clock-feedback and coordinate fixes |
+
+A partial all-pulsar IPTA sweep was started but intentionally stopped; it had completed
+only the early alphabetical subset. Completed cases were mostly <1 ns RMS, with
+`J0900-3144` still above the hard target (~5.8 ns RMS, max ~10.9 ns) and requiring a
+focused follow-up. Do **not** treat the interrupted 65-pulsar run as a full validation.
+
+### Iteration policy
+
+The full `pytest tests/ -k "tempo2"` sweep and the full 65-pulsar IPTA oracle campaign
+are multi-hour jobs and should only be launched on explicit request. For normal
+iteration, use the mini J0613 gates plus simulated fixtures:
+
+```bash
+cd ref-packages/jug
+PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
+  pytest tests/test_tempo2_j0613_fast_gates.py \
+         tests/test_tempo2_simulated_fixtures.py \
+  -q -o addopts='' --no-cov -m 'not slow'
+```
+
+For IPTA DR2 validation, run one pulsar or a short named batch at a time with the
+scratch script used during the investigation (`/tmp/jug-tryouts/measure_ipta_tdb.py`),
+and capture per-pulsar RMS/p99/max before expanding the set.
+
+---
+
 ## Simulated tempo2 fixture suite (2026-07-08)
 
 **Default CI path:** `tests/data_tempo2_sim/` — 15 libstempo-generated fixtures, 6–10
@@ -83,14 +150,21 @@ convention).
 > epoch map. **F0 design-matrix column passes** (`atol=0.02`) because the mismatch is a
 > **spin-epoch / prefit offset**, not a derivative error.
 
-### J0613 fast gates (2026-07-07)
+### J0613 fast gates (2026-07-08)
+
+"Fast" now means the default inner loop uses mini fixtures (20 TOAs or fewer) and
+excludes `slow` tests. Full wsrt167 (167 TOAs), full nrt1400 (120 TOAs), full EPTA
+J0613 (1369 TOAs), and NG5 625-TOA fixtures are marked `slow` and are release /
+explicit-request jobs. The 11-TOA addsat fixture is also marked `slow` for now:
+although tiny, its current JUG path takes ~4 minutes on the 2026-07-08 environment.
 
 | Gate | File | Measured debt | Pin |
 |------|------|---------------|-----|
-| No TRACK / no `-pn` | `tests/test_tempo2_j0613_fast_gates.py` | nrt1400 ~4.4 ns RMS | 100 ns |
-| TRACK −2 `-addsat` mini | `epta_j0613_addsat_min` (11 TOAs) | bulk ~86 ns RMS; addsat TOAs ~172 ns max | 1 µs |
-| wsrt167 bulk spin | `test_dev_oracle_wsrt167_parity.py` | **~1.4 ns** RMS | 2.5 ns |
-| Full EPTA | `test_tempo2_ipta_dr2_j0613_parity.py` (xfail) | ~10 ns RMS | 5 ns |
+| No TRACK / no `-pn` | `epta_j0613_nrt1400_mini` (20 TOAs) via `tests/test_tempo2_j0613_fast_gates.py` | mini NRT no-TRACK path | 100 ns |
+| TRACK −2 `-addsat` mini (slow) | `epta_j0613_addsat_min` (11 TOAs) | bulk/addsat regression guard; current runtime ~4 min | 1 µs |
+| WSRT TRACK −2 spin mini | `wsrt167_mini` (20 TOAs) | strict residual target on WSRT subset | 5 ns RMS / 10 ns p99 / 25 ns max |
+| Full wsrt167 (slow) | `wsrt167` (167 TOAs) via session fixtures | **~1.4 ns** RMS | 2.5 ns debt pin + strict gate |
+| Full EPTA (slow) | `test_tempo2_ipta_dr2_j0613_parity.py` (xfail) | ~10 ns RMS | 5 ns |
 
 ### Production host routing (`pipeline.finalize_tempo2_host_residuals`)
 

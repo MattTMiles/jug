@@ -117,10 +117,16 @@ available:
 ```bash
 conda install -c conda-forge tempo2 libstempo
 export TEMPO2=/path/to/T2runtime
-JUG_TEST_TEMPO2=1 pytest tests/test_tempo2_*.py -q -o addopts=''
+PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
+  pytest tests/test_tempo2_j0613_fast_gates.py \
+         tests/test_tempo2_simulated_fixtures.py \
+  -q -o addopts='' --no-cov -m 'not slow'
 ```
 
-The curated fixtures live in `tests/data_tempo2/`. The manifest includes:
+The default tempo2 parity fixtures live in `tests/data_tempo2_sim/`: small
+libstempo-generated par/tim pairs with 5–12 TOAs. Real excerpts live in
+`tests/data_tempo2/` for TIM-format edge cases and historical probes. Its manifest
+includes:
 
 - Case A (TCB regression fixtures),
 - Case B (NG5 equatorial TDB),
@@ -128,6 +134,14 @@ The curated fixtures live in `tests/data_tempo2/`. The manifest includes:
 
 `tests/tempo2_fixtures.py` exposes helpers to select parity fixtures by case
 for CI and local debugging.
+
+Avoid using `pytest tests/ -k "tempo2"` as a development loop: it selects hundreds of
+oracle-heavy tests and can run for hours. Prefer the simulated fixtures, wsrt167, and
+J0613 fast gates, then expand to a named real pulsar or fixture only when needed.
+Full wsrt167 (167 TOAs), full J0613/IPTA, and NG5 625-TOA oracle tests are marked
+`slow` and excluded by the command above. The tiny J0613 addsat regression is also
+currently marked `slow` because its JUG path is several minutes despite only using
+11 TOAs.
 
 ### Compatibility modes and residual conventions
 
@@ -194,11 +208,14 @@ JAX_ENABLE_X64=1 PYTHONPATH=.:tests python3 -m pytest \
 
 See [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) for the full parity table.
 
-**Tempo2 parity status (2026-07-08):** wsrt167 is **~1.4 ns RMS** after the
-troposphere-in-dt and longdouble-wrap fixes. The largest current blocker is NG5 TDB's
-**~5.3 µs** spin-epoch / TDB-TCB map issue; EPTA J0613 full remains a **~10 ns**
-floor. The main roadmap is native tempo2 autodiff / residual-delta validation against
-libstempo two-parameter perturbation oracles across all graph modes.
+**Tempo2 parity status (2026-07-08):** commit `8a1a34d` aligned the IPTA DR2 TDB host
+path with tempo2 for mixed-units pulsars converted to `UNITS TDB`: TDB ephemeris
+scaling, tempo1 emulation, `T2C_TEMPO` site vectors, per-TOA multi-observatory geometry,
+epoch-aware clock chains, longdouble TT feedback, native T2/Kopeikin binaries, and
+tempo2 observatory coordinates. Targeted checks are now sub-ns to low-ns on the core
+TDB probes (e.g. J0034 ~0.5 ns RMS, J0437 ~0.34 ns RMS, J1713 ~1.34 ns RMS). Remaining
+IPTA validation should be targeted per pulsar; a partial all-pulsar sweep found
+`J0900-3144` still above the hard target.
 Details: [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
 
 Test-data policy, provenance, and fixture-size guidance live in

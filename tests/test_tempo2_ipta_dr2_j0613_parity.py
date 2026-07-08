@@ -19,6 +19,8 @@ from test_tempo2_residual_parity import (
     _delta_stats_ns,
 )
 
+pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
+
 # IPTA DR2 EPTA single-PTA dataset (J0613-0200.par + J0613-0200_all.tim).
 FIXTURE_ID = "epta_j0613_t2_ipta_all"
 

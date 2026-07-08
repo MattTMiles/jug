@@ -35,6 +35,18 @@ regression tests** and slow CI unnecessarily.
 5. Revisit whether large bundled MPTA files (~3k–7k TOAs) should be replaced by trimmed
    variants in-repo, with full files optional via env vars.
 
+**Tempo2/IPTA iteration rule (2026-07-08):** do not use the full tempo2 pytest sweep
+or all 65 IPTA DR2 pulsars as the default development loop. `pytest tests/ -k
+"tempo2"` currently selects hundreds of oracle-heavy tests, and a full IPTA DR2 TDB
+campaign can run for hours because individual pulsars contain hundreds to thousands
+of TOAs. Use focused fixtures first (`tests/data_tempo2_sim/`, wsrt167, J0613 fast
+gates), then run one real IPTA pulsar or a small named batch when a specific parity
+question requires it. Full sweeps are release/explicit-request jobs.
+
+Current real-data mini gates: `wsrt167_mini` and `epta_j0613_nrt1400_mini` are
+20-TOA excerpts for inner-loop tempo2 checks; `epta_j0613_addsat_min` remains the
+11-TOA TRACK −2 / `-addsat` regression guard.
+
 ---
 
 ## Collections at a glance

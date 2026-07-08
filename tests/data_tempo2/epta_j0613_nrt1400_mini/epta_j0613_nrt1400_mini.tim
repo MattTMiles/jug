@@ -1,0 +1,22 @@
+FORMAT 1
+MODE 1
+ ../data/53373.000003.f.000.000.zap 1396.95400000 53373.96505696657105133 1.13200 ncy -fe L_Band -be BON -bw 64 -tobs 3002.2 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 0 
+ ../data/53377.000010.f.000.000.zap 1397.00000000 53377.95697013735039249 4.02600 ncy -fe L_Band -be BON -bw 64 -tobs 1441.1 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 112642849 
+ ../data/53385.000004.f.000.000.zap 1396.72700000 53385.93005627804549107 1.29300 ncy -fe L_Band -be BON -bw 64 -tobs 3242.4 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 337623475 
+ ../data/53398.000005.f.000.000.zap 1396.98700000 53398.89660064997534050 1.12200 ncy -fe L_Band -be BON -bw 64 -tobs 3722.8 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 703501783 
+ ../data/53410.000003.f.000.000.zap 1397.00000000 53410.86453836230269943 0.91700 ncy -fe L_Band -be BON -bw 64 -tobs 2762 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 1041196507 
+ ../data/53418.000009.f.000.000.zap 1397.00000000 53418.86068546601579499 1.95400 ncy -fe L_Band -be BON -bw 64 -tobs 360.27 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 1266818057 
+ ../data/53431.000013.f.000.000.zap 1397.00000000 53431.79389454054711450 2.62800 ncy -fe L_Band -be BON -bw 64 -tobs 3602.7 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 1631741781 
+ ../data/53437.000001.f.000.000.zap 1397.00000000 53437.78812549002723742 4.67900 ncy -fe L_Band -be BON -bw 64 -tobs 1681.2 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 1800874303 
+ ../data/53450.000003.f.000.000.zap 1397.00000000 53450.74657459261938541 5.43900 ncy -fe L_Band -be BON -bw 64 -tobs 2161.6 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 2166507183 
+ ../data/53462.000003.f.000.000.zap 1397.00000000 53462.71042192709331431 1.75400 ncy -fe L_Band -be BON -bw 64 -tobs 3002.2 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 2504076255 
+ ../data/53471.000001.f.000.000.zap 1397.00000000 53471.69296488858185867 1.90800 ncy -fe L_Band -be BON -bw 64 -tobs 1921.4 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 2757526587 
+ ../data/53478.000006.f.000.000.zap 1397.00000000 53478.66222272410445981 5.18600 ncy -fe L_Band -be BON -bw 64 -tobs 2882.1 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 2954170271 
+ ../data/53486.000004.f.000.000.zap 1397.00000000 53486.63826731924655178 3.25500 ncy -fe L_Band -be BON -bw 64 -tobs 3242.4 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 3179222831 
+ ../data/53493.000001.f.000.000.zap 1396.97900000 53493.64149695578580790 2.00700 ncy -fe L_Band -be BON -bw 64 -tobs 2161.6 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 3376827947 
+ ../data/53503.000013.f.000.000.zap 1397.00000000 53503.59562691072143892 2.79400 ncy -fe L_Band -be BON -bw 64 -tobs 2882.1 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 3657697850 
+ ../data/53509.000006.f.000.000.zap 1397.00000000 53509.59316747781511836 1.41400 ncy -fe L_Band -be BON -bw 64 -tobs 2762 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 3826928792 
+ ../data/53514.000000.f.000.000.zap 1397.00000000 53514.57440003167533149 2.78500 ncy -fe L_Band -be BON -bw 64 -tobs 2521.9 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 3967483933 
+ ../data/53529.000002.f.000.000.zap 1397.00000000 53529.52155504479523884 1.62200 ncy -fe L_Band -be BON -bw 64 -tobs 3722.8 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 4389252587 
+ ../data/53539.000004.f.000.000.zap 1397.00000000 53539.51350040723614043 1.08400 ncy -fe L_Band -be BON -bw 64 -tobs 3602.7 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 4671202586 
+ ../data/53544.000002.f.000.000.zap 1397.00900000 53544.50101348551470792 5.17400 ncy -fe L_Band -be BON -bw 64 -tobs 3242.4 -tmplt 0613-Lband.tpl -nbin 2048 -nch 16 -group NRT.BON.1400 -sys NRT.BON.1400 -pn 4811940803 

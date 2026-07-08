@@ -17,8 +17,8 @@ from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
 from tempo2_native_test_helpers import load_wsrt167_fixture
 
+pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
 
-@pytest.mark.tempo2
 def test_tempo2_obs_state_in_overlay_payload():
     fixture = load_wsrt167_fixture()
     result = compute_residuals_simple(
@@ -37,7 +37,6 @@ def test_tempo2_obs_state_in_overlay_payload():
         assert np.asarray(obs[key]).shape[0] == n
 
 
-@pytest.mark.tempo2
 def test_cached_fit_setup_populates_native_chain_static():
     fixture = load_wsrt167_fixture()
     params = parse_par_file(fixture["par_path"])

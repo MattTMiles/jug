@@ -103,6 +103,15 @@ and `tests/data_golden/J1909_proper_golden.json`.
 gated on raw pre-fit δ with ns-scale targets on **curated real and simulated fixtures**;
 larger debt is tracked in [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
 
+**IPTA DR2 TDB host path (2026-07-08):** mixed-units IPTA DR2 pulsars converted to
+`UNITS TDB` are now treated as a first-class tempo2 compatibility target. The host path
+matches tempo2's TDB conventions directly: no `IFTE_K` ephemeris scaling for TDB,
+tempo1-emulation overrides for `EPHVER < 5`, per-TOA multi-observatory site positions,
+legacy `T2C_TEMPO` site vectors where tempo2 would use them, epoch-aware clock chains,
+and `longdouble` SAT/TT feedback arithmetic. The remaining IPTA validation debt should
+be handled as targeted per-pulsar follow-up, not by defaulting to a full all-pulsar
+oracle campaign.
+
 **Two-part barycentric time (2026-07-07):** the tempo2-native JAX tail represents
 `sat`/`bat`/`bbat` as `(int_day, sec_in_day)` float64 pairs
 (`jug/residuals/tempo2_native/compensated.py`). This removes the ~630 ns ULP

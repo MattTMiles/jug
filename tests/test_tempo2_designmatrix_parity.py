@@ -81,8 +81,14 @@ def test_tempo2_designmatrix_column_parity_f0():
         "epta_j0030_isolated",
         "epta_j1909_t2",
         "ppta_j1902_ell1h",
-        "ng5_j1600_tdb_equatorial",
-        "ng5_j1600_tdb_ecliptic_cross_engine",
+        pytest.param(
+            "ng5_j1600_tdb_equatorial",
+            marks=pytest.mark.slow,
+        ),
+        pytest.param(
+            "ng5_j1600_tdb_ecliptic_cross_engine",
+            marks=pytest.mark.slow,
+        ),
     ],
 )
 def test_tempo2_designmatrix_columns_match_libstempo(fixture_id):

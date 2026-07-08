@@ -1,20 +1,19 @@
 """Fast inner-loop tempo2 parity gates for IPTA DR2 J0613-0200.
 
-These tests avoid the full 1369-TOA EPTA dataset unless explicitly selected
-elsewhere. See ``PARITY_ROADMAP.md`` § J0613 fast gates.
+The default ``-m 'not slow'`` path uses mini fixtures (20 TOAs or fewer) plus
+the existing 11-TOA addsat gate.  Full-fixture debt pins stay in this module but
+are marked ``slow``.  See ``PARITY_ROADMAP.md`` § J0613 fast gates.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-pytest.importorskip("libstempo")
-
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.testing.tempo2_reference import tempo2_reference
 
 from tempo2_fixtures import get_tempo2_fixture
 from test_tempo2_residual_parity import (
@@ -31,10 +30,21 @@ NO_TRACK_DEBT_RMS_NS = 100.0
 ADDSAT_DEBT_MAX_NS = 1000.0  # 1 µs — catches integer-turn regressions
 
 
-def _delta_ns(jug, ref) -> np.ndarray:
+def _stored_residuals_us(path: Path) -> np.ndarray:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return np.asarray(payload["residuals_us"], dtype=np.float64)
+
+
+def _fixture_stored_residuals_us(fixture: dict) -> np.ndarray:
+    return _stored_residuals_us(
+        Path(fixture["tim_path"]).with_suffix(".libstempo_residuals_us.json")
+    )
+
+
+def _delta_ns(jug, ref_residuals_us) -> np.ndarray:
     return (
         np.asarray(jug["residuals_us"], dtype=np.float64)
-        - np.asarray(ref.residuals_us, dtype=np.float64)
+        - np.asarray(ref_residuals_us, dtype=np.float64)
     ) * 1000.0
 
 
@@ -73,20 +83,25 @@ def _strip_track_and_pulse_flags(tmp_path: Path, fixture: dict) -> tuple[Path, P
     return par_out, tim_out
 
 
-def test_epta_j0613_nrt1400_no_track_residual_debt(tmp_path):
-    """Non-TRACK path must stay near libstempo on the small NRT excerpt."""
-    fixture = get_tempo2_fixture("epta_j0613_t2_nrt1400")
+def test_epta_j0613_nrt1400_mini_no_track_residual_debt(tmp_path):
+    """Non-TRACK path must stay near libstempo on the mini NRT excerpt."""
+    fixture = get_tempo2_fixture("epta_j0613_nrt1400_mini")
     par, tim = _strip_track_and_pulse_flags(tmp_path, fixture)
     jug = compute_residuals_simple(par, tim, verbose=False, compatibility="tempo2")
-    ref = tempo2_reference(par, tim)
-    stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
+    ref_us = _stored_residuals_us(
+        Path(fixture["tim_path"]).with_name(
+            "epta_j0613_nrt1400_mini_no_track.libstempo_residuals_us.json"
+        )
+    )
+    stats = _delta_stats_ns(jug["residuals_us"], ref_us)
     assert stats["rms"] < NO_TRACK_DEBT_RMS_NS, (
-        f"no-track nrt1400 rms={stats['rms']:.2f} ns"
+        f"no-track nrt1400 mini rms={stats['rms']:.2f} ns"
     )
 
 
-def test_epta_j0613_addsat_min_no_integer_wrap():
-    """TRACK -2 ``-addsat`` TOAs must not integer-wrap (~±1 s)."""
+@pytest.mark.slow
+def test_epta_j0613_addsat_min_no_integer_wrap_and_bulk_context():
+    """TRACK -2 ``-addsat`` mini fixture: no integer wrap and bulk stays bounded."""
     fixture = get_tempo2_fixture("epta_j0613_addsat_min")
     jug = compute_residuals_simple(
         fixture["par_path"],
@@ -94,54 +109,42 @@ def test_epta_j0613_addsat_min_no_integer_wrap():
         verbose=False,
         compatibility="tempo2",
     )
-    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
-    delta = _delta_ns(jug, ref)
+    ref_us = _fixture_stored_residuals_us(fixture)
+    delta = _delta_ns(jug, ref_us)
+    stats = _delta_stats_ns(jug["residuals_us"], ref_us)
     addsat_idx = [i for i, flags in enumerate(jug["toa_flags"]) if "addsat" in flags]
     assert addsat_idx == [3, 6, 9]
     assert np.max(np.abs(delta[addsat_idx])) < ADDSAT_DEBT_MAX_NS
-
-
-def test_epta_j0613_addsat_min_bulk_context_near_libstempo():
-    """Mini addsat fixture bulk RMS should stay in the sub-µs debt band."""
-    fixture = get_tempo2_fixture("epta_j0613_addsat_min")
-    jug = compute_residuals_simple(
-        fixture["par_path"],
-        fixture["tim_path"],
-        verbose=False,
-        compatibility="tempo2",
-    )
-    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
-    stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
     assert stats["rms"] < 1000.0
 
 
-def test_wsrt167_track2_bulk_spin_debt_pin():
-    """wsrt167 TRACK -2 floor pin (production Taylor spin route, ~1.4 ns)."""
-    fixture = get_tempo2_fixture("wsrt167")
+def test_wsrt167_mini_track2_strict_residual_target():
+    """Mini WSRT TRACK -2 spin gate for the default fast path."""
+    fixture = get_tempo2_fixture("wsrt167_mini")
     jug = compute_residuals_simple(
         fixture["par_path"],
         fixture["tim_path"],
         verbose=False,
         compatibility="tempo2",
     )
-    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
+    ref_us = _fixture_stored_residuals_us(fixture)
+    stats = _delta_stats_ns(jug["residuals_us"], ref_us)
+    assert stats["rms"] < FINAL_RMS_DELTA_NS
+    assert stats["p99_abs"] < FINAL_P99_DELTA_NS
+    assert stats["max_abs"] < FINAL_MAX_DELTA_NS
+
+
+@pytest.mark.slow
+def test_wsrt167_track2_full_fixture_debt_pin_and_strict_target(
+    wsrt167_jug, wsrt167_libstempo
+):
+    """Full 167-TOA wsrt167 gate; session fixtures amortize JUG/libstempo setup."""
+    jug = wsrt167_jug
+    ref = wsrt167_libstempo
     stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
     assert stats["rms"] < WSRT167_DEBT_RMS_NS, (
         f"wsrt167 rms={stats['rms']:.2f} ns exceeds {WSRT167_DEBT_RMS_NS} ns debt cap"
     )
-
-
-def test_wsrt167_track2_strict_residual_target():
-    """Strict wsrt167 gate (passing since tropo-in-dt + longdouble-wrap fixes)."""
-    fixture = get_tempo2_fixture("wsrt167")
-    jug = compute_residuals_simple(
-        fixture["par_path"],
-        fixture["tim_path"],
-        verbose=False,
-        compatibility="tempo2",
-    )
-    ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
-    stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
     assert stats["rms"] < FINAL_RMS_DELTA_NS
     assert stats["p99_abs"] < FINAL_P99_DELTA_NS
     assert stats["max_abs"] < FINAL_MAX_DELTA_NS

@@ -1754,7 +1754,7 @@ def _build_setup_common(
     use_native = str(compatibility).lower().startswith("tempo2")
     native_chain_static = None
     if use_native and extras.get("term_diagnostics") is not None:
-        from jug.residuals.tempo2_native.fit_cache import Tempo2NativeChainStatic
+        from jug.residuals.tempo2.fit_cache import Tempo2NativeChainStatic
 
         native_chain_static = Tempo2NativeChainStatic(
             term_diagnostics=extras["term_diagnostics"],
@@ -1961,7 +1961,7 @@ def _compute_full_model_residuals(
         Weighted RMS in microseconds
     """
     # Get cached arrays -- use longdouble dt_sec for phase precision
-    from jug.residuals.simple_calculator import compute_phase_residuals
+    from jug.residuals.phase import compute_phase_residuals
     dt_sec_base = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)
     weights = setup.weights
     errors_sec = setup.errors_sec
@@ -2113,7 +2113,7 @@ def _run_general_fit_iterations(
     )
     from jug.fitting.derivatives_fd import compute_fd_delay
     from jug.fitting.derivatives_sw import compute_sw_derivatives
-    from jug.residuals.simple_calculator import compute_phase_residuals
+    from jug.residuals.phase import compute_phase_residuals
     from jug.io.par_reader import get_longdouble
 
     # Convergence criteria

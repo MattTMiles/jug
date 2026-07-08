@@ -48,14 +48,18 @@ from jug.residuals.engine_conventions import (
     EngineConventionProfile,
     resolve_engine_profile,
 )
+from jug.residuals.phase import (
+    _spin_taylor_phase, compute_phase_residuals,
+)
 from jug.residuals.tzr_geometry import (
     TzrEpochs,
+    compute_tempo2_tzr_wrapped_residual_sec,
     compute_tzr_astrometry_pint,
     compute_tzr_astrometry_tempo2,
     resolve_tempo2_tzr_apply_mode,
     resolve_tzrmjd_epochs,
 )
-from jug.residuals.tempo2_graph_config import USE_NATIVE_BBAT_PHASE5
+from jug.residuals.tempo2.graph_config import USE_NATIVE_BBAT_PHASE5
 from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
@@ -480,66 +484,6 @@ def _resolve_ephemeris(name: str) -> str:
         return _bundled_ephemeris_path(_DEFAULT_EPHEMERIS) or _DEFAULT_EPHEMERIS
 
 
-def _fortran_mod(value, period):
-    """Fractional part using tempo2's Fortran-style modulo (tempo2Util.C)."""
-    x = np.asarray(value, dtype=np.longdouble)
-    p = np.longdouble(period)
-    return x - np.trunc(x / p) * p
-
-
-def _fortran_nlong(value):
-    """Nearest integer with ties away from zero (tempo2Util.C fortran_nlong).
-
-    Rounds in longdouble: at |phase5| ~ 1e11 turns a float64 downcast can
-    round to the wrong integer near half-turn boundaries.
-    """
-    x = np.asarray(value, dtype=np.longdouble)
-    scalar = x.ndim == 0
-    if scalar:
-        x = x.reshape(1)
-    half = np.longdouble(0.5)
-    out = np.empty(len(x), dtype=np.int64)
-    pos = x > 0.0
-    out[pos] = np.trunc(x[pos] + half).astype(np.int64)
-    out[~pos] = np.trunc(x[~pos] - half).astype(np.int64)
-    return out[0] if scalar else out
-
-
-def compute_tempo2_tzr_wrapped_residual_sec(
-    tzr_spin_phase,
-    anchor_phase_with_jump,
-    f0,
-    *,
-    tzr_jump_phase=0.0,
-) -> float:
-    """Wrapped TZR residual in seconds (tempo2 ``REFPHS TZR`` / ``formResiduals.C``).
-
-    Uses the same ``phas1`` anchor as the first TOA (tim index 0) and the same
-    ``phase5 - fortran_nlong(phase5)`` fractional convention as tempo2.
-    """
-    f0_ld = np.longdouble(f0)
-    phas1 = _fortran_mod(anchor_phase_with_jump, np.longdouble(1.0))
-    tzr_total = np.longdouble(tzr_spin_phase) + np.longdouble(tzr_jump_phase)
-    tzr_phase5 = float(tzr_total - phas1)
-    tzr_frac = tzr_phase5 - float(_fortran_nlong(np.asarray([tzr_phase5], dtype=np.float64))[0])
-    return float(tzr_frac / f0_ld)
-
-
-def _spin_taylor_phase(dt_sec, f_coeffs) -> np.ndarray:
-    """Spin Taylor phase at emission-time offsets (longdouble)."""
-    dt = np.asarray(dt_sec, dtype=np.longdouble)
-    n_coeffs = len(f_coeffs)
-    if dt.ndim == 0:
-        phase = np.longdouble(0.0)
-        for i in range(n_coeffs - 1, -1, -1):
-            phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
-        return phase
-    phase = np.longdouble(0.0)
-    for i in range(n_coeffs - 1, -1, -1):
-        phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
-    return phase
-
-
 def _tempo2_tt2tb_geometry(
     tdb_mjd: np.ndarray,
     toas: list,
@@ -557,230 +501,6 @@ def _tempo2_tt2tb_geometry(
     with solar_system_ephemeris.set(ephem):
         earth_vel = get_body_barycentric_posvel("earth", times)[1].xyz.to(u.km / u.s).value.T
     return obs_km, earth_vel
-
-
-def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
-                            tzr_phase=None, tdb_sec_ld=None, jump_phase=None,
-                            external_pulse_numbers=None,
-                            track_val=None,
-                            external_pn_add=None,
-                            bbat_mjd=None,
-                            torb_sec=None,
-                            use_native_bbat_phase5: bool = False,
-                            addsat_sec=None,
-                            mean_mode: str = "weighted"):
-    """Compute phase residuals from emission-time offsets (canonical implementation).
-
-    This is the single shared function used by both the evaluate-only and fitter
-    codepaths to guarantee identical phase computation, wrapping, and conversion.
-
-    Parameters
-    ----------
-    dt_sec_ld : np.ndarray (longdouble)
-        Time since PEPOCH minus all delays, in seconds.
-        Must be longdouble to preserve phase precision for large |dt|.
-    params : dict
-        Timing model parameters (needs F0, F1, F2).
-    weights : np.ndarray (float64)
-        1/sigma^2 weights for weighted mean subtraction.
-    subtract_mean : bool
-        Whether to subtract weighted mean from residuals.
-    mean_mode : {"weighted", "unweighted"}
-        Mean convention used when ``subtract_mean`` is true. Tempo2 removes
-        the unweighted prefit mean; the existing PINT-compatible path keeps
-        JUG's historical weighted-mean convention.
-    tzr_phase : float or longdouble, optional
-        Phase at the TZR reference point. If provided, subtracted from each
-        TOA's phase before wrapping to ensure correct pulse numbering.
-    tdb_sec_ld : np.ndarray (longdouble), optional
-        TDB times in seconds (longdouble). Required for glitch computation.
-        If None, glitch contributions are not computed.
-    external_pulse_numbers : np.ndarray (longdouble), optional
-        Externally provided pulse numbers (from -pn flags in tim file).
-        With ``track_val=-2``, these are offsets from obsn[0] and are used
-        with tempo2's ``pnAdd`` / ``addPhase`` logic in ``formResiduals.C``.
-        Without TRACK -2, -pn flags are ignored.
-    track_val : int, optional
-        Tempo2 TRACK parameter value. When -2, enables pulse-number tracking.
-    external_pn_add : np.ndarray (int64), optional
-        Per-TOA cumulative ``-pnadd`` flag values (tim order). Tempo2
-        initialises ``pnAdd`` to -1 before accumulating ``-pnadd`` flags.
-    bbat_mjd : np.ndarray (float64), optional
-        Barycentric arrival MJDs for tempo2 spin phase (``formResiduals.C``).
-    torb_sec : np.ndarray (float64), optional
-        Binary delay (seconds) included in tempo2 ``deltaT`` / ``ftpd``.
-    use_native_bbat_phase5 : bool
-        When True (and TRACK −2 + ``-pn``), use quarantined tempo2 ``phase5`` at
-        ``bbat`` with ``track_minus2_frac_phase``. See
-        ``jug.residuals.tempo2_graph_config.USE_NATIVE_BBAT_PHASE5``.
-    addsat_sec : np.ndarray (float64), optional
-        Per-TOA integer-second ``-addsat`` shifts (already applied to site MJD at
-        read). On TRACK -2, applies ``addsat_track2_turn_delta`` from
-        ``jug.residuals.tempo2_spin`` (see ``PARITY_ROADMAP.md``).
-
-    Returns
-    -------
-    residuals_us : np.ndarray (float64)
-        Residuals in microseconds.
-    residuals_sec : np.ndarray (float64)
-        Residuals in seconds.
-    pulse_number : np.ndarray (longdouble)
-        Integer pulse numbers used for phase wrapping.
-    """
-    F0 = get_longdouble(params, 'F0')
-    PEPOCH = get_longdouble(params, 'PEPOCH')
-    dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
-
-    has_track_minus2_pn = (
-        track_val is not None
-        and int(track_val) == -2
-        and external_pulse_numbers is not None
-    )
-    use_tempo2_bbat_phase5 = (
-        use_native_bbat_phase5
-        and bbat_mjd is not None
-        and torb_sec is not None
-        and has_track_minus2_pn
-    )
-
-    if use_tempo2_bbat_phase5:
-        from jug.residuals.tempo2_spin import compute_tempo2_phase5
-
-        jump_arr = None
-        if jump_phase is not None:
-            jump_arr = np.asarray(jump_phase, dtype=np.float64)
-        torb_for_phase5 = np.asarray(torb_sec, dtype=np.float64)
-        phase = compute_tempo2_phase5(
-            bbat_mjd,
-            torb_for_phase5,
-            params,
-            jump_phase=jump_arr,
-            tzr_phase=tzr_phase,
-        )
-    else:
-        # Collect all spin frequency derivatives F0, F1, F2, ... FN
-        f_coeffs = [F0]
-        k = 1
-        while f'F{k}' in params:
-            f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
-            k += 1
-
-        dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
-
-        # Phase via Taylor series: phase = sum(F_k * dt^(k+1) / (k+1)!)
-        n_coeffs = len(f_coeffs)
-        phase = np.longdouble(0.0)
-        for i in range(n_coeffs - 1, -1, -1):
-            phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
-
-        # Glitch contributions at emission time (PINT convention).
-        glitch_idx = 1
-        while f'GLEP_{glitch_idx}' in params:
-            glep = get_longdouble(params, f'GLEP_{glitch_idx}')
-            glph = get_longdouble(params, f'GLPH_{glitch_idx}', default=0.0)
-            glf0 = get_longdouble(params, f'GLF0_{glitch_idx}', default=0.0)
-            glf1 = get_longdouble(params, f'GLF1_{glitch_idx}', default=0.0)
-            glf0d = get_longdouble(params, f'GLF0D_{glitch_idx}', default=0.0)
-            gltd = get_longdouble(params, f'GLTD_{glitch_idx}', default=0.0)
-
-            dt_glitch = dt
-            glep_dt = (glep - PEPOCH) * np.longdouble(SECS_PER_DAY)
-            active = dt_glitch > glep_dt
-            dt_since_glep = np.where(active, dt_glitch - glep_dt, np.longdouble(0.0))
-
-            glitch_phase = (glph
-                           + glf0 * dt_since_glep
-                           + np.longdouble(0.5) * glf1 * dt_since_glep**2)
-
-            if gltd != 0.0 and glf0d != 0.0:
-                gltd_sec = gltd * np.longdouble(SECS_PER_DAY)
-                glitch_phase += glf0d * gltd_sec * (
-                    np.longdouble(1.0) - np.exp(-dt_since_glep / gltd_sec)
-                )
-
-            phase += np.where(active, glitch_phase, np.longdouble(0.0))
-            glitch_idx += 1
-
-        if jump_phase is not None:
-            phase = phase + np.asarray(jump_phase, dtype=np.longdouble)
-
-        if tzr_phase is not None:
-            phase = phase - np.longdouble(tzr_phase)
-
-        # Keep longdouble through wrapping: the Taylor phase carries the full
-        # integer pulse count (~1e11 turns on decade-long data at F0~300 Hz),
-        # where a float64 downcast quantizes phase at ~2e-5 turns (~60 ns).
-        # tempo2 keeps phase5 in longdouble throughout formResiduals.C.
-        phase = np.asarray(phase, dtype=np.longdouble)
-
-    # Phase wrapping (Tempo2 formResiduals.C for TRACK -2; sequential connection otherwise).
-    # Native ``track_minus2_frac_phase`` (tempo2 pnNew) is used with ``phase5`` when
-    # ``use_tempo2_bbat_phase5``; legacy ``-pn_add`` wrapping remains for Taylor spin.
-    if has_track_minus2_pn and use_tempo2_bbat_phase5:
-        from jug.residuals.tempo2_spin import track_minus2_frac_phase
-
-        if external_pn_add is not None:
-            pn_add_arr = np.asarray(external_pn_add, dtype=np.int64)
-        else:
-            pn_add_arr = np.full(len(phase), -1, dtype=np.int64)
-
-        pn_tim = np.asarray(external_pulse_numbers, dtype=np.int64)
-        frac_phase, pulse_number = track_minus2_frac_phase(
-            np.asarray(phase, dtype=np.float64),
-            np.asarray(bbat_mjd, dtype=np.float64),
-            float(F0),
-            pn_tim,
-            pn_add_arr,
-        )
-        pulse_number = np.asarray(pulse_number, dtype=np.longdouble)
-    elif has_track_minus2_pn:
-        # Legacy TRACK -2 on emission-time Taylor phase (PINT / partial tempo2).
-        phas1 = _fortran_mod(phase[0], np.longdouble(1.0))
-        phase5 = np.asarray(phase, dtype=np.longdouble) - phas1
-        nphase = np.asarray(_fortran_nlong(phase5), dtype=np.longdouble)
-
-        if external_pn_add is not None:
-            pn_add_arr = np.asarray(external_pn_add, dtype=np.int64)
-        else:
-            pn_add_arr = np.full(len(phase5), -1, dtype=np.int64)
-
-        pn_tim = np.asarray(external_pulse_numbers, dtype=np.int64)
-        pn0 = np.int64(nphase[0]) + pn_add_arr[0]
-        pulse_number = np.asarray(pn0 + pn_tim, dtype=np.longdouble)
-
-        add_phase = -pn_add_arr.astype(np.float64)
-        frac_phase = phase5 - nphase + add_phase
-    else:
-        # Phase-connected wrapping: anchor at earliest emission time (dt order).
-        sort_idx = np.argsort(dt)
-        pulse_number = np.zeros(len(phase), dtype=np.longdouble)
-        pulse_number[sort_idx[0]] = np.round(phase[sort_idx[0]])
-        for k in range(1, len(sort_idx)):
-            i = sort_idx[k]
-            i_prev = sort_idx[k - 1]
-            predicted_n = phase[i] - (phase[i_prev] - pulse_number[i_prev])
-            pulse_number[i] = np.round(predicted_n)
-        frac_phase = phase - pulse_number
-
-    # -addsat is applied to sat at timfile read (readTimfile.C); native/tempo2
-    # paths must not apply a second phase-domain correction here.
-    if addsat_sec is not None and np.any(np.asarray(addsat_sec) != 0.0):
-        pass
-
-    # Convert to float64 seconds
-    residuals_sec = np.asarray(frac_phase / F0, dtype=np.float64)
-
-    if subtract_mean:
-        if mean_mode == "unweighted":
-            residuals_sec = residuals_sec - np.mean(residuals_sec)
-        elif mean_mode == "weighted":
-            wm = np.sum(residuals_sec * weights) / np.sum(weights)
-            residuals_sec = residuals_sec - wm
-        else:
-            raise ValueError(f"Unknown residual mean mode {mean_mode!r}")
-
-    residuals_us = residuals_sec * 1e6
-    return residuals_us, residuals_sec, pulse_number
 
 
 def _extract_binary_params(params, verbose, compatibility: str = "pint"):
@@ -1919,109 +1639,33 @@ def compute_residuals_simple(
     tempo2_obs_state = None
     tempo2_obs_state_export = None
     if is_tempo2_compat:
-        from jug.residuals.tempo2_native.pipeline import compute_tempo2_host_setup
-
-        # Keep the kernel-time delay terms so the native-overlay delta can be
-        # folded into the total delay below (the kernel ran with the provider
-        # geometry; the overlay recomputes Roemer/DM/SW from the exact
-        # bootstrap chain).
-        _pre_overlay_roemer_shapiro = np.asarray(roemer_shapiro, dtype=np.float64)
-        _pre_overlay_dm = np.asarray(dm_delay_sec, dtype=np.float64)
-        _pre_overlay_sw = np.asarray(sw_delay_sec, dtype=np.float64)
-
-        _t2_setup = compute_tempo2_host_setup(
-            mjd_utc=mjd_utc,
-            obs_clocks=obs_clocks,
-            bipm_clock=bipm_clock,
-            toas=toas,
-            all_obs_codes=all_obs_codes,
-            obs_clock=obs_clock,
-            time_offsets=time_offsets,
-            params=params,
-            obs_itrf_km=obs_itrf_km,
-            dm_eff=dm_eff,
-            freq_bary_mhz=freq_bary_mhz,
-            dt_sec=dt_sec,
-            model_mjd=model_mjd,
-            PEPOCH=PEPOCH,
-            compatibility_mode=compatibility_mode,
-            engine_profile=engine_profile,
-            correct_troposphere=correct_troposphere,
-            roemer_sec=roemer_sec,
-            sun_shapiro_sec=sun_shapiro_sec,
-            planet_shapiro_sec=planet_shapiro_sec,
-            roemer_shapiro=roemer_shapiro,
-            dm_delay_sec=dm_delay_sec,
-            sw_delay_sec=sw_delay_sec,
-            tropo_delay_sec=tropo_delay_sec,
-            dmx_delay_sec=dmx_delay_sec,
+        from jug.residuals.tempo2.host import run_tempo2_host_stage
+        _stage = run_tempo2_host_stage(
+            mjd_utc=mjd_utc, obs_clocks=obs_clocks, bipm_clock=bipm_clock, toas=toas,
+            all_obs_codes=all_obs_codes, obs_clock=obs_clock, time_offsets=time_offsets,
+            params=params, obs_itrf_km=obs_itrf_km, dm_eff=dm_eff,
+            freq_bary_mhz=freq_bary_mhz, dt_sec=dt_sec, model_mjd=model_mjd, PEPOCH=PEPOCH,
+            compatibility_mode=compatibility_mode, engine_profile=engine_profile,
+            correct_troposphere=correct_troposphere, roemer_sec=roemer_sec,
+            sun_shapiro_sec=sun_shapiro_sec, planet_shapiro_sec=planet_shapiro_sec,
+            roemer_shapiro=roemer_shapiro, dm_delay_sec=dm_delay_sec, sw_delay_sec=sw_delay_sec,
+            tropo_delay_sec=tropo_delay_sec, dmx_delay_sec=dmx_delay_sec,
             skip_native_bclt_overlay=skip_native_bclt_overlay,
+            total_delay_sec=total_delay_sec, delay_sec=delay_sec,
         )
-        formbats_correction_tt = _t2_setup.formbats_correction_tt
-        tempo2_clock_terms = _t2_setup.tempo2_clock_terms
-        tempo2_obs_state_export = _t2_setup.tempo2_obs_state_export
-        earth_ssb_vel_km_s = _t2_setup.earth_ssb_vel_km_s
-        dm_delay_sec = _t2_setup.dm_delay_sec
-        sw_delay_sec = _t2_setup.sw_delay_sec
-        tropo_delay_sec = _t2_setup.tropo_delay_sec
-        roemer_sec = _t2_setup.roemer_sec
-        sun_shapiro_sec = _t2_setup.sun_shapiro_sec
-        planet_shapiro_sec = _t2_setup.planet_shapiro_sec
-        roemer_shapiro = _t2_setup.roemer_shapiro
-        prebinary_delay_sec = _t2_setup.prebinary_delay_sec
-        ifte_delta_t_sec = _t2_setup.ifte_delta_t_sec
-        bbat_mjd = _t2_setup.bbat_mjd
-        torb_sec = _t2_setup.torb_sec
-        model_mjd = _t2_setup.model_mjd
-
-        # The JAX kernel summed the provider-geometry Roemer/DM/SW; the native
-        # BCLT overlay recomputes them from the exact bootstrap chain (fixed
-        # POSEPOCH direction + dt_pm/dt_px terms, dt_SSB iteration).  Fold the
-        # difference into the total so residuals use the native terms (for
-        # high-PM/PX binaries like J0437-4715 the provider-vs-native gap is
-        # ~20 ns and otherwise leaks into the residuals).
-        _overlay_delta_sec = (
-            (np.asarray(roemer_shapiro, dtype=np.float64) - _pre_overlay_roemer_shapiro)
-            + (np.asarray(dm_delay_sec, dtype=np.float64) - _pre_overlay_dm)
-            + (np.asarray(sw_delay_sec, dtype=np.float64) - _pre_overlay_sw)
+        (formbats_correction_tt, tempo2_clock_terms, tempo2_obs_state_export,
+         earth_ssb_vel_km_s, dm_delay_sec, sw_delay_sec, tropo_delay_sec, roemer_sec,
+         sun_shapiro_sec, planet_shapiro_sec, roemer_shapiro, prebinary_delay_sec,
+         ifte_delta_t_sec, bbat_mjd, torb_sec, model_mjd, total_delay_sec, delay_sec,
+         dt_sec) = (
+            _stage.formbats_correction_tt, _stage.tempo2_clock_terms,
+            _stage.tempo2_obs_state_export, _stage.earth_ssb_vel_km_s, _stage.dm_delay_sec,
+            _stage.sw_delay_sec, _stage.tropo_delay_sec, _stage.roemer_sec,
+            _stage.sun_shapiro_sec, _stage.planet_shapiro_sec, _stage.roemer_shapiro,
+            _stage.prebinary_delay_sec, _stage.ifte_delta_t_sec, _stage.bbat_mjd,
+            _stage.torb_sec, _stage.model_mjd, _stage.total_delay_sec, _stage.delay_sec,
+            _stage.dt_sec,
         )
-        if np.any(_overlay_delta_sec != 0.0):
-            _overlay_delta_ld = np.asarray(_overlay_delta_sec, dtype=np.longdouble)
-            total_delay_sec = total_delay_sec + _overlay_delta_ld
-            delay_sec = total_delay_sec
-            dt_sec = dt_sec - _overlay_delta_ld
-
-        # formBats.C subtracts troposphericDelay inside ``bat``, so tempo2's
-        # spin argument includes the troposphere.  The kernel stage above ran
-        # with tropo=0 (the tempo2-native troposphere needs the formBats clock
-        # chain computed inside the host setup), so fold it into the total
-        # delay and emission dt now.  Delays enter dt linearly, so this
-        # post-hoc adjustment is exact; without it the Taylor host residuals
-        # are missing up to ~100 ns of troposphere vs tempo2 (wsrt167 floor).
-        if np.any(np.asarray(tropo_delay_sec) != 0.0):
-            _tropo_ld = np.asarray(tropo_delay_sec, dtype=np.longdouble)
-            total_delay_sec = total_delay_sec + _tropo_ld
-            delay_sec = total_delay_sec
-            dt_sec = dt_sec - _tropo_ld
-
-        # clkcorr.C feedback: the production model_mjd/tdb_mjd evaluate the UTC→TT
-        # clock chain at raw SAT, but tempo2 evaluates each hop at sat+corr/SECDAY.
-        # For the Taylor host spin (TRACK absent or TRACK -2) fold the per-TOA feedback
-        # delta into the emission time so residuals match tempo2's bat-based epoch.
-        # The native-JAX path (other TRACK) already consumes the feedback correction
-        # via formbats terms, so gate on the Taylor host condition to leave the
-        # full-JAX pipeline untouched.
-        _track_val_fb = params.get("TRACK", None)
-        _use_taylor_host = _track_val_fb is None or int(_track_val_fb) == -2
-        if _use_taylor_host:
-            _clock_fb_delta_sec = np.asarray(
-                _t2_setup.clock_feedback_delta_sec, dtype=np.longdouble
-            )
-            dt_sec = dt_sec + _clock_fb_delta_sec
-            model_mjd = (
-                np.asarray(model_mjd, dtype=np.longdouble)
-                + _clock_fb_delta_sec / np.longdouble(SECS_PER_DAY)
-            )
 
     phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
     phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None
@@ -2117,7 +1761,7 @@ def compute_residuals_simple(
         #   TRACK == -2   -> Taylor emission-time + legacy -pn (libstempo parity)
         #   other TRACK   -> native two-part phase5@bbat
         # JAX autodiff uses phase5@bbat via jax_residual_delta for all TRACK values.
-        from jug.residuals.tempo2_native.pipeline import finalize_tempo2_host_residuals
+        from jug.residuals.tempo2.host import finalize_tempo2_host_residuals
 
         _t2_final = finalize_tempo2_host_residuals(
             params=params,
@@ -2149,7 +1793,7 @@ def compute_residuals_simple(
         dm_delay_sec = _t2_final.dm_delay_sec
         sw_delay_sec = _t2_final.sw_delay_sec
     else:
-        from jug.residuals.tempo2_native.pipeline import finalize_pint_host_residuals
+        from jug.residuals.host_pipeline import finalize_pint_host_residuals
 
         residuals_us, residuals_sec, pulse_number = finalize_pint_host_residuals(
             dt_sec=dt_sec,
@@ -2165,6 +1809,7 @@ def compute_residuals_simple(
             phase_torb_sec=phase_torb_sec,
             addsat_sec=addsat_sec,
             phase_mean_mode=delay_provider.phase_mean_mode,
+            use_native_bbat_phase5=USE_NATIVE_BBAT_PHASE5,
         )
 
     if tzr_apply_mode == "post_wrap":

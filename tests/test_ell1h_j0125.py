@@ -372,7 +372,7 @@ class TestZeroIterationParity:
     @pytest.fixture(scope="class")
     def zero_iter_data(self):
         from jug.engine.session import TimingSession
-        from jug.residuals.simple_calculator import compute_phase_residuals
+        from jug.residuals.phase import compute_phase_residuals
 
         # Use the pre-fit par to avoid any ambiguity
         session = TimingSession(par_file=PAR_FILE, tim_file=TIM_FILE, verbose=False)

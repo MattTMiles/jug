@@ -12,7 +12,7 @@ import jax
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.residuals.tempo2_native.chain_jax import prepare_native_chain_from_simple_result
+from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
 from tempo2_native_test_helpers import load_wsrt167_fixture, native_batcorr_days, rms_ns
 
 

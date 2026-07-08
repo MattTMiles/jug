@@ -125,7 +125,7 @@ the Teph bootstrap converges identically in either frame.
 
 **Two-part barycentric time (2026-07-07):** the tempo2-native JAX tail represents
 `sat`/`bat`/`bbat` as `(int_day, sec_in_day)` float64 pairs
-(`jug/residuals/tempo2_native/compensated.py`). This removes the ~630 ns ULP
+(`jug/residuals/tempo2/compensated.py`). This removes the ~630 ns ULP
 loss from collapsing MJD ~50000 to a single float64 before `phase5@bbat`.
 Host TRACK −2 residuals still use Taylor emission spin (libstempo parity); the traced
 graph uses `phase5@bbat` for autodiff. Environment preflight:
@@ -173,8 +173,8 @@ total_delay_change = native_delay_change + binary_delay_change
 residual_delta(Δθ) = _phase_residual_delta_jax(dt_sec, total_delay_change, F_ref, F_pert, …)
 ```
 
-Implementation: `compute_native_bbat_delay_change_sec_jax()` in
-`jug/residuals/tempo2_native/chain_jax.py`; dispatch in
+Implementation: `compute_bbat_delay_change_sec_jax()` in
+`jug/residuals/tempo2/terms.py`; dispatch in
 `jug/fitting/jax_residual_delta.py`.
 
 **Performance note (deferred):** each call still runs the **full** native tail twice
@@ -314,7 +314,7 @@ nonlinear graph with PINT-family conventions — not PINT itself.
 ## 5. Tempo2-compatible path (`compatibility="tempo2"`)
 
 Tempo2 mode uses a **separate native chain** under
-`jug/residuals/tempo2_native/`. Host parity is defined against libstempo on
+`jug/residuals/tempo2/`. Host parity is defined against libstempo on
 identical par+tim inputs (§7).
 
 For JAX-traced fitting (`compatibility="tempo2"`), the traced graph uses one of three
@@ -428,11 +428,11 @@ in the delay terms themselves.
 
 | Component | Location |
 |-----------|----------|
-| Mode selector | `jug/residuals/tempo2_graph_config.py` → `tempo2_native_graph_mode()` |
-| Pack types | `jug/residuals/tempo2_native/chain_jax.py` — `NativeDeltaPack` |
-| Bbat delay change | `chain_jax.py` → `compute_native_bbat_delay_change_sec_jax()` |
-| One-pass BCLT | `jug/residuals/tempo2_native/calculate_bclt_jax.py` → `compute_bclt_terms_fixed_state_jax()` |
-| Residual kernel | `jug/residuals/tempo2_native/model_jax.py` → `compute_tempo2_toa_model_fixed_state_nonlinear_jax()` |
+| Mode selector | `jug/residuals/tempo2/graph_config.py` → `tempo2_native_graph_mode()` |
+| Pack types | `jug/residuals/tempo2/common.py` — `NativeDeltaPack` |
+| Bbat delay change | `jug/residuals/tempo2/terms.py` → `compute_bbat_delay_change_sec_jax()` |
+| One-pass BCLT | `jug/residuals/tempo2/calculate_bclt_jax.py` → `compute_bclt_terms_fixed_state_jax()` |
+| Residual kernel | `jug/residuals/tempo2/model/fixed_state.py` → `compute_tempo2_toa_model_fixed_state_nonlinear_jax()` |
 | JAX dispatch | `jug/fitting/jax_residual_delta.py` → `_compute_residual_delta_jax()` |
 
 `dt_ssb_ref_sec` is sourced from host term diagnostics at pack-build time
@@ -614,6 +614,29 @@ Requires libstempo + `$TEMPO2` runtime (see [`README.md`](README.md)).
 
 ---
 
+## Naming & structure conventions
+
+Inside ``jug/residuals/tempo2/``, internal functions use ``compute_*`` / ``build_*``
+without a redundant ``native`` or ``tempo2_native`` infix — the package name already
+scopes them. The ``_jax`` suffix is kept where the function is JAX-specific.
+
+Public package exports listed in ``tempo2/__init__.py.__all__`` retain their
+``tempo2_native_*`` names for configuration API stability. User-facing configuration
+names (``Tempo2NativeConfig``, ``tempo2_native`` kwargs, ``JUG_TEMPO2_NATIVE_GRAPH_MODE``)
+are unchanged.
+
+Layout mirrors the PINT path:
+
+| PINT | JUG tempo2 |
+|------|------------|
+| ``pint/phase.py`` | ``jug/residuals/phase.py`` |
+| ``pint/residuals.py`` | ``jug/residuals/host_pipeline.py`` |
+| tempo2 host finalize | ``jug/residuals/tempo2/host.py`` |
+| JAX model | ``jug/residuals/tempo2/model/`` |
+| JAX chain | ``jug/residuals/tempo2/{common,terms,delta_pack,fit_setup,orchestrator}.py`` |
+
+---
+
 ## 10. Architecture (delivered)
 
 Phases A–E (2026-06) delivered native tempo2 TDB geometry, mode-specific TZR, CI fixtures,
@@ -621,7 +644,7 @@ and design-matrix/fit parity on Case A (TCB).
 
 | Layer | Module | Role |
 |-------|--------|------|
-| Residual engine | `jug/residuals/simple_calculator.py` | `compute_residuals_simple`, `compute_phase_residuals` |
+| Residual engine | `jug/residuals/simple_calculator.py` | `compute_residuals_simple`, shared phase in `phase.py` |
 | Runtime conventions | `jug/residuals/engine_conventions.py` | `EngineConventionProfile` — physics defaults from par + tempo2 implicit rules |
 | Diagnostic conventions | `jug/residuals/diagnostic_conventions.py` | Comparison knobs only (`residual_metric`, `term_set`, …) |
 | Pint geometry | `PintDelayProvider` | Astropy JPL + PINT-family Roemer/Shapiro |
@@ -630,9 +653,11 @@ and design-matrix/fit parity on Case A (TCB).
 | TZR dispatch | `jug/residuals/tzr_geometry.py` | Phase C TZR apply modes; `resolve_tempo2_tzr_apply_mode()` |
 | Ephemeris | `jug/delays/tempo2_ephemeris.py` | jplephem DE405 SPK state vectors |
 | Tempo2 helpers | `jug/delays/tempo2_geometry.py` | Ecliptic / Roemer-Shapiro helpers |
-| Phase / TRACK −2 | `compute_phase_residuals()` in `simple_calculator.py` | Shared; production Taylor + legacy wrap |
+| Phase / TRACK −2 | `jug/residuals/phase.py` → `compute_phase_residuals()` | Shared; production Taylor + legacy wrap |
+| Host finalize (PINT) | `jug/residuals/host_pipeline.py` | PINT-family residual finalization |
+| Tempo2 host stage | `jug/residuals/tempo2/host.py` | Clock chain, overlay, finalize |
 | Tempo2 spin scaffolding | `jug/residuals/tempo2_spin.py` | ``phase5``, ``track_minus2_frac_phase`` (Phase D) |
-| Tempo2-native JAX chain | `jug/residuals/tempo2_native/` | BCLT, formBats, spin, clock in JAX |
+| Tempo2-native JAX chain | `jug/residuals/tempo2/` | BCLT, formBats, spin, clock in JAX |
 | TRACK −2 oracle | `jug/testing/tempo2_track2_oracle.py` | pnNew / ``phase5@bbat`` harness |
 | libstempo acceptance oracle | `jug/testing/tempo2_reference.py` | Scalar residual gates |
 | Phase A (legacy oracle) | `jug/testing/tempo2_diagnostics.py`, `phase_a_comparison.py` | libstempo properties — target: pytempo |

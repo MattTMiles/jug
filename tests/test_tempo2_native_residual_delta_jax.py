@@ -17,7 +17,7 @@ from jug.fitting.jax_residual_delta import (
 )
 from jug.fitting.optimized_fitter import _build_general_fit_setup_from_files
 from tempo2_native_test_helpers import load_wsrt167_fixture
-from test_tempo2_designmatrix_parity import _assert_column_matches
+from tempo2_fixture_assertions import assert_column_matches
 
 
 @pytest.fixture(autouse=True)
@@ -70,8 +70,8 @@ def wsrt167_fixed_state_setup(monkeypatch):
 
 def test_native_bclt_converges_within_fixed_iter(wsrt167_setup):
     """Fixed scan length must cover tempo2 convergence on wsrt167."""
-    from jug.residuals.tempo2_native.calculate_bclt_jax import DEFAULT_BCLT_JAX_FIXED_ITER
-    from jug.residuals.tempo2_native.chain_jax import prepare_native_chain_from_simple_result
+    from jug.residuals.tempo2.calculate_bclt_jax import DEFAULT_BCLT_JAX_FIXED_ITER
+    from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
     from jug.io.par_reader import parse_par_file
     from jug.io.tim_reader import parse_tim_file_mjds
     from jug.residuals.simple_calculator import compute_residuals_simple
@@ -190,7 +190,7 @@ def test_native_autodiff_designmatrix_f0_matches_libstempo(wsrt167_setup):
     assert ref.designmatrix is not None
     assert ref.designmatrix_labels is not None
     ref_col = ref.designmatrix[:, ref.designmatrix_labels.index("F0")]
-    _assert_column_matches("F0", matrix[:, 0], ref_col)
+    assert_column_matches("F0", matrix[:, 0], ref_col)
 
 
 def test_native_f0_jacfwd_finite_difference_spot_check(wsrt167_setup):

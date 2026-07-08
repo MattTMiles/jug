@@ -3,8 +3,9 @@
 Implements ``getCorrectionTT`` + ``correctionTT_TB`` (``tt2tdb.C``) and
 ``formBats.C`` bat/bbat construction for ``compatibility='tempo2'``.
 
-Diagnostic-only: production spin uses geometry ``model_mjd``, not
-``model_clock`` from this module. See ``PARITY_ROADMAP.md``.
+This module supplies the production host clock chain consumed by
+``run_tempo2_host_stage`` in ``jug.residuals.tempo2.host``. See
+``PARITY_ROADMAP.md``.
 """
 
 from __future__ import annotations

@@ -208,7 +208,7 @@ def bootstrap_tempo2_geometry_jax(
     ecl_obl_rad: float = 0.0,
 ) -> tuple[jnp.ndarray, Tempo2ObservatoryStateJax]:
     """Fixed-point Teph ↔ ephemeris bootstrap inside the JIT graph."""
-    from jug.residuals.tempo2_native.clock_jax import compute_tempo2_correction_tt_tb_jax
+    from jug.residuals.tempo2.clock_jax import compute_tempo2_correction_tt_tb_jax
 
     site_mjd = sat_mjd + correction_tt_sec / SECS_PER_DAY
     mjd_tt = site_mjd

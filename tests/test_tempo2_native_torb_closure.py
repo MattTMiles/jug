@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 
 from jug.io.par_reader import parse_par_file
-from jug.residuals.tempo2_native.formbats_jax import compute_torb_closure_jax
+from jug.residuals.tempo2.formbats_jax import compute_torb_closure_jax
 from tempo2_native_test_helpers import delta_ns
 
 

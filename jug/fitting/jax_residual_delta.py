@@ -15,7 +15,7 @@ in-graph model; expect multi-minute JIT compile on first call. The Taylor
 
 **Host vs fit model split:** production host residuals (``compute_residuals_simple``)
 use Taylor emission spin for TRACK −2 / absent TRACK; this module uses native
-``phase5@bbat`` in JAX. See ``jug.residuals.tempo2_native.pipeline`` routing contract.
+``phase5@bbat`` in JAX. See ``jug.residuals.tempo2.host`` routing contract.
 """
 
 from __future__ import annotations
@@ -28,11 +28,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jug.residuals.tempo2_native.chain_jax import (
-    NativeDeltaPack,
-    build_native_delta_pack_for_setup,
-    compute_native_bbat_delay_change_sec_jax,
-)
+from jug.residuals.tempo2.common import NativeDeltaPack
+from jug.residuals.tempo2.delta_pack import build_delta_pack_for_setup
+from jug.residuals.tempo2.terms import compute_bbat_delay_change_sec_jax
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.units import native_derivative_to_fit_column
 
@@ -350,7 +348,7 @@ def _compute_residual_delta_jax(
                 "tempo2 native residual_delta could not build a native delta pack "
                 "(missing term_diagnostics['tempo2_obs_state'] or TOA list on setup)."
             )
-        native_delay_change = compute_native_bbat_delay_change_sec_jax(
+        native_delay_change = compute_bbat_delay_change_sec_jax(
             params_ref, params_pert, native_pack
         )
         binary_delay_change = _binary_delay_change_jax(
@@ -434,7 +432,7 @@ def make_residual_delta_jax_fn(
     )
     native_pack = None
     if str(setup.compatibility).lower().startswith("tempo2"):
-        native_pack = build_native_delta_pack_for_setup(setup)
+        native_pack = build_delta_pack_for_setup(setup)
 
     @jax.jit
     def _fn(delta_theta):

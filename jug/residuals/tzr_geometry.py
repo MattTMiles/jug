@@ -42,11 +42,32 @@ from jug.io.tim_reader import compute_tdb_standalone_vectorized
 from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.utils.constants import C_KM_S, SECS_PER_DAY, T_PLANET, T_SUN_SEC
 from jug.io.par_reader import get_longdouble
+from jug.residuals.phase import _fortran_mod, _fortran_nlong
 
 # Pre-wrap ``tzr_phase`` subtraction is only valid when every TOA sits near
 # ``TZRMJD`` in epoch space.  Beyond this span, integer pulse wraps diverge
 # from tempo2 ``REFPHS MEAN`` behaviour (see ``epta_j0030_isolated`` outliers).
 TZRMJD_PREWRAP_MAX_DAYS = 2000.0
+
+
+def compute_tempo2_tzr_wrapped_residual_sec(
+    tzr_spin_phase,
+    anchor_phase_with_jump,
+    f0,
+    *,
+    tzr_jump_phase=0.0,
+) -> float:
+    """Wrapped TZR residual in seconds (tempo2 ``REFPHS TZR`` / ``formResiduals.C``).
+
+    Uses the same ``phas1`` anchor as the first TOA (tim index 0) and the same
+    ``phase5 - fortran_nlong(phase5)`` fractional convention as tempo2.
+    """
+    f0_ld = np.longdouble(f0)
+    phas1 = _fortran_mod(anchor_phase_with_jump, np.longdouble(1.0))
+    tzr_total = np.longdouble(tzr_spin_phase) + np.longdouble(tzr_jump_phase)
+    tzr_phase5 = float(tzr_total - phas1)
+    tzr_frac = tzr_phase5 - float(_fortran_nlong(np.asarray([tzr_phase5], dtype=np.float64))[0])
+    return float(tzr_frac / f0_ld)
 
 
 def resolve_tempo2_tzr_apply_mode(

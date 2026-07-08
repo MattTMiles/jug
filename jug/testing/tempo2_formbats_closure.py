@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from jug.residuals.tempo2_native.probes import (
+from jug.residuals.tempo2.probes import (
     formbats_replay_batcorr_sec,
     formbats_replay_batcorr_tempo2_sec,
     rms_ns,

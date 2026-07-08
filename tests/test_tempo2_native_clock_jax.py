@@ -1,4 +1,4 @@
-"""DEV ORACLE — JAX getCorrectionTT vs host Astropy and pytempo."""
+"""DEV ORACLE — JAX getCorrectionTT vs host formBats reference and pytempo."""
 
 from __future__ import annotations
 
@@ -14,14 +14,16 @@ import jax.numpy as jnp
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.tempo2_clock import compute_get_correction_tt_sec
-from jug.residuals.tempo2_native.chain_jax import _load_model_static_for_native_chain
-from jug.residuals.tempo2_native.clock_jax import compute_tempo2_get_correction_tt_jax
+from jug.residuals.tempo2.common import _load_model_static_for_native_chain
+from jug.residuals.tempo2.clock_jax import compute_tempo2_get_correction_tt_jax
 from jug.residuals.simple_calculator import compute_residuals_simple
 from tempo2_native_test_helpers import delta_ns
 
 
-def test_jax_get_correction_tt_matches_host_astropy(wsrt167_fixture, wsrt167_clock_inputs, wsrt167_jug):
-    """Astropy UTC→TT includes topocentric terms absent from tempo2 clkcorr.C."""
+def test_jax_get_correction_tt_matches_host_formbats_reference(
+    wsrt167_fixture, wsrt167_clock_inputs, wsrt167_jug
+):
+    """JAX getCorrectionTT matches ``compute_get_correction_tt_sec`` (formBats host path)."""
     fixture, sat, static = wsrt167_clock_inputs
     params = parse_par_file(fixture["par_path"])
     toas = parse_tim_file_mjds(fixture["tim_path"])
@@ -60,7 +62,7 @@ def test_jax_get_correction_tt_matches_host_astropy(wsrt167_fixture, wsrt167_clo
     )
     delta = delta_ns(jax_tt, host)
     rms = float(np.sqrt(np.mean(delta**2)))
-    assert rms > 100.0, "expected Astropy topocentric offset vs tempo2-native JAX clock"
+    assert rms < 1.0, f"JAX getCorrectionTT RMS {rms:.3f} ns vs host formBats reference"
 
 
 def test_jax_get_correction_tt_matches_pytempo_wsrt167(wsrt167_clock_inputs, wsrt167_pytempo_oracle):
@@ -129,7 +131,7 @@ def test_clock_tt_probe_writes_report(wsrt167_clock_inputs, wsrt167_jug):
     from pathlib import Path
 
     from jug.residuals.tempo2_clock import compute_correction_tt_tb_sec
-    from jug.residuals.tempo2_native.clock_jax import compute_tempo2_correction_tt_tb_jax
+    from jug.residuals.tempo2.clock_jax import compute_tempo2_correction_tt_tb_jax
     from jug.utils.constants import C_KM_S, SECS_PER_DAY
     from jug.utils.ifteph import IFTE_LC, IFTE_TEPH0_SEC, ifte_delta_t_mjd, load_ifte_coeff_tables
     from jug.utils.timescales import IFTE_K, is_tempo2_si_units, parse_timescale

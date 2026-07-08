@@ -10,7 +10,7 @@ import pytest
 
 pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
-from jug.residuals.tempo2_native.chain_numpy import (
+from jug.residuals.tempo2.chain_numpy import (
     compute_tempo2_native_terms_numpy_from_simple_result,
 )
 from tempo2_native_test_helpers import load_wsrt167_fixture, rms_ns

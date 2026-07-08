@@ -12,7 +12,7 @@ import jax
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.residuals.tempo2_native.chain_jax import prepare_native_chain_from_simple_result
+from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
 from tempo2_native_test_helpers import load_wsrt167_fixture
 
 
@@ -61,7 +61,7 @@ def test_native_chain_does_not_call_legacy_bclt_numpy_dm(monkeypatch, wsrt167_na
         )
 
     monkeypatch.setattr(
-        "jug.residuals.tempo2_native.model_jax._dm_vals_numpy",
+        "jug.residuals.tempo2.model.static._dm_vals_numpy",
         forbidden,
     )
     _fixture, params, toas, jug = wsrt167_native_inputs
@@ -76,7 +76,7 @@ def test_unified_native_path_has_no_host_ifte_geometry(monkeypatch, wsrt167_nati
         raise AssertionError("host ephemeris shortcut used in unified JIT path")
 
     monkeypatch.setattr(
-        "jug.residuals.tempo2_native.model_jax.prepare_ephemeris_inputs_jax",
+        "jug.residuals.tempo2.model.static.prepare_ephemeris_inputs_jax",
         forbidden,
     )
     monkeypatch.setattr(
@@ -111,7 +111,7 @@ def test_unified_native_path_has_no_host_einstein_rate(monkeypatch, wsrt167_nati
         raise AssertionError("host einstein_rate precompute used on unified path")
 
     monkeypatch.setattr(
-        "jug.residuals.tempo2_native.model_jax.tempo2_einstein_rate_host",
+        "jug.residuals.tempo2.model.static.tempo2_einstein_rate_host",
         forbidden,
     )
     prepare_native_chain_from_simple_result(jug, params, toas)

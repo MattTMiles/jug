@@ -11,7 +11,7 @@ from jug.timing import Tempo2NativeConfig
 
 
 def _reload_quarantine():
-    import jug.residuals.tempo2_native_quarantine as q
+    import jug.residuals.tempo2.graph_config as q
 
     return importlib.reload(q)
 

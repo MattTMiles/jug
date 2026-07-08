@@ -15,8 +15,8 @@ pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.residuals.tempo2_native.chain_jax import _load_model_static_for_native_chain
-from jug.residuals.tempo2_native.clock_jax import (
+from jug.residuals.tempo2.common import _load_model_static_for_native_chain
+from jug.residuals.tempo2.clock_jax import (
     compute_tempo2_correction_tt_tb_jax,
     compute_tempo2_get_correction_tt_jax,
 )

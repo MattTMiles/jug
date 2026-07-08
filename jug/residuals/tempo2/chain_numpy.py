@@ -15,8 +15,8 @@ import warnings
 import numpy as np
 
 from jug.residuals.tempo2_clock import compute_correction_tt_tb_sec, compute_shklovskii_sec
-from jug.residuals.tempo2_native.calculate_bclt_jax import compute_bclt_terms_numpy
-from jug.residuals.tempo2_native.probes import (
+from jug.residuals.tempo2.calculate_bclt_jax import compute_bclt_terms_numpy
+from jug.residuals.tempo2.probes import (
     compute_formbats_effective_shapiro_sec,
     formbats_correction_tt_sec,
 )
@@ -235,9 +235,9 @@ def compute_tempo2_native_terms_numpy_from_simple_result(
     import jax
     import jax.numpy as jnp
 
-    from jug.residuals.tempo2_native.chain_jax import _load_model_static_for_native_chain
-    from jug.residuals.tempo2_native.clock_jax import compute_tempo2_get_correction_tt_jax
-    from jug.residuals.tempo2_native.model_jax import host_frozen_vectors_from_tempo2_obs_state
+    from jug.residuals.tempo2.common import _load_model_static_for_native_chain
+    from jug.residuals.tempo2.clock_jax import compute_tempo2_get_correction_tt_jax
+    from jug.residuals.tempo2.model import host_frozen_vectors_from_tempo2_obs_state
 
     td = jug_result["term_diagnostics"]
     frozen = host_frozen_vectors_from_tempo2_obs_state(td)

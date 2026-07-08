@@ -232,16 +232,16 @@ Production wiring is **done**; oracle breadth is **not**.
 
 | Layer | TRACK absent | TRACK == −2 | other TRACK |
 |-------|--------------|-------------|-------------|
-| **Host residuals** | Taylor `compute_phase_residuals` | Taylor + legacy `-pn` wrap (~1.2 ns) | `compute_native_eval_residuals_jax` |
+| **Host residuals** | Taylor `compute_phase_residuals` | Taylor + legacy `-pn` wrap (~1.2 ns) | `compute_eval_residuals_jax` |
 | **JAX autodiff** | Native chain → bbat Δ + Taylor phase Δ | Same — wsrt167 F0 vs libstempo gated (`dev_oracle`/`slow`) | Same |
 
 **Host residuals** (`pipeline.finalize_tempo2_host_residuals`): see
-`jug/residuals/tempo2_native/pipeline.py`.
+`jug/residuals/tempo2/pipeline.py`.
 
 **JAX fit/autodiff** (`jax_residual_delta.py`, all TRACK values):
 
 1. Trace tempo2-native chain via `JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
-2. Compute **`compute_native_bbat_delay_change_sec_jax`** (bbat displacement between
+2. Compute **`compute_bbat_delay_change_sec_jax`** (bbat displacement between
    θ and θ+Δθ, plus binary delay change when fitted).
 3. Apply **`_phase_residual_delta_jax`** — Taylor phase difference on frozen
    `dt_sec_cached` and the delay change (not the host Taylor spin path).
@@ -363,7 +363,7 @@ explicit request.
 | Spin | Taylor on `dt_sec_ld` + TRACK −2 | `phase2+phase3` at `bbat` | **~1.2 ns** host residuals on gated fixtures |
 | End-to-end residuals | libstempo oracle | `psr.residuals()` | **< 7 ns** on gated fixtures |
 
-Scaffold: `jug/residuals/tempo2_native/`. Graph mode:
+Scaffold: `jug/residuals/tempo2/`. Graph mode:
 `JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
 
 ### Dev-oracle gates (component-level)
@@ -413,7 +413,7 @@ residual blocker.
 | BCLT iteration | **Recomputed in JAX** (`lax.scan` × 12/TOA) | **Frozen** at reference BCLT |
 | formBats / Shklovskii / spin tail | In JAX | In JAX |
 
-`NativeFrozenDeltaPack` = frozen **host inputs**, not frozen BCLT output.
+`NativeDeltaPack` with `mode=staged_bclt` freezes **host inputs**, not BCLT output.
 See [`PARITY_THEORY.md`](PARITY_THEORY.md) §5.
 
 ### JAX autodiff graph — compile debt
@@ -446,9 +446,9 @@ Shklovskii, and native spin terms to obtain **bbat**. The returned delta uses on
 | Component | Location |
 |-----------|----------|
 | JIT residual factory | `jug/fitting/jax_residual_delta.py` |
-| Bbat delay change | `jug/residuals/tempo2_native/chain_jax.py` |
-| Full tail (trim candidate) | `jug/residuals/tempo2_native/model_jax.py` |
-| BCLT scan | `jug/residuals/tempo2_native/calculate_bclt_jax.py` |
+| Bbat delay change | `jug/residuals/tempo2/terms.py` |
+| Full tail (trim candidate) | `jug/residuals/tempo2/model/full.py` |
+| BCLT scan | `jug/residuals/tempo2/calculate_bclt_jax.py` |
 | Compensated formBats | `formbats_jax.py`, `compensated.py` |
 
 ---

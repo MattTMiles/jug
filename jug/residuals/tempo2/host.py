@@ -8,7 +8,7 @@ Host **residuals** (libstempo parity):
 * ``TRACK == -2``   → Taylor emission-time spin + legacy ``-pn`` wrapping
   (matches libstempo; ``phase5@bbat`` TRACK−2 mis-handles ``-addsat`` even when
   sat carries the read-time shift)
-* other ``TRACK``   → ``compute_native_eval_residuals_jax`` (two-part formBats)
+* other ``TRACK``   → ``compute_eval_residuals_jax`` (two-part formBats)
 
 JAX fit/autodiff always uses the native two-part ``staged_bclt`` tail
 (``phase5@bbat`` + TRACK−2 in-graph). Host vs fit spin routing therefore
@@ -26,8 +26,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
-from jug.residuals.tempo2_graph_config import USE_NATIVE_BBAT_PHASE5
-from jug.residuals.tempo2_native.types import Tempo2NativeTerms
+from jug.residuals.tempo2.graph_config import USE_NATIVE_BBAT_PHASE5
+from jug.residuals.tempo2.types import Tempo2NativeTerms
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
@@ -116,10 +116,8 @@ def compute_tempo2_host_setup(
         compute_get_correction_tt_sec,
         compute_site_clock_corrections_sec,
     )
-    from jug.residuals.tempo2_native.chain_jax import (
-        prepare_native_chain_from_simple_result,
-    )
-    from jug.residuals.tempo2_native.types import native_terms_to_numpy
+    from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
+    from jug.residuals.tempo2.types import native_terms_to_numpy
     from jug.utils.ifteph import ifte_delta_t_mjd
 
     correction_tt = compute_site_clock_corrections_sec(
@@ -366,12 +364,10 @@ def finalize_tempo2_host_residuals(
     phase_torb_sec,
 ) -> Tempo2HostFinalizeResult:
     """Tempo2 host residuals: Taylor for TRACK−2/no-TRACK; native for other TRACK."""
-    from jug.residuals.simple_calculator import compute_phase_residuals
-    from jug.residuals.tempo2_native.chain_jax import (
-        compute_native_eval_residuals_jax,
-        prepare_native_chain_from_simple_result,
-        sat_daysec_numpy_from_td_and_toas,
-    )
+    from jug.residuals.phase import compute_phase_residuals
+    from jug.residuals.tempo2.common import sat_daysec_numpy_from_td_and_toas
+    from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
+    from jug.residuals.tempo2.orchestrator import compute_eval_residuals_jax
 
     sat_int, sat_sec = sat_daysec_numpy_from_td_and_toas(
         {"sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64)},
@@ -421,7 +417,7 @@ def finalize_tempo2_host_residuals(
     else:
         jump_j = None if jump_phase is None else np.asarray(jump_phase, dtype=np.float64)
         tzr_j = None if tzr_phase_for_residuals is None else float(tzr_phase_for_residuals)
-        residuals_sec_jax, pulse_number_jax, native = compute_native_eval_residuals_jax(
+        residuals_sec_jax, pulse_number_jax, native = compute_eval_residuals_jax(
             params=params,
             toas=toas,
             jug_result=_jug,
@@ -450,38 +446,180 @@ def finalize_tempo2_host_residuals(
     )
 
 
-def finalize_pint_host_residuals(
-    *,
-    dt_sec: np.ndarray,
-    params: dict,
-    weights_scaled: np.ndarray,
-    subtract_mean_in_phase: bool,
-    tzr_phase_for_residuals,
-    jump_phase: np.ndarray,
-    external_pn: np.ndarray | None,
-    track_val,
-    external_pn_add: np.ndarray | None,
-    phase_bbat_mjd,
-    phase_torb_sec,
-    addsat_sec: np.ndarray | None,
-    phase_mean_mode: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """PINT-family host residual finalization via ``compute_phase_residuals``."""
-    from jug.residuals.simple_calculator import compute_phase_residuals
+@dataclass
+class Tempo2HostStageResult:
+    formbats_correction_tt: np.ndarray
+    tempo2_clock_terms: Any
+    tempo2_obs_state_export: dict
+    earth_ssb_vel_km_s: np.ndarray
+    dm_delay_sec: np.ndarray
+    sw_delay_sec: np.ndarray
+    tropo_delay_sec: np.ndarray
+    roemer_sec: np.ndarray
+    sun_shapiro_sec: np.ndarray
+    planet_shapiro_sec: np.ndarray
+    roemer_shapiro: np.ndarray
+    prebinary_delay_sec: np.ndarray
+    ifte_delta_t_sec: np.ndarray
+    bbat_mjd: np.ndarray | None
+    torb_sec: np.ndarray | None
+    model_mjd: np.ndarray
+    total_delay_sec: np.ndarray
+    delay_sec: np.ndarray
+    dt_sec: np.ndarray
 
-    return compute_phase_residuals(
-        dt_sec,
-        params,
-        weights_scaled,
-        subtract_mean=subtract_mean_in_phase,
-        tzr_phase=tzr_phase_for_residuals,
-        jump_phase=jump_phase,
-        external_pulse_numbers=external_pn,
-        track_val=int(track_val) if track_val is not None else None,
-        external_pn_add=external_pn_add,
-        bbat_mjd=phase_bbat_mjd,
-        torb_sec=phase_torb_sec,
-        use_native_bbat_phase5=USE_NATIVE_BBAT_PHASE5,
-        addsat_sec=addsat_sec,
-        mean_mode=phase_mean_mode,
+
+def run_tempo2_host_stage(
+    *,
+    mjd_utc,
+    obs_clocks,
+    bipm_clock,
+    toas,
+    all_obs_codes,
+    obs_clock,
+    time_offsets,
+    params,
+    obs_itrf_km,
+    dm_eff,
+    freq_bary_mhz,
+    dt_sec,
+    model_mjd,
+    PEPOCH,
+    compatibility_mode,
+    engine_profile,
+    correct_troposphere,
+    roemer_sec,
+    sun_shapiro_sec,
+    planet_shapiro_sec,
+    roemer_shapiro,
+    dm_delay_sec,
+    sw_delay_sec,
+    tropo_delay_sec,
+    dmx_delay_sec,
+    skip_native_bclt_overlay,
+    total_delay_sec,
+    delay_sec,
+) -> Tempo2HostStageResult:
+    # Keep the kernel-time delay terms so the native-overlay delta can be
+    # folded into the total delay below (the kernel ran with the provider
+    # geometry; the overlay recomputes Roemer/DM/SW from the exact
+    # bootstrap chain).
+    _pre_overlay_roemer_shapiro = np.asarray(roemer_shapiro, dtype=np.float64)
+    _pre_overlay_dm = np.asarray(dm_delay_sec, dtype=np.float64)
+    _pre_overlay_sw = np.asarray(sw_delay_sec, dtype=np.float64)
+
+    _t2_setup = compute_tempo2_host_setup(
+        mjd_utc=mjd_utc,
+        obs_clocks=obs_clocks,
+        bipm_clock=bipm_clock,
+        toas=toas,
+        all_obs_codes=all_obs_codes,
+        obs_clock=obs_clock,
+        time_offsets=time_offsets,
+        params=params,
+        obs_itrf_km=obs_itrf_km,
+        dm_eff=dm_eff,
+        freq_bary_mhz=freq_bary_mhz,
+        dt_sec=dt_sec,
+        model_mjd=model_mjd,
+        PEPOCH=PEPOCH,
+        compatibility_mode=compatibility_mode,
+        engine_profile=engine_profile,
+        correct_troposphere=correct_troposphere,
+        roemer_sec=roemer_sec,
+        sun_shapiro_sec=sun_shapiro_sec,
+        planet_shapiro_sec=planet_shapiro_sec,
+        roemer_shapiro=roemer_shapiro,
+        dm_delay_sec=dm_delay_sec,
+        sw_delay_sec=sw_delay_sec,
+        tropo_delay_sec=tropo_delay_sec,
+        dmx_delay_sec=dmx_delay_sec,
+        skip_native_bclt_overlay=skip_native_bclt_overlay,
+    )
+    formbats_correction_tt = _t2_setup.formbats_correction_tt
+    tempo2_clock_terms = _t2_setup.tempo2_clock_terms
+    tempo2_obs_state_export = _t2_setup.tempo2_obs_state_export
+    earth_ssb_vel_km_s = _t2_setup.earth_ssb_vel_km_s
+    dm_delay_sec = _t2_setup.dm_delay_sec
+    sw_delay_sec = _t2_setup.sw_delay_sec
+    tropo_delay_sec = _t2_setup.tropo_delay_sec
+    roemer_sec = _t2_setup.roemer_sec
+    sun_shapiro_sec = _t2_setup.sun_shapiro_sec
+    planet_shapiro_sec = _t2_setup.planet_shapiro_sec
+    roemer_shapiro = _t2_setup.roemer_shapiro
+    prebinary_delay_sec = _t2_setup.prebinary_delay_sec
+    ifte_delta_t_sec = _t2_setup.ifte_delta_t_sec
+    bbat_mjd = _t2_setup.bbat_mjd
+    torb_sec = _t2_setup.torb_sec
+    model_mjd = _t2_setup.model_mjd
+
+    # The JAX kernel summed the provider-geometry Roemer/DM/SW; the native
+    # BCLT overlay recomputes them from the exact bootstrap chain (fixed
+    # POSEPOCH direction + dt_pm/dt_px terms, dt_SSB iteration).  Fold the
+    # difference into the total so residuals use the native terms (for
+    # high-PM/PX binaries like J0437-4715 the provider-vs-native gap is
+    # ~20 ns and otherwise leaks into the residuals).
+    _overlay_delta_sec = (
+        (np.asarray(roemer_shapiro, dtype=np.float64) - _pre_overlay_roemer_shapiro)
+        + (np.asarray(dm_delay_sec, dtype=np.float64) - _pre_overlay_dm)
+        + (np.asarray(sw_delay_sec, dtype=np.float64) - _pre_overlay_sw)
+    )
+    if np.any(_overlay_delta_sec != 0.0):
+        _overlay_delta_ld = np.asarray(_overlay_delta_sec, dtype=np.longdouble)
+        total_delay_sec = total_delay_sec + _overlay_delta_ld
+        delay_sec = total_delay_sec
+        dt_sec = dt_sec - _overlay_delta_ld
+
+    # formBats.C subtracts troposphericDelay inside ``bat``, so tempo2's
+    # spin argument includes the troposphere.  The kernel stage above ran
+    # with tropo=0 (the tempo2-native troposphere needs the formBats clock
+    # chain computed inside the host setup), so fold it into the total
+    # delay and emission dt now.  Delays enter dt linearly, so this
+    # post-hoc adjustment is exact; without it the Taylor host residuals
+    # are missing up to ~100 ns of troposphere vs tempo2 (wsrt167 floor).
+    if np.any(np.asarray(tropo_delay_sec) != 0.0):
+        _tropo_ld = np.asarray(tropo_delay_sec, dtype=np.longdouble)
+        total_delay_sec = total_delay_sec + _tropo_ld
+        delay_sec = total_delay_sec
+        dt_sec = dt_sec - _tropo_ld
+
+    # clkcorr.C feedback: the production model_mjd/tdb_mjd evaluate the UTC→TT
+    # clock chain at raw SAT, but tempo2 evaluates each hop at sat+corr/SECDAY.
+    # For the Taylor host spin (TRACK absent or TRACK -2) fold the per-TOA feedback
+    # delta into the emission time so residuals match tempo2's bat-based epoch.
+    # The native-JAX path (other TRACK) already consumes the feedback correction
+    # via formbats terms, so gate on the Taylor host condition to leave the
+    # full-JAX pipeline untouched.
+    _track_val_fb = params.get("TRACK", None)
+    _use_taylor_host = _track_val_fb is None or int(_track_val_fb) == -2
+    if _use_taylor_host:
+        _clock_fb_delta_sec = np.asarray(
+            _t2_setup.clock_feedback_delta_sec, dtype=np.longdouble
+        )
+        dt_sec = dt_sec + _clock_fb_delta_sec
+        model_mjd = (
+            np.asarray(model_mjd, dtype=np.longdouble)
+            + _clock_fb_delta_sec / np.longdouble(SECS_PER_DAY)
+        )
+
+    return Tempo2HostStageResult(
+        formbats_correction_tt=formbats_correction_tt,
+        tempo2_clock_terms=tempo2_clock_terms,
+        tempo2_obs_state_export=tempo2_obs_state_export,
+        earth_ssb_vel_km_s=earth_ssb_vel_km_s,
+        dm_delay_sec=dm_delay_sec,
+        sw_delay_sec=sw_delay_sec,
+        tropo_delay_sec=tropo_delay_sec,
+        roemer_sec=roemer_sec,
+        sun_shapiro_sec=sun_shapiro_sec,
+        planet_shapiro_sec=planet_shapiro_sec,
+        roemer_shapiro=roemer_shapiro,
+        prebinary_delay_sec=prebinary_delay_sec,
+        ifte_delta_t_sec=ifte_delta_t_sec,
+        bbat_mjd=bbat_mjd,
+        torb_sec=torb_sec,
+        model_mjd=model_mjd,
+        total_delay_sec=total_delay_sec,
+        delay_sec=delay_sec,
+        dt_sec=dt_sec,
     )

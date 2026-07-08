@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.residuals.tempo2_native.probes import (
+from jug.residuals.tempo2.probes import (
     batcorr_from_model_epoch,
     formbats_replay_batcorr_sec,
     rms_ns,
@@ -84,7 +84,7 @@ def run_native_probe_report(
 
         oracle = load_pytempo_native_oracle(par_path, tim_path, fixture_id=fixture_id)
         if native_batcorr_sec is not None and "bbat_mjd" in oracle.fields:
-            from jug.residuals.tempo2_native.types import Tempo2NativeTerms
+            from jug.residuals.tempo2.types import Tempo2NativeTerms
 
             pass  # bbat checked in dedicated tests
         if "bbat_mjd" in oracle.fields and native_batcorr_sec is None:

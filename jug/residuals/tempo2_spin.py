@@ -4,7 +4,7 @@ Quarantined experimental path: ``compute_tempo2_phase5`` and
 ``track_minus2_frac_phase`` are **not** on the production parity route.
 Production uses emission-time Taylor spin + legacy TRACK −2.
 
-See ``jug.residuals.tempo2_graph_config`` and
+See ``jug.residuals.tempo2.graph_config`` and
 ``PARITY_ROADMAP.md``.
 """
 
@@ -228,12 +228,12 @@ def compute_tempo2_phase5(
 
     .. deprecated::
         Dev/oracle wrapper only. Production tempo2 spin uses emission-time Taylor;
-        JAX counterpart is ``compute_tempo2_phase5_jax`` in ``tempo2_native.spin_jax``.
+        JAX counterpart is ``compute_tempo2_phase5_jax`` in ``jug.residuals.tempo2.spin_jax``.
     """
     import warnings
 
     warnings.warn(
-        "compute_tempo2_phase5 is deprecated; use tempo2_native.spin_jax for JAX production.",
+        "compute_tempo2_phase5 is deprecated; use jug.residuals.tempo2.spin_jax for JAX production.",
         DeprecationWarning,
         stacklevel=2,
     )

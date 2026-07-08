@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from jug.residuals.tempo2_native.compensated import (
+from jug.residuals.tempo2.compensated import (
     add_seconds_daysec,
     assemble_mjd_from_day_sec,
     mjd_view_from_daysec,

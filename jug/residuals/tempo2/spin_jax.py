@@ -7,7 +7,7 @@ import math
 import jax
 import jax.numpy as jnp
 
-from jug.residuals.tempo2_native.compensated import frac_of_int_times
+from jug.residuals.tempo2.compensated import frac_of_int_times
 from jug.utils.constants import SECS_PER_DAY
 
 
@@ -117,7 +117,7 @@ def compute_tempo2_phase5_jax(
     tzr_phase=None,
 ):
     """Legacy single-MJD phase5; prefer :func:`compute_tempo2_phase5_daysec`."""
-    from jug.residuals.tempo2_native.compensated import split_mjd_to_daysec
+    from jug.residuals.tempo2.compensated import split_mjd_to_daysec
 
     bbat_int, bbat_sec = split_mjd_to_daysec(bbat_mjd)
     _, pep_int, pep_frac = pepoch_parts_from_value(pepoch_mjd)

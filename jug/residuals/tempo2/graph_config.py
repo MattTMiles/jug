@@ -28,15 +28,15 @@ if TYPE_CHECKING:
 # ``bbat`` with ``track_minus2_frac_phase``. Do not enable for parity gates.
 USE_NATIVE_BBAT_PHASE5 = False
 
-TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR = "fixed_state_nonlinear"
-TEMPO2_NATIVE_GRAPH_STAGED_BCLT = "staged_bclt"
-TEMPO2_NATIVE_GRAPH_FULL = "full"
+TEMPO2_GRAPH_FIXED_STATE_NONLINEAR = "fixed_state_nonlinear"
+TEMPO2_GRAPH_STAGED_BCLT = "staged_bclt"
+TEMPO2_GRAPH_FULL = "full"
 
-_TEMPO2_NATIVE_GRAPH_MODE_DEFAULT = TEMPO2_NATIVE_GRAPH_STAGED_BCLT
-_TEMPO2_NATIVE_GRAPH_MODES = {
-    TEMPO2_NATIVE_GRAPH_FIXED_STATE_NONLINEAR,
-    TEMPO2_NATIVE_GRAPH_STAGED_BCLT,
-    TEMPO2_NATIVE_GRAPH_FULL,
+_TEMPO2_GRAPH_MODE_DEFAULT = TEMPO2_GRAPH_STAGED_BCLT
+_TEMPO2_GRAPH_MODES = {
+    TEMPO2_GRAPH_FIXED_STATE_NONLINEAR,
+    TEMPO2_GRAPH_STAGED_BCLT,
+    TEMPO2_GRAPH_FULL,
 }
 
 
@@ -61,9 +61,9 @@ def tempo2_native_graph_mode(
             )
             mode = env_mode.strip().lower().replace("-", "_")
         else:
-            mode = _TEMPO2_NATIVE_GRAPH_MODE_DEFAULT
-    if mode not in _TEMPO2_NATIVE_GRAPH_MODES:
-        allowed = ", ".join(sorted(_TEMPO2_NATIVE_GRAPH_MODES))
+            mode = _TEMPO2_GRAPH_MODE_DEFAULT
+    if mode not in _TEMPO2_GRAPH_MODES:
+        allowed = ", ".join(sorted(_TEMPO2_GRAPH_MODES))
         raise ValueError(
             f"Unknown tempo2-native graph mode={mode!r}; expected one of {allowed}"
         )

@@ -19,7 +19,7 @@ import jax
 
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
-from jug.residuals.tempo2_native.chain_jax import compute_tempo2_native_residuals_jax
+from jug.residuals.tempo2.terms import compute_tempo2_native_residuals_jax
 
 
 def test_native_spin_wsrt167_vs_pytempo_acceptance(

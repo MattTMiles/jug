@@ -99,7 +99,7 @@ def wsrt167_libstempo(wsrt167_fixture):
 def wsrt167_clock_inputs(wsrt167_fixture, wsrt167_jug):
     from jug.io.par_reader import parse_par_file
     from jug.io.tim_reader import parse_tim_file_mjds
-    from jug.residuals.tempo2_native.chain_jax import _load_model_static_for_native_chain
+    from jug.residuals.tempo2.common import _load_model_static_for_native_chain
 
     params = parse_par_file(wsrt167_fixture["par_path"])
     toas = parse_tim_file_mjds(wsrt167_fixture["tim_path"])

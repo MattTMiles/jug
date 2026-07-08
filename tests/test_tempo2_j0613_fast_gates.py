@@ -1,7 +1,7 @@
 """Fast inner-loop tempo2 parity gates for IPTA DR2 J0613-0200.
 
 These tests avoid the full 1369-TOA EPTA dataset unless explicitly selected
-elsewhere. See ``TEMPO2_PARITY.md`` § J0613 fast gates.
+elsewhere. See ``PARITY_ROADMAP.md`` § J0613 fast gates.
 """
 
 from __future__ import annotations

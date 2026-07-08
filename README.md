@@ -145,7 +145,7 @@ JUG exposes two compatibility families:
 > picosecond tests. With unmatched clock/ephemeris files (the CI default) the
 > difference is tens of ns, dominated by a DC phase-offset convention plus
 > clock-file drift — not a timing-model disagreement. See
-> [`TIMING_GRAPH_ACCURACY.md`](TIMING_GRAPH_ACCURACY.md) §"What 'picosecond
+> [`PARITY_THEORY.md`](PARITY_THEORY.md) §"What 'picosecond
 > compatibility' means (and does not)".
 
 When evaluating Tempo2 parity, use **raw pre-fit residuals** only (no post-hoc
@@ -158,10 +158,9 @@ raw.
 
 **Nonlinear / autodiff / MetaPulsar:** green residual tests on curated fixtures
 do **not** mean tempo2 mode is ready for JAX-traced likelihoods or IPTA-scale
-workloads. See [`TIMING_GRAPH_ACCURACY.md`](TIMING_GRAPH_ACCURACY.md) for what
-JAX-traced graphs actually guarantee (PINT-family fixed-state vs tempo2 graph
-modes), [`TEMPO2_COMPATIBILITY.md`](TEMPO2_COMPATIBILITY.md) for policy, and
-[`TEMPO2_PARITY.md`](TEMPO2_PARITY.md) for gap analysis, pytempo workflow, and usage guidance.
+workloads. See [`PARITY_THEORY.md`](PARITY_THEORY.md) for theory, policy, and JAX-traced
+graph guarantees, and [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) for gap analysis,
+pytempo workflow, and usage guidance.
 
 ### Tempo2-native JAX fitting (graph modes, 2026-07-07)
 
@@ -195,9 +194,12 @@ JAX_ENABLE_X64=1 PYTHONPATH=.:tests python3 -m pytest \
 
 See [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) for the full parity table.
 
-**Tempo2 parity status (2026-07-06):** Phase C TZR closed J0030 to **~4.7 ns RMS**.
-wsrt167 remains **~16.4 ns RMS** (max **~110 ns** at idx 85 — spin-error tail). Phase D Steps 1–3 done/ruled out; Step 4 ruled out Taylor vs tempo2 ``phase2+phase3`` (0.02 ns fractional). Next: clock / ``model_mjd`` vs ``updateBatsAll``.
-Details: [`TEMPO2_NATIVE_CLOCK_STATUS.md`](TEMPO2_NATIVE_CLOCK_STATUS.md).
+**Tempo2 parity status (2026-07-08):** wsrt167 is **~1.4 ns RMS** after the
+troposphere-in-dt and longdouble-wrap fixes. The largest current blocker is NG5 TDB's
+**~5.3 µs** spin-epoch / TDB-TCB map issue; EPTA J0613 full remains a **~10 ns**
+floor. The main roadmap is native tempo2 autodiff / residual-delta validation against
+libstempo two-parameter perturbation oracles across all graph modes.
+Details: [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
 
 Test-data policy, provenance, and fixture-size guidance live in
 [`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md).

@@ -2,7 +2,7 @@
 
 Step 1: validate tim ``-pn`` convention and ``track_minus2_frac_phase``.
 Step 2 (2026-07-06): wiring ``phase5@bbat`` to production **ruled out** — oracle
-path ~17.5 ns vs production ~16.4 ns. See ``TEMPO2_PARITY.md`` § Phase D Step 2.
+path ~17.5 ns vs production ~16.4 ns. See ``PARITY_ROADMAP.md`` § Phase D Step 2.
 """
 
 from __future__ import annotations

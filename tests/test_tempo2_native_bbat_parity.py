@@ -5,7 +5,7 @@ the unified JAX path matches ``bat_corr_days`` to tempo2 at ~1 ns but ``bbat_mjd
 ~304 ns because JUG uses float64 single-sum assembly while tempo2 ``formBats.C`` uses
 split ``long double`` summation (``sat + tt/86400 + (other)/86400``).
 
-This is documented in ``TEMPO2_PARITY.md`` § "formBats bat_mjd / bbat_mjd assembly".
+This is documented in ``PARITY_ROADMAP.md`` § "formBats bat_mjd / bbat_mjd assembly".
 A failing test here does **not** mean delay physics is wrong; gate ``bat_corr_days``
 in ``test_tempo2_native_formbats_closure.py`` for that.
 """

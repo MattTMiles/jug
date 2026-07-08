@@ -3,7 +3,7 @@
 Native spin uses ``phase5(bbat, torb)`` with ``torb`` defined as a closure against
 ``bbat``; a ~304 ns ``bbat_mjd`` assembly offset vs tempo2 may partially cancel in
 ``deltaT``. This test is not a substitute for ``acceptance_residual_sec`` parity.
-See ``TEMPO2_PARITY.md`` § "formBats bat_mjd / bbat_mjd assembly".
+See ``PARITY_ROADMAP.md`` § "formBats bat_mjd / bbat_mjd assembly".
 """
 
 from __future__ import annotations

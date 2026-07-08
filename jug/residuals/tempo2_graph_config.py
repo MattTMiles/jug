@@ -12,7 +12,7 @@ used by autodiff / ``residual_delta_jax``:
 
 ``USE_NATIVE_BBAT_PHASE5`` gates an experimental host path using ``phase5@bbat``
 in ``compute_phase_residuals``. Production keeps this ``False`` (strict-parity
-probes: worse than Taylor on wsrt167). See ``TEMPO2_NATIVE_CLOCK_STATUS.md``.
+probes: worse than Taylor on wsrt167). See ``PARITY_ROADMAP.md``.
 """
 
 from __future__ import annotations

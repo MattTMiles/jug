@@ -33,8 +33,11 @@ ADDSAT_MAX_DELTA_US = 1.0
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "IPTA DR2 EPTA J0613: Taylor TRACK -2 production ~10 ns RMS; "
-        f"remaining dt-chain gap vs {FINAL_RMS_DELTA_NS} ns gate"
+        "IPTA DR2 EPTA J0613: ~10 ns RMS after clkcorr feedback fix (zero delta on "
+        "merged chains); naive dt_jug−deltaT(pytempo) correlates weakly (~0.07) "
+        "with residual — Taylor spin partially absorbs tempo2 deltaT. "
+        f"Non-addsat bulk ~5.4 ns; addsat TOAs ~200 ns site/backend debt. "
+        f"Gate {FINAL_RMS_DELTA_NS} ns."
     ),
 )
 def test_tempo2_mode_epta_j0613_ipta_dr2_residual_parity():

@@ -22,7 +22,7 @@ on the JAX path.
 or `jug["obs_planet_pos_ls"]` for native parity probes — use
 `term_diagnostics['tempo2_obs_state']` via `host_frozen_vectors_from_tempo2_obs_state`.
 
-### wsrt167 hybrid gates (< 1 ns RMS vs pytempo)
+### wsrt167 hybrid gates (2026-07-08)
 
 | Term | Frozen staging | NumPy reference | Full in-graph | Notes |
 |------|----------------|-----------------|---------------|-------|
@@ -32,7 +32,7 @@ or `jug["obs_planet_pos_ls"]` for native parity probes — use
 | `tdis1_sec` / `tdis2_sec` | yes | yes | opt-in | |
 | `dt_ssb_sec` | yes | yes | opt-in | |
 | `bat_corr_days` | yes | yes | opt-in | Sub-1 ns after TCB implicit tropo + planet Shapiro fixes |
-| `bbat_mjd` | **two-part daysec in JAX tail** | opt-in | Host Taylor spin ~15.5 ns wsrt167; native ``phase5@bbat`` for fit Jacobian |
+| `bbat_mjd` | **two-part daysec in JAX tail** | opt-in | Host Taylor spin ~1.4 ns wsrt167; native ``phase5@bbat`` for fit Jacobian |
 | DILATEFREQ / DMX / ecliptic fixtures | **deferred** | **deferred** | opt-in | After wsrt167 green |
 
 Fast hybrid probes (~seconds compile; no full ephemeris/clock JIT):
@@ -64,56 +64,37 @@ includes `term_diagnostics['tempo2_obs_state']`. After JUG upgrades, call
 IPTA example: `examples/notebooks-dev/nlt_ipta_dr2_compare_jug.ipynb` uses
 `nlt_ipta_dr2_compare_jug_lib.prime_jug_tempo2_native_sessions()`.
 
-## Current parity work (2026-07-05)
+## Current parity work (2026-07-08)
 
-| Phase | Fix | Tests | Status |
-|-------|-----|-------|--------|
-| **C** | TZR apply modes (`tzr_geometry.py`) | `tests/test_tempo2_tzr_parity.py` | **Done** — J0030 ~4.7 ns RMS |
-| **D Step 1** | tim ``-pn`` relative to obsn[0] | `tests/test_tempo2_track2_pnnew.py` | **Done** — pnNew oracle |
-| **D Step 2** | ``phase5@bbat`` production wiring | — | **Ruled out** — ~17.5 ns vs ~16.4 ns production |
-| **D Step 3** | ``-padd`` / ``jump_phase`` | pytempo ``phase_offset_turns`` | **Ruled out** — exact match |
-| **D Step 4** | Taylor vs tempo2 ``phase2+phase3`` | ``/tmp/wsrt_taylor_spin_probe.py`` | **Ruled out** — 0.02 ns fractional |
-| **D Step 5** | Per-TOA term diff | ``/tmp/wsrt_term_diff_probe.py`` | **Done** — ~330 ns ``bbat`` gap |
-| **D Step 6** | ``model_mjd`` vs ``pet``/``torb`` | ``/tmp/wsrt_model_pet_torb_probe.py`` | **Done** |
-| **D Step 7** | ``dt_sec`` precision + ``deltaT(pt)`` counterfactual | ``/tmp/wsrt_dt_spin_counterfactual_probe.py`` | **Done** — float64 inputs; swap worsens |
-| **Next** | ``model_mjd`` vs tempo2 ``calculate_bclt`` epoch | read-only trace | **Open** |
+This file is the oracle-harness guide. The authoritative theory/policy document is
+[`PARITY_THEORY.md`](../PARITY_THEORY.md); the authoritative status and roadmap is
+[`PARITY_ROADMAP.md`](../PARITY_ROADMAP.md).
 
-Docs: [`TEMPO2_PARITY.md`](../TEMPO2_PARITY.md), [`TEMPO2_NATIVE_CLOCK_STATUS.md`](../TEMPO2_NATIVE_CLOCK_STATUS.md).
+| Workstream | Tests / oracle | Status |
+|------------|----------------|--------|
+| **Canonical tangent** | libstempo two-parameter perturbation oracles across `staged_bclt`, `fixed_state_nonlinear`, `full` | **Open** — main roadmap item |
+| **NG5 TDB** | pytempo `deltaT`; F0 design-matrix column | **Open** — ~5.3 µs spin-epoch / TDB-TCB map |
+| **EPTA J0613 full** | `tests/test_tempo2_ipta_dr2_j0613_parity.py` | **Open** — ~10 ns floor; strict xfail |
+| **wsrt167 host parity** | `tests/test_dev_oracle_wsrt167_parity.py` | **Done** — ~1.4 ns RMS after tropo-in-dt + longdouble wrap |
+| **TRACK −2 pnNew** | `tests/test_tempo2_track2_pnnew.py` | **Done** |
+| **TZR** | `tests/test_tempo2_tzr_parity.py` | **Done** — J0030 ~4.7 ns RMS |
+| **`-addsat` SAT resync** | `epta_j0613_addsat_min` / dt-chain diag | **Done** — was ~±1 s; residual dt-chain scatter remains |
+| **Stale dev-oracle assertions** | `pytest -m dev_oracle` | **Open** — audit/retire assertion debt |
 
-## Current parity work (2026-07-06)
+## Native delay-chain notes
 
-| Phase | Fix | Tests | Status |
-|-------|-----|-------|--------|
-| **Native chain** | JAX `tempo2_native/` module | `tests/test_tempo2_native_*.py` | **In progress** — strict formBats path wired |
-| **Granular closure** | pytempo delay-chain diagnostics | `tests/test_tempo2_native_formbats_closure.py` | **Added** — component ranking |
-| **Oracle** | pytempo Tier-1 via `tempo2_pytempo_oracle.py` | dev_oracle gates | **Added** |
+Gate policy remains **1 ns RMS** for formBats component comparisons vs pytempo
+`toa_diagnostics()`, but not every epoch scalar is a physics gate:
 
-## wsrt167 native delay-chain parity (2026-07-06)
+| Quantity | Current interpretation |
+|----------|------------------------|
+| `correction_tt_sec`, `correction_tt_tb_sec` | Clock chain is closed to <1 ns on wsrt167-class probes |
+| `bat_corr_days` | Primary delay-physics gate (~1.1 ns on wsrt167 strict formBats path) |
+| `bat_mjd`, `bbat_mjd` | MJD assembly recipe mismatch can show ~304 ns even when delay physics is ~1 ns |
+| `torb_sec` | Use pytempo `torb_sec` or `prebinary - total`; libstempo `binarydelay` is stale on fresh construct |
 
-Gate policy: **1 ns RMS** on every formBats slot vs pytempo ``toa_diagnostics``.
-
-| Term | RMS (ns) | Gate | Notes |
-|------|----------|------|-------|
-| `tt` | ~270 | 1 | ``getCorrectionTT`` / Astropy TT path |
-| `tt_tb` | ~44 000 | 1 | Fixed SPK vel (km/day→km/s) + ``formbats_correction_tt`` |
-| `roemer` (host export) | ~0.8 | 1 | Delay provider at ``model_mjd`` |
-| `roemer` (native BCLT) | ~4800 | 1 | IFTE fixed geometry vs pytempo BCLT epoch |
-| `tdis1` | ~42 | 1 | DM Taylor only; DMX/shapelets open |
-| `tdis2` | ~0.1 | 1 | Closed |
-| `tropo` | ~26 | 1 | Open |
-| `shap` | ~24 | 1 | Open |
-
-Temp probes (outside repo):
-
-```bash
-PYTHONPATH=/workspaces/metapulsar/ref-packages/jug:/workspaces/metapulsar/ref-packages/jug/tests \
-  python /tmp/jug_geometry_vector_probe.py
-PYTHONPATH=/workspaces/metapulsar/ref-packages/jug:/workspaces/metapulsar/ref-packages/jug/tests \
-  python /tmp/jug_clock_tt_probe.py
-PYTHONPATH=/workspaces/metapulsar/ref-packages/jug:/workspaces/metapulsar/ref-packages/jug/tests \
-  python /tmp/jug_wsrt167_parity_probe.py
-# writes /tmp/jug_wsrt167_parity_probe.txt
-```
+See `PARITY_ROADMAP.md` § "formBats `bat_mjd` / `bbat_mjd` assembly" before
+treating epoch-scalar gaps as delay-physics bugs.
 
 Fast native gate path (skips ``@pytest.mark.slow`` modules — ~45 s vs ~2.5 min full):
 
@@ -137,8 +118,9 @@ PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
   pytest tests/test_tempo2_native_*.py -m dev_oracle --no-cov -q
 ```
 
-Exit criteria: all ``test_tempo2_native_*.py`` gates at **1 ns**; production path uses
-``compute_tempo2_toa_model_jax`` with no mid-chain ``device_get``.
+Exit criteria for dev-oracle promotion: all required native component gates are within
+their stated envelopes, stale assertion-only failures have been retired, and the
+canonical tangent is validated against libstempo perturbation oracles.
 
 
 ## Delete checklist
@@ -179,7 +161,7 @@ PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
   pytest tests/test_tempo2_track2_pnnew.py -q
 
-# wsrt167 acceptance (strict gate; still failing)
+# wsrt167 acceptance (strict gate)
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
   pytest tests/test_dev_oracle_wsrt167_parity.py -m dev_oracle -q
 ```

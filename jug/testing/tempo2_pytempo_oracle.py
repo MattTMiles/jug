@@ -1,7 +1,7 @@
 """Tier-1 pytempo diagnostic oracle — dev_oracle only, never production imports.
 
 Wraps ``pytempo.sandbox.tempopulsar(...).toa_diagnostics()`` with cheat-sheet
-guards from ``TEMPO2_PARITY.md`` §0.
+guards from ``PARITY_ROADMAP.md`` §0.
 """
 
 from __future__ import annotations

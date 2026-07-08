@@ -1,7 +1,7 @@
 """Component-level pytempo oracle gates for J0613 tempo2-compatible JUG.
 
 Uses Tier-1 ``toa_diagnostics`` fields only. Marked ``dev_oracle`` because
-pytempo is optional in CI. See ``TEMPO2_PARITY.md`` § J0613 term gates.
+pytempo is optional in CI. See ``PARITY_ROADMAP.md`` § J0613 fast gates.
 """
 
 from __future__ import annotations

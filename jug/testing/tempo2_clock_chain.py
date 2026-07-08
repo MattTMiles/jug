@@ -2,7 +2,7 @@
 
 Compares JUG ``correction_tt`` / ``correction_tt_tb`` against libstempo
 ``batCorrs`` decomposed via tempo2 ``formBats.C`` signs and the production
-``model_mjd`` epoch chain. See Steps 10–12 in ``TEMPO2_PARITY.md``.
+``model_mjd`` epoch chain. See Steps 10–12 in ``PARITY_ROADMAP.md``.
 """
 
 from __future__ import annotations

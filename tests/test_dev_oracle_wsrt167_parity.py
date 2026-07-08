@@ -1,7 +1,7 @@
 """DEV ORACLE — TRACK -2 wsrt167 parity (delete with oracle harness).
 
 Requires libstempo + tempo2 runtime. Not part of standalone JUG CI.
-See ``jug/testing/DEV_ORACLE.md``, ``TEMPO2_NATIVE_CLOCK_STATUS.md`` § Phase D,
+See ``jug/testing/DEV_ORACLE.md``, ``PARITY_ROADMAP.md`` § Phase D,
 and ``tests/test_tempo2_track2_pnnew.py`` (Step 1 done; Step 2 ``phase5@bbat`` ruled out).
 Next: Step 14 torb/bbat oracle (~330 ns); Step 13 batCorr temp prototype done.
 """

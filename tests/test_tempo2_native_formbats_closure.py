@@ -5,7 +5,7 @@ Gate semantics (wsrt167, unified JAX path):
 - ``bat_corr_days`` and per-component gates test **delay physics** (~1 ns target).
 - ``bbat_mjd`` is tested separately in ``test_tempo2_native_bbat_parity.py``; raw
   ``bbat_mjd`` can fail at ~304 ns while ``bat_corr_days`` passes because tempo2
-  assembles ``bat`` with split ``long double`` summation. See ``TEMPO2_PARITY.md``.
+  assembles ``bat`` with split ``long double`` summation. See ``PARITY_ROADMAP.md``.
 """
 
 from __future__ import annotations

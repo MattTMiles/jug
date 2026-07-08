@@ -601,7 +601,7 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     addsat_sec : np.ndarray (float64), optional
         Per-TOA integer-second ``-addsat`` shifts (already applied to site MJD at
         read). On TRACK -2, applies ``addsat_track2_turn_delta`` from
-        ``jug.residuals.tempo2_spin`` (see ``TEMPO2_PARITY.md``).
+        ``jug.residuals.tempo2_spin`` (see ``PARITY_ROADMAP.md``).
 
     Returns
     -------
@@ -1950,6 +1950,25 @@ def compute_residuals_simple(
             total_delay_sec = total_delay_sec + _tropo_ld
             delay_sec = total_delay_sec
             dt_sec = dt_sec - _tropo_ld
+
+        # clkcorr.C feedback: the production model_mjd/tdb_mjd evaluate the UTC→TT
+        # clock chain at raw SAT, but tempo2 evaluates each hop at sat+corr/SECDAY.
+        # For the Taylor host spin (TRACK absent or TRACK -2) fold the per-TOA feedback
+        # delta into the emission time so residuals match tempo2's bat-based epoch.
+        # The native-JAX path (other TRACK) already consumes the feedback correction
+        # via formbats terms, so gate on the Taylor host condition to leave the
+        # full-JAX pipeline untouched.
+        _track_val_fb = params.get("TRACK", None)
+        _use_taylor_host = _track_val_fb is None or int(_track_val_fb) == -2
+        if _use_taylor_host:
+            _clock_fb_delta_sec = np.asarray(
+                _t2_setup.clock_feedback_delta_sec, dtype=np.longdouble
+            )
+            dt_sec = dt_sec + _clock_fb_delta_sec
+            model_mjd = (
+                np.asarray(model_mjd, dtype=np.longdouble)
+                + _clock_fb_delta_sec / np.longdouble(SECS_PER_DAY)
+            )
 
     phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
     phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None

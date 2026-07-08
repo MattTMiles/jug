@@ -5,7 +5,7 @@ Quarantined experimental path: ``compute_tempo2_phase5`` and
 Production uses emission-time Taylor spin + legacy TRACK −2.
 
 See ``jug.residuals.tempo2_graph_config`` and
-``TEMPO2_NATIVE_CLOCK_STATUS.md``.
+``PARITY_ROADMAP.md``.
 """
 
 from __future__ import annotations
@@ -289,7 +289,7 @@ def track_minus2_frac_phase(
     # IPTA tim files store ``-pn`` as an absolute-looking offset whose *delta from
     # obsn[0]* equals tempo2 ``pnNew`` (after ``pn0`` anchoring).  Using raw ``-pn``
     # in ``pnAct`` blows up ``addPhase`` on wsrt167 (~10¹⁰ turns); see
-    # ``TEMPO2_PARITY.md`` § "Phase D — TRACK −2 pnNew".
+    # ``PARITY_ROADMAP.md`` § "Phase D — TRACK −2 pnNew".
     pn_tim_base = int(pn_tim[0])
 
     nf0 = int(f0)
@@ -339,7 +339,7 @@ def addsat_spin_turn_correction(
     cancels that shift in ``dt``, but tempo2 evaluates spin at ``bbat``.  This
     helper is for diagnostics only: applying the raw delta on the legacy TRACK -2
     path over-corrects (~67 µs at idx 247).  Production uses
-    :func:`addsat_track2_turn_delta` instead (see ``TEMPO2_PARITY.md``).
+    :func:`addsat_track2_turn_delta` instead (see ``PARITY_ROADMAP.md``).
     """
     bbat = np.asarray(bbat_mjd, dtype=np.float64)
     torb = np.asarray(torb_sec, dtype=np.float64)

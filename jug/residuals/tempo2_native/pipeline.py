@@ -52,6 +52,7 @@ class Tempo2HostSetupResult:
     bbat_mjd: np.ndarray | None
     torb_sec: np.ndarray | None
     model_mjd: np.ndarray
+    clock_feedback_delta_sec: np.ndarray
 
 
 @dataclass
@@ -135,6 +136,22 @@ def compute_tempo2_host_setup(
         bipm_clock=bipm_clock,
         all_obs_codes=all_obs_codes,
         time_offsets=time_offsets,
+    )
+    formbats_correction_tt_nofeedback = compute_get_correction_tt_sec(
+        toas,
+        obs_clocks=obs_clocks,
+        obs_clock_default=obs_clock,
+        bipm_clock=bipm_clock,
+        all_obs_codes=all_obs_codes,
+        time_offsets=time_offsets,
+        feedback_iters=1,
+    )
+    # clkcorr.C evaluates each UTC->TT hop at sat + accumulated_corr/SECDAY;
+    # the production tdb_mjd/model_mjd path evaluates the same chain at raw SAT.
+    # This per-TOA delta is the dt-chain piece missing from the Taylor dt_sec.
+    clock_feedback_delta_sec = (
+        np.asarray(formbats_correction_tt, dtype=np.float64)
+        - np.asarray(formbats_correction_tt_nofeedback, dtype=np.float64)
     )
 
     ephem_path = resolve_tempo2_ephemeris_path(params.get("EPHEM", "DE405"))
@@ -291,6 +308,7 @@ def compute_tempo2_host_setup(
         bbat_mjd=bbat_mjd,
         torb_sec=torb_sec,
         model_mjd=model_mjd_out,
+        clock_feedback_delta_sec=clock_feedback_delta_sec,
     )
 
 

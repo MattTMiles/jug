@@ -16,13 +16,8 @@ from jug.fitting.jax_residual_delta import (
     make_residual_delta_jax_fn,
 )
 from jug.fitting.optimized_fitter import _build_general_fit_setup_from_files
-from tempo2_native_test_helpers import load_wsrt167_fixture
+from tempo2_test_helpers import load_wsrt167_fixture
 from tempo2_fixture_assertions import assert_column_matches
-
-
-@pytest.fixture(autouse=True)
-def _force_staged_native_path(monkeypatch):
-    monkeypatch.setenv("JUG_TEMPO2_NATIVE_GRAPH_MODE", "staged_bclt")
 
 
 @pytest.fixture
@@ -36,6 +31,7 @@ def wsrt167_setup():
         verbose=False,
         compatibility="tempo2",
         design_matrix_method="autodiff",
+        tempo2_native="staged_bclt",
     )
 
 
@@ -50,12 +46,12 @@ def wsrt167_setup_multiparam():
         verbose=False,
         compatibility="tempo2",
         design_matrix_method="autodiff",
+        tempo2_native="staged_bclt",
     )
 
 
 @pytest.fixture
-def wsrt167_fixed_state_setup(monkeypatch):
-    monkeypatch.setenv("JUG_TEMPO2_NATIVE_GRAPH_MODE", "fixed_state_nonlinear")
+def wsrt167_fixed_state_setup():
     fixture = load_wsrt167_fixture()
     return _build_general_fit_setup_from_files(
         fixture["par_path"],
@@ -65,13 +61,14 @@ def wsrt167_fixed_state_setup(monkeypatch):
         verbose=False,
         compatibility="tempo2",
         design_matrix_method="autodiff",
+        tempo2_native="fixed_state_nonlinear",
     )
 
 
 def test_native_bclt_converges_within_fixed_iter(wsrt167_setup):
     """Fixed scan length must cover tempo2 convergence on wsrt167."""
     from jug.residuals.tempo2.calculate_bclt_jax import DEFAULT_BCLT_JAX_FIXED_ITER
-    from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
+    from jug.residuals.tempo2.fit_setup import prepare_tempo2_chain_from_simple_result
     from jug.io.par_reader import parse_par_file
     from jug.io.tim_reader import parse_tim_file_mjds
     from jug.residuals.simple_calculator import compute_residuals_simple
@@ -86,7 +83,7 @@ def test_native_bclt_converges_within_fixed_iter(wsrt167_setup):
         compatibility="tempo2",
         skip_native_bclt_overlay=True,
     )
-    terms = prepare_native_chain_from_simple_result(jug, params, toas)
+    terms = prepare_tempo2_chain_from_simple_result(jug, params, toas)
     iters = np.asarray(jax.device_get(terms.bclt_iterations), dtype=np.int32)
     converged = np.asarray(jax.device_get(terms.converged), dtype=bool)
     assert bool(np.all(converged)), (
@@ -150,25 +147,39 @@ def test_native_jacfwd_jacrev_agreement(wsrt167_setup_multiparam):
     assert float(np.max(np.abs(jac_fwd - jac_rev))) / scale < 1e-6
 
 
-def test_native_residual_delta_uses_full_chain_not_taylor(wsrt167_setup, monkeypatch):
+def test_native_residual_delta_uses_bbat_displacement_not_pint_delay(
+    wsrt167_setup, monkeypatch
+):
+    """Tempo2 autodiff must use native bbat displacement, not the PINT delay path."""
     setup = wsrt167_setup
     if setup.native_chain_static is None:
         pytest.skip("native_chain_static unavailable")
 
-    calls = {"taylor": 0}
+    calls = {"bbat": 0}
 
-    def _taylor(*args, **kwargs):
-        calls["taylor"] += 1
-        raise AssertionError("_phase_residual_delta_jax must not run in native mode")
+    def _pint_delay(*args, **kwargs):
+        raise AssertionError(
+            "compute_total_delay_change must not run in tempo2 native mode"
+        )
+
+    def _bbat_delay_change(*args, **kwargs):
+        calls["bbat"] += 1
+        from jug.residuals.tempo2.terms import compute_bbat_delay_change_sec_jax
+
+        return compute_bbat_delay_change_sec_jax(*args, **kwargs)
 
     monkeypatch.setattr(
-        "jug.fitting.jax_residual_delta._phase_residual_delta_jax",
-        _taylor,
+        "jug.fitting.forward_delay.compute_total_delay_change",
+        _pint_delay,
+    )
+    monkeypatch.setattr(
+        "jug.fitting.jax_residual_delta.compute_bbat_delay_change_sec_jax",
+        _bbat_delay_change,
     )
     fn = make_residual_delta_jax_fn(setup=setup, fit_params=["F0"])
     delta = fn(jnp.zeros(1, dtype=jnp.float64))
     assert delta.shape[0] == setup.toas_mjd.shape[0]
-    assert calls["taylor"] == 0
+    assert calls["bbat"] == 1
 
 
 def test_native_autodiff_designmatrix_f0_matches_libstempo(wsrt167_setup):

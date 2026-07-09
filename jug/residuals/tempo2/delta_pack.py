@@ -32,10 +32,10 @@ from jug.residuals.tempo2.graph_config import (
     TEMPO2_GRAPH_FIXED_STATE_NONLINEAR,
     TEMPO2_GRAPH_FULL,
     TEMPO2_GRAPH_STAGED_BCLT,
-    tempo2_native_graph_mode,
+    tempo2_graph_mode,
 )
 from jug.residuals.tempo2.spin_jax import spin_params_to_jax
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -50,7 +50,17 @@ from .common import (
     sat_daysec_numpy_from_td_and_toas,
     track2_pulse_arrays_from_toas,
 )
-from .terms import compute_tempo2_native_terms_jax
+from .terms import compute_tempo2_terms_jax
+
+
+def _bclt_max_iter_from_setup(setup: "GeneralFitSetup") -> int:
+    """Resolve the fixed BCLT scan length from ``setup.tempo2_jug_options``."""
+    from jug.residuals.tempo2.calculate_bclt_jax import bclt_jax_fixed_iter_count
+    from jug.timing import resolve_tempo2_jug_options
+
+    opts = resolve_tempo2_jug_options(getattr(setup, "tempo2_jug_options", None))
+    return bclt_jax_fixed_iter_count(opts.get("bclt_fixed_iter"))
+
 
 def build_delta_pack(setup: "GeneralFitSetup") -> NativeDeltaPack | None:
     """Build JAX-static cache for full-chain native residual deltas."""
@@ -88,6 +98,7 @@ def build_delta_pack(setup: "GeneralFitSetup") -> NativeDeltaPack | None:
     tropo = model_static.tropo_packed
     jump = getattr(setup, "jump_phase", None)
     tzr = getattr(setup, "tzr_phase", None)
+    bclt_max_iter = _bclt_max_iter_from_setup(setup)
     return NativeDeltaPack(
         mode=TEMPO2_GRAPH_FULL,
         sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
@@ -148,6 +159,7 @@ def build_delta_pack(setup: "GeneralFitSetup") -> NativeDeltaPack | None:
             if model_static.pn_add is None
             else jnp.asarray(model_static.pn_add, dtype=jnp.int64)
         ),
+        bclt_max_iter=bclt_max_iter,
     )
 
 
@@ -202,6 +214,7 @@ def build_staged_delta_pack(
     planet_obs_ls = {
         k: jnp.asarray(v, dtype=jnp.float64) for k, v in frozen["planet_obs_ls"].items()
     }
+    bclt_max_iter = _bclt_max_iter_from_setup(setup)
     return NativeDeltaPack(
         mode=TEMPO2_GRAPH_STAGED_BCLT,
         sat_mjd=jnp.asarray(sat, dtype=jnp.float64),
@@ -248,6 +261,7 @@ def build_staged_delta_pack(
             if model_static.pn_add is None
             else jnp.asarray(model_static.pn_add, dtype=jnp.int64)
         ),
+        bclt_max_iter=bclt_max_iter,
     )
 
 
@@ -263,9 +277,10 @@ def _resolve_dt_ssb_ref_sec(
     model_static: Tempo2ModelStatic,
     ne_sw: float,
     use_native_ecliptic: bool,
+    bclt_max_iter: int | None = None,
 ) -> np.ndarray:
     """Resolve reference BCLT ``dt_ssb`` for fixed-state nonlinear mode."""
-    native_terms = td.get("tempo2_native_terms") or {}
+    native_terms = td.get("tempo2_terms") or {}
     for candidate in (
         td.get("bclt_dt_ssb_sec"),
         td.get("dt_ssb_sec"),
@@ -273,6 +288,10 @@ def _resolve_dt_ssb_ref_sec(
     ):
         if candidate is not None:
             return np.asarray(candidate, dtype=np.float64)
+    tt_pre = np.asarray(
+        td.get("formbats_correction_tt_sec", td["correction_tt_sec"]),
+        dtype=np.float64,
+    )
     ref_terms, _ = run_tempo2_toa_model_with_fixed_ifte_geometry(
         params=params,
         sat_mjd=np.asarray(sat_mjd, dtype=np.float64),
@@ -292,6 +311,7 @@ def _resolve_dt_ssb_ref_sec(
         ne_sw=float(ne_sw),
         planet_shapiro_enabled=bool(model_static.planet_shapiro_enabled),
         use_native_ecliptic=use_native_ecliptic,
+        bclt_max_iter=bclt_max_iter,
     )
     return np.asarray(ref_terms.dt_ssb_sec, dtype=np.float64)
 
@@ -305,6 +325,7 @@ def _build_fixed_state_pack_from_host(
     frozen: dict,
     tropo: np.ndarray,
     dt_ssb_ref_sec: np.ndarray,
+    bclt_max_iter: int | None = None,
 ) -> NativeDeltaPack:
     """Assemble a fixed-state pack from host residual-cache inputs."""
     from jug.residuals.tempo2.model import tempo2_einstein_rate_host
@@ -372,13 +393,14 @@ def _build_fixed_state_pack_from_host(
             if model_static.pn_add is None
             else jnp.asarray(model_static.pn_add, dtype=jnp.int64)
         ),
+        bclt_max_iter=bclt_max_iter,
     )
 
 
 def _native_fixed_state_terms_from_pack(
     params: dict,
     pack: NativeDeltaPack,
-) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+) -> tuple[Tempo2Terms, jnp.ndarray]:
     pos, vel, acc = build_tempo2_pulsar_vectors(
         params, use_native_ecliptic=pack.use_native_ecliptic
     )
@@ -481,6 +503,7 @@ def build_fixed_state_nonlinear_delta_pack(
         model_static=model_static,
         ne_sw=float(model_static.ne_sw),
         use_native_ecliptic=bool(model_static.use_native_ecliptic),
+        bclt_max_iter=_bclt_max_iter_from_setup(setup),
     )
     return _build_fixed_state_pack_from_host(
         jug_result=jug_result,
@@ -490,13 +513,14 @@ def build_fixed_state_nonlinear_delta_pack(
         frozen=frozen,
         tropo=tropo,
         dt_ssb_ref_sec=dt_ssb_ref,
+        bclt_max_iter=_bclt_max_iter_from_setup(setup),
     )
 
 
 def build_delta_pack_for_setup(
     setup: "GeneralFitSetup",
 ) -> NativeDeltaPack | NativeDeltaPack | NativeDeltaPack | None:
-    """Select native delta pack from ``setup.tempo2_native`` (or env fallback)."""
+    """Select native delta pack from ``setup.tempo2_native``."""
     config = getattr(setup, "tempo2_native", None)
     mode = _chain_mode(config)
     if mode == TEMPO2_GRAPH_FULL:

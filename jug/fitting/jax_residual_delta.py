@@ -8,9 +8,9 @@ columns in this path.
 
 For ``compatibility="tempo2"``, fits recompute
 ``residual_sec(θ+Δθ) − residual_sec(θ)`` through the tempo2-native JAX graph
-selected by ``JUG_TEMPO2_NATIVE_GRAPH_MODE`` (default ``staged_bclt``). Set
-``JUG_TEMPO2_NATIVE_GRAPH_MODE=full`` only to differentiate through the unified
-in-graph model; expect multi-minute JIT compile on first call. The Taylor
+selected by ``setup.tempo2_native`` (default ``staged_bclt``). Set
+``tempo2_native="full"`` only to differentiate through the unified in-graph
+model; expect multi-minute JIT compile on first call. The Taylor
 ``dt_base + delay_change`` fallback is not used for tempo2 compatibility.
 
 **Host vs fit model split:** production host residuals (``compute_residuals_simple``)
@@ -28,6 +28,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from jug.residuals.engine_conventions import normalize_compatibility_mode
 from jug.residuals.tempo2.common import NativeDeltaPack
 from jug.residuals.tempo2.delta_pack import build_delta_pack_for_setup
 from jug.residuals.tempo2.terms import compute_bbat_delay_change_sec_jax
@@ -64,8 +65,9 @@ _ECLIPTIC_INTERNAL_TO_LAMBDA_PUBLIC = {
 
 
 def _phase_mean_mode(compatibility: str) -> str:
-    mode = str(compatibility).lower()
-    if mode in ("tempo2", "tempo2-compatible", "tempo2_compatible"):
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    if normalize_compatibility_mode(compatibility) == "tempo2":
         return "unweighted"
     return "weighted"
 
@@ -332,7 +334,7 @@ def _compute_residual_delta_jax(
     binary_plan=None,
 ):
     """Residual delta (perturbed - reference) through JUG's JAX forward model."""
-    if str(getattr(setup, "compatibility", "")).lower().startswith("tempo2"):
+    if normalize_compatibility_mode(str(getattr(setup, "compatibility", ""))) == "tempo2":
         if native_pack is None:
             static = getattr(setup, "native_chain_static", None)
             if static is None:
@@ -341,7 +343,7 @@ def _compute_residual_delta_jax(
                     "GeneralFitSetup. Rebuild from a residual cache that includes "
                     "term_diagnostics (e.g. call compute_residuals before "
                     "export_jax_timing_state). "
-                    "Set JUG_TEMPO2_NATIVE_GRAPH_MODE to staged_bclt (default), "
+                    "Set tempo2_native to staged_bclt (default), "
                     "fixed_state_nonlinear, or full."
                 )
             raise ValueError(
@@ -430,8 +432,10 @@ def make_residual_delta_jax_fn(
     ecliptic_coords, obl_rad, ecliptic_init, native_family = _ecliptic_session_metadata(
         ref_params
     )
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
     native_pack = None
-    if str(setup.compatibility).lower().startswith("tempo2"):
+    if normalize_compatibility_mode(str(setup.compatibility)) == "tempo2":
         native_pack = build_delta_pack_for_setup(setup)
 
     @jax.jit

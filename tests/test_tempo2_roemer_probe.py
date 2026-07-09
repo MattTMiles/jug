@@ -21,7 +21,7 @@ from jug.delays.tempo2_geometry import (
 from jug.io.par_reader import parse_par_file
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.utils.constants import C_KM_S, SECS_PER_DAY
-from tempo2_native_test_helpers import compute_native_terms_for_fixture, load_wsrt167_fixture, rms_cm, rms_ns
+from tempo2_test_helpers import compute_native_terms_for_fixture, load_wsrt167_fixture, rms_cm, rms_ns
 
 TRACE = [0, 42, 85, 166]
 

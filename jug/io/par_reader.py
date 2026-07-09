@@ -410,12 +410,12 @@ def validate_par_timescale_for_compat(
     verbose: bool = False,
 ) -> str:
     """Validate timescale using the selected compatibility backend."""
-    mode = str(compatibility).lower()
-    if mode in {"pint", "pint-compatible", "pint_compatible"}:
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    mode = normalize_compatibility_mode(compatibility)
+    if mode == "pint":
         return validate_par_timescale(params, context=context, verbose=verbose)
-    if mode in {"tempo2", "tempo2-compatible", "tempo2_compatible"}:
-        return validate_par_timescale_tempo2(params, context=context, verbose=verbose)
-    raise ValueError(f"{context}: unknown compatibility mode {compatibility!r}")
+    return validate_par_timescale_tempo2(params, context=context, verbose=verbose)
 
 
 def normalize_model_params(

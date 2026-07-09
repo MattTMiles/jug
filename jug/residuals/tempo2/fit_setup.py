@@ -34,22 +34,22 @@ from jug.residuals.tempo2.graph_config import (
     TEMPO2_GRAPH_FIXED_STATE_NONLINEAR,
     TEMPO2_GRAPH_FULL,
     TEMPO2_GRAPH_STAGED_BCLT,
-    tempo2_native_graph_mode,
+    tempo2_graph_mode,
 )
 from jug.residuals.tempo2.spin_jax import spin_params_to_jax
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 from .common import NativeDeltaPack, _load_model_static_for_native_chain, _chain_mode, sat_daysec_numpy_from_td_and_toas
-from .terms import compute_tempo2_native_terms_jax
+from .terms import compute_tempo2_terms_jax
 
-def prepare_native_chain_from_simple_result(
+def prepare_tempo2_chain_from_simple_result(
     jug_result: dict,
     params: dict,
     toas: list[Any],
-) -> Tempo2NativeTerms:
+) -> Tempo2Terms:
     """Build native terms for dev_oracle / diagnostics.
 
-    Dispatches by ``JUG_TEMPO2_NATIVE_GRAPH_MODE``:
+    Dispatches by ``jug_result['tempo2_native']`` graph mode:
     ``full``, ``fixed_state_nonlinear``, or ``staged_bclt`` (default).
     """
     from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
@@ -60,9 +60,15 @@ def prepare_native_chain_from_simple_result(
     ne_sw = resolve_ne_sw_cm3(params, profile)
     freq_topo = np.array([t.freq_mhz for t in toas], dtype=np.float64)
     model_static = _load_model_static_for_native_chain(params, toas, jug_result)
+    graph_mode = _chain_mode(jug_result.get("tempo2_native"))
+    from jug.residuals.tempo2.calculate_bclt_jax import bclt_jax_fixed_iter_count
+    from jug.timing import resolve_tempo2_jug_options
 
-    if _chain_mode() == TEMPO2_GRAPH_FULL:
-        return compute_tempo2_native_terms_jax(
+    bclt_opts = resolve_tempo2_jug_options(jug_result.get("tempo2_jug_options"))
+    bclt_max_iter = bclt_jax_fixed_iter_count(bclt_opts.get("bclt_fixed_iter"))
+
+    if graph_mode == TEMPO2_GRAPH_FULL:
+        return compute_tempo2_terms_jax(
             sat_mjd=jnp.asarray(td["sat_mjd"], dtype=jnp.float64),
             correction_tt_sec=jnp.asarray(
                 td.get("formbats_correction_tt_sec", td["correction_tt_sec"]),
@@ -95,7 +101,7 @@ def prepare_native_chain_from_simple_result(
         tropo = np.full(len(td["sat_mjd"]), float(tropo), dtype=np.float64)
     sat_int, sat_sec = sat_daysec_numpy_from_td_and_toas(td, toas)
 
-    mode = _chain_mode()
+    mode = graph_mode
     if mode == TEMPO2_GRAPH_FIXED_STATE_NONLINEAR:
         dt_ssb_ref = _resolve_dt_ssb_ref_sec(
             td,
@@ -145,6 +151,7 @@ def prepare_native_chain_from_simple_result(
         use_native_ecliptic=bool(params.get("_ecliptic_coords", False)),
         sat_int_day=sat_int,
         sat_sec_in_day=sat_sec,
+        bclt_max_iter=bclt_max_iter,
     )
     return terms
 

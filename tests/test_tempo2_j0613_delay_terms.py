@@ -17,7 +17,7 @@ from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.testing.tempo2_pytempo_oracle import load_pytempo_native_oracle
 
 from tempo2_fixtures import get_tempo2_fixture
-from tempo2_native_test_helpers import rms_ns
+from tempo2_test_helpers import rms_ns
 
 _WSRT167 = get_tempo2_fixture("wsrt167")
 
@@ -105,7 +105,7 @@ def test_wsrt167_pulse_numbers_match_pytempo():
 
 def test_wsrt167_batcorr_native_chain_under_2_ns():
     """Native JAX ``bat_corr_days`` gate (delay physics, not MJD assembly)."""
-    from tempo2_native_test_helpers import compute_native_terms_for_fixture, native_batcorr_days
+    from tempo2_test_helpers import compute_native_terms_for_fixture, native_batcorr_days
 
     oracle = _oracle_wsrt167()
     native = compute_native_terms_for_fixture(_WSRT167)

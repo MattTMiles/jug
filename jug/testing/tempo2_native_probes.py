@@ -84,7 +84,7 @@ def run_native_probe_report(
 
         oracle = load_pytempo_native_oracle(par_path, tim_path, fixture_id=fixture_id)
         if native_batcorr_sec is not None and "bbat_mjd" in oracle.fields:
-            from jug.residuals.tempo2.types import Tempo2NativeTerms
+            from jug.residuals.tempo2.types import Tempo2Terms
 
             pass  # bbat checked in dedicated tests
         if "bbat_mjd" in oracle.fields and native_batcorr_sec is None:

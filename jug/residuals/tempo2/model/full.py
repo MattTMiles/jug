@@ -54,7 +54,7 @@ from jug.residuals.tempo2.spin_jax import (
     spin_params_to_jax,
     track_minus2_frac_phase_jax,
 )
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 from .static import (
@@ -89,6 +89,7 @@ from .tail import _tempo2_residual_tail_jax
         "ifte_ncf",
         "ifte_na",
         "bootstrap_max_iter",
+        "bclt_max_iter",
         "correct_troposphere",
         "obs_site_latitude_rad",
         "obs_site_longitude_rad",
@@ -147,13 +148,14 @@ def compute_tempo2_toa_model_jax(
     pulse_numbers: jnp.ndarray | None = None,
     pn_add: jnp.ndarray | None = None,
     bootstrap_max_iter: int = 8,
+    bclt_max_iter: int | None = None,
     correct_troposphere: bool = False,
     ecl_obl_rad: float = 0.0,
     sat_int_day: jnp.ndarray | None = None,
     sat_sec_in_day: jnp.ndarray | None = None,
     pep_int: jnp.ndarray | None = None,
     pep_frac: jnp.ndarray | None = None,
-) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+) -> tuple[Tempo2Terms, jnp.ndarray]:
     """Full Tempo2 delay/spin chain in one JIT graph.
 
     .. warning::
@@ -163,7 +165,7 @@ def compute_tempo2_toa_model_jax(
         initial compile can take **minutes**. Production fitting and fast dev loops
         should use ``compute_tempo2_toa_model_staging_with_host_inputs_jax`` with
         host-frozen inputs instead. Enable only via
-        ``JUG_TEMPO2_NATIVE_GRAPH_MODE=full``.
+        ``tempo2_native="full"``.
 
     Clock ``getCorrectionTT``, IFTE ``IF_deltaT``, ephemeris geometry
     (SPK + site motion + Teph bootstrap), troposphere, and ``einsteinRate``
@@ -252,6 +254,7 @@ def compute_tempo2_toa_model_jax(
         planet_shapiro_enabled=planet_shapiro_enabled,
         obs_jupiter_ls=geom.obs_jupiter_ls,
         planet_obs_ls=_stack_planet_obs_ls_jax(geom),
+        max_iter=bclt_max_iter,
     )
     tropo = jnp.asarray(tropo, dtype=jnp.float64)
     return _tempo2_residual_tail_jax(
@@ -287,7 +290,7 @@ def run_tempo2_toa_model(
     freq_mhz: np.ndarray,
     ephem_mjd: np.ndarray,
     static: Tempo2ModelStatic,
-) -> tuple[Tempo2NativeTerms, np.ndarray]:
+) -> tuple[Tempo2Terms, np.ndarray]:
     """Host wrapper: run unified JIT model with prepacked static tables."""
     del ephem_mjd
     terms, res = run_tempo2_toa_model_with_fixed_ifte_geometry(
@@ -340,7 +343,8 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
     compute_residuals: bool = False,
     sat_int_day: np.ndarray | None = None,
     sat_sec_in_day: np.ndarray | None = None,
-) -> tuple[Tempo2NativeTerms, np.ndarray | None]:
+    bclt_max_iter: int | None = None,
+) -> tuple[Tempo2Terms, np.ndarray | None]:
     """Run unified or staging JAX model.
 
     When host geometry arrays are omitted, ephemeris geometry is derived
@@ -487,6 +491,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
             ifte_coef_offset=int(model_static.ifte_coef_offset),
             ifte_ncf=int(model_static.ifte_ncf),
             ifte_na=int(model_static.ifte_na),
+            bclt_max_iter=bclt_max_iter,
         )
     else:
         from jug.delays.tempo2_geometry import ecliptic_obliquity_rad
@@ -533,6 +538,7 @@ def run_tempo2_toa_model_with_fixed_ifte_geometry(
                 if model_static.tropo_packed is not None
                 else 101.325
             ),
+            bclt_max_iter=bclt_max_iter,
         )
     if compute_residuals:
         return terms, jax.device_get(residual_sec)

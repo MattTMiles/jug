@@ -34,10 +34,10 @@ from jug.residuals.tempo2.graph_config import (
     TEMPO2_GRAPH_FIXED_STATE_NONLINEAR,
     TEMPO2_GRAPH_FULL,
     TEMPO2_GRAPH_STAGED_BCLT,
-    tempo2_native_graph_mode,
+    tempo2_graph_mode,
 )
 from jug.residuals.tempo2.spin_jax import spin_params_to_jax
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
 def sat_daysec_numpy_from_td_and_toas(td: dict, toas: list[Any] | None) -> tuple[np.ndarray, np.ndarray]:
@@ -56,9 +56,9 @@ def sat_daysec_numpy_from_td_and_toas(td: dict, toas: list[Any] | None) -> tuple
     return sat_int, (sat_mjd - sat_int) * SECS_PER_DAY
 
 
-def _chain_mode(config=None) -> str:
+def _chain_mode(mode: str | None = None) -> str:
     """Return the active tempo2-native JAX graph mode."""
-    return tempo2_native_graph_mode(config)
+    return tempo2_graph_mode(mode)
 
 
 @dataclass(frozen=True)
@@ -124,6 +124,7 @@ class NativeDeltaPack:
     obs_site_longitude_rad: float | None = None
     obs_site_height_m: float | None = None
     obs_site_pressure_mbar: float | None = None
+    bclt_max_iter: int | None = None
 
 
 def _param_scalar_jax(params: dict, name: str, default: float = 0.0):

@@ -11,7 +11,7 @@ pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 
 from jug.testing.tempo2_pytempo_oracle import load_pytempo_native_oracle
 from jug.testing.tempo2_reference import tempo2_reference
-from tempo2_native_test_helpers import delta_ns
+from tempo2_test_helpers import delta_ns
 
 
 def test_native_batcorr_wsrt167_matches_pytempo_bat_corr_days(wsrt167_fixture):

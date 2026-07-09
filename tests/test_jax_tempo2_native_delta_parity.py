@@ -17,10 +17,10 @@ def test_native_delta_module_importable():
 
 
 def test_native_delta_phase5_gates_documented():
-    """Full Phase 5 gates: tests/test_tempo2_native_residual_delta_jax.py."""
+    """Full Phase 5 gates: tests/test_tempo2_residual_delta_jax.py."""
     from pathlib import Path
 
-    gate_path = Path(__file__).with_name("test_tempo2_native_residual_delta_jax.py")
+    gate_path = Path(__file__).with_name("test_tempo2_residual_delta_jax.py")
     text = gate_path.read_text(encoding="utf-8")
     assert "test_native_autodiff_designmatrix_f0_matches_libstempo" in text
-    assert "test_native_residual_delta_uses_full_chain_not_taylor" in text
+    assert "test_native_residual_delta_uses_bbat_displacement_not_pint_delay" in text

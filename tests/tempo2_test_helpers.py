@@ -10,7 +10,7 @@ import numpy as np
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
+from jug.residuals.tempo2.fit_setup import prepare_tempo2_chain_from_simple_result
 from jug.utils.constants import SECS_PER_DAY
 
 
@@ -33,7 +33,7 @@ def compute_native_terms_for_fixture(fixture: dict) -> Any:
         par_path, tim_path, verbose=False, compatibility="tempo2",
         skip_native_bclt_overlay=True,
     )
-    return prepare_native_chain_from_simple_result(
+    return prepare_tempo2_chain_from_simple_result(
         jug,
         params,
         toas,
@@ -41,7 +41,7 @@ def compute_native_terms_for_fixture(fixture: dict) -> Any:
 
 
 def compute_native_terms_model_epoch(fixture: dict) -> Any:
-    """Alias for the unified JAX path (model-epoch batCorr lives in chain_numpy)."""
+    """Alias for the unified JAX path."""
     return compute_native_terms_for_fixture(fixture)
 
 

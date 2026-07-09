@@ -54,7 +54,7 @@ from jug.residuals.tempo2.spin_jax import (
     spin_params_to_jax,
     track_minus2_frac_phase_jax,
 )
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 @dataclass(frozen=True)

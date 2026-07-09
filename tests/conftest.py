@@ -45,7 +45,7 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(scope="session")
 def wsrt167_fixture():
-    from tempo2_native_test_helpers import load_wsrt167_fixture
+    from tempo2_test_helpers import load_wsrt167_fixture
 
     return load_wsrt167_fixture()
 
@@ -66,7 +66,7 @@ def wsrt167_pytempo_oracle(wsrt167_fixture):
 def wsrt167_native_terms(wsrt167_fixture):
     """Amortize one wsrt167 JAX native-chain compile across a module."""
     from jug.utils.jax_setup import ensure_jax_x64
-    from tempo2_native_test_helpers import compute_native_terms_for_fixture
+    from tempo2_test_helpers import compute_native_terms_for_fixture
 
     ensure_jax_x64()
     return compute_native_terms_for_fixture(wsrt167_fixture)

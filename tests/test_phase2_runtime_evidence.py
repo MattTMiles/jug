@@ -25,7 +25,7 @@ from jug.testing.tempo2_pytempo_oracle import load_pytempo_native_oracle
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.ifteph import IFTE_LC, IFTE_TEPH0_SEC, ifte_delta_t_mjd, load_ifte_coeff_tables
 from jug.utils.timescales import IFTE_K, is_tempo2_si_units, parse_timescale
-from tempo2_native_test_helpers import (
+from tempo2_test_helpers import (
     compute_native_terms_for_fixture,
     load_wsrt167_fixture,
     rms_ns,

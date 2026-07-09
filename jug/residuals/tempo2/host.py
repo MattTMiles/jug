@@ -27,7 +27,7 @@ import numpy as np
 
 from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
 from jug.residuals.tempo2.graph_config import USE_NATIVE_BBAT_PHASE5
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
@@ -62,7 +62,7 @@ class Tempo2HostFinalizeResult:
     residuals_us: np.ndarray
     residuals_sec: np.ndarray
     pulse_number: np.ndarray
-    native: Tempo2NativeTerms
+    native: Tempo2Terms
     dm_delay_sec: np.ndarray
     sw_delay_sec: np.ndarray
 
@@ -116,8 +116,8 @@ def compute_tempo2_host_setup(
         compute_get_correction_tt_sec,
         compute_site_clock_corrections_sec,
     )
-    from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
-    from jug.residuals.tempo2.types import native_terms_to_numpy
+    from jug.residuals.tempo2.fit_setup import prepare_tempo2_chain_from_simple_result
+    from jug.residuals.tempo2.types import tempo2_terms_to_numpy
     from jug.utils.ifteph import ifte_delta_t_mjd
 
     correction_tt = compute_site_clock_corrections_sec(
@@ -277,10 +277,10 @@ def compute_tempo2_host_setup(
             "freq_bary_mhz": freq_bary_mhz,
             "compatibility": compatibility_mode,
         }
-        _native_overlay = prepare_native_chain_from_simple_result(
+        _native_overlay = prepare_tempo2_chain_from_simple_result(
             _overlay_jug, params, toas
         )
-        _native_np = native_terms_to_numpy(_native_overlay)
+        _native_np = tempo2_terms_to_numpy(_native_overlay)
         formbats_tt_arr = np.asarray(_native_np["correction_tt_sec"], dtype=np.float64)
         formbats_correction_tt = formbats_tt_arr
         tropo_delay_sec = np.asarray(_native_np["tropospheric_sec"], dtype=np.float64)
@@ -366,7 +366,7 @@ def finalize_tempo2_host_residuals(
     """Tempo2 host residuals: Taylor for TRACK−2/no-TRACK; native for other TRACK."""
     from jug.residuals.phase import compute_phase_residuals
     from jug.residuals.tempo2.common import sat_daysec_numpy_from_td_and_toas
-    from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
+    from jug.residuals.tempo2.fit_setup import prepare_tempo2_chain_from_simple_result
     from jug.residuals.tempo2.orchestrator import compute_eval_residuals_jax
 
     sat_int, sat_sec = sat_daysec_numpy_from_td_and_toas(
@@ -398,7 +398,7 @@ def finalize_tempo2_host_residuals(
         "freq_bary_mhz": freq_bary_mhz,
         "compatibility": compatibility_mode,
     }
-    native = prepare_native_chain_from_simple_result(_jug, params, toas)
+    native = prepare_tempo2_chain_from_simple_result(_jug, params, toas)
     use_taylor_host_spin = track_val is None or int(track_val) == -2
     if use_taylor_host_spin:
         residuals_us, residuals_sec, pulse_number = compute_phase_residuals(

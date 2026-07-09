@@ -514,8 +514,9 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
     dict with keys: model_id, has_binary, binary_model, plus all scalar
     float values (*_val) and JAX arrays (*_jax) needed by the delay kernel.
     """
-    mode = str(compatibility).lower()
-    is_tempo2_mode = mode in ("tempo2", "tempo2-compatible", "tempo2_compatible")
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    is_tempo2_mode = normalize_compatibility_mode(compatibility) == "tempo2"
 
     has_binary = 'PB' in params or 'FB0' in params
     binary_model = params.get('BINARY', 'NONE').upper() if has_binary else 'NONE'
@@ -1057,7 +1058,8 @@ def compute_residuals_simple(
     diagnostic_conventions: DiagnosticConventions | None = None,
     engine_conventions: EngineConventionProfile | None = None,
     skip_native_bclt_overlay: bool = False,
-    iers_policy: str | None = None,
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict | None = None,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -1133,6 +1135,13 @@ def compute_residuals_simple(
     from jug.io.clock import resolve_clock_dir
 
     clock_dir = resolve_clock_dir(clock_dir, compatibility=compatibility)
+
+    from jug.timing import resolve_tempo2_session_args
+
+    resolved_tempo2_native, resolved_tempo2_jug_options = resolve_tempo2_session_args(
+        compatibility, tempo2_native, tempo2_jug_options
+    )
+    iers_policy = resolved_tempo2_jug_options.get("iers_policy")
 
     # Parse files
     if verbose: print(f"\n1. Loading files...")
@@ -1374,9 +1383,9 @@ def compute_residuals_simple(
     # The resolved engine profile is the single source of truth so implicit
     # tempo2 defaults and explicit par overrides follow the same code path.
     correct_troposphere = bool(engine_profile.correct_troposphere)
-    is_tempo2_compat_early = str(compatibility_mode).lower() in (
-        "tempo2", "tempo2-compatible", "tempo2_compatible"
-    )
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    is_tempo2_compat_early = normalize_compatibility_mode(compatibility_mode) == "tempo2"
 
     tropo_delay_sec = np.zeros(len(toas), dtype=np.float64)
     if correct_troposphere and not is_tempo2_compat_early:
@@ -1628,9 +1637,7 @@ def compute_residuals_simple(
     spin_model_mjd_ld = np.asarray(model_mjd, dtype=np.longdouble)
     dt_sec = (spin_model_mjd_ld - PEPOCH) * np.longdouble(SECS_PER_DAY) - delay_sec
 
-    is_tempo2_compat = str(compatibility_mode).lower() in (
-        "tempo2", "tempo2-compatible", "tempo2_compatible"
-    )
+    is_tempo2_compat = normalize_compatibility_mode(compatibility_mode) == "tempo2"
     bbat_mjd = None
     torb_sec = None
     tempo2_clock_terms = None
@@ -1963,6 +1970,8 @@ def compute_residuals_simple(
 
     return {
         'compatibility': compatibility_mode,
+        'tempo2_native': resolved_tempo2_native,
+        'tempo2_jug_options': resolved_tempo2_jug_options,
         'par_timescale': par_timescale,
         'diagnostic_conventions': {
             'residual_metric': diagnostic_conv.residual_metric,

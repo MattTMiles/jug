@@ -13,17 +13,25 @@ import jax
 import jax.numpy as jnp
 
 from jug.io.par_reader import parse_par_file
-from jug.residuals.tempo2.formbats_jax import compute_torb_closure_jax
-from tempo2_native_test_helpers import delta_ns
+from jug.residuals.tempo2.compensated import split_mjd_to_daysec
+from jug.residuals.tempo2.formbats_jax import compute_torb_closure_daysec
+from jug.residuals.tempo2.spin_jax import pepoch_parts_from_value
+from tempo2_test_helpers import delta_ns
 
 
 def _torb_from_native(native, pepoch: float) -> np.ndarray:
+    bbat_int, bbat_sec = split_mjd_to_daysec(native.bbat_mjd)
+    _, pep_int, pep_frac = pepoch_parts_from_value(
+        jnp.asarray(pepoch, dtype=jnp.float64)
+    )
     return np.asarray(
         jax.device_get(
-            compute_torb_closure_jax(
-                native.bbat_mjd,
+            compute_torb_closure_daysec(
+                bbat_int,
+                bbat_sec,
                 native.dt_emission_sec,
-                jnp.asarray(pepoch, dtype=jnp.float64),
+                pep_int,
+                pep_frac,
             )
         ),
         dtype=np.float64,

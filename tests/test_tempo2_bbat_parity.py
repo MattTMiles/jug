@@ -7,7 +7,7 @@ split ``long double`` summation (``sat + tt/86400 + (other)/86400``).
 
 This is documented in ``PARITY_ROADMAP.md`` § "formBats bat_mjd / bbat_mjd assembly".
 A failing test here does **not** mean delay physics is wrong; gate ``bat_corr_days``
-in ``test_tempo2_native_formbats_closure.py`` for that.
+in ``test_tempo2_formbats_closure.py`` for that.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
 import jax
 
-from tempo2_native_test_helpers import delta_ns
+from tempo2_test_helpers import delta_ns
 
 
 def test_native_bbat_strict_formbats_wsrt167(wsrt167_native_terms, wsrt167_pytempo_oracle):

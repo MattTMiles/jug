@@ -17,7 +17,7 @@ from jug.residuals.tempo2_clock import compute_get_correction_tt_sec
 from jug.residuals.tempo2.common import _load_model_static_for_native_chain
 from jug.residuals.tempo2.clock_jax import compute_tempo2_get_correction_tt_jax
 from jug.residuals.simple_calculator import compute_residuals_simple
-from tempo2_native_test_helpers import delta_ns
+from tempo2_test_helpers import delta_ns
 
 
 def test_jax_get_correction_tt_matches_host_formbats_reference(
@@ -102,7 +102,7 @@ def test_wsrt167_parity_probe_writes_report(wsrt167_clock_inputs, wsrt167_native
     tdis1 = np.asarray(jax.device_get(native.tdis1_sec), dtype=np.float64)
     tdis2 = np.asarray(jax.device_get(native.tdis2_sec), dtype=np.float64)
     dt_ssb = np.asarray(jax.device_get(native.dt_ssb_sec), dtype=np.float64)
-    from tempo2_native_test_helpers import native_batcorr_days
+    from tempo2_test_helpers import native_batcorr_days
 
     batcorr = native_batcorr_days(native)
 

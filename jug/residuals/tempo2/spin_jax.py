@@ -108,31 +108,6 @@ def compute_tempo2_frac_phase_daysec(
     return total - jnp.round(total)
 
 
-def compute_tempo2_phase5_jax(
-    bbat_mjd,
-    torb_sec,
-    f_terms,
-    pepoch_mjd,
-    jump_phase=None,
-    tzr_phase=None,
-):
-    """Legacy single-MJD phase5; prefer :func:`compute_tempo2_phase5_daysec`."""
-    from jug.residuals.tempo2.compensated import split_mjd_to_daysec
-
-    bbat_int, bbat_sec = split_mjd_to_daysec(bbat_mjd)
-    _, pep_int, pep_frac = pepoch_parts_from_value(pepoch_mjd)
-    return compute_tempo2_phase5_daysec(
-        bbat_int,
-        bbat_sec,
-        torb_sec,
-        f_terms,
-        pep_int,
-        pep_frac,
-        jump_phase=jump_phase,
-        tzr_phase=tzr_phase,
-    )
-
-
 def track_minus2_frac_phase_jax(
     phase5,
     bbat_int,

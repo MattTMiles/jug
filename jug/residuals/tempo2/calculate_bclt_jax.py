@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -315,9 +314,6 @@ def bclt_jax_fixed_iter_count(max_iter: int | None = None) -> int:
     """Return the fixed BCLT scan length for the JAX path."""
     if max_iter is not None:
         return int(max_iter)
-    env = os.environ.get("JUG_TEMPO2_BCLT_FIXED_ITER", "").strip()
-    if env:
-        return int(env)
     return DEFAULT_BCLT_JAX_FIXED_ITER
 
 GM_C3_JAX = GM_C3

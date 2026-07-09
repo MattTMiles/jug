@@ -12,7 +12,7 @@ locked.
 - [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) — dev oracle harness and test commands
 - [`README.md`](README.md) — install, compatibility modes, pytest entry points
 
-*Last updated: 2026-07-08*
+*Last updated: 2026-07-09*
 
 ---
 
@@ -318,30 +318,41 @@ Tempo2 mode uses a **separate native chain** under
 identical par+tim inputs (§7).
 
 For JAX-traced fitting (`compatibility="tempo2"`), the traced graph uses one of three
-user-selectable tempo2-native modes via `JUG_TEMPO2_NATIVE_GRAPH_MODE`.
+user-selectable tempo2-native modes via the `tempo2_native` session kwarg.
 
 ### Graph mode selector
 
 | Control | Role |
 |---------|------|
-| `JUG_TEMPO2_NATIVE_GRAPH_MODE` | Selects **which** in-graph tempo2 physics to run for fitting / `residual_delta_jax` |
+| `tempo2_native` | Selects **which** in-graph tempo2 physics to run for fitting / `residual_delta_jax` |
+| `tempo2_jug_options` | Dict of tempo2-specific options (see below) |
 
 Requires session cache `term_diagnostics['tempo2_obs_state']` when building
 `GeneralFitSetup.native_chain_static`.
 
 ### Three tempo2-native graph modes
 
-User-facing control (exact strings only):
+User-facing control on `TimingSession` / `open_session` (exact strings only):
 
-```bash
-JUG_TEMPO2_NATIVE_GRAPH_MODE={fixed_state_nonlinear,staged_bclt,full}
+```python
+TimingSession(
+    par, tim,
+    compatibility="tempo2",
+    tempo2_native="staged_bclt",  # fixed_state_nonlinear | full
+    tempo2_jug_options={
+        "iers_policy": "warn",       # or "strict"
+        "bclt_fixed_iter": 12,       # fixed-length BCLT scan for JAX AD
+        "force_cache_refresh": False,
+        "require_native_cache": True,
+    },
+)
 ```
 
-Default when unset: **`staged_bclt`**.
+Default when `tempo2_native` is omitted on tempo2 sessions: **`staged_bclt`**.
 
 ```mermaid
 flowchart TB
-  Mode["JUG_TEMPO2_NATIVE_GRAPH_MODE"] --> Fixed["fixed_state_nonlinear"]
+  Mode["tempo2_native kwarg"] --> Fixed["fixed_state_nonlinear"]
   Mode --> Staged["staged_bclt (default)"]
   Mode --> Full["full"]
 
@@ -428,7 +439,8 @@ in the delay terms themselves.
 
 | Component | Location |
 |-----------|----------|
-| Mode selector | `jug/residuals/tempo2/graph_config.py` → `tempo2_native_graph_mode()` |
+| Mode selector | `jug/residuals/tempo2/graph_config.py` → `tempo2_graph_mode()` |
+| Session kwargs | `jug/timing/__init__.py` → `resolve_tempo2_session_args()` |
 | Pack types | `jug/residuals/tempo2/common.py` — `NativeDeltaPack` |
 | Bbat delay change | `jug/residuals/tempo2/terms.py` → `compute_bbat_delay_change_sec_jax()` |
 | One-pass BCLT | `jug/residuals/tempo2/calculate_bclt_jax.py` → `compute_bclt_terms_fixed_state_jax()` |
@@ -436,14 +448,14 @@ in the delay terms themselves.
 | JAX dispatch | `jug/fitting/jax_residual_delta.py` → `_compute_residual_delta_jax()` |
 
 `dt_ssb_ref_sec` is sourced from host term diagnostics at pack-build time
-(`bclt_dt_ssb_sec`, `dt_ssb_sec`, or nested `tempo2_native_terms`). The hot
+(`bclt_dt_ssb_sec`, `dt_ssb_sec`, or nested `tempo2_terms`). The hot
 residual function must not re-run a reference BCLT solve per sample.
 
 ### Validation plan for `fixed_state_nonlinear`
 
 Before promoting the fast mode for production NUTS:
 
-1. **Mode selection tests** — env var parsing, default `staged_bclt`, invalid mode raises.
+1. **Mode selection tests** — `tempo2_native` validation, default `staged_bclt`, invalid mode raises.
 2. **Gradient sanity** — `jax.grad` finite for `RAJ`, `DECJ`, `F0`, `DM`.
 3. **Residual movement** — perturbing astrometry/DM changes residuals.
 4. **Parity envelope** — compare `fixed_state_nonlinear` vs `staged_bclt` for
@@ -484,17 +496,21 @@ fast graph mode for IPTA-scale traced likelihoods.
 | Canonical TCB fixtures | Case A (TCB) must stay green. |
 | PINT vs tempo2 cross-engine floor | Closing PINT↔tempo2 gaps inside PINT is **out of scope**. |
 | Design matrix in tempo2 mode | Use `design_matrix_method="autodiff"`. **Do not** use `"analytic"` on tempo2 sessions (known broken). |
-| Tempo2-native JAX fitting | **Graph modes** (default `staged_bclt`): `JUG_TEMPO2_NATIVE_GRAPH_MODE={fixed_state_nonlinear,staged_bclt,full}`. Requires `term_diagnostics['tempo2_obs_state']` in residual cache for `native_chain_static`. |
-| IERS preflight | **Warn** in notebooks / offline use; **strict fail** under pytest or `JUG_IERS_STRICT=1`. |
+| Tempo2-native JAX fitting | **Graph modes** (default `staged_bclt`): `tempo2_native={fixed_state_nonlinear,staged_bclt,full}` plus `tempo2_jug_options` for IERS/BCLT/cache knobs. Requires `term_diagnostics['tempo2_obs_state']` in residual cache for `native_chain_static`. |
+| IERS preflight | **Warn** in notebooks / offline use; **strict fail** under pytest (auto-detected) or `tempo2_jug_options={"iers_policy": "strict"}`. |
 | Canonical tangent for fitting | tempo2 autodiff / `residual_delta_jax` is the **production tangent** for NUTS/WLS when `design_matrix_method="autodiff"` (wired; IPTA notebook uses it). Remaining work: broaden libstempo design-matrix oracle gates beyond wsrt167 F0 and all graph modes. |
 
-### Tempo2-native graph mode
+### Tempo2-native graph mode and options
 
-| Env var | Default | Purpose |
-|---------|---------|---------|
-| `JUG_TEMPO2_NATIVE_GRAPH_MODE` | `staged_bclt` | Selects which tempo2-native JAX physics to trace for fitting / `residual_delta_jax` |
+| Kwarg | Default | Purpose |
+|-------|---------|---------|
+| `tempo2_native` | `staged_bclt` | Selects which tempo2-native JAX physics to trace for fitting / `residual_delta_jax` |
+| `tempo2_jug_options["iers_policy"]` | `warn` | IERS/EOP preflight: `warn` or `strict` |
+| `tempo2_jug_options["bclt_fixed_iter"]` | `12` | Fixed-length BCLT `lax.scan` iterations for reverse-mode AD |
+| `tempo2_jug_options["force_cache_refresh"]` | `False` | Force rebuild of native-chain cache |
+| `tempo2_jug_options["require_native_cache"]` | `True` | Require `term_diagnostics['tempo2_obs_state']` before JAX export |
 
-Supported values (exact strings only): `fixed_state_nonlinear`, `staged_bclt`, `full`.
+Supported `tempo2_native` values (exact strings only): `fixed_state_nonlinear`, `staged_bclt`, `full`.
 
 MetaPulsar / notebook integrators must call `compute_residuals` (or
 `force_recompute=True` after JUG upgrades) before `export_jax_timing_state`, and pass
@@ -620,10 +636,10 @@ Inside ``jug/residuals/tempo2/``, internal functions use ``compute_*`` / ``build
 without a redundant ``native`` or ``tempo2_native`` infix — the package name already
 scopes them. The ``_jax`` suffix is kept where the function is JAX-specific.
 
-Public package exports listed in ``tempo2/__init__.py.__all__`` retain their
-``tempo2_native_*`` names for configuration API stability. User-facing configuration
-names (``Tempo2NativeConfig``, ``tempo2_native`` kwargs, ``JUG_TEMPO2_NATIVE_GRAPH_MODE``)
-are unchanged.
+User-facing configuration is the ``tempo2_native`` graph-mode string and
+``tempo2_jug_options`` dict on ``TimingSession`` / ``open_session`` / fit exports
+(resolved by ``jug.timing.resolve_tempo2_session_args``). Internal graph dispatch
+uses ``tempo2_graph_mode()`` in ``graph_config.py``.
 
 Layout mirrors the PINT path:
 

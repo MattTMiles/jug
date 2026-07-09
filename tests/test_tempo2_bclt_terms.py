@@ -11,7 +11,7 @@ pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
 import jax
 
-from tempo2_native_test_helpers import delta_ns, rms_ns
+from tempo2_test_helpers import delta_ns, rms_ns
 
 
 def test_native_roemer_wsrt167_vs_pytempo(wsrt167_native_terms, wsrt167_pytempo_oracle):

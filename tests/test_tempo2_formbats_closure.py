@@ -3,7 +3,7 @@
 Gate semantics (wsrt167, unified JAX path):
 
 - ``bat_corr_days`` and per-component gates test **delay physics** (~1 ns target).
-- ``bbat_mjd`` is tested separately in ``test_tempo2_native_bbat_parity.py``; raw
+- ``bbat_mjd`` is tested separately in ``test_tempo2_bbat_parity.py``; raw
   ``bbat_mjd`` can fail at ~304 ns while ``bat_corr_days`` passes because tempo2
   assembles ``bat`` with split ``long double`` summation. See ``PARITY_ROADMAP.md``.
 """
@@ -19,7 +19,7 @@ pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
 
 import jax
 
-from tempo2_native_test_helpers import delta_ns, native_batcorr_days
+from tempo2_test_helpers import delta_ns, native_batcorr_days
 
 WSRT167_TRACE_INDICES = [0, 42, 85, 166]
 
@@ -56,7 +56,7 @@ def test_native_strict_formbats_batcorr_wsrt167(wsrt167_native_terms, wsrt167_py
 
     Compares ``bat_corr_days`` / integrated formBats correction. Target < 1 ns.
     May fail at ~1.1 ns until clock-outlier TOAs are closed. For ``bbat_mjd``
-    assembly (~304 ns), see ``test_tempo2_native_bbat_parity.py``.
+    assembly (~304 ns), see ``test_tempo2_bbat_parity.py``.
     """
     delta = delta_ns(
         native_batcorr_days(wsrt167_native_terms),

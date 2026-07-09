@@ -18,9 +18,13 @@ T2CMethod = Literal["IAU2000B", "TEMPO"]
 def normalize_compatibility_mode(compatibility: str) -> str:
     """Map API compatibility string to ``pint`` or ``tempo2``."""
     mode = str(compatibility).lower()
-    if mode in ("tempo2", "tempo2-compatible", "tempo2_compatible"):
+    if mode == "tempo2":
         return "tempo2"
-    return "pint"
+    if mode == "pint":
+        return "pint"
+    raise ValueError(
+        f"Unknown compatibility={compatibility!r}; expected 'pint' or 'tempo2'"
+    )
 
 
 def _normalize_compatibility(compatibility: str) -> str:

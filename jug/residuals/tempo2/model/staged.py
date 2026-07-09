@@ -54,7 +54,7 @@ from jug.residuals.tempo2.spin_jax import (
     spin_params_to_jax,
     track_minus2_frac_phase_jax,
 )
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 from .static import Tempo2ModelStatic, compute_dm_vals_jax, planet_rsa_tuple_jax_from_dict
@@ -76,6 +76,7 @@ from .tail import _tempo2_residual_tail_jax
         "shk_posepoch",
         "dm_epoch",
         "dm_coeffs",
+        "bclt_max_iter",
     ),
 )
 def compute_tempo2_toa_model_staging_with_host_inputs_jax(
@@ -131,13 +132,14 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
     sat_sec_in_day: jnp.ndarray | None = None,
     pep_int: jnp.ndarray | None = None,
     pep_frac: jnp.ndarray | None = None,
-) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+    bclt_max_iter: int | None = None,
+) -> tuple[Tempo2Terms, jnp.ndarray]:
     """Production Tempo2 TOA model with host-frozen static inputs.
 
     Accepts precomputed geometry, clocks, and ``einsteinRate`` from
     ``term_diagnostics['tempo2_obs_state']``. Only the parameter-dependent tail
     (BCLT, formBats, Shklovskii, spin) runs inside JAX. This is the **default**
-    production path when ``JUG_TEMPO2_NATIVE_GRAPH_MODE=staged_bclt`` (default).
+    production path when ``tempo2_native="staged_bclt"`` (default).
 
     For the slow unified in-graph reference, see ``compute_tempo2_toa_model_jax``.
     """
@@ -196,6 +198,7 @@ def compute_tempo2_toa_model_staging_with_host_inputs_jax(
         planet_shapiro_enabled=planet_shapiro_enabled,
         obs_jupiter_ls=obs_jupiter_ls,
         planet_obs_ls=planet_rsa,
+        max_iter=bclt_max_iter,
     )
     tropo = jnp.asarray(tropo_sec, dtype=jnp.float64)
     return _tempo2_residual_tail_jax(

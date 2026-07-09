@@ -53,43 +53,6 @@ def compute_formbats_daysec(
     )
 
 
-def compute_formbats_jax(
-    sat_mjd,
-    correction_tt_sec,
-    correction_tt_tb_sec,
-    tropospheric_sec,
-    roemer_sec,
-    shapiro_delay_sec,
-    tdis1_sec,
-    tdis2_sec,
-    shklovskii_sec,
-):
-    """Legacy single-MJD wrapper; prefer :func:`compute_formbats_daysec`."""
-    sat_int, sat_sec = split_mjd_to_daysec(sat_mjd)
-    (
-        bat_corr_day,
-        bat_corr_resid,
-        bat_int,
-        bat_sec,
-        bbat_int,
-        bbat_sec,
-    ) = compute_formbats_daysec(
-        sat_int,
-        sat_sec,
-        correction_tt_sec,
-        correction_tt_tb_sec,
-        tropospheric_sec,
-        roemer_sec,
-        shapiro_delay_sec,
-        tdis1_sec,
-        tdis2_sec,
-        shklovskii_sec,
-    )
-    bat_mjd = mjd_view_from_daysec(bat_int, bat_sec)
-    bbat_mjd = mjd_view_from_daysec(bbat_int, bbat_sec)
-    return bat_corr_day, bat_corr_resid, bat_mjd, bbat_mjd
-
-
 def compute_shklovskii_sec_jax(bat_mjd, params):
     """JAX Shklovskii delay; host params dict with float values."""
     bat = jnp.asarray(bat_mjd, dtype=jnp.float64)
@@ -166,10 +129,3 @@ def compute_torb_closure_daysec(bbat_int, bbat_sec, dt_emission_sec, pep_int, pe
         - pep_frac * jnp.asarray(SECS_PER_DAY, dtype=jnp.float64)
     )
 
-
-def compute_torb_closure_jax(bbat_mjd, dt_emission_sec, pepoch_mjd):
-    """Legacy single-MJD torb closure; prefer :func:`compute_torb_closure_daysec`."""
-    bbat_int, bbat_sec = split_mjd_to_daysec(bbat_mjd)
-    pep_int = jnp.floor(jnp.asarray(pepoch_mjd, dtype=jnp.float64))
-    pep_frac = jnp.asarray(pepoch_mjd, dtype=jnp.float64) - pep_int
-    return compute_torb_closure_daysec(bbat_int, bbat_sec, dt_emission_sec, pep_int, pep_frac)

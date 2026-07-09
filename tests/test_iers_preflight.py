@@ -69,6 +69,8 @@ def test_raise_on_iers_failure():
 
 def test_iers_strict_enabled_under_pytest():
     assert iers_strict_enabled() is True
+    assert iers_strict_enabled(iers_policy="warn") is True
+    assert iers_strict_enabled(iers_policy="strict") is True
 
 
 def test_warn_on_iers_failure_emits_user_warning():
@@ -86,7 +88,7 @@ def test_load_clock_corrections_warns_on_iers_failure_non_strict(monkeypatch):
         return False, [{"severity": "error", "message": "EOP/IERS ERROR: broken cache."}]
 
     monkeypatch.setattr("jug.io.clock.check_iers_coverage", fake_iers)
-    monkeypatch.setattr("jug.io.clock.iers_strict_enabled", lambda: False)
+    monkeypatch.setattr("jug.io.clock.iers_strict_enabled", lambda *args, **kwargs: False)
 
     clock_dir = repo_root / "data" / "clock"
     params = {"CLK": "TT(BIPM2024)"}
@@ -105,7 +107,7 @@ def test_load_clock_corrections_warns_on_iers_failure_non_strict(monkeypatch):
         return False, [{"severity": "error", "message": "EOP/IERS ERROR: broken cache."}]
 
     monkeypatch.setattr("jug.io.clock.check_iers_coverage", fake_iers)
-    monkeypatch.setattr("jug.io.clock.iers_strict_enabled", lambda: True)
+    monkeypatch.setattr("jug.io.clock.iers_strict_enabled", lambda *args, **kwargs: True)
 
     clock_dir = repo_root / "data" / "clock"
     params = {"CLK": "TT(BIPM2024)"}

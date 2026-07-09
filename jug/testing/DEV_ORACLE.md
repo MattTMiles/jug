@@ -7,14 +7,14 @@ marked pytest modules.
 ## Hybrid Tempo2 native parity (2026-07-07)
 
 Production tempo2-native fitting uses a **host-frozen** path by default
-(``JUG_TEMPO2_NATIVE_GRAPH_MODE=staged_bclt``):
+(``tempo2_native="staged_bclt"``):
 `term_diagnostics['tempo2_obs_state']` geometry + one-time JAX clock + a slim
 differentiable JAX tail (BCLT → formBats → spin). The slow unified in-graph
 model (`compute_tempo2_toa_model_jax`) is **opt-in only** via
-``JUG_TEMPO2_NATIVE_GRAPH_MODE=full``.
+``tempo2_native="full"``.
 
-JAX BCLT uses a **fixed-length** `lax.scan` (default 12 iterations,
-`JUG_TEMPO2_BCLT_FIXED_ITER` override) so reverse-mode AD (NUTS/HMC) works.
+JAX BCLT uses a **fixed-length** `lax.scan` (default 12 iterations via
+``tempo2_jug_options["bclt_fixed_iter"]``) so reverse-mode AD (NUTS/HMC) works.
 Host NumPy BCLT keeps dynamic convergence; convergence flags are diagnostics only
 on the JAX path.
 
@@ -24,37 +24,36 @@ or `jug["obs_planet_pos_ls"]` for native parity probes — use
 
 ### wsrt167 hybrid gates (2026-07-08)
 
-| Term | Frozen staging | NumPy reference | Full in-graph | Notes |
-|------|----------------|-----------------|---------------|-------|
-| `correction_tt_sec` | yes | yes | opt-in | JAX `clock_jax` once; not host NumPy |
-| `correction_tt_tb_sec` | yes | yes | opt-in | Host diagnostics |
-| `roemer_sec` | yes | yes | opt-in | |
-| `tdis1_sec` / `tdis2_sec` | yes | yes | opt-in | |
-| `dt_ssb_sec` | yes | yes | opt-in | |
-| `bat_corr_days` | yes | yes | opt-in | Sub-1 ns after TCB implicit tropo + planet Shapiro fixes |
+| Term | Frozen staging | Full in-graph | Notes |
+|------|----------------|---------------|-------|
+| `correction_tt_sec` | yes | opt-in | JAX `clock_jax` once; not host NumPy |
+| `correction_tt_tb_sec` | yes | opt-in | Host diagnostics |
+| `roemer_sec` | yes | opt-in | |
+| `tdis1_sec` / `tdis2_sec` | yes | opt-in | |
+| `dt_ssb_sec` | yes | opt-in | |
+| `bat_corr_days` | yes | opt-in | Sub-1 ns after TCB implicit tropo + planet Shapiro fixes |
 | `bbat_mjd` | **two-part daysec in JAX tail** | opt-in | Host Taylor spin ~1.4 ns wsrt167; native ``phase5@bbat`` for fit Jacobian |
-| DILATEFREQ / DMX / ecliptic fixtures | **deferred** | **deferred** | opt-in | After wsrt167 green |
+| DILATEFREQ / DMX / ecliptic fixtures | **deferred** | opt-in | After wsrt167 green |
 
 Fast hybrid probes (~seconds compile; no full ephemeris/clock JIT):
 
 ```bash
 cd /workspaces/metapulsar/ref-packages/jug
 JAX_ENABLE_X64=1 PYTHONPATH=.:tests python3 -m pytest \
-  tests/test_tempo2_native_numpy_reference_parity.py \
-  tests/test_tempo2_native_staging_host_frozen.py \
-  tests/test_tempo2_native_residual_delta_jax.py -q
+  tests/test_tempo2_staging_host_frozen.py \
+  tests/test_tempo2_residual_delta_jax.py -q
 ```
 
 Slow full-in-graph oracle (minutes compile; manual only):
 
 ```bash
 cd /workspaces/metapulsar/ref-packages/jug
-JUG_TEMPO2_NATIVE_GRAPH_MODE=full JAX_ENABLE_X64=1 PYTHONPATH=.:tests \
-  python3 -m pytest tests/test_tempo2_native_jax_no_host_roundtrip.py -q
+JAX_ENABLE_X64=1 PYTHONPATH=.:tests python3 -m pytest \
+  tests/test_tempo2_jax_no_host_roundtrip.py -q
 ```
 
-NumPy reference path is dev-only: set `JUG_DEV_NUMPY_TEMPO2_CHAIN=1` for
-`chain_numpy` tests.
+Pass ``tempo2_native="full"`` on the session under test (or via test helpers in
+``tests/tempo2_test_helpers.py``).
 
 ### MetaPulsar / notebook integration
 
@@ -62,7 +61,7 @@ NumPy reference path is dev-only: set `JUG_DEV_NUMPY_TEMPO2_CHAIN=1` for
 includes `term_diagnostics['tempo2_obs_state']`. After JUG upgrades, call
 `compute_residuals(force_recompute=True)` on tempo2 sessions before binding NTM autodiff.
 IPTA example: `examples/notebooks-dev/nlt_ipta_dr2_compare_jug.ipynb` uses
-`nlt_ipta_dr2_compare_jug_lib.prime_jug_tempo2_native_sessions()`.
+`MetaPulsar.prime_jug_tempo2_sessions()`.
 
 ## Current parity work (2026-07-08)
 
@@ -101,12 +100,12 @@ Fast native gate path (skips ``@pytest.mark.slow`` modules — ~45 s vs ~2.5 min
 ```bash
 cd ref-packages/jug
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
-  pytest tests/test_tempo2_native_*.py -m 'dev_oracle and not slow' --no-cov -q
+  pytest tests/test_tempo2_*.py -m 'dev_oracle and not slow' --no-cov -q
 ```
 
 Slow modules (tagged ``slow``): ``residual_delta_jax``, ``geometry_parity``,
-``clock_jax``, ``jax_no_host_roundtrip``, ``numpy_reference_parity``,
-``spin_phase5``, ``roemer_probe``. Primary delay gates stay on the fast path:
+``clock_jax``, ``jax_no_host_roundtrip``, ``spin_phase5``, ``roemer_probe``.
+Primary delay gates stay on the fast path:
 ``formbats_closure``, ``bclt_terms``, ``bbat_parity``, ``batcorr_parity``,
 ``torb_closure``.
 
@@ -115,7 +114,7 @@ Full suite (sprint sign-off only):
 ```bash
 cd ref-packages/jug
 PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
-  pytest tests/test_tempo2_native_*.py -m dev_oracle --no-cov -q
+  pytest tests/test_tempo2_*.py -m dev_oracle --no-cov -q
 ```
 
 Exit criteria for dev-oracle promotion: all required native component gates are within

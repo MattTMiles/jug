@@ -179,13 +179,27 @@ pytempo workflow, and usage guidance.
 ### Tempo2-native JAX fitting (graph modes, 2026-07-07)
 
 Production tempo2 `design_matrix_method="autodiff"` and `residual_delta_jax` always use
-the tempo2-native JAX graph. Select the graph with a single env var:
+the tempo2-native JAX graph. Select the graph with session kwargs:
 
-| Mode | Env value | Role |
-|------|-----------|------|
-| `staged_bclt` | default (unset) | Freeze host ephemeris/clocks; recompute BCLT scan, formBats, Shklovskii, spin in JAX |
-| `fixed_state_nonlinear` | `JUG_TEMPO2_NATIVE_GRAPH_MODE=fixed_state_nonlinear` | Freeze host state + reference BCLT `dt_ssb`; one-pass nonlinear tail (no BCLT scan) |
-| `full` | `JUG_TEMPO2_NATIVE_GRAPH_MODE=full` | Unified in-graph clocks/SPK/EOP/IFTE/tropo/BCLT (oracle/dev only) |
+```python
+session = TimingSession(
+    par, tim,
+    compatibility="tempo2",
+    tempo2_native="staged_bclt",  # fixed_state_nonlinear | full
+    tempo2_jug_options={
+        "iers_policy": "warn",       # or "strict"
+        "bclt_fixed_iter": 12,
+        "force_cache_refresh": False,
+        "require_native_cache": True,
+    },
+)
+```
+
+| Mode | `tempo2_native` | Role |
+|------|-----------------|------|
+| `staged_bclt` | default (omit or explicit) | Freeze host ephemeris/clocks; recompute BCLT scan, formBats, Shklovskii, spin in JAX |
+| `fixed_state_nonlinear` | `"fixed_state_nonlinear"` | Freeze host state + reference BCLT `dt_ssb`; one-pass nonlinear tail (no BCLT scan) |
+| `full` | `"full"` | Unified in-graph clocks/SPK/EOP/IFTE/tropo/BCLT (oracle/dev only) |
 
 Requirements for MetaPulsar / `export_jax_timing_state`:
 
@@ -194,7 +208,8 @@ Requirements for MetaPulsar / `export_jax_timing_state`:
 2. `_build_general_fit_setup_from_cache` must pass `term_diagnostics` and `toas` into
    `GeneralFitSetup.native_chain_static`.
 
-IERS preflight: **warn** in general use; **strict fail** under pytest or `JUG_IERS_STRICT=1`.
+IERS preflight: **warn** in general use; **strict fail** under pytest (auto-detected) or
+`tempo2_jug_options={"iers_policy": "strict"}`.
 
 Fast hybrid regression probes:
 
@@ -202,8 +217,8 @@ Fast hybrid regression probes:
 cd ref-packages/jug
 JAX_ENABLE_X64=1 PYTHONPATH=.:tests python3 -m pytest \
   tests/test_tempo2_obs_state_export.py \
-  tests/test_tempo2_native_staging_host_frozen.py \
-  tests/test_tempo2_native_residual_delta_jax.py -q
+  tests/test_tempo2_staging_host_frozen.py \
+  tests/test_tempo2_residual_delta_jax.py -q
 ```
 
 See [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) for the full parity table.

@@ -34,10 +34,10 @@ from jug.residuals.tempo2.graph_config import (
     TEMPO2_GRAPH_FIXED_STATE_NONLINEAR,
     TEMPO2_GRAPH_FULL,
     TEMPO2_GRAPH_STAGED_BCLT,
-    tempo2_native_graph_mode,
+    tempo2_graph_mode,
 )
 from jug.residuals.tempo2.spin_jax import spin_params_to_jax
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 from .common import (
     NativeDeltaPack,
@@ -48,7 +48,7 @@ from .common import (
     track2_pulse_arrays_from_toas,
 )
 
-def compute_tempo2_native_terms_jax(
+def compute_tempo2_terms_jax(
     *,
     sat_mjd,
     correction_tt_sec,
@@ -84,7 +84,7 @@ def compute_tempo2_native_terms_jax(
     site_vel_km_s=None,
     model_static: Tempo2ModelStatic | None = None,
     tdb_mjd=None,
-) -> Tempo2NativeTerms:
+) -> Tempo2Terms:
     """Compute tempo2-native terms through ``compute_tempo2_toa_model_jax``."""
     del (
         toas,
@@ -120,7 +120,7 @@ def compute_tempo2_native_terms_jax(
         )
     if model_static is None:
         raise ValueError(
-            "compute_tempo2_native_terms_jax requires model_static with "
+            "compute_tempo2_terms_jax requires model_static with "
             "clock, IFTE, and SPK tables"
         )
 
@@ -142,9 +142,9 @@ def compute_tempo2_native_terms_jax(
     return terms
 
 
-def compute_tempo2_native_residuals_jax(
+def compute_tempo2_residuals_jax(
     *,
-    native_terms: Tempo2NativeTerms,
+    native_terms: Tempo2Terms,
     params,
     weights,
     pulse_numbers,
@@ -210,7 +210,7 @@ def compute_tempo2_native_residuals_jax(
 
 
 def compute_spin_residual_sec_jax(
-    native_terms: Tempo2NativeTerms,
+    native_terms: Tempo2Terms,
     params,
     *,
     pulse_numbers=None,
@@ -221,7 +221,7 @@ def compute_spin_residual_sec_jax(
     track_val: int = -2,
 ) -> jnp.ndarray:
     """Spin/track-only residual from precomputed delay terms (diagnostics helper)."""
-    residual_sec, _, _ = compute_tempo2_native_residuals_jax(
+    residual_sec, _, _ = compute_tempo2_residuals_jax(
         native_terms=native_terms,
         params=params,
         weights=jnp.ones(native_terms.sat_mjd.shape[0], dtype=jnp.float64),
@@ -237,7 +237,7 @@ def compute_spin_residual_sec_jax(
 def compute_terms_and_residual_sec_jax(
     params: dict,
     pack: NativeDeltaPack,
-) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+) -> tuple[Tempo2Terms, jnp.ndarray]:
     """Recompute tempo2-native terms and residuals for any graph mode pack."""
     pos, vel, acc = pulsar_vectors_from_params_jax(
         params, use_native_ecliptic=pack.use_native_ecliptic
@@ -319,6 +319,7 @@ def compute_terms_and_residual_sec_jax(
             obs_site_height_m=pack.obs_site_height_m,
             obs_site_pressure_mbar=pack.obs_site_pressure_mbar,
             correct_troposphere=pack.correct_troposphere,
+            bclt_max_iter=pack.bclt_max_iter,
             **common,
         )
     else:
@@ -334,6 +335,7 @@ def compute_terms_and_residual_sec_jax(
             correction_tt_sec_pre=pack.correction_tt_sec,
             correction_tt_tb_sec_pre=pack.correction_tt_tb_sec,
             einstein_rate=pack.einstein_rate,
+            bclt_max_iter=pack.bclt_max_iter,
             **common,
         )
     return terms, residual_sec

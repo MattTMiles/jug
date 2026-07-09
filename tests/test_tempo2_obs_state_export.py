@@ -15,7 +15,7 @@ from jug.fitting.optimized_fitter import _build_general_fit_setup_from_cache
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
-from tempo2_native_test_helpers import load_wsrt167_fixture
+from tempo2_test_helpers import load_wsrt167_fixture
 
 pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
 

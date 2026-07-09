@@ -54,7 +54,7 @@ from jug.residuals.tempo2.spin_jax import (
     spin_params_to_jax,
     track_minus2_frac_phase_jax,
 )
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 from .static import Tempo2ModelStatic, compute_dm_vals_jax, planet_rsa_tuple_jax_from_dict
@@ -125,7 +125,7 @@ def compute_tempo2_toa_model_fixed_state_nonlinear_jax(
     sat_sec_in_day: jnp.ndarray | None = None,
     pep_int: jnp.ndarray | None = None,
     pep_frac: jnp.ndarray | None = None,
-) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+) -> tuple[Tempo2Terms, jnp.ndarray]:
     """Tempo2 TOA model with frozen reference BCLT epoch (one-pass nonlinear tail)."""
     if dm_vals is None:
         dm_vals = compute_dm_vals_jax(sat_mjd, dm_epoch=dm_epoch, dm_coeffs=dm_coeffs)

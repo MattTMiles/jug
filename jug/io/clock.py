@@ -34,11 +34,12 @@ def resolve_clock_dir(
     """
     if clock_dir is not None:
         return Path(clock_dir)
-    tempo2_compat = str(compatibility or "").lower() in (
-        "tempo2",
-        "tempo2-compatible",
-        "tempo2_compatible",
-    )
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    try:
+        tempo2_compat = normalize_compatibility_mode(str(compatibility or "")) == "tempo2"
+    except ValueError:
+        tempo2_compat = False
     t2_env = os.environ.get("TEMPO2")
     if tempo2_compat and t2_env:
         t2_clock = Path(t2_env) / "clock"
@@ -943,9 +944,12 @@ def _probe_iers_gcrs_transform(mjd: float) -> None:
 def iers_strict_enabled(*, iers_policy: str | None = None) -> bool:
     """Return True when IERS preflight should hard-fail (parity/dev), not warn."""
     if iers_policy is not None:
-        return str(iers_policy).lower() == "strict"
-    if os.environ.get("JUG_IERS_STRICT", "").lower() in ("1", "true", "yes"):
-        return True
+        policy = str(iers_policy).lower()
+        if policy == "strict":
+            return True
+        if policy == "warn":
+            return "pytest" in sys.modules
+        return False
     return "pytest" in sys.modules
 
 

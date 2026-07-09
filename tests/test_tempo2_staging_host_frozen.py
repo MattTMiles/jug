@@ -12,13 +12,8 @@ import jax
 from jug.io.par_reader import parse_par_file
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.residuals.tempo2.fit_setup import prepare_native_chain_from_simple_result
-from tempo2_native_test_helpers import load_wsrt167_fixture, native_batcorr_days, rms_ns
-
-
-@pytest.fixture(autouse=True)
-def _force_staged_native_path(monkeypatch):
-    monkeypatch.setenv("JUG_TEMPO2_NATIVE_GRAPH_MODE", "staged_bclt")
+from jug.residuals.tempo2.fit_setup import prepare_tempo2_chain_from_simple_result
+from tempo2_test_helpers import load_wsrt167_fixture, native_batcorr_days, rms_ns
 
 
 def _staging_terms(fixture):
@@ -30,8 +25,9 @@ def _staging_terms(fixture):
         verbose=False,
         compatibility="tempo2",
         skip_native_bclt_overlay=True,
+        tempo2_native="staged_bclt",
     )
-    return prepare_native_chain_from_simple_result(jug, params, toas)
+    return prepare_tempo2_chain_from_simple_result(jug, params, toas)
 
 
 def test_staging_roemer_matches_pytempo_wsrt167(wsrt167_pytempo_oracle):

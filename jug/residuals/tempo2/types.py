@@ -7,7 +7,7 @@ from typing import NamedTuple
 import jax.numpy as jnp
 
 
-class Tempo2NativeTerms(NamedTuple):
+class Tempo2Terms(NamedTuple):
     """JAX-native tempo2 clock/delay/spin terms for one TOA batch."""
 
     sat_mjd: jnp.ndarray
@@ -39,7 +39,7 @@ class Tempo2NativeTerms(NamedTuple):
     converged: jnp.ndarray
 
 
-def native_terms_to_numpy(terms: Tempo2NativeTerms) -> dict[str, object]:
+def tempo2_terms_to_numpy(terms: Tempo2Terms) -> dict[str, object]:
     """Device-get native terms at the public export boundary only."""
     import jax
     import numpy as np

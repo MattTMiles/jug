@@ -54,7 +54,7 @@ from jug.residuals.tempo2.spin_jax import (
     spin_params_to_jax,
     track_minus2_frac_phase_jax,
 )
-from jug.residuals.tempo2.types import Tempo2NativeTerms
+from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 def _tempo2_residual_tail_jax(
@@ -82,7 +82,7 @@ def _tempo2_residual_tail_jax(
     sat_sec_in_day: jnp.ndarray | None = None,
     pep_int: jnp.ndarray | None = None,
     pep_frac: jnp.ndarray | None = None,
-) -> tuple[Tempo2NativeTerms, jnp.ndarray]:
+) -> tuple[Tempo2Terms, jnp.ndarray]:
     """Shared formBats → Shklovskii → spin tail for all tempo2 TOA model modes."""
     if sat_int_day is None or sat_sec_in_day is None:
         sat_int_day, sat_sec_in_day = split_mjd_to_daysec(sat_mjd)
@@ -148,7 +148,7 @@ def _tempo2_residual_tail_jax(
     bbat_mjd = mjd_view_from_daysec(bbat_int, bbat_sec)
     dt_emit = jnp.asarray(dt_emission_sec, dtype=jnp.float64)
     torb = compute_torb_closure_daysec(bbat_int, bbat_sec, dt_emit, pep_int, pep_frac)
-    terms = Tempo2NativeTerms(
+    terms = Tempo2Terms(
         sat_mjd=sat_mjd,
         sat_int_day=sat_int_day,
         sat_sec_in_day=sat_sec_in_day,

@@ -33,7 +33,8 @@ def open_session(
     verbose: bool = False,
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
-    tempo2_native: object | None = None,
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> TimingSession:
     """
     Open a timing session for repeated operations.
@@ -52,6 +53,18 @@ def open_session(
         Directory containing clock files
     verbose : bool, default False
         Print status messages
+    compatibility : str, default "pint"
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
+    engine_conventions : EngineConventionProfile, optional
+        Explicit engine convention profile (must match *compatibility*).
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode: ``"staged_bclt"``, ``"fixed_state_nonlinear"``,
+        or ``"full"``.  Default for ``compatibility="tempo2"`` is
+        ``"staged_bclt"``; ignored on the PINT path.
+    tempo2_jug_options : dict, optional
+        Tempo2 options (``iers_policy``, ``bclt_fixed_iter``,
+        ``force_cache_refresh``, ``require_native_cache``).  Passed through to
+        downstream session and fit functions; ``None`` uses built-in defaults.
     
     Returns
     -------
@@ -77,6 +90,7 @@ def open_session(
         compatibility=compatibility,
         engine_conventions=engine_conventions,
         tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
 
 
@@ -88,6 +102,8 @@ def compute_residuals(
     verbose: bool = False,
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Compute timing residuals (legacy one-shot API).
@@ -105,8 +121,14 @@ def compute_residuals(
         Directory containing clock files
     subtract_tzr : bool, default True
         Whether to subtract TZR offset
-    verbose : bool, default False
-        Print status messages
+    compatibility : str, default "pint"
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
+    engine_conventions : EngineConventionProfile, optional
+        Explicit engine convention profile (must match *compatibility*).
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode (see :func:`open_session`).
+    tempo2_jug_options : dict, optional
+        Tempo2 options dict (see :func:`open_session`).
     
     Returns
     -------
@@ -136,6 +158,8 @@ def compute_residuals(
         verbose=verbose,
         compatibility=compatibility,
         engine_conventions=engine_conventions,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
 
 
@@ -149,6 +173,8 @@ def fit_parameters(
     device: Optional[str] = None,
     verbose: bool = False,
     compatibility: str = "pint",
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Fit timing model parameters (legacy one-shot API).
@@ -174,6 +200,12 @@ def fit_parameters(
         'cpu', 'gpu', or None (auto-detect)
     verbose : bool, default False
         Print fitting progress
+    compatibility : str, default "pint"
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode (see :func:`open_session`).
+    tempo2_jug_options : dict, optional
+        Tempo2 options dict (see :func:`open_session`).
     
     Returns
     -------
@@ -208,4 +240,6 @@ def fit_parameters(
         device=device,
         verbose=verbose,
         compatibility=compatibility,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )

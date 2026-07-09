@@ -106,8 +106,8 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         ``jug.residuals.tempo2.graph_config.USE_NATIVE_BBAT_PHASE5``.
     addsat_sec : np.ndarray (float64), optional
         Per-TOA integer-second ``-addsat`` shifts (already applied to site MJD at
-        read). On TRACK -2, applies ``addsat_track2_turn_delta`` from
-        ``jug.residuals.tempo2_spin`` (see ``PARITY_ROADMAP.md``).
+        read). ``-addsat`` is applied to SAT at timfile read; no extra phase
+        correction is applied here (see ``PARITY_ROADMAP.md``).
 
     Returns
     -------

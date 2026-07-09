@@ -20,7 +20,7 @@ from jug.delays.tempo2_ephemeris import (
 from jug.delays.tempo2_geometry import tempo2_observatory_chain_vectors, Tempo2ObservatoryState
 from jug.io.par_reader import parse_par_file
 from jug.utils.constants import C_KM_S
-from tempo2_native_test_helpers import rms_cm, rms_ns
+from tempo2_test_helpers import rms_cm, rms_ns
 
 WSRT167_TRACE_INDICES = [0, 42, 85, 166]
 

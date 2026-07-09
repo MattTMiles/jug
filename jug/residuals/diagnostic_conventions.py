@@ -52,8 +52,9 @@ class DiagnosticConventions:
     def resolved_phase_mean_mode(self, compatibility: str) -> PhaseMeanMode:
         if self.phase_mean_mode is not None:
             return self.phase_mean_mode
-        mode = str(compatibility).lower()
-        if mode in ("tempo2", "tempo2-compatible", "tempo2_compatible"):
+        from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+        if normalize_compatibility_mode(compatibility) == "tempo2":
             return "unweighted"
         return "weighted"
 
@@ -84,8 +85,13 @@ class DiagnosticConventions:
         Diagnostic metadata may still record implicit defaults for any mode,
         but only tempo2 compatibility may change delay-term behavior.
         """
-        mode = str(compatibility).lower()
-        if mode not in ("tempo2", "tempo2-compatible", "tempo2_compatible"):
+        from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+        try:
+            is_tempo2 = normalize_compatibility_mode(compatibility) == "tempo2"
+        except ValueError:
+            is_tempo2 = False
+        if not is_tempo2:
             return False
         return self.tempo2_tdb_defaults == "implicit_tempo2"
 
@@ -130,8 +136,9 @@ def resolve_ne_sw_cm3(
 
 def default_conventions(compatibility: str = "tempo2") -> DiagnosticConventions:
     """Return default diagnostic conventions for a compatibility mode."""
-    mode = str(compatibility).lower()
-    tempo2_mode = mode in ("tempo2", "tempo2-compatible", "tempo2_compatible")
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    tempo2_mode = normalize_compatibility_mode(compatibility) == "tempo2"
     return DiagnosticConventions(
         phase_mean_mode=None,
         residual_metric="raw",

@@ -228,7 +228,7 @@ def compute_tempo2_phase5(
 
     .. deprecated::
         Dev/oracle wrapper only. Production tempo2 spin uses emission-time Taylor;
-        JAX counterpart is ``compute_tempo2_phase5_jax`` in ``jug.residuals.tempo2.spin_jax``.
+        JAX counterpart is ``compute_tempo2_phase5_daysec`` in ``jug.residuals.tempo2.spin_jax``.
     """
     import warnings
 
@@ -322,82 +322,6 @@ def track_minus2_frac_phase(
         )
 
     return frac, pulse_number
-
-
-def addsat_spin_turn_correction(
-    bbat_mjd: np.ndarray,
-    torb_sec: np.ndarray,
-    addsat_sec: np.ndarray,
-    params,
-    *,
-    jump_phase: Optional[np.ndarray] = None,
-    tzr_phase=None,
-) -> np.ndarray:
-    """Turn-domain ``phase5(bbat) - phase5(bbat - addsat)`` for ``-addsat`` TOAs.
-
-    tempo2 shifts site arrival time at read; emission-time Taylor spin in JUG
-    cancels that shift in ``dt``, but tempo2 evaluates spin at ``bbat``.  This
-    helper is for diagnostics only: applying the raw delta on the legacy TRACK -2
-    path over-corrects (~67 µs at idx 247).  Production uses
-    :func:`addsat_track2_turn_delta` instead (see ``PARITY_ROADMAP.md``).
-    """
-    bbat = np.asarray(bbat_mjd, dtype=np.float64)
-    torb = np.asarray(torb_sec, dtype=np.float64)
-    addsat = np.asarray(addsat_sec, dtype=np.float64)
-    if bbat.shape != addsat.shape:
-        raise ValueError("bbat_mjd and addsat_sec must have the same length")
-
-    shift_day = addsat / 86400.0
-    phase_at = compute_tempo2_phase5(
-        bbat, torb, params, jump_phase=jump_phase, tzr_phase=tzr_phase
-    )
-    phase_off = compute_tempo2_phase5(
-        bbat - shift_day, torb, params, jump_phase=jump_phase, tzr_phase=tzr_phase
-    )
-    delta = phase_at - phase_off
-    return np.where(addsat != 0.0, delta, 0.0)
-
-
-def addsat_track2_turn_delta(
-    p5: float,
-    nph: float,
-    addsat_s: float,
-    f0: float,
-) -> float:
-    """Deprecated: ``-addsat`` is applied to ``sat`` at timfile read (readTimfile.C).
-
-    Two-part barycentric time in the native JAX path makes phase-domain fudge
-    unnecessary. Kept for backward-compatible imports only; returns 0.
-    """
-    del p5, nph, addsat_s, f0
-    return 0.0
-
-
-def addsat_frac_turn_correction(
-    bbat_mjd: np.ndarray,
-    torb_sec: np.ndarray,
-    addsat_sec: np.ndarray,
-    params,
-    phase5_after_phas1: np.ndarray,
-    nphase: np.ndarray,
-    f0: float,
-    *,
-    jump_phase: Optional[np.ndarray] = None,
-    tzr_phase=None,
-) -> np.ndarray:
-    """Deprecated: see :func:`addsat_track2_turn_delta`. Returns zeros."""
-    del (
-        bbat_mjd,
-        torb_sec,
-        addsat_sec,
-        params,
-        phase5_after_phas1,
-        nphase,
-        f0,
-        jump_phase,
-        tzr_phase,
-    )
-    return np.zeros_like(np.asarray(phase5_after_phas1, dtype=np.float64))
 
 
 def form_residuals_tempo2_numpy(

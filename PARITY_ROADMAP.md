@@ -7,7 +7,7 @@ debt, open gaps, production behavior, and the path to production-ready fitting.
 **Fixture provenance:** [`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md)  
 **Dev oracle harness:** [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md)
 
-*Last updated: 2026-07-08 (fact-checked vs in-repo pytest; host parity on external IPTA DR2 data measured manually, not CI-gated)*
+*Last updated: 2026-07-09 (fact-checked vs in-repo pytest; host parity on external IPTA DR2 data measured manually, not CI-gated)*
 
 ---
 
@@ -20,7 +20,7 @@ JUG `compatibility="tempo2"` has **two evaluation layers** (see [`PARITY_THEORY.
 2. **JAX fit / autodiff** — `make_residual_delta_jax_fn` +
    `design_matrix_method="autodiff"`, used for NUTS/WLS whitening and design matrices.
    Entry point: `jug/fitting/jax_residual_delta.py`; graph mode via
-   `JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
+   `tempo2_native` session kwarg (default `staged_bclt`).
 
 **Host residual parity** on curated par+tim fixtures is **green at sub-ns to low-ns**
 for TCB/TDB probes, NG5 Cases B/C, simulated option coverage, and production-scale
@@ -49,7 +49,7 @@ path is **not CI-gated**.
 4. **Hygiene / audit** — stale dev-oracle assertions; BIPM clock extrapolation on J0613
    (data, shared with libstempo).
 5. **IPTA `-addsat` autodiff gates** — TRACK −2 autodiff design matrix is **green on
-   wsrt167** (`test_tempo2_native_residual_delta_jax.py`, `dev_oracle`/`slow`). No pytest
+   wsrt167** (`test_tempo2_residual_delta_jax.py`, `dev_oracle`/`slow`). No pytest
    yet gates autodiff on IPTA `-addsat` fixtures (`epta_j0613_addsat_min`, full EPTA J0613).
 
 Treat tempo2 mode as **experimental** outside curated par+tim tests. Do not use
@@ -140,11 +140,11 @@ What is gated today (derive status from tests, not from this doc alone):
 | WLS fit vs libstempo | `test_tempo2_fit_parity.py` | `tempo2` | **green** (selected fixtures; analytic DM) |
 | Analytic design matrix vs libstempo | `test_tempo2_designmatrix_parity.py` | `tempo2` | **green** (selected columns/fixtures) |
 | Sim autodiff DM nonzero (astrometry) | `test_tempo2_simulated_fixtures.py` | `tempo2` | **green** (finite, RAJ/DECJ ≠ 0) |
-| Tempo2 autodiff F0 vs libstempo | `test_tempo2_native_residual_delta_jax.py` | `dev_oracle`, `slow` | **green** (wsrt167 TRACK −2) |
-| Autodiff θ=0, jacfwd/jacrev, fixed vs staged | `test_tempo2_native_residual_delta_jax.py` | `dev_oracle`, `slow` | **green** (wsrt167 TRACK −2) |
+| Tempo2 autodiff F0 vs libstempo | `test_tempo2_residual_delta_jax.py` | `dev_oracle`, `slow` | **green** (wsrt167 TRACK −2) |
+| Autodiff θ=0, jacfwd/jacrev, fixed vs staged | `test_tempo2_residual_delta_jax.py` | `dev_oracle`, `slow` | **green** (wsrt167 TRACK −2) |
 | `native_chain_static` / obs_state export | `test_tempo2_obs_state_export.py` | `slow` | **green** |
-| Graph mode selector | `test_tempo2_native_graph_modes.py` | — | **green** |
-| Native chain component gates | `test_tempo2_native_*.py` | `dev_oracle` | mixed (see DEV_ORACLE.md) |
+| Graph mode selector | `test_tempo2_graph_modes.py` | — | **green** |
+| Native chain component gates | `test_tempo2_*.py` | `dev_oracle` | mixed (see DEV_ORACLE.md) |
 | Multi-PTA tempo2 autodiff (NUTS/WLS) | — | manual | **in use** externally; not in pytest |
 | IPTA `-addsat` autodiff design matrix | — | — | **open** — host residuals green; no autodiff gate |
 
@@ -198,7 +198,7 @@ Production wiring is **done**; oracle breadth is **not**.
 
 - [x] Tempo2 `residual_delta_jax` + `design_matrix_method="autodiff"` in
   `jax_residual_delta.py` / `optimized_fitter.py` (requires `native_chain_static`).
-- [x] Default graph mode `staged_bclt`; selector tested (`test_tempo2_native_graph_modes.py`).
+- [x] Default graph mode `staged_bclt`; selector tested (`test_tempo2_graph_modes.py`).
 - [x] `native_chain_static` / obs_state export (`test_tempo2_obs_state_export.py`).
 - [x] wsrt167 (TRACK −2): F0 autodiff column vs libstempo; jacfwd/jacrev agreement; reverse-mode grad finite.
 - [x] wsrt167 (TRACK −2): `fixed_state_nonlinear` vs `staged_bclt` envelope at PTA-scale ε (< 1 ns).
@@ -240,7 +240,7 @@ Production wiring is **done**; oracle breadth is **not**.
 
 **JAX fit/autodiff** (`jax_residual_delta.py`, all TRACK values):
 
-1. Trace tempo2-native chain via `JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
+1. Trace tempo2-native chain via `tempo2_native` (default `staged_bclt`).
 2. Compute **`compute_bbat_delay_change_sec_jax`** (bbat displacement between
    θ and θ+Δθ, plus binary delay change when fitted).
 3. Apply **`_phase_residual_delta_jax`** — Taylor phase difference on frozen
@@ -341,7 +341,7 @@ PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
 
 # Dev-oracle native chain (requires libstempo)
 PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
-  pytest tests/test_tempo2_native_*.py -m 'dev_oracle and not slow' --no-cov -q
+  pytest tests/test_tempo2_*.py -m 'dev_oracle and not slow' --no-cov -q
 
 # JUG-only CI (no libstempo)
 pytest -m 'not dev_oracle' -q
@@ -363,8 +363,7 @@ explicit request.
 | Spin | Taylor on `dt_sec_ld` + TRACK −2 | `phase2+phase3` at `bbat` | **~1.2 ns** host residuals on gated fixtures |
 | End-to-end residuals | libstempo oracle | `psr.residuals()` | **< 7 ns** on gated fixtures |
 
-Scaffold: `jug/residuals/tempo2/`. Graph mode:
-`JUG_TEMPO2_NATIVE_GRAPH_MODE` (default `staged_bclt`).
+Scaffold: `jug/residuals/tempo2/`. Graph mode: `tempo2_native` kwarg (default `staged_bclt`).
 
 ### Dev-oracle gates (component-level)
 

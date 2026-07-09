@@ -20,10 +20,9 @@ from jug.utils.constants import SECS_PER_DAY
 
 
 def _normalize_spin_compatibility(compatibility: str | None) -> str:
-    mode = str(compatibility or "pint").lower()
-    if mode in ("tempo2", "tempo2-compatible", "tempo2_compatible"):
-        return "tempo2"
-    return "pint"
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    return normalize_compatibility_mode(str(compatibility or "pint"))
 
 
 def _spin_param_names(fit_params: list) -> list[str]:

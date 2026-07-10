@@ -13,8 +13,76 @@ from functools import lru_cache
 from pathlib import Path
 from bisect import bisect_left
 import heapq
+import os
+import sys
 import warnings
 import numpy as np
+
+
+def resolve_clock_dir(
+    clock_dir: Path | str | None = None,
+    *,
+    compatibility: str | None = None,
+) -> Path:
+    """Resolve the clock file directory for PINT-family chain discovery."""
+    if clock_dir is not None:
+        return Path(clock_dir)
+    module_dir = Path(__file__).resolve().parent
+    return module_dir.parent.parent / "data" / "clock"
+
+
+# ---------------------------------------------------------------------------
+# Leap-second-aware MJD scale conversion
+# ---------------------------------------------------------------------------
+# Clock-correction files are tabulated against UTC MJD stamps (typically integer
+# day stamps). On a UTC day that contains a leap second, the day is 86401 s
+# rather than 86400 s long; a query MJD that falls inside such a day is not
+# linearly equidistant in physical seconds from the surrounding integer-day
+# clock entries unless we account for the inserted second.
+#
+# Astropy ``Time`` (used by PINT) handles this transparently via SOFA; JUG
+# previously interpolated directly on UTC MJD, giving ~ few-fs disagreement
+# with PINT on TOAs that fall on leap-second days.
+#
+# Fix: map both query and clock-file MJDs onto a continuous (TAI-like) scale by
+# adding cumulative leap-second offsets, then interpolate on that scale.  The
+# absolute zero-point cancels because the same transformation is applied to
+# both sides, so we omit the TAI-UTC base offset (10 s at MJD 41499) and just
+# add the cumulative count of leap seconds inserted at or before each MJD.
+
+# UTC MJD at the start of each day following a leap-second insertion.  For
+# every entry M, all UTC MJDs >= M have accumulated one additional leap second
+# relative to MJDs < M.  Table covers leaps from 1972-06-30 through 2016-12-31.
+_LEAP_INSERTION_MJDS = np.array([
+    41499, 41683, 42048, 42413, 42778, 43144, 43509, 43874, 44239,
+    44786, 45151, 45516, 46247, 47161, 47892, 48257, 48804, 49169,
+    49534, 50083, 50630, 51179, 53736, 54832, 56109, 57204, 57754,
+], dtype=np.int64)
+
+
+def utc_mjd_to_continuous(mjd):
+    """Map UTC MJD to a continuous (leap-second-aware) time coordinate.
+
+    Adds the cumulative count of leap seconds inserted at or before ``mjd``,
+    expressed in days, to convert from a UTC abscissa (where leap-second days
+    are 86401 s long) to a continuous abscissa suitable for linear
+    interpolation against clock-file MJDs treated the same way.
+
+    The absolute offset cancels when both query and clock-file MJDs are
+    converted; only the relative leap count between them matters.
+
+    Parameters
+    ----------
+    mjd : float or np.ndarray
+        UTC MJD value(s).
+
+    Returns
+    -------
+    Same shape as input; continuous-MJD scale.
+    """
+    mjd_arr = np.asarray(mjd, dtype=np.float64)
+    n_leaps = np.searchsorted(_LEAP_INSERTION_MJDS, mjd_arr, side='right')
+    return mjd_arr + n_leaps / 86400.0
 
 
 # ---------------------------------------------------------------------------
@@ -159,37 +227,30 @@ class ClockGraph:
             # that aren't on the path to UTC.
             self._edges.append((from_scale, to_scale, clk_file, weight))
 
-    def correction_chain(self, obs_scale: str) -> dict | None:
-        """Return the merged clock correction from ``obs_scale`` to ``self.target``.
+    def _edge_coverage(self, edge_idx: int) -> tuple[float, float]:
+        """(start, end) MJD covered by the clock file of *edge_idx*."""
+        clk = parse_clock_file(self._edges[edge_idx][2])
+        mjds = clk['mjd']
+        if len(mjds) == 0:
+            return (np.inf, -np.inf)
+        return (float(mjds[0]), float(mjds[-1]))
 
-        Uses Dijkstra's algorithm over the graph of clock files, choosing the
-        path with the fewest hops (each file = 1 hop, matching Tempo2).
+    def _shortest_path(self, src: str, mjd: float | None = None) -> list[int] | None:
+        """Dijkstra from *src* to the target; returns edge indices or None.
 
-        Parameters
-        ----------
-        obs_scale : str
-            Starting timescale, e.g. ``"UTC(meerkat)"`` or ``"UTC(AO)"``.
-            Case-insensitive.
-
-        Returns
-        -------
-        dict or None
-            A merged clock dict ``{'mjd': array, 'offset': array}`` representing
-            the sum of corrections along the shortest path, or ``None`` if no
-            path exists.  Also sets ``dict['chain']`` to the list of file names
-            used, for diagnostic purposes.
+        When *mjd* is given, only edges whose clock file covers that epoch are
+        traversable — mirroring tempo2 ``makeClockCorrectionSequence``, which
+        rebuilds the chain per epoch from the files valid at that SAT.
         """
-        src = obs_scale.upper()
         dst = self.target
-
-        if src in self._target_set:
-            # Already at target — zero correction
-            return {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0]),
-                    'chain': []}
 
         # Build adjacency: node → list of (neighbour, edge_index, weight)
         adj: dict[str, list[tuple[str, int, int]]] = {}
         for i, (frm, to, _, weight) in enumerate(self._edges):
+            if mjd is not None:
+                lo, hi = self._edge_coverage(i)
+                if not (lo <= mjd <= hi):
+                    continue
             adj.setdefault(frm, []).append((to, i, weight))
             # Edges are directed; Tempo2 also supports reverse traversal when
             # the path can be inverted (additive inverse), but we only support
@@ -234,10 +295,134 @@ class ClockGraph:
             edge_indices.append(eidx)
             node = parent
         edge_indices.reverse()
+        return edge_indices
 
-        # Load and merge corrections along the path
-        chain_files = [self._edges[i][2] for i in edge_indices]
-        return self._merge_chain(chain_files)
+    def correction_chain(self, obs_scale: str,
+                         mjd_min: float | None = None,
+                         mjd_max: float | None = None) -> dict | None:
+        """Return the merged clock correction from ``obs_scale`` to ``self.target``.
+
+        Uses Dijkstra's algorithm over the graph of clock files, choosing the
+        path with the lowest total hop weight (matching Tempo2).
+
+        When ``mjd_min``/``mjd_max`` are given, the chain is resolved
+        *per epoch* the way tempo2 ``getClockCorrectionSequence`` does: only
+        files covering a given epoch are usable, so different MJD ranges may
+        route through different files (e.g. UTC(AO) goes via UTC(NIST) before
+        MJD 50155 and via UTC(GPS) after).  The result is a piecewise merged
+        table spanning ``[mjd_min, mjd_max]``.
+
+        Parameters
+        ----------
+        obs_scale : str
+            Starting timescale, e.g. ``"UTC(meerkat)"`` or ``"UTC(AO)"``.
+            Case-insensitive.
+        mjd_min, mjd_max : float, optional
+            Data MJD range for epoch-aware chain resolution.  When omitted,
+            a single epoch-blind chain is used (previous behaviour).
+
+        Returns
+        -------
+        dict or None
+            A merged clock dict ``{'mjd': array, 'offset': array}`` representing
+            the sum of corrections along the shortest path, or ``None`` if no
+            path exists.  Also sets ``dict['chain']`` to the list of file names
+            used, for diagnostic purposes.
+        """
+        src = obs_scale.upper()
+
+        if src in self._target_set:
+            # Already at target — zero correction
+            return {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0]),
+                    'chain': []}
+
+        if mjd_min is None or mjd_max is None:
+            edge_indices = self._shortest_path(src)
+            if edge_indices is None:
+                return None
+            chain_files = [self._edges[i][2] for i in edge_indices]
+            return self._merge_chain(chain_files)
+
+        return self._correction_chain_piecewise(src, float(mjd_min), float(mjd_max))
+
+    def _correction_chain_piecewise(self, src: str, mjd_min: float,
+                                    mjd_max: float) -> dict | None:
+        """Epoch-aware chain: re-run Dijkstra on each coverage interval."""
+        # Pad the data range slightly so interpolation at the exact endpoints
+        # stays inside the table.
+        lo_all = mjd_min - 1.0
+        hi_all = mjd_max + 1.0
+
+        # Interval breakpoints: coverage boundaries of every file, clipped
+        # to the data range.
+        cuts = {lo_all, hi_all}
+        for i in range(len(self._edges)):
+            for b in self._edge_coverage(i):
+                if lo_all < b < hi_all:
+                    cuts.add(b)
+        bounds = sorted(cuts)
+
+        seg_mjd: list[np.ndarray] = []
+        seg_off: list[np.ndarray] = []
+        chain_names: list[str] = []
+        prev_path: tuple[int, ...] | None = None
+
+        for lo, hi in zip(bounds[:-1], bounds[1:]):
+            mid = 0.5 * (lo + hi)
+            edge_indices = self._shortest_path(src, mjd=mid)
+            if edge_indices is None:
+                # tempo2 CLK4: "Trying assuming UTC = <obs>" → zero correction
+                grid = np.array([lo, hi])
+                offs = np.zeros(2)
+                path_key: tuple[int, ...] = ()
+            else:
+                files = [self._edges[i][2] for i in edge_indices]
+                clocks = [parse_clock_file(f) for f in files]
+                grid_pts = [c['mjd'][(c['mjd'] >= lo) & (c['mjd'] <= hi)]
+                            for c in clocks]
+                grid = np.unique(np.concatenate(grid_pts + [np.array([lo, hi])]))
+                grid_cont = utc_mjd_to_continuous(grid)
+                offs = np.zeros_like(grid)
+                for clk in clocks:
+                    # Clamped linear interpolation (files cover the interval by
+                    # construction; clamping only matters at exact boundaries,
+                    # where interpolate_clock_vectorized would zero the value).
+                    offs += np.interp(
+                        grid_cont,
+                        utc_mjd_to_continuous(clk['mjd']),
+                        clk['offset'],
+                    )
+                path_key = tuple(edge_indices)
+                for f in files:
+                    if f.name not in chain_names:
+                        chain_names.append(f.name)
+
+            if seg_mjd and prev_path != path_key:
+                # Chain switch: duplicate the boundary so the merged table has
+                # a step there instead of interpolating across the switch.
+                eps = 1e-8  # ~0.9 ms on the MJD axis; clock tables vary slowly
+                last = seg_mjd[-1]
+                if last[-1] >= grid[0]:
+                    grid = grid.copy()
+                    grid[0] = last[-1] + eps
+            elif seg_mjd:
+                # Same chain continuing: drop the duplicated boundary sample.
+                grid = grid[1:]
+                offs = offs[1:]
+            seg_mjd.append(grid)
+            seg_off.append(offs)
+            prev_path = path_key
+
+        if not seg_mjd:
+            return None
+        mjd_all = np.concatenate(seg_mjd)
+        off_all = np.concatenate(seg_off)
+        order = np.argsort(mjd_all, kind="stable")
+        return {
+            'mjd': mjd_all[order],
+            'offset': off_all[order],
+            'chain': chain_names,
+        }
 
     @staticmethod
     def _merge_chain(files: list[Path]) -> dict:
@@ -784,6 +969,65 @@ def compare_clock_files(path_a: Path | str, path_b: Path | str,
     }
 
 
+_IERS_REMEDIATION = (
+    'python -c "from astropy.utils.iers import IERS_A; IERS_A.open()" '
+    "or bind a host ~/.astropy/cache into the container"
+)
+
+
+def _probe_iers_gcrs_transform(mjd: float) -> None:
+    """Smoke-test ITRF→GCRS; raises if Astropy IERS/EOP data is unusable."""
+    from astropy import units as u
+    from astropy.coordinates import EarthLocation
+    from astropy.time import Time
+
+    # Fixed geocentric ITRF position (Green Bank approximate); avoids site registry.
+    loc = EarthLocation.from_geocentric(
+        -849.066 * u.km, -4792.015 * u.km, 3952.036 * u.km
+    )
+    times = Time([mjd], format="mjd", scale="tdb")
+    loc.get_gcrs_posvel(obstime=times)
+
+
+def iers_strict_enabled(*, iers_policy: str | None = None) -> bool:
+    """Return True when IERS preflight should hard-fail (parity/dev), not warn."""
+    if iers_policy is not None:
+        policy = str(iers_policy).lower()
+        if policy == "strict":
+            return True
+        if policy == "warn":
+            return "pytest" in sys.modules
+        return False
+    return "pytest" in sys.modules
+
+
+def warn_on_iers_failure(valid: bool, issues: list) -> None:
+    """Emit warnings for IERS preflight issues (general fitting / offline use)."""
+    if valid:
+        return
+    messages = [i["message"] for i in issues if i.get("message")]
+    if not messages:
+        messages = ["IERS/EOP preflight failed."]
+    for msg in messages:
+        warnings.warn(
+            f"{msg} Observatory geometry may be wrong. Try: {_IERS_REMEDIATION}.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def raise_on_iers_failure(valid: bool, issues: list) -> None:
+    """Abort when IERS preflight reports errors."""
+    if valid:
+        return
+    errors = [i["message"] for i in issues if i.get("severity") == "error"]
+    detail = errors[0] if errors else "IERS/EOP preflight failed."
+    raise RuntimeError(
+        f"{detail} Observatory geometry (ITRF→GCRS) requires working Astropy "
+        f"IERS data. Try: {_IERS_REMEDIATION}."
+    )
+
+
 def check_iers_coverage(mjd_start: float, mjd_end: float,
                         verbose: bool = True) -> tuple:
     """Check that astropy's IERS Earth-orientation data covers the data MJD range.
@@ -791,6 +1035,9 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
     The ITRF->GCRS coordinate transform (used when computing observatory SSB
     positions) relies on IERS UT1-UTC and polar-motion data.  Using predicted
     rather than measured values introduces small but systematic errors.
+
+    After the table-range check, performs a functional ``get_gcrs_posvel``
+    probe so missing or corrupt IERS caches fail before geometry computation.
 
     Parameters
     ----------
@@ -814,10 +1061,11 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
 
     try:
         from astropy.utils import iers as astropy_iers
-        import numpy as np
 
         tab = astropy_iers.earth_orientation_table.get()
         table_mjds = np.asarray(tab['MJD'])
+        if table_mjds.size == 0:
+            raise ValueError("IERS table is empty")
         table_end = float(table_mjds[-1])
 
         # Find end of *measured* (vs predicted) UT1-UTC
@@ -843,7 +1091,7 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
             issues.append({'severity': 'error', 'message': msg})
             valid = False
             print(f"{_RED}[!] {msg}{_RESET}")
-            print(f"{_RED}  -> Run: python -c \"from astropy.utils.iers import IERS_A; IERS_A.open()\"{_RESET}")
+            print(f"{_RED}  -> Run: {_IERS_REMEDIATION}{_RESET}")
         elif mjd_end > measured_end:
             days_predicted = mjd_end - measured_end
             msg = (
@@ -854,7 +1102,7 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
             issues.append({'severity': 'warning', 'message': msg})
             if verbose:
                 print(f"{_YELLOW}[!]  {msg}{_RESET}")
-                print(f"{_YELLOW}  -> Download fresh IERS-A: python -c \"from astropy.utils.iers import IERS_A; IERS_A.open()\"{_RESET}")
+                print(f"{_YELLOW}  -> Download fresh IERS-A: {_IERS_REMEDIATION}{_RESET}")
         else:
             if verbose:
                 print(
@@ -862,10 +1110,24 @@ def check_iers_coverage(mjd_start: float, mjd_end: float,
                     f"with measured data to MJD {measured_end:.1f}"
                 )
 
+        probe_mjd = 0.5 * (float(mjd_start) + float(mjd_end))
+        try:
+            _probe_iers_gcrs_transform(probe_mjd)
+        except Exception as exc:
+            msg = (
+                f"EOP/IERS ERROR: ITRF→GCRS transform failed at MJD {probe_mjd:.1f} "
+                f"({exc}). Astropy IERS/EOP data may be missing or corrupt."
+            )
+            issues.append({'severity': 'error', 'message': msg})
+            valid = False
+            print(f"{_RED}[!] {msg}{_RESET}")
+            print(f"{_RED}  -> Run: {_IERS_REMEDIATION}{_RESET}")
+
     except Exception as e:
-        msg = f"EOP/IERS WARNING: Could not check IERS coverage: {e}"
-        issues.append({'severity': 'warning', 'message': msg})
-        if verbose:
-            print(f"{_YELLOW}[!]  {msg}{_RESET}")
+        msg = f"EOP/IERS ERROR: Could not check IERS coverage: {e}"
+        issues.append({'severity': 'error', 'message': msg})
+        valid = False
+        print(f"{_RED}[!] {msg}{_RESET}")
+        print(f"{_RED}  -> Run: {_IERS_REMEDIATION}{_RESET}")
 
     return valid, issues

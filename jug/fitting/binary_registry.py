@@ -227,13 +227,22 @@ def _register_builtin_models():
         compute_dd_binary_delay,
         compute_ddk_binary_delay,
         compute_binary_derivatives_dd,
-        compute_binary_derivatives_ddk
+        compute_binary_derivatives_ddk,
+        compute_binary_derivatives_ddgr,
+        compute_ddgr_binary_delay,
     )
     # DD and variants without KIN/KOM
     register_binary_model(
-        ['DD', 'DDS', 'DDH', 'DDGR'],
+        ['DD', 'DDS', 'DDH'],
         compute_dd_binary_delay,
         compute_binary_derivatives_dd
+    )
+    # DDGR: GR assumed -> PK params derived from MTOT/M2; derivatives chain the
+    # mass fit onto the DD per-PK columns (compute_binary_derivatives_ddgr).
+    register_binary_model(
+        ['DDGR'],
+        compute_ddgr_binary_delay,
+        compute_binary_derivatives_ddgr
     )
     
     # DDK uses Kopeikin-corrected delay and derivatives with KIN/KOM support
@@ -243,12 +252,15 @@ def _register_builtin_models():
         compute_binary_derivatives_ddk
     )
 
-    # BT (Blandford-Teukolsky) - uses DD-style parameterization
-    # Register separately in case it needs different handling later
+    # BT (Blandford-Teukolsky) has a distinct delay equation from DD.
+    from jug.delays.binary_bt import (
+        compute_bt_binary_delay,
+        compute_binary_derivatives_bt,
+    )
     register_binary_model(
         ['BT', 'BTX'],
-        compute_dd_binary_delay,
-        compute_binary_derivatives_dd
+        compute_bt_binary_delay,
+        compute_binary_derivatives_bt
     )
 
     # ELL1 (low-eccentricity model)

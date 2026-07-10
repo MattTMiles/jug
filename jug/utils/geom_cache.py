@@ -329,6 +329,99 @@ class GeometryDiskCache:
                 pass
             return False
     
+    def _compute_named_key(self, tag: str, key_arrays: dict) -> Tuple[str, dict]:
+        """Compute cache key + per-array hashes for a named-array entry.
+
+        ``key_arrays`` maps name -> ndarray; every array participates in the
+        key, so any bitwise change in any input produces a different key.
+        """
+        hashes = {name: compute_array_hash(arr) for name, arr in sorted(key_arrays.items())}
+        joined = "_".join(hashes[name] for name in sorted(hashes))
+        # Digest the joined hashes to a fixed-length filename component. With many
+        # key arrays the raw join exceeds the 255-byte filename limit (OSError 36).
+        # The full per-array hashes still live in metadata['key_hashes'] and are
+        # checked exactly on load, so collapsing the filename keeps validation strict.
+        digest = hashlib.sha256(joined.encode()).hexdigest()[:32]
+        return f"geom_{tag}_{digest}", hashes
+
+    def load_named(self, tag: str, key_arrays: dict, names: list) -> Optional[dict]:
+        """Load a generic named-array cache entry (same validation rules as
+        the SSB cache: astropy/ERFA versions and all key-array hashes must
+        match exactly, so a hit returns bit-for-bit the stored arrays).
+
+        Parameters
+        ----------
+        tag : str
+            Entry type tag, e.g. "tropo_elev_v1". Bump the version suffix
+            whenever the computation that fills the entry changes.
+        key_arrays : dict of str -> ndarray
+            Arrays identifying the computation inputs (times, observatory
+            position, source position, ...).
+        names : list of str
+            Names of the stored output arrays to load.
+
+        Returns
+        -------
+        dict of str -> ndarray, or None on miss/mismatch.
+        """
+        if not self.enabled:
+            return None
+        key, hashes = self._compute_named_key(tag, key_arrays)
+        data_path, meta_path = self._get_cache_paths(key)
+        if not data_path.exists() or not meta_path.exists():
+            return None
+        try:
+            with open(meta_path, 'r') as f:
+                metadata = json.load(f)
+            if not self._validate_metadata(metadata):
+                return None
+            if metadata.get('key_hashes') != hashes:
+                return None
+            with np.load(data_path) as data:
+                out = {name: data[name] for name in names}
+            logger.debug(f"Loaded named geometry from cache: {key}")
+            return out
+        except Exception as e:
+            logger.debug(f"Failed to load named cache {key}: {e}")
+            return None
+
+    def save_named(self, tag: str, key_arrays: dict, arrays: dict) -> bool:
+        """Save a generic named-array cache entry (see load_named)."""
+        if not self.enabled:
+            return False
+        key, hashes = self._compute_named_key(tag, key_arrays)
+        data_path, meta_path = self._get_cache_paths(key)
+        try:
+            metadata = {
+                'tag': tag,
+                'key_hashes': hashes,
+                'versions': get_version_info(),
+            }
+            with tempfile.NamedTemporaryFile(
+                mode='w', dir=self.cache_dir, suffix='.json', delete=False
+            ) as f:
+                json.dump(metadata, f, indent=2)
+                temp_meta = f.name
+            with tempfile.NamedTemporaryFile(
+                dir=self.cache_dir, suffix='.npz', delete=False
+            ) as f:
+                temp_data = f.name
+            np.savez(temp_data, **arrays)
+            os.replace(temp_meta, meta_path)
+            os.replace(temp_data, data_path)
+            logger.debug(f"Saved named geometry to cache: {key}")
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to save named cache {key}: {e}")
+            try:
+                if 'temp_meta' in locals():
+                    os.unlink(temp_meta)
+                if 'temp_data' in locals():
+                    os.unlink(temp_data)
+            except Exception:
+                pass
+            return False
+
     def clear(self) -> int:
         """Clear all cached geometry files.
         

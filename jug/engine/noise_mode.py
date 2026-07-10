@@ -26,7 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
-from jug.noise.red_noise import (RedNoiseProcess, DMNoiseProcess, ChromaticNoiseProcess,
+from jug.noise.red_noise import (RedNoiseProcess, GWNoiseProcess, DMNoiseProcess,
+                                  ChromaticNoiseProcess, SWNoiseProcess,
                                   BandNoiseProcess, GroupNoiseProcess)
 
 
@@ -38,6 +39,8 @@ EFAC = "EFAC"
 EQUAD = "EQUAD"
 ECORR = "ECORR"
 RED_NOISE = "RedNoise"
+GW_NOISE = "GWNoise"
+SW_NOISE = "SWNoise"
 DM_NOISE = "DMNoise"
 DMX = "DMX"
 CHROMATIC_NOISE = "ChromaticNoise"
@@ -71,7 +74,7 @@ def _has_equad(params: dict) -> bool:
 def _has_ecorr(params: dict) -> bool:
     for line in params.get("_noise_lines", []):
         key = line.split()[0].upper()
-        if key in ("ECORR", "TNECORR"):
+        if key in ("ECORR", "TNECORR", "TNEC"):
             return True
     return False
 
@@ -107,9 +110,30 @@ def _has_chromatic_noise(params: dict) -> bool:
     return False
 
 
+def _has_gw_noise(params: dict) -> bool:
+    if "TNGWAmp" in params and "TNGWGam" in params:
+        return True
+    if "TNGWAMP" in params and "TNGWGAM" in params:
+        return True
+    if "GW_log10_A" in params and "GW_gamma" in params:
+        return True
+    return False
+
+
+def _has_sw_noise(params: dict) -> bool:
+    if "SWAMP" in params and "SWGAM" in params:
+        return True
+    if "TNSWAmp" in params and "TNSWGam" in params:
+        return True
+    if "TNSWAMP" in params and "TNSWGAM" in params:
+        return True
+    if "SW_log10_A" in params and "SW_gamma" in params:
+        return True
+    return False
+
+
 def _has_dmx(params: dict) -> bool:
-    fit_flags = params.get("_fit_flags", {})
-    return any(k.startswith("DMX_") for k in fit_flags)
+    return any(k.startswith("DMXR1_") for k in params)
 
 
 def _has_band_noise(params: dict) -> bool:
@@ -191,6 +215,18 @@ _NOISE_SPECS = [
         tooltip="Chromatic DM noise (power-law)",
         display_order=4, detector=_has_dm_noise, is_power_law=True,
         impl_class=DMNoiseProcess,
+    ),
+    NoiseProcessSpec(
+        name=GW_NOISE, label="GW Noise",
+        tooltip="Gravitational-wave background red noise (achromatic, power-law)",
+        display_order=9, detector=_has_gw_noise, is_power_law=True,
+        impl_class=GWNoiseProcess,
+    ),
+    NoiseProcessSpec(
+        name=SW_NOISE, label="SW Noise",
+        tooltip="Stochastic solar-wind noise (chromatic, power-law)",
+        display_order=9, detector=_has_sw_noise, is_power_law=True,
+        impl_class=SWNoiseProcess,
     ),
     NoiseProcessSpec(
         name=DMX, label="DMX",

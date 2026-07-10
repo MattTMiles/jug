@@ -102,7 +102,6 @@ def build_fourier_design_matrix(
     toas_mjd: np.ndarray,
     n_harmonics: int = 30,
     Tspan_days: Optional[float] = None,
-    reference_mjd: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build a Fourier design matrix for red/DM noise.
 
@@ -115,10 +114,6 @@ def build_fourier_design_matrix(
     Tspan_days : float, optional
         Time span in days.  If None, uses max(toas_mjd) - min(toas_mjd).
         The fundamental frequency is 1/Tspan.
-    reference_mjd : float, optional
-        Reference epoch subtracted before evaluating Fourier phases. If None,
-        use the first TOA, preserving the historical JUG convention. PINT uses
-        absolute TDB seconds, which is equivalent to reference_mjd=0.
 
     Returns
     -------
@@ -140,8 +135,8 @@ def build_fourier_design_matrix(
     # Fourier frequencies: k/Tspan for k = 1, ..., n_harmonics
     freqs_hz = np.arange(1, n_harmonics + 1, dtype=np.float64) / Tspan_sec
 
-    # Reference time for Fourier phases.
-    t0_mjd = toas_mjd.min() if reference_mjd is None else float(reference_mjd)
+    # Reference time at start of span
+    t0_mjd = toas_mjd.min()
     t_sec = (toas_mjd - t0_mjd) * SECS_PER_DAY
 
     F = np.asarray(_fourier_design_jax(jnp.array(t_sec), jnp.array(freqs_hz)))
@@ -251,7 +246,6 @@ class RedNoiseProcess:
         self,
         toas_mjd: np.ndarray,
         Tspan_days: Optional[float] = None,
-        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build Fourier basis F and diagonal prior phi.
 
@@ -270,7 +264,7 @@ class RedNoiseProcess:
             Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, Tspan_days, reference_mjd=reference_mjd
+            toas_mjd, self.n_harmonics, Tspan_days
         )
         # Frequency resolution (all harmonics equally spaced)
         df = freqs[0]  # = 1/T_span (fundamental frequency = frequency spacing)
@@ -284,6 +278,62 @@ class RedNoiseProcess:
 
 
 @dataclass
+class GWNoiseProcess:
+    """Gravitational-wave background red noise (achromatic).
+
+    Identical maths to :class:`RedNoiseProcess` (power-law, enterprise phi
+    convention); kept as a separate process so it carries its own amplitude /
+    spectral index and produces a distinctly-labelled ``GWNoise`` realisation
+    that maps to PINT's ``pl_gw_noise`` (``PLGWNoise`` component). Read from the
+    TempoNest ``TNGWAmp`` / ``TNGWGam`` / ``TNGWC`` keywords; the amplitude is
+    in the enterprise convention (no offset), verified bit-identical to PINT's
+    PLGWNoise prior.
+    """
+    log10_A: float
+    gamma: float
+    n_harmonics: int = 30
+
+    _gui_labels = {"log10_A": "log_{10}(A)", "gamma": r"\gamma (spectral)", "n_harmonics": "N harmonics"}
+    # NOTE: do NOT match bare GWAMP/GWGAM -- those are PINT's *deterministic*
+    # GW (GWAMP/GWIDX), a different model. Only the TempoNest power-law GW
+    # background (TNGW*) and the enterprise alias map here.
+    _par_keys = {
+        "log10_A": ["TNGWAMP", "TNGWAmp", "GW_log10_A"],
+        "gamma": ["TNGWGAM", "TNGWGam", "GW_gamma"],
+        "n_harmonics": ["TNGWC", "TNGWc", "GW_ncoeff"],
+    }
+    _gui_defaults = {"log10_A": -15.0, "gamma": 4.33}
+    _needs_freqs = False
+
+    @classmethod
+    def from_par(cls, params: dict) -> Optional["GWNoiseProcess"]:
+        return parse_gw_noise_params(params)
+
+    def spectrum(self, freqs_hz: np.ndarray) -> np.ndarray:
+        """Evaluate PSD at given frequencies."""
+        return powerlaw_spectrum(freqs_hz, self.log10_A, self.gamma)
+
+    def build_basis_and_prior(
+        self,
+        toas_mjd: np.ndarray,
+        Tspan_days: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Build achromatic Fourier basis F and diagonal prior phi (s^2).
+
+        Same enterprise convention as :class:`RedNoiseProcess`.
+        """
+        F, freqs = build_fourier_design_matrix(
+            toas_mjd, self.n_harmonics, Tspan_days
+        )
+        df = freqs[0]
+        A = 10.0 ** self.log10_A
+        phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
+            _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
+        phi = np.repeat(phi_per_harmonic, 2)
+        return F, phi
+
+
+@dataclass
 class DMNoiseProcess:
     """Chromatic DM noise (scales as 1/nu^2).
 
@@ -292,9 +342,9 @@ class DMNoiseProcess:
     ``(1400 / nu)^2``.
 
     Internally uses the enterprise convention (same as red/chromatic
-    noise).  When read from a par file with ``TNDMAmp``, the amplitude
-    is converted from the Tempo2/TempoNest DM convention using
-    ``TNDM_OFFSET`` (see :func:`parse_dm_noise_params`).
+    noise). The amplitude read from a par file (``TNDMAmp``, ``DMAMP`` or
+    ``DM_log10_A``) is taken as the enterprise log10 amplitude directly, with
+    no offset -- matching PINT's PLDMNoise (see :func:`parse_dm_noise_params`).
 
     Attributes
     ----------
@@ -331,7 +381,6 @@ class DMNoiseProcess:
         toas_mjd: np.ndarray,
         freq_mhz: np.ndarray,
         Tspan_days: Optional[float] = None,
-        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build chromatic Fourier basis F_dm and diagonal prior phi.
 
@@ -358,7 +407,7 @@ class DMNoiseProcess:
             Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, Tspan_days, reference_mjd=reference_mjd
+            toas_mjd, self.n_harmonics, Tspan_days
         )
         # Chromatic weighting: (1400 / nu)^2
         # Using 1400 MHz as normalisation keeps numerical values ~= O(1)
@@ -423,7 +472,6 @@ class ChromaticNoiseProcess:
         toas_mjd: np.ndarray,
         freq_mhz: np.ndarray,
         Tspan_days: Optional[float] = None,
-        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build chromatic Fourier basis F_dm and diagonal prior phi.
 
@@ -450,7 +498,7 @@ class ChromaticNoiseProcess:
             Prior variance for each Fourier coefficient (s^2).
         """
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, Tspan_days, reference_mjd=reference_mjd
+            toas_mjd, self.n_harmonics, Tspan_days
         )
         # Chromatic weighting: (1400 / nu)^\beta
         # Using 1400 MHz as normalisation keeps numerical values ~= O(1)
@@ -463,6 +511,65 @@ class ChromaticNoiseProcess:
             _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
         phi = np.repeat(phi_per_harmonic, 2)
         return F_dm, phi
+
+@dataclass
+class SWNoiseProcess:
+    """Stochastic solar-wind noise (chromatic, solar-wind geometry).
+
+    A power-law Fourier GP whose basis columns are scaled per-TOA by the
+    solar-wind dispersion weight ``K_DM * sw_geometry / nu^2`` (the SW DM delay
+    for ``n_earth = 1 cm^-3``; the GP amplitude scales it). Matches PINT's
+    ``PLSWNoise`` (``pl_SW_noise``) component, which uses the same
+    ``solar_wind_geometry * DMconst / freq^2`` weighting and the enterprise
+    power-law prior. Read from ``SWAMP``/``SWGAM``/``SWC`` (TempoNest
+    ``TNSWAmp``/``TNSWGam``/``TNSWC``); amplitude is the enterprise log10 value
+    (no offset).
+    """
+    log10_A: float
+    gamma: float
+    n_harmonics: int = 30
+
+    _gui_labels = {"log10_A": "log_{10}(A)", "gamma": r"\gamma (spectral)", "n_harmonics": "N harmonics"}
+    _par_keys = {
+        "log10_A": ["SWAMP", "TNSWAMP", "TNSWAmp", "SW_log10_A"],
+        "gamma": ["SWGAM", "TNSWGAM", "TNSWGam", "SW_gamma"],
+        "n_harmonics": ["SWC", "TNSWC", "TNSWc", "SW_ncoeff"],
+    }
+    _gui_defaults = {"log10_A": -15.0, "gamma": 2.0}
+    _needs_freqs = True
+
+    @classmethod
+    def from_par(cls, params: dict) -> Optional["SWNoiseProcess"]:
+        return parse_sw_noise_params(params)
+
+    def spectrum(self, freqs_hz: np.ndarray) -> np.ndarray:
+        return powerlaw_spectrum(freqs_hz, self.log10_A, self.gamma)
+
+    def build_basis_and_prior(
+        self,
+        toas_mjd: np.ndarray,
+        freq_mhz: np.ndarray,
+        sw_geometry_pc: np.ndarray,
+        Tspan_days: Optional[float] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Build solar-wind chromatic Fourier basis F_sw and prior phi (s^2).
+
+        Columns are scaled by ``K_DM * sw_geometry_pc / freq_mhz^2`` (the SW DM
+        delay per unit ``NE_SW``), matching PINT's PLSWNoise ``dt_DM`` weight.
+        """
+        from jug.utils.constants import K_DM_SEC
+        F, freqs = build_fourier_design_matrix(
+            toas_mjd, self.n_harmonics, Tspan_days
+        )
+        sw_weight = K_DM_SEC * np.asarray(sw_geometry_pc, dtype=float) / (np.asarray(freq_mhz, dtype=float) ** 2)
+        F_sw = F * sw_weight[:, None]
+        df = freqs[0]
+        A = 10.0 ** self.log10_A
+        phi_per_harmonic = (A ** 2 / (12.0 * np.pi ** 2)) * \
+            _F_YR ** (self.gamma - 3) * freqs ** (-self.gamma) * df
+        phi = np.repeat(phi_per_harmonic, 2)
+        return F_sw, phi
+
 
 # ---------------------------------------------------------------------------
 # Band noise and Group noise -- per-subset Fourier GP models
@@ -503,7 +610,6 @@ class BandNoiseProcess:
         toas_mjd: np.ndarray,
         freq_mhz: np.ndarray,
         Tspan_days: Optional[float] = None,
-        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build masked Fourier basis and prior for this band.
 
@@ -511,7 +617,7 @@ class BandNoiseProcess:
         """
         mask = (freq_mhz >= self.freq_lo) & (freq_mhz < self.freq_hi)
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, Tspan_days, reference_mjd=reference_mjd
+            toas_mjd, self.n_harmonics, Tspan_days
         )
         # Zero out rows for TOAs outside the band
         F = F * mask[:, None].astype(F.dtype)
@@ -559,7 +665,6 @@ class GroupNoiseProcess:
         toas_mjd: np.ndarray,
         group_flags: np.ndarray,
         Tspan_days: Optional[float] = None,
-        reference_mjd: Optional[float] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build masked Fourier basis and prior for this group.
 
@@ -577,7 +682,7 @@ class GroupNoiseProcess:
         if use_Tspan is None and np.any(mask):
             use_Tspan = float(toas_mjd[mask].max() - toas_mjd[mask].min())
         F, freqs = build_fourier_design_matrix(
-            toas_mjd, self.n_harmonics, use_Tspan, reference_mjd=reference_mjd
+            toas_mjd, self.n_harmonics, use_Tspan
         )
         # Zero out rows for non-matching TOAs
         F = F * mask[:, None].astype(F.dtype)
@@ -637,6 +742,28 @@ def parse_red_noise_params(params: dict) -> Optional[RedNoiseProcess]:
     return None
 
 
+def parse_gw_noise_params(params: dict) -> Optional[GWNoiseProcess]:
+    """Extract a GWNoiseProcess from a par file dict, if present.
+
+    Accepts TempoNest (``TNGWAmp``/``TNGWGam``/``TNGWC``) and
+    enterprise (``GW_log10_A``/``GW_gamma``) conventions. The amplitude is the
+    enterprise log10 spectral amplitude (no offset, like achromatic red noise).
+
+    Returns None if no GW noise parameters are found.
+    """
+    keys = GWNoiseProcess._par_keys
+    amp_key = _find_key(params, keys["log10_A"])
+    gam_key = _find_key(params, keys["gamma"])
+    if amp_key and gam_key:
+        nharm_key = _find_key(params, keys["n_harmonics"])
+        return GWNoiseProcess(
+            log10_A=float(params[amp_key]),
+            gamma=float(params[gam_key]),
+            n_harmonics=int(float(params[nharm_key])) if nharm_key else 30,
+        )
+    return None
+
+
 def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
     """Extract a DMNoiseProcess from a par file dict, if present.
 
@@ -644,13 +771,15 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
     TempoNest (``TNDMAmp``/``TNDMGam``/``TNDMC``), and
     enterprise (``DM_log10_A``/``DM_gamma``) conventions.
 
-    **Convention handling:**
-
-    - ``TNDMAMP`` / ``TNDMAmp``, ``DMAMP``, and ``DM_log10_A`` are all
-      treated as ``log10_A`` in the enterprise/PINT convention (i.e. the
-      value from the par file is used directly with no offset applied).
-      The par file value is ``log10(A)`` where the PSD is
-      ``A² / (12π² f³) × (f/fyr)^{-γ} × (1400 MHz / freq)^2``.
+    **Convention handling:** the amplitude is taken as the enterprise/PINT
+    log10 spectral amplitude directly (no offset), for ALL keyword spellings
+    including ``TNDMAMP``. PINT's PLDMNoise uses ``10**TNDMAMP`` with the same
+    ``(1400/nu)^2`` basis "to match the convention used in enterprise"
+    (noise_model.py), and MPTA/discovery pars write the enterprise amplitude
+    under the ``TNDMAmp`` keyword. The previous ``TNDM_OFFSET`` (~1.638)
+    Tempo2->enterprise conversion made JUG's DM-noise amplitude ~43x smaller
+    than PINT's (J0125-2327: ~1.5 us DM-noise-realization disagreement). PINT
+    never applies that offset, so for parity JUG must not either.
     """
     keys = DMNoiseProcess._par_keys
     amp_key = _find_key(params, keys["log10_A"])
@@ -667,6 +796,26 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
             n_harmonics=int(params[nharm_key]) if nharm_key else 30,
         )
 
+    return None
+
+
+def parse_sw_noise_params(params: dict) -> Optional[SWNoiseProcess]:
+    """Extract an SWNoiseProcess from a par file dict, if present.
+
+    Accepts ``SWAMP``/``SWGAM``/``SWC`` and the TempoNest ``TNSWAmp``/
+    ``TNSWGam``/``TNSWC`` aliases. Amplitude is the enterprise log10 value
+    (no offset). Returns None if no SW-noise parameters are found.
+    """
+    keys = SWNoiseProcess._par_keys
+    amp_key = _find_key(params, keys["log10_A"])
+    gam_key = _find_key(params, keys["gamma"])
+    if amp_key and gam_key:
+        nharm_key = _find_key(params, keys["n_harmonics"])
+        return SWNoiseProcess(
+            log10_A=float(params[amp_key]),
+            gamma=float(params[gam_key]),
+            n_harmonics=int(float(params[nharm_key])) if nharm_key else 30,
+        )
     return None
 
 

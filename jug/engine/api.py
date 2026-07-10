@@ -93,8 +93,62 @@ def fit_parameters(
     device: Optional[str] = None,
     verbose: bool = False,
     compatibility: str = "pint",
+    fit_dmx: bool = True,
 ) -> Dict[str, Any]:
-    """Fit timing model parameters (legacy one-shot API)."""
+    """
+    Fit timing model parameters (legacy one-shot API).
+
+    This function provides backward compatibility with existing code.
+    For multiple operations on the same files, use open_session() instead.
+
+    Parameters
+    ----------
+    par_file : Path or str
+        Path to .par file
+    tim_file : Path or str
+        Path to .tim file
+    fit_params : list of str
+        Parameters to fit (e.g., ['F0', 'F1', 'DM'])
+    max_iter : int, default 25
+        Maximum iterations
+    convergence_threshold : float, default 1e-14
+        Convergence threshold
+    clock_dir : str, optional
+        Directory containing clock files
+    device : str, optional
+        'cpu', 'gpu', or None (auto-detect)
+    verbose : bool, default False
+        Print fitting progress
+    compatibility : str, default "pint"
+        Delay/residual compatibility mode (pint-only on main).
+    fit_dmx : bool, default True
+        If True (default), DMX_* bins in the PAR are auto-added as fitted
+        timing parameters. If False, fixed DMX delays from the PAR are still
+        applied but DMX_* are not fitted (use for global-DM recovery checks).
+
+    Returns
+    -------
+    result : dict
+        Fit results with keys:
+        - 'final_params': Fitted parameter values
+        - 'uncertainties': Parameter uncertainties
+        - 'final_rms': Final RMS in mus
+        - 'iterations': Number of iterations
+        - 'converged': Whether fit converged
+        - etc.
+
+    Examples
+    --------
+    >>> from jug.engine import fit_parameters
+    >>> result = fit_parameters('J1909.par', 'J1909.tim', ['F0', 'F1'])
+    >>> print(f"F0 = {result['final_params']['F0']:.15f} Hz")
+    >>> print(f"RMS = {result['final_rms']:.3f} mus")
+
+    Notes
+    -----
+    This calls fit_parameters_optimized() directly without caching.
+    For repeated operations, use open_session() instead.
+    """
     return fit_parameters_optimized(
         par_file=par_file,
         tim_file=tim_file,
@@ -105,4 +159,5 @@ def fit_parameters(
         device=device,
         verbose=verbose,
         compatibility=compatibility,
+        fit_dmx=fit_dmx,
     )

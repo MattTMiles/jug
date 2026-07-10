@@ -77,6 +77,8 @@ def dd_binary_delay(
     h3_sec=None,
     h4_sec=None,
     stig=None,
+    dr=0.0,
+    dth=0.0,
 ):
     """Compute DD binary delay at a single barycentric time.
 
@@ -138,6 +140,9 @@ def dd_binary_delay(
     The Shapiro delay requires either (sini, m2) or (h3, h4).
     """
     # Time since periastron
+    # NOTE: computing (t_bary_mjd - t0_mjd) in float64 at MJD ~58000 loses ~600 ns
+    # of precision due to catastrophic cancellation. Use dd_binary_delay_from_tt0
+    # (which accepts pre-computed tt0 in longdouble) for binary pulsars.
     dt_days = t_bary_mjd - t0_mjd
     dt_sec = dt_days * SECS_PER_DAY
     tt0 = dt_sec  # Time since T0 in seconds (PINT convention)
@@ -190,9 +195,9 @@ def dd_binary_delay(
 
     # Alpha and Beta parameters (D&D eqs [46], [47])
     # Note: er = ecc*(1 + DR), eTheta = ecc*(1 + DTH)
-    # For standard DD model: DR=0, DTH=0
-    er = ecc_current
-    eTheta = ecc_current
+    # For standard DD model: DR=0, DTH=0 (DDGR passes derived dr/dth).
+    er = ecc_current * (1.0 + dr)
+    eTheta = ecc_current * (1.0 + dth)
 
     alpha = a1_current * sinOm  # eq [46]
     beta = a1_current * jnp.sqrt(1.0 - eTheta**2) * cosOm  # eq [47]
@@ -339,6 +344,149 @@ def dd_binary_delay_vectorized(
             sini, m2_msun, h3_sec, h4_sec, stig
         )
     )(t_bary_mjd)
+
+
+def dd_binary_delay_from_tt0(
+    tt0_sec,
+    pb_days,
+    a1_lt_sec,
+    ecc,
+    omega_deg,
+    gamma_sec=0.0,
+    pbdot=0.0,
+    omdot_deg_yr=0.0,
+    xdot=0.0,
+    edot=0.0,
+    sini=None,
+    m2_msun=None,
+    h3_sec=None,
+    h4_sec=None,
+    stig=None,
+    tt0_red_sec=None,
+    dr=0.0,
+    dth=0.0,
+):
+    """DD binary delay given tt0_sec = (t_prebinary - T0) in seconds.
+
+    Like dd_binary_delay but accepts the time-since-T0 directly.
+    Use this instead of dd_binary_delay when tt0_sec has been precomputed
+    in longdouble to avoid float64 cancellation errors at MJD ~58000.
+
+    tt0_red_sec (optional): tt0 reduced by a whole number of orbital periods
+    in LONGDOUBLE (jug.utils.orbit_reduction.reduce_binary_time_sec, with the
+    same float64 pb_days). When given, the fractional orbit — and hence the
+    mean anomaly — is built from it, removing the ~ps float64
+    phase-quantization floor of tt0/pb_sec at ~1e4 orbits. norbits (used only
+    in the secular OMDOT/Ae term) still comes from the full tt0, where float64
+    is ample. When omitted, behavior is bitwise-identical to before.
+    """
+    # tt0_sec is already (t - T0) * SECS_PER_DAY, computed outside JAX in longdouble.
+    # Alias to match the rest of the function body.
+    tt0 = tt0_sec
+    dt_sec = tt0_sec
+
+    pb_sec = pb_days * SECS_PER_DAY
+    orbits = tt0 / pb_sec - 0.5 * pbdot * (tt0 / pb_sec)**2
+
+    norbits = jnp.floor(orbits)
+    if tt0_red_sec is None:
+        frac_orbits = orbits - norbits
+    else:
+        # High-precision fractional orbit: linear term from the reduced time
+        # (integer orbits already subtracted in longdouble), PBDOT quadratic
+        # from the full time. Differs from orbits by an integer, which drops
+        # out of the mean anomaly; re-wrap to [0, 1) to keep the downstream
+        # nu/Ae branch structure identical to the unreduced path.
+        orbit_shift = jnp.rint((tt0 - tt0_red_sec) / pb_sec)
+        orbits_hp = (orbit_shift + tt0_red_sec / pb_sec
+                     - 0.5 * pbdot * (tt0 / pb_sec)**2)
+        norbits = jnp.floor(orbits_hp)
+        frac_orbits = orbits_hp - norbits
+    mean_anomaly = frac_orbits * 2.0 * jnp.pi
+
+    a1_current = a1_lt_sec + xdot * dt_sec
+    ecc_current = ecc + edot * dt_sec
+
+    E = solve_kepler(mean_anomaly, ecc_current)
+
+    half_E = E / 2.0
+    nu = 2.0 * jnp.arctan2(
+        jnp.sqrt(1.0 + ecc_current) * jnp.sin(half_E),
+        jnp.sqrt(1.0 - ecc_current) * jnp.cos(half_E)
+    )
+    Ae = 2.0 * jnp.pi * norbits + nu
+    k_omdot = omdot_deg_yr * pb_days / (360.0 * 365.25)
+    omega_rad = jnp.deg2rad(omega_deg) + k_omdot * Ae
+
+    sinE = jnp.sin(E)
+    cosE = jnp.cos(E)
+    sinOm = jnp.sin(omega_rad)
+    cosOm = jnp.cos(omega_rad)
+
+    # Relativistic deformation (DDGR): er = ecc*(1+DR), eTheta = ecc*(1+DTH).
+    # Standard DD passes dr=dth=0 -> er = eTheta = ecc_current.
+    er = ecc_current * (1.0 + dr)
+    eTheta = ecc_current * (1.0 + dth)
+
+    alpha = a1_current * sinOm
+    beta = a1_current * jnp.sqrt(1.0 - eTheta**2) * cosOm
+
+    delayR = alpha * (cosE - er) + beta * sinE
+    delayE = gamma_sec * sinE
+    Dre = delayR + delayE
+    Drep = -alpha * sinE + (beta + gamma_sec) * cosE
+    Drepp = -alpha * cosE - (beta + gamma_sec) * sinE
+
+    pb_prime_sec = pb_sec + pbdot * tt0
+    nhat = (2.0 * jnp.pi / pb_prime_sec) / (1.0 - ecc_current * cosE)
+
+    correction_factor = (
+        1.0
+        - nhat * Drep
+        + (nhat * Drep)**2
+        + 0.5 * nhat**2 * Dre * Drepp
+        - 0.5 * ecc_current * sinE / (1.0 - ecc_current * cosE) * nhat**2 * Dre * Drep
+    )
+
+    delayInverse = Dre * correction_factor
+
+    sini_default = sini if sini is not None else 0.0
+    m2_default = m2_msun if m2_msun is not None else 0.0
+
+    h3_val = h3_sec if h3_sec is not None else 0.0
+    stig_val = stig if stig is not None else 0.0
+    stig_safe = jnp.maximum(jnp.abs(stig_val), 1e-30)
+    sini_h3stig = 2.0 * stig_val / (1.0 + stig_val**2)
+    m2_h3stig = h3_val / (stig_safe**3 * T_SUN)
+
+    h4_val = h4_sec if h4_sec is not None else 0.0
+    h3h4_denom = jnp.maximum(h3_val**2 + h4_val**2, 1e-60)
+    sini_h3h4 = jnp.clip(2.0 * h3_val * h4_val / h3h4_denom, 0.0, 1.0)
+    h4_safe = jnp.maximum(jnp.abs(h4_val), 1e-30)
+    m2_h3h4 = h3_val**4 / (h4_safe**3 * T_SUN)
+
+    use_h3stig = (h3_val != 0.0) & (stig_val != 0.0)
+    use_h3h4 = (h3_val != 0.0) & (h4_val != 0.0) & (stig_val == 0.0)
+
+    sini_use = jnp.where(use_h3stig, sini_h3stig,
+                         jnp.where(use_h3h4, sini_h3h4, sini_default))
+    m2_msun_use = jnp.where(use_h3stig, m2_h3stig,
+                            jnp.where(use_h3h4, m2_h3h4, m2_default))
+
+    shapiro_arg = (
+        1.0
+        - ecc_current * cosE
+        - sini_use * (sinOm * (cosE - ecc_current) + jnp.sqrt(1.0 - ecc_current**2) * cosOm * sinE)
+    )
+    shapiro_arg = jnp.maximum(shapiro_arg, 1e-30)
+
+    delayS = jnp.where(
+        (m2_msun_use > 0.0) & (sini_use > 0.0),
+        -2.0 * T_SUN * m2_msun_use * jnp.log(shapiro_arg),
+        0.0
+    )
+
+    return delayInverse + delayS
 
 
 # Convenience aliases for model variants

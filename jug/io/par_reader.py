@@ -24,6 +24,20 @@ import numpy as np
 from jug.utils.constants import HIGH_PRECISION_PARAMS
 
 
+_INDEXED_HIGH_PRECISION_EPOCH = re.compile(
+    r'^(?:GLEP|EXPEP|GAUSEP|DMXR1|DMXR2|DMXEP|T0|TASC)_\d+$'
+)
+_FIXED_HIGH_PRECISION_EPOCHS = {'START', 'FINISH', 'PBEPOCH'}
+
+
+def _is_high_precision_param(key: str) -> bool:
+    return (
+        key in HIGH_PRECISION_PARAMS
+        or key in _FIXED_HIGH_PRECISION_EPOCHS
+        or _INDEXED_HIGH_PRECISION_EPOCH.fullmatch(key) is not None
+    )
+
+
 # Obliquity of the ecliptic in arcseconds, matching PINT/Tempo2 conventions.
 # Source: IERS Technical Notes and IAU resolutions.
 OBLIQUITY_ARCSEC = {
@@ -102,7 +116,7 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
 
     # Keywords that use multi-token format: T2EFAC -f <val> <num>, etc.
     _NOISE_KEYWORDS = {'T2EFAC', 'T2EQUAD', 'EFAC', 'EQUAD', 'ECORR', 'TNECORR',
-                       'TNEF', 'TNEQ', 'DMEFAC', 'DMJUMP',
+                       'TNEF', 'TNEQ', 'TNEC', 'DMEFAC', 'DMJUMP',
                        'TNBANDNOISE', 'TNGROUPNOISE',
                        'BANDNOISE', 'GROUPNOISE'}
 
@@ -144,7 +158,7 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                 value_str = parts[1]
 
                 # Store high-precision parameters as strings
-                if key in HIGH_PRECISION_PARAMS:
+                if _is_high_precision_param(key):
                     params_str[key] = value_str
                     try:
                         params[key] = _parse_float(value_str)
@@ -155,6 +169,17 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                         params[key] = _parse_float(value_str)
                     except ValueError:
                         params[key] = value_str
+
+                # EPS1DOT/EPS2DOT dual-convention (Tempo2 readParfile.C ~2136):
+                # a "large" written value (|val|>1e-7) is in units of 1e-12 s^-1
+                # and is multiplied by 1e-12; a "small" value is already physical
+                # s^-1 and left as-is. JUG stores everything in physical s^-1, so
+                # replicate the conditional scaling here. (PPTA DR4 values are
+                # ~1e-16, so they take the no-scale branch -- matching the data
+                # and disagreeing with PINT, which always applies the 1e-12.)
+                if key in ("EPS1DOT", "EPS2DOT") and isinstance(params.get(key), float):
+                    if abs(params[key]) > 1e-7:
+                        params[key] *= 1.0e-12
 
                 # Extract fit flag: parts[2] is '1' or '0' if present
                 if len(parts) >= 3 and parts[2] in ('0', '1'):
@@ -633,7 +658,11 @@ def format_ra(ra_rad: float) -> str:
             if h >= 24:
                 h = 0
     
-    return f"{h:02d}:{m:02d}:{s:011.8f}"
+    # 12 decimal places in RA-seconds preserves full float64 precision of the
+    # radian RA (8 dp ~= 1.5e-4 mas resolution -> ~0.1 ns Roemer error for
+    # high-parallax pulsars when the sexagesimal string is re-parsed by the
+    # forward model; J0437-4715). Tempo2/PINT parse arbitrary precision.
+    return f"{h:02d}:{m:02d}:{s:015.12f}"
 
 
 def format_dec(dec_rad: float) -> str:
@@ -666,7 +695,9 @@ def format_dec(dec_rad: float) -> str:
             m = 0
             d += 1
     
-    return f"{sign}{d:02d}:{m:02d}:{s:010.7f}"
+    # 11 decimal places in DEC-arcsec preserves full float64 precision of the
+    # radian DEC (see format_ra; matters for high-parallax Roemer parity).
+    return f"{sign}{d:02d}:{m:02d}:{s:014.11f}"
 
 
 def convert_equatorial_to_ecliptic(

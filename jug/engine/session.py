@@ -284,7 +284,22 @@ class TimingSession:
                     # because they contain TCB values while params are TDB.
                     if not tcb_converted:
                         initial_val = self._initial_params.get(actual_key)
-                        if initial_val is not None and initial_val == new_value:
+                        # The float64 value comparison is not sufficient for
+                        # high-precision parameters: a GLS fit can refine F0
+                        # (and similar) at the SUB-float64 level, which is
+                        # captured only in the ``_high_precision`` string while
+                        # the float64 value still compares equal. Keeping the
+                        # original par line in that case writes the PREFIT
+                        # high-precision value, discarding the refinement and
+                        # reintroducing a ~1 ns linear-in-time phase error in
+                        # this from-scratch evaluation (the fitter's own
+                        # differential residuals and save_par/write_par_file
+                        # both use the refined value, so the standalone
+                        # post-fit compute_residuals would silently disagree).
+                        hp_now = params.get('_high_precision', {}).get(actual_key)
+                        hp_orig = self._original_high_precision.get(actual_key)
+                        if (initial_val is not None and initial_val == new_value
+                                and hp_now == hp_orig):
                             updated_lines.append(line)
                             updated_params.add(actual_key)
                             continue
@@ -329,7 +344,7 @@ class TimingSession:
                 geometry_cache=self._geometry_cache,
                 compatibility=self.compatibility,
                 engine_conventions=self.engine_conventions,
-
+                toas=self.toas_data,
             )
         finally:
             tmp_par_path.unlink()
@@ -394,6 +409,21 @@ class TimingSession:
                 print("  Using temp par file (params override)")
             merged = dict(self.params)
             merged.update(params)
+            # Explicit overrides must take precedence over the
+            # ``_high_precision`` string cache: _compute_residuals_with_params
+            # writes hp strings to the temp par file in preference to dict
+            # values, which would silently IGNORE overrides of hp-cached
+            # parameters (F0, TASC, T0, PEPOCH, ...).
+            hp = dict(merged.get('_high_precision', {}))
+            for k, v in params.items():
+                if k in hp:
+                    if isinstance(v, str):
+                        hp[k] = v
+                    elif isinstance(v, np.longdouble):
+                        hp[k] = str(v)
+                    else:
+                        hp[k] = repr(float(v))
+            merged['_high_precision'] = hp
             return self._compute_residuals_with_params(merged, subtract_tzr)
         
         # No params override - use current self.params (not original par file!)
@@ -420,7 +450,7 @@ class TimingSession:
                 geometry_cache=self._geometry_cache,
                 compatibility=self.compatibility,
                 engine_conventions=self.engine_conventions,
-
+                toas=self.toas_data,
             )
         
         # Cache the result (only for original params), keyed by subtract_tzr
@@ -570,7 +600,8 @@ class TimingSession:
         toa_mask: Optional[np.ndarray] = None,
         solver_mode: str = "exact",
         noise_config: Optional[object] = None,
-        subtract_noise_sec: Optional[np.ndarray] = None
+        subtract_noise_sec: Optional[np.ndarray] = None,
+        fit_dmx: bool = True,
     ) -> Dict[str, Any]:
         """
         Fit timing model parameters.
@@ -604,6 +635,14 @@ class TimingSession:
             after subtracting a noise realization from the displayed residuals,
             the fitter should work on the cleaned data. If None, no noise
             subtraction is applied.
+        fit_dmx : bool or str, default True
+            Which DMX_* bins to auto-add as fitted timing parameters.
+            - True (default): fit each DMX bin iff flagged free in the PAR
+              (per-bin flag = 1), like every other parameter and like PINT.
+              Frozen bins keep PAR values applied to residuals but are not fit.
+            - False: fit no DMX bins (PAR delays still applied). Use for
+              global-DM recovery checks where DM + DMX is degenerate.
+            - "all": force-fit every DMX bin regardless of flag (legacy).
 
         Returns
         -------
@@ -714,7 +753,7 @@ class TimingSession:
                 noise_config=noise_config,
                 subtract_noise_sec=subtract_noise_sec,
                 compatibility=self.compatibility,
-
+                fit_dmx=fit_dmx,
             )
             
             # Run cached fit
@@ -725,6 +764,23 @@ class TimingSession:
                 verbose=verbose,
                 solver_mode=solver_mode
             )
+
+            # Barycentric arrival times the fitter evaluated the binary model
+            # at (prefit-parameter values; enterprise-compatible, see
+            # compute_residuals_simple). For BATs at the fitted parameters,
+            # call compute_residuals() after this fit.
+            for _bat_key in ('bat_mjd_ld', 'bat_mjd', 'bat_sec'):
+                if _bat_key in cached_result and _bat_key not in result:
+                    result[_bat_key] = cached_result[_bat_key]
+
+            # Expose barycentric observing frequencies (MHz) and per-TOA flags
+            # alongside bat_mjd/design_matrix. Sourced from the same residual
+            # path (compute_residuals_simple) and the same self.toas_data order
+            # as bat_mjd, so they are row-for-row aligned (unmasked, full length).
+            if 'freq_bary_mhz' in cached_result and 'freq_bary_mhz' not in result:
+                result['freq_bary_mhz'] = cached_result['freq_bary_mhz']
+            if 'toa_flags' not in result:
+                result['toa_flags'] = toa_flags
         else:
             # FALLBACK PATH: Use file-based fitting (slower but always works)
             if verbose:
@@ -741,7 +797,7 @@ class TimingSession:
                 verbose=verbose,
                 compatibility=self.compatibility,
                 engine_conventions=self.engine_conventions,
-
+                fit_dmx=fit_dmx,
             )
         
         # Update session params with fitted values (CRITICAL for iterative fitting!)
@@ -751,9 +807,19 @@ class TimingSession:
             updated_params = result['final_params'].copy()
             updated_params.update(result.get('final_dmx_params', {}))
             # Convert RAJ/DECJ from radians back to string format for consistency
+            # Refresh the cached radian astrometry (_raj_rad/_decj_rad) from the
+            # fitted value BEFORE formatting RAJ/DECJ to sexagesimal strings.
+            # The forward model (simple_calculator: ra_rad = params['_raj_rad'])
+            # prefers these cached radians; if left at the par value they make
+            # L_hat (hence Roemer) stale while PMRA/PX are fitted -- a position
+            # error that the parallax amplifies (J0437-4715: 0.2 mas RAJ shift x
+            # 8 us parallax = ~84 ps annual). The ecliptic path below refreshes
+            # them via sync; this covers equatorial (RAJ/DECJ) fits.
             if 'RAJ' in updated_params:
+                updated_params['_raj_rad'] = float(updated_params['RAJ'])
                 updated_params['RAJ'] = format_ra(updated_params['RAJ'])
             if 'DECJ' in updated_params:
+                updated_params['_decj_rad'] = float(updated_params['DECJ'])
                 updated_params['DECJ'] = format_dec(updated_params['DECJ'])
 
             if self.params.get('_ecliptic_coords'):
@@ -775,6 +841,18 @@ class TimingSession:
                 updated_params.update(ecliptic_aliases_from_equatorial(self.params, updated_params))
 
             self.params.update(updated_params)
+            # Strip stale aliases: if canonical key just updated, remove any
+            # alias keys that still hold the old par-file value.
+            # Example: par file has A1DOT, fitter updates XDOT (canonical) →
+            # session.params ends up with both; downstream code reading A1DOT
+            # gets the stale value.  Remove aliases for every updated canonical.
+            from jug.model.parameter_spec import _ALIAS_MAP
+            _reverse_alias = {}
+            for _a, _c in _ALIAS_MAP.items():
+                _reverse_alias.setdefault(_c, []).append(_a)
+            for _key in updated_params:
+                for _alias in _reverse_alias.get(_key, []):
+                    self.params.pop(_alias, None)
 
             # Update _high_precision strings for fitted parameters whose
             # values changed.  Always compute from the ORIGINAL longdouble
@@ -786,12 +864,27 @@ class TimingSession:
             # multi-cycle phase errors (~ΔF0 × dt_max).
             hp = self.params.get('_high_precision')
             if hp is not None:
+                _final_ld = result.get('final_params_ld', {}) or {}
                 for p, new_val in updated_params.items():
                     if p.startswith('_') or not isinstance(new_val, (int, float)):
                         continue
                     init_val = self._initial_params.get(p)
                     orig_hp_str = self._original_high_precision.get(p)
-                    if init_val is not None and orig_hp_str is not None and float(init_val) != float(new_val):
+                    _ld_val = _final_ld.get(p)
+                    if init_val is not None and orig_hp_str is not None and (
+                            float(init_val) != float(new_val) or _ld_val is not None):
+                        if _ld_val is not None:
+                            # The fitter carried this parameter in LONGDOUBLE
+                            # (sub-float64-ULP steps; required for F0 in GLS
+                            # red-noise fits). Use its value directly — the
+                            # float64 delta reconstruction below cannot
+                            # represent it and the 1-ULP snap-back would
+                            # discard a real refinement. str(longdouble)
+                            # round-trips exactly; skip notation matching.
+                            new_ld = np.longdouble(_ld_val)
+                            if str(np.longdouble(orig_hp_str)) != str(new_ld):
+                                hp[p] = str(new_ld)
+                            continue
                         # If a high-precision parameter moved by only one float64 ULP,
                         # the float64 result cannot represent the fitted sub-ULP value.
                         # Keep the original high-precision value rather than snapping to
@@ -834,6 +927,32 @@ class TimingSession:
         # spin/DM changes, so stale dt_sec causes wrong postfit residuals
         # when binary, astrometric, FD, or SW parameters were fitted.
         self._cached_toa_data = None
+
+        # Canonicalize the returned post-fit residuals to the from-scratch
+        # evaluator so result['residuals_us'] is bit-identical to a subsequent
+        # compute_residuals() call (eliminates the ~0.01 ns RMS / ~0.15 ns p2p
+        # float64 evaluation-order gap between the fitter's fast differential
+        # evaluator and the from-scratch kernel). The from-scratch path is full
+        # longdouble and matches PINT, so this is at least as accurate as the
+        # differential residuals it replaces. This is only safe now that the
+        # keep-original-par-line optimisation no longer discards the GLS
+        # sub-float64 F0 refinement (see _compute_residuals_with_params); before
+        # that fix this swap reintroduced a ~1 ns linear-in-time ramp.
+        # Skipped for TOA-masked fits: the all-TOA compute_residuals() cannot
+        # reproduce a fitted subset.
+        if toa_mask is None and result.get('success', True) and \
+                'residuals_us' in result:
+            try:
+                _post = self.compute_residuals(
+                    subtract_tzr=True, force_recompute=True)
+                _fresh = np.asarray(_post['residuals_us'], dtype=float)
+                if _fresh.shape == np.asarray(result['residuals_us']).shape:
+                    result['residuals_us'] = _fresh
+                    if 'residuals_sec' in _post:
+                        result['residuals_sec'] = np.asarray(
+                            _post['residuals_sec'], dtype=float)
+            except Exception:
+                pass  # fall back to the fitter's differential residuals
 
         # Attach prefit snapshot so fit report can show per-fit changes
         result['prefit_params'] = prefit_params
@@ -990,9 +1109,13 @@ class TimingSession:
             binary_keys = ['PB', 'A1', 'ECC', 'E', 'T0', 'OM', 'OMDOT', 'PBDOT',
                            'GAMMA', 'M2', 'SINI', 'KIN', 'KOM',
                            'EPS1', 'EPS2', 'EPS1DOT', 'EPS2DOT', 'TASC',
-                           'FB0', 'FB1', 'A1DOT', 'XDOT', 'EDOT',
+                           'A1DOT', 'XDOT', 'EDOT',
                            'DR', 'DTH', 'A0', 'B0', 'SHAPMAX',
                            'H3', 'H4', 'STIGMA', 'K96']
+            binary_keys.extend(sorted(
+                (k for k in p if k.startswith('FB') and k[2:].isdigit()),
+                key=lambda k: int(k[2:]),
+            ))
             for k in binary_keys:
                 if k in p:
                     lines.append(_row(k, p[k]))

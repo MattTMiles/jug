@@ -56,7 +56,7 @@ from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.residuals.engine_conventions import EngineConventionProfile
-from jug.io.par_reader import parse_par_file, _parse_float
+from jug.io.par_reader import parse_par_file, validate_par_timescale, _parse_float, get_longdouble
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
@@ -723,7 +723,7 @@ def fit_parameters_optimized(
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
-
+    fit_dmx: bool = True,
 ) -> Dict:
     """
     Fit timing model parameters to TOA data.
@@ -760,6 +760,11 @@ def fit_parameters_optimized(
         ``tempo2_delay``/``delay_only`` for delay derivatives or
         ``pint_phase_scaled`` for PINT-style phase-chain scaling.
         If omitted, defaults by compatibility mode.
+    fit_dmx : bool or str, default True
+        Controls which DMX_* bins are auto-added as fitted timing parameters.
+        - True (default): fit each DMX bin iff it is flagged free in the PAR.
+        - False: fit no DMX bins (PAR delays still applied).
+        - "all": force-fit every DMX bin regardless of flags.
 
     Returns
     -------
@@ -789,7 +794,7 @@ def fit_parameters_optimized(
     return _fit_parameters_general(
         par_file, tim_file, fit_params, max_iter, convergence_threshold,
         clock_dir, verbose, device, compatibility, engine_conventions, fd_column_mode,
-
+        fit_dmx=fit_dmx,
     )
 
 
@@ -1118,7 +1123,7 @@ def _build_setup_common(
     design_matrix_method: str = "analytic",
     verbose: bool = False,
     subtract_noise_sec: Optional[np.ndarray] = None,
-
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Shared setup builder for both file-based and cache-based paths.
 
@@ -1319,17 +1324,31 @@ def _build_setup_common(
                         print(f"  DMEFAC: Applied scaling to {n_scaled}/{len(toas_mjd)} TOAs "
                               f"({len(dmefac_entries)} backend groups)")
 
-    if dmx_labels:
+    if dmx_labels and fit_dmx:
         # DMX is deterministic timing-model structure, not stochastic noise.
         # It used to ride in the GLS noise basis because its design matrix is
         # basis-like, but keeping it in fit_params makes each nonlinear
         # iteration update the DMX baseline just like PINT.
+        #
+        # WHICH bins to fit follows the per-bin PAR fit flag, exactly like every
+        # other parameter and exactly like PINT (a bin is fit iff flagged free).
         existing = set(fit_params)
-        added_dmx = [label for label in dmx_labels if label not in existing]
+        if fit_dmx == "all":
+            candidate_dmx = list(dmx_labels)
+        else:
+            dmx_flags = params.get("_fit_flags", {}) or {}
+            candidate_dmx = [label for label in dmx_labels if dmx_flags.get(label)]
+        added_dmx = [label for label in candidate_dmx if label not in existing]
         if added_dmx:
             fit_params = list(fit_params) + added_dmx
             if verbose:
-                print(f"  Auto-added {len(added_dmx)} DMX timing parameters")
+                how = "all bins" if fit_dmx == "all" else "PAR-flagged free"
+                print(f"  Auto-added {len(added_dmx)} DMX timing parameters ({how})")
+        elif verbose:
+            print(f"  Holding {len(dmx_labels)} DMX bins fixed at PAR values "
+                  f"(no free DMX flags)")
+    elif dmx_labels and not fit_dmx and verbose:
+        print(f"  fit_dmx=False: holding {len(dmx_labels)} DMX bins fixed at PAR values")
 
     # --- DMJUMP design matrix ----------------------------------------------
     dmjump_design_matrix = None
@@ -1702,7 +1721,7 @@ def _build_general_fit_setup_from_files(
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
     design_matrix_method: str = "analytic",
-
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
@@ -1789,7 +1808,7 @@ def _build_general_fit_setup_from_files(
         fd_column_mode=fd_column_mode,
         design_matrix_method=design_matrix_method,
         verbose=verbose,
-
+        fit_dmx=fit_dmx,
     )
 
 
@@ -2008,6 +2027,8 @@ def _run_general_fit_iterations(
     _saved_lambda = 1.0
     condition_diagnostics_history: List[Dict[str, Any]] = []
     condition_threshold = 1e12
+    _saved_M_labels = None
+    _saved_M_n_timing = 0
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
@@ -2791,7 +2812,7 @@ def _run_general_fit_iterations(
     # For WLS fits, the delta-based nonlinear evaluation accumulates cross-term
     # errors over iterations; the linearized postfit from the final iteration is
     # more accurate (matching Tempo2's approach).
-    if _saved_residuals_sec is not None:
+    if _saved_residuals_sec is not None and not _tn_poly_applied:
         if n_augmented > 0:
             # GLS: Subtract only the timing model correction (timing params + offset
             # + deterministic timing columns such as DMX/DMJUMP). Noise realizations (Red, DM, Chromatic, ECORR,
@@ -3055,12 +3076,17 @@ def _run_general_fit_iterations(
         'final_dmx_params': final_dmx_params,
         'final_dmx_uncertainties': final_dmx_uncertainties,
         'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
+        'final_dmx_params': final_dmx_params,
+        'final_dmx_uncertainties': final_dmx_uncertainties,
         'fit_diagnostics': {
             'condition_threshold': condition_threshold,
             'ill_conditioned': any(d.get('ill_conditioned', False) for d in condition_diagnostics_history),
             'condition_history': condition_diagnostics_history,
             'requested_fit_params': list(fit_params),
         },
+        'design_matrix': (_saved_M[:, :_saved_M_n_timing].copy()
+                          if _saved_M is not None else None),
+        'design_matrix_labels': _saved_M_labels,
     }
 
 
@@ -3076,7 +3102,7 @@ def _build_general_fit_setup_from_cache(
     compatibility: str = "pint",
     fd_column_mode: str | None = None,
     design_matrix_method: str = "analytic",
-
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -3200,7 +3226,7 @@ def _build_general_fit_setup_from_cache(
         design_matrix_method=design_matrix_method,
         verbose=False,
         subtract_noise_sec=subtract_noise_sec,
-
+        fit_dmx=fit_dmx,
     )
 
 
@@ -3263,7 +3289,7 @@ def _fit_parameters_general(
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
-
+    fit_dmx: bool = True,
 ) -> Dict:
     """General parameter fitter -- handles any parameter combination.
 
@@ -3281,7 +3307,7 @@ def _fit_parameters_general(
         compatibility=compatibility,
         engine_conventions=engine_conventions,
         fd_column_mode=fd_column_mode,
-
+        fit_dmx=fit_dmx,
     )
     cache_time = time.time() - cache_start
     

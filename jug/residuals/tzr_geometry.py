@@ -69,6 +69,7 @@ def resolve_tzrmjd_epochs(
     tzrmjd_raw = get_longdouble(params, "TZRMJD")
     tzrmjd_scale_upper = tzrmjd_scale.upper()
     model_timescale = str(model_timescale).upper()
+    par_timescale = str(params.get("_par_timescale", "TDB")).upper()
 
     if tzr_is_ssb:
         if model_timescale == "TCB":
@@ -111,6 +112,12 @@ def resolve_tzrmjd_epochs(
         if verbose:
             print(
                 f"   TZRMJD scale: UTC (explicit override, converting via {tzr_site} clock)"
+            )
+        if par_timescale == "TDB":
+            print(
+                "   [!] WARNING: tzrmjd_scale='UTC' contradicts par file UNITS=TDB. "
+                "This will apply a ~69 s clock correction to TZRMJD. "
+                "Use only for legacy par files with UTC TZRMJD values."
             )
     elif tzrmjd_scale_upper == "AUTO":
         if verbose:

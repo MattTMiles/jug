@@ -658,6 +658,8 @@ def parse_dm_noise_params(params: dict) -> Optional[DMNoiseProcess]:
 
     if amp_key and gam_key:
         log10_A = float(params[amp_key])
+        if amp_key.upper() == "TNDMAMP":
+            log10_A -= TNDM_OFFSET
         nharm_key = _find_key(params, keys["n_harmonics"])
         return DMNoiseProcess(
             log10_A=log10_A,

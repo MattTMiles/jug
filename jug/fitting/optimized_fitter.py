@@ -238,6 +238,11 @@ def _update_param(params: Dict, param: str, value: float) -> None:
     if param_upper in HIGH_PRECISION_PARAMS:
         hp[param_upper] = _format_longdouble(hp_value)
 
+    if param_upper == "RAJ":
+        params["_raj_rad"] = float(value)
+    elif param_upper == "DECJ":
+        params["_decj_rad"] = float(value)
+
 
 def _reconvert_ecliptic_to_equatorial(params: Dict) -> None:
     """Reconvert ecliptic coords to equatorial after an ecliptic param update."""

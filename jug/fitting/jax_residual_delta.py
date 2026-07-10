@@ -22,8 +22,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jug.fitting.forward_delay import compute_side_delay_change, compute_total_delay_change
-from jug.utils.constants import SECS_PER_DAY
+from jug.fitting.forward_delay import compute_total_delay_change
 from jug.utils.units import native_derivative_to_fit_column
 
 if TYPE_CHECKING:
@@ -268,30 +267,6 @@ def _spin_terms_from_params(params: dict) -> list:
     return terms
 
 
-def _binary_delay_change_jax(params: dict, setup: "GeneralFitSetup", *, binary_plan):
-    """Traceable binary-delay change, matching the shared Taylor delay path."""
-    if not setup.binary_params or setup.initial_binary_delay is None:
-        return None
-    if setup.prebinary_delay_sec is None:
-        raise ValueError("Binary delay-change requires prebinary_delay_sec in setup.")
-    plan = binary_plan
-    if plan is None:
-        from jug.fitting.binary_delay_plan import resolve_binary_structure
-
-        plan = resolve_binary_structure(
-            setup.params, setup.fit_param_list, obs_pos_ls=setup.ssb_obs_pos_ls
-        )
-    tdb_mjd = jnp.asarray(setup.tdb_mjd, dtype=jnp.float64)
-    toas_prebinary = tdb_mjd - (
-        jnp.asarray(setup.prebinary_delay_sec, dtype=jnp.float64) / SECS_PER_DAY
-    )
-    new_binary = jnp.asarray(
-        plan.evaluate(toas_prebinary, params, setup.ssb_obs_pos_ls, jnp),
-        dtype=jnp.float64,
-    )
-    return new_binary - jnp.asarray(setup.initial_binary_delay, dtype=jnp.float64)
-
-
 def _compute_residual_delta_jax(
     params_ref: dict,
     params_pert: dict,
@@ -315,11 +290,6 @@ def _compute_residual_delta_jax(
         xp=jnp,
         binary_plan=binary_plan,
     )
-    side_delay_change = compute_side_delay_change(params_pert, setup, xp=jnp)
-    delay_change = delay_change + side_delay_change
-    binary_delay_change = _binary_delay_change_jax(params_pert, setup, binary_plan=binary_plan)
-    if binary_delay_change is not None:
-        delay_change = delay_change + binary_delay_change
 
     f_terms = _spin_terms_from_params(params_pert)
     return _phase_residual_delta_jax(

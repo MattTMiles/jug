@@ -89,6 +89,8 @@ def compute_t2_binary_delay(
     delay : jnp.ndarray
         Binary delay in seconds.
     """
+    from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+    convert_t2_kin_kom_to_ddk_convention(params)
     if _is_ell1_parameterization(params):
         from jug.fitting.derivatives_binary import compute_ell1_binary_delay
         return compute_ell1_binary_delay(toas_bary_mjd, params)
@@ -125,6 +127,8 @@ def compute_binary_derivatives_t2(
     derivatives : dict
         Maps parameter names to derivative arrays.
     """
+    from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+    convert_t2_kin_kom_to_ddk_convention(params)
     if _is_ell1_parameterization(params):
         from jug.fitting.derivatives_binary import compute_binary_derivatives_ell1
         return compute_binary_derivatives_ell1(params, toas_bary_mjd, fit_params)

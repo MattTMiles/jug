@@ -183,17 +183,6 @@ def compute_spin_derivatives(
     dict
         Mapping parameter name to derivative column, shape ``(n_toas,)``.
     """
-<<<<<<< HEAD
-    # Get PEPOCH
-    pepoch_mjd = get_longdouble(params, 'PEPOCH', default=float(toas_mjd[0]))
-
-    # Compute dt in seconds using longdouble to avoid float64 cancellation at MJD ~58000
-    toas_ld = np.asarray(toas_mjd, dtype=np.longdouble)
-    pepoch_ld = np.longdouble(pepoch_mjd)
-    dt_sec = np.asarray((toas_ld - pepoch_ld) * np.longdouble(SECS_PER_DAY), dtype=np.float64)
-    
-    # Get all F terms for API compatibility (not used in derivative)
-=======
     spin_params = _spin_param_names(fit_params)
     if not spin_params:
         return {}
@@ -201,10 +190,15 @@ def compute_spin_derivatives(
     _normalize_spin_compatibility(compatibility)
     f0 = float(params.get("F0", 1.0))
 
-    pepoch_mjd = params.get("PEPOCH", toas_mjd[0])
-    dt_jax = (toas_mjd - pepoch_mjd) * SECS_PER_DAY
+    # Get PEPOCH
+    pepoch_mjd = get_longdouble(params, 'PEPOCH', default=float(toas_mjd[0]))
 
->>>>>>> f8d375b (feat: add pint-only JAX residual delta and forward delay model)
+    # Compute dt in seconds using longdouble to avoid float64 cancellation at MJD ~58000
+    toas_ld = np.asarray(toas_mjd, dtype=np.longdouble)
+    pepoch_ld = np.longdouble(pepoch_mjd)
+    dt_sec = np.asarray((toas_ld - pepoch_ld) * np.longdouble(SECS_PER_DAY), dtype=np.float64)
+
+    # Get all F terms for API compatibility (not used in derivative)
     f_terms = []
     for i in range(10):
         f_key = f"F{i}"
@@ -214,22 +208,12 @@ def compute_spin_derivatives(
             break
 
     derivatives = {}
-<<<<<<< HEAD
-    for param in fit_params:
-        if param.startswith('F'):
-            deriv_phase = d_phase_d_F(dt_sec, param, f_terms)  # cycles/Hz (POSITIVE)
-            # Apply PINT's convention (timing_model.py line 2365):
-            # q = -self.d_phase_d_param(toas, delay, param)
-            # Then divide by F0 to convert phase -> time units (line 2368)
-            f0 = params.get('F0', 1.0)
-            derivatives[param] = -deriv_phase / f0  # seconds/Hz (NEGATIVE)
-    
-=======
     for param in spin_params:
-        deriv_phase = d_phase_d_F(dt_jax, param, f_terms)
-        derivatives[param] = -deriv_phase / f0
-
->>>>>>> f8d375b (feat: add pint-only JAX residual delta and forward delay model)
+        deriv_phase = d_phase_d_F(dt_sec, param, f_terms)  # cycles/Hz (POSITIVE)
+        # Apply PINT's convention (timing_model.py line 2365):
+        # q = -self.d_phase_d_param(toas, delay, param)
+        # Then divide by F0 to convert phase -> time units (line 2368)
+        derivatives[param] = -deriv_phase / f0  # seconds/Hz (NEGATIVE)
     return derivatives
 
 

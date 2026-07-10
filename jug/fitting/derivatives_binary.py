@@ -55,17 +55,13 @@ Reference:
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from functools import partial
 from typing import Dict, List, Tuple
 
-from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY, T_SUN
-from jug.utils.orbit_reduction import reduce_binary_time_sec
-from jug.delays.combined import _ELL1H_MAX_NHARM
 
 
-def _resolve_pb_days(params: Dict) -> np.longdouble:
+def _resolve_pb_days(params: Dict) -> float:
     """Orbital period in days, FB-aware.
 
     FB-parameterized binaries (black widows etc.) carry no PB, so a bare
@@ -73,30 +69,15 @@ def _resolve_pb_days(params: Dict) -> np.longdouble:
     formula (orbital phase, nhat, PB/PBDOT derivatives). Fall back to PB = 1/FB0.
     """
     if 'PB' in params:
-        return get_longdouble(params, 'PB')
+        return float(params['PB'])
     fb0 = params.get('FB0')
     if fb0 is not None and float(fb0) != 0.0:
-        return np.longdouble(1.0) / (
-            np.longdouble(fb0) * np.longdouble(SECS_PER_DAY)
-        )
-    return np.longdouble(1.0)
+        return 1.0 / (float(fb0) * SECS_PER_DAY)
+    return 1.0
 
 
 # Ensure 64-bit precision for pulsar timing accuracy
 jax.config.update('jax_enable_x64', True)
-
-
-def _compute_ttasc_sec(toas_bary_mjd: np.ndarray, tasc: np.longdouble) -> np.ndarray:
-    """Return (toas_bary_mjd - tasc) in seconds using longdouble to avoid float64 cancellation.
-
-    Direct float64 subtraction at MJD ~58000 loses ~600 ns in ttasc → ~30 ps Roemer
-    error.  Computing in longdouble before returning float64 eliminates this.
-    """
-    return np.asarray(
-        (np.asarray(toas_bary_mjd, dtype=np.longdouble) - np.longdouble(tasc))
-        * np.longdouble(SECS_PER_DAY),
-        dtype=np.float64,
-    )
 
 
 # =============================================================================
@@ -105,87 +86,69 @@ def _compute_ttasc_sec(toas_bary_mjd: np.ndarray, tasc: np.longdouble) -> np.nda
 
 @jax.jit
 def compute_orbital_phase_ell1(
-    ttasc_sec: jnp.ndarray,
+    toas_bary_mjd: jnp.ndarray,
     pb: float,
+    tasc: float,
     pbdot: float = 0.0,
     fb_coeffs: jnp.ndarray = None,
-    ttasc_red_sec: jnp.ndarray = None,
 ) -> jnp.ndarray:
     """Compute orbital phase Phi for ELL1 model (supports FB parameters).
-
+    
     Standard:
         orbits = ttasc / PB - 0.5 * PBDOT * (ttasc / PB)^2
-
+    
     FB Mode (if fb_coeffs provided):
         F_orb(t) = sum(FB_i * t^i / i!)
         Phi = 2pi * integral(F_orb * dt) = 2pi * sum(FB_i * t^(i+1) / (i+1)!)
-
+    
     Parameters
     ----------
-    ttasc_sec : jnp.ndarray
-        Time since TASC in seconds (precomputed in longdouble by caller)
+    toas_bary_mjd : jnp.ndarray
+        BARYCENTRIC TOA times in MJD
     pb : float
         Orbital period in days (used if FB not used)
+    tasc : float
+        Time of ascending node in MJD
     pbdot : float, optional
         Orbital period derivative
     fb_coeffs : jnp.ndarray, optional
         FB coefficients (FB0, FB1, ...). If present/not empty, uses FB model.
-    ttasc_red_sec : jnp.ndarray, optional
-        ttasc reduced by a whole number of orbital periods in LONGDOUBLE
-        (jug.utils.orbit_reduction.reduce_binary_time_sec). When given, the
-        LINEAR phase term uses it (integer orbits drop out of all trig),
-        removing the ~ps float64 phase-quantization floor. All secular /
-        higher-order terms still use the full ttasc_sec.
-
+        
     Returns
     -------
     phi : jnp.ndarray
-        Orbital phase in radians (only meaningful modulo 2*pi when
-        ttasc_red_sec is supplied)
+        Orbital phase in radians
     """
-
+    ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY  # seconds
+    
     def compute_phi_standard():
         pb_sec = pb * SECS_PER_DAY
-        if ttasc_red_sec is None:
-            orbits = ttasc_sec / pb_sec - 0.5 * pbdot * (ttasc_sec / pb_sec) ** 2
-        else:
-            # Linear term from the reduced time; PBDOT quadratic keeps the
-            # full time (small smooth correction, float64-safe).
-            orbits = ttasc_red_sec / pb_sec - 0.5 * pbdot * (ttasc_sec / pb_sec) ** 2
+        orbits = ttasc_sec / pb_sec - 0.5 * pbdot * (ttasc_sec / pb_sec) ** 2
         return 2 * jnp.pi * orbits
 
     def compute_phi_fb():
         # FB Taylor series integration
         # Phase = 2pi * sum(FB_i * t^(i+1) / (i+1)!)
         # Note: (i+1)! = fb_factorials[i] * (i+1)
-        # We need to construct factorials here or pass them.
+        # We need to construct factorials here or pass them. 
         # Constructing small factorials on the fly is cheap in JIT.
         n_coeffs = len(fb_coeffs)
-
+        
         indices = jnp.arange(n_coeffs)
         powers = indices + 1
-
+        
         # Factorials: (i+1)! via cumulative product (JIT-friendly)
         _all_facts = jnp.concatenate([jnp.array([1.0]), jnp.cumprod(jnp.arange(1, 20, dtype=jnp.float64))])
         denom = _all_facts[indices + 1]
-
+        
         # Expand time: t^(i+1)
         # shape (N, M)
         t_pow = jnp.power(ttasc_sec[:, None], powers[None, :])
-
+        
         # Terms: FB_i * t^(i+1) / (i+1)!
         terms = fb_coeffs[None, :] * t_pow / denom[None, :]
-
-        if ttasc_red_sec is None:
-            phase_integral = jnp.sum(terms, axis=1)
-        else:
-            # Build the FB0 linear term from the reduced time and sum only the
-            # i>=1 terms at full time: FB0*ttasc_red == FB0*ttasc - n_orb
-            # exactly (the reduction period is 1/FB0 from the same float64
-            # FB0), so integer orbits drop out BEFORE any large-magnitude
-            # float64 sum can round them in.
-            terms = jnp.where((indices > 0)[None, :], terms, 0.0)
-            phase_integral = jnp.sum(terms, axis=1) + fb_coeffs[0] * ttasc_red_sec
+        
+        phase_integral = jnp.sum(terms, axis=1)
         return 2 * jnp.pi * phase_integral
 
     if fb_coeffs is not None and len(fb_coeffs) > 0:
@@ -935,100 +898,85 @@ def compute_ell1_binary_delay(
     binary_delay_sec : jnp.ndarray
         Total binary delay in seconds
     """
-    # Extract numeric parameters with defaults (avoid passing strings to JAX)
-    a1 = float(params.get('A1', 0.0))
-    pb_ld = _resolve_pb_days(params)
-    pb = float(pb_ld)
-    tasc = get_longdouble(params, 'TASC', default=0.0)
-    eps1 = float(params.get('EPS1', 0.0))
-    eps2 = float(params.get('EPS2', 0.0))
-    pbdot = float(params.get('PBDOT', 0.0))
-    a1dot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
-    sini = float(params.get('SINI', 0.0))
-    m2 = float(params.get('M2', 0.0))
-    gamma = float(params.get('GAMMA', 0.0))
-    h3 = float(params.get('H3', 0.0))
-    h4 = float(params.get('H4', 0.0))
-    stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
-    nharm = float(params.get('NHARMS', params.get('NHARM', 4.0)) or 4.0)
+    p = _extract_ell1_params(params)
+    fb_coeffs = jnp.array(p["fb_coeffs"], dtype=jnp.float64)
 
-    # Convert orthometric Shapiro parameters to SINI/M2
-    # Only convert when the derived STIG is physically valid (0 < STIG ≤ 1).
-    # When H4 ≤ 0 or STIG is out of range, leave sini/m2 = 0 so the
-    # H3-only harmonic expansion path activates (Freire & Wex 2010).
+    # Call JIT-compiled inner function with extracted numeric values
+    return _compute_ell1_binary_delay_jit(
+        jnp.asarray(toas_bary_mjd),
+        p["a1"], p["pb"], p["tasc"], p["eps1"], p["eps2"], p["pbdot"], p["a1dot"],
+        p["sini"], p["m2"], p["gamma"], p["h3"], p["h4"], p["stig"], fb_coeffs,
+        p["eps1dot"], p["eps2dot"]
+    )
+
+
+def _extract_ell1_params(params: Dict) -> Dict:
+    """Concrete ELL1 kernel scalars from reference params."""
+    a1 = float(params.get("A1", 0.0))
+    pb = _resolve_pb_days(params)
+    tasc = float(params.get("TASC", 0.0))
+    eps1 = float(params.get("EPS1", 0.0))
+    eps2 = float(params.get("EPS2", 0.0))
+    pbdot = float(params.get("PBDOT", 0.0))
+    a1dot = float(params.get("A1DOT", params.get("XDOT", 0.0)))
+    sini = float(params.get("SINI", 0.0))
+    m2 = float(params.get("M2", 0.0))
+    gamma = float(params.get("GAMMA", 0.0))
+    h3 = float(params.get("H3", 0.0))
+    h4 = float(params.get("H4", 0.0))
+    stig = float(params.get("STIG", params.get("STIGMA", 0.0)))
+
     if sini == 0.0 and m2 == 0.0 and h3 != 0.0:
-        if stig > 0.0 and stig <= 1.0:
-            sini = 2.0 * stig / (1.0 + stig**2)
-            m2 = h3 / (stig**3 * T_SUN)
+        if 0.0 < stig <= 1.0:
+            sini = 2.0 * stig / (1.0 + stig ** 2)
+            m2 = h3 / (stig ** 3 * T_SUN)
         elif h4 > 0.0 and h3 > 0.0:
             stig_derived = h4 / h3
             if 0.0 < stig_derived <= 1.0:
-                sini = 2.0 * stig_derived / (1.0 + stig_derived**2)
-                m2 = h3 / (stig_derived**3 * T_SUN)
+                sini = 2.0 * stig_derived / (1.0 + stig_derived ** 2)
+                m2 = h3 / (stig_derived ** 3 * T_SUN)
                 stig = stig_derived
 
-    # Extract FB parameters (FB0, FB1, ...)
-    fb_coeffs_list = []
-    fb0_ld = None
+    fb_coeffs = []
     i = 0
-    while True:
-        key = f'FB{i}'
-        if key in params:
-            fb_coeffs_list.append(float(params[key]))
-            if i == 0:
-                fb0_ld = get_longdouble(params, key)
-            i += 1
-        else:
-            break
+    while f"FB{i}" in params:
+        fb_coeffs.append(float(params[f"FB{i}"]))
+        i += 1
 
-    if fb_coeffs_list:
-        fb_coeffs = jnp.array(fb_coeffs_list, dtype=jnp.float64)
-    else:
-        fb_coeffs = jnp.array([], dtype=jnp.float64)
+    eps1dot = float(params.get("EPS1DOT", 0.0))
+    eps2dot = float(params.get("EPS2DOT", 0.0))
 
-    # Extract EPS1DOT/EPS2DOT for time evolution
-    eps1dot = float(params.get('EPS1DOT', 0.0))
-    eps2dot = float(params.get('EPS2DOT', 0.0))
-
-    # Precompute time since TASC in longdouble to avoid float64 cancellation
-    # at MJD ~58000 (~600 ns error → ~30 ps Roemer delay error).
-    ttasc_ld = ((np.asarray(toas_bary_mjd, dtype=np.longdouble) - np.longdouble(tasc))
-                * np.longdouble(SECS_PER_DAY))
-    ttasc_sec_f64 = np.asarray(ttasc_ld, dtype=np.float64)
-    # Orbit-count reduction in longdouble: kills the ~ps float64
-    # phase-quantization floor in the linear phase term (see
-    # jug/utils/orbit_reduction.py). FB mode reduces by 1/FB0.
-    ttasc_red_f64 = reduce_binary_time_sec(
-        ttasc_ld,
-        pb_days=pb_ld,
-        fb0_hz=fb0_ld,
-    )
-    return _compute_ell1_binary_delay_jit(
-        jnp.asarray(ttasc_sec_f64),
-        a1, pb, eps1, eps2, pbdot, a1dot, sini, m2, gamma,
-        h3, h4, stig, fb_coeffs, eps1dot, eps2dot,
-        ttasc_red_sec=jnp.asarray(ttasc_red_f64),
-        nharm=nharm,
+    return dict(
+        a1=a1,
+        pb=pb,
+        tasc=tasc,
+        eps1=eps1,
+        eps2=eps2,
+        pbdot=pbdot,
+        a1dot=a1dot,
+        sini=sini,
+        m2=m2,
+        gamma=gamma,
+        h3=h3,
+        h4=h4,
+        stig=stig,
+        eps1dot=eps1dot,
+        eps2dot=eps2dot,
+        fb_coeffs=fb_coeffs,
     )
 
 
 @jax.jit
 def _compute_ell1_binary_delay_jit(
-    ttasc_sec: jnp.ndarray,
-    a1: float, pb: float, eps1: float, eps2: float,
+    toas_bary_mjd: jnp.ndarray,
+    a1: float, pb: float, tasc: float, eps1: float, eps2: float,
     pbdot: float, a1dot: float, sini: float, m2: float, gamma: float,
     h3: float, h4: float, stig: float, fb_coeffs: jnp.ndarray,
-    eps1dot: float = 0.0, eps2dot: float = 0.0,
-    ttasc_red_sec: jnp.ndarray = None,
-    nharm: float = 4.0,
+    eps1dot: float = 0.0, eps2dot: float = 0.0
 ) -> jnp.ndarray:
-    """JIT-compiled ELL1 binary delay computation.
-
-    ttasc_sec must be precomputed as (toas_bary_mjd - TASC)*86400 in longdouble
-    by the caller to avoid float64 catastrophic cancellation at MJD ~58000.
-    ttasc_red_sec (optional) is the longdouble orbit-count-reduced time; the
-    linear phase term uses it to avoid the ~ps float64 quantization floor.
-    """
+    """JIT-compiled ELL1 binary delay computation."""
+    # Time since TASC
+    ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY
     pb_sec = pb * SECS_PER_DAY
 
     # Effective a1 with time evolution
@@ -1038,9 +986,8 @@ def _compute_ell1_binary_delay_jit(
     eps1_eff = eps1 + eps1dot * ttasc_sec
     eps2_eff = eps2 + eps2dot * ttasc_sec
 
-    # Orbital phase (reduced time, when given, removes the float64 floor)
-    phi = compute_orbital_phase_ell1(ttasc_sec, pb, pbdot, fb_coeffs,
-                                     ttasc_red_sec=ttasc_red_sec)
+    # Orbital phase
+    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
 
     # nhat = instantaneous orbital angular frequency (rad/s). For FB-parameterized
     # binaries (no PB) it must be derived from the FB series like the kernel
@@ -1082,17 +1029,12 @@ def _compute_ell1_binary_delay_jit(
 
     sin_phi = jnp.sin(phi)
 
-    # ELL1H Shapiro delay, H3 + STIGMA -> 3rd-harmonic-and-up EXACT form
-    # (Freire & Wex 2010 Eq. 28), matching Tempo2 ELL1Hmodel.C mode 1:
-    #   lsc = log(1+stig²-2*stig*sin(Φ)) + 2*stig*sin(Φ) - stig²*cos(2Φ)
-    #   ds  = -2*(H3/stig³) * lsc
-    # The k=1,2 harmonics are degenerate with the ELL1 Roemer a1/EPS terms and are
-    # absorbed by the (Tempo2-fit) Keplerian params; the FULL log (Eq.29) would
-    # double-count them at fixed params. Must stay in sync with
-    # combined.py:branch_ell1 shapiro_ell1h (see that comment for the J1902-5105
-    # verification).
-    cos_2phi = jnp.cos(2.0 * phi)
+    # ELL1H Shapiro delay (Freire & Wex 2010, orthometric lsc formula)
+    # When 0 < STIG ≤ 1, use: fs = 1 + stig² - 2*stig*sin(Φ)
+    #   lsc = log(fs) + 2*stig*sin(Φ) - stig²*cos(2Φ)
+    #   ds = -2*(H3/stig³)*lsc
     fs = 1.0 + stig**2 - 2.0 * stig * sin_phi
+    cos_2phi = jnp.cos(2.0 * phi)
     lsc = jnp.log(fs) + 2.0 * stig * sin_phi - stig**2 * cos_2phi
     r_ell1h = h3 / jnp.maximum(stig**3, 1e-30)
     shapiro_ell1h = -2.0 * r_ell1h * lsc
@@ -1105,32 +1047,16 @@ def _compute_ell1_binary_delay_jit(
         0.0
     )
 
-    # H3/H4 harmonic Shapiro delay (Tempo2 ELL1Hmodel.C calcDH; see
-    # combined.py:branch_ell1 for the full derivation). nharm-dependent sd5 term
-    # (harmonics 5..nharm), masked divergence-safe; sd5=0 for nharm<=4.
-    s_h4 = h4 / jnp.where(h3 != 0.0, h3, 1.0)
-    fs_h3h4 = 0.0
-    for _k in range(5, _ELL1H_MAX_NHARM + 1):
-        base = jnp.where(_k <= nharm, s_h4, 0.0)
-        term = base ** (_k - 4)
-        if _k % 2 == 1:
-            coeff = ((-1.0) ** ((_k - 1) // 2)) / _k
-            fs_h3h4 = fs_h3h4 + coeff * term * jnp.sin(_k * phi)
-        else:
-            coeff = ((-1.0) ** (_k // 2)) / _k
-            fs_h3h4 = fs_h3h4 + coeff * term * jnp.cos(_k * phi)
+    # H3/H4 harmonic Shapiro delay (Freire & Wex 2010)
     shapiro_harmonic = jnp.where(
         (sini == 0.0) & (m2 == 0.0) & (h3 > 0.0) & (stig == 0.0),
-        -(4.0 / 3.0) * h3 * jnp.sin(3.0 * phi) + h4 * jnp.cos(4.0 * phi)
-        + 4.0 * h4 * fs_h3h4,
+        -(4.0 / 3.0) * h3 * jnp.sin(3.0 * phi) + h4 * jnp.cos(4.0 * phi),
         0.0
     )
 
-    # Select: ELL1H lsc if stig > 0 (H3+STIGMA), else standard/harmonic.
-    # No stig<=1 bound: matches PINT delayS_H3_STIGMA_exact for any STIGMA
-    # (see combined.py:branch_ell1 for the J1902-5105 STIG=1.154 case).
+    # Select: ELL1H lsc if 0 < stig ≤ 1, else standard/harmonic
     shapiro_delay = jnp.where(
-        stig > 0.0,
+        (stig > 0.0) & (stig <= 1.0),
         shapiro_ell1h,
         shapiro_standard + shapiro_harmonic
     )
@@ -1186,33 +1112,26 @@ def compute_binary_derivatives_ell1(
     This function exactly matches PINT's design matrix for ELL1 binary models.
     The inverse delay corrections provide ~0.01-0.02% improvement over Tempo2.
     """
+    toas_bary_mjd = jnp.asarray(toas_bary_mjd)
     n_toas = len(toas_bary_mjd)
-
+    
     # Extract parameters with defaults
     a1 = float(params.get('A1', 0.0))
-    pb_ld = _resolve_pb_days(params)
-    pb = float(pb_ld)
-    tasc = get_longdouble(
-        params,
-        'TASC',
-        default=float(np.mean(np.asarray(toas_bary_mjd, dtype=np.float64))),
-    )
+    pb = _resolve_pb_days(params)
+    tasc = float(params.get('TASC', float(jnp.mean(toas_bary_mjd))))
     eps1 = float(params.get('EPS1', 0.0))
     eps2 = float(params.get('EPS2', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
-    a1dot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
+    a1dot = float(params.get('A1DOT', params.get('XDOT', 0.0)))
     eps1dot = float(params.get('EPS1DOT', 0.0))
     eps2dot = float(params.get('EPS2DOT', 0.0))
     sini = float(params.get('SINI', 0.0))
     m2 = float(params.get('M2', 0.0))
-
-    # Time since TASC — longdouble to avoid float64 cancellation at MJD ~58000.
-    ttasc_sec_ld = (
-        np.asarray(toas_bary_mjd, dtype=np.longdouble) - np.longdouble(tasc)
-    ) * np.longdouble(SECS_PER_DAY)
-    ttasc_sec = jnp.asarray(np.asarray(ttasc_sec_ld, dtype=np.float64))
+    
+    # Time since TASC
+    ttasc_sec = (toas_bary_mjd - tasc) * SECS_PER_DAY  # seconds
     pb_sec = pb * SECS_PER_DAY
-
+    
     # Effective parameters (with time evolution)
     # a1(t) = A1 + A1DOT * ttasc
     a1_eff = a1 + a1dot * ttasc_sec
@@ -1223,14 +1142,11 @@ def compute_binary_derivatives_ell1(
     
     # Extract FB parameters (FB0, FB1, ...)
     fb_coeffs_list = []
-    fb0_ld = None
     i = 0
     while True:
         key = f'FB{i}'
         if key in params:
             fb_coeffs_list.append(float(params[key]))
-            if i == 0:
-                fb0_ld = get_longdouble(params, key)
             i += 1
         else:
             break
@@ -1240,16 +1156,9 @@ def compute_binary_derivatives_ell1(
     else:
         fb_coeffs = jnp.array([], dtype=jnp.float64)
     
-    # Compute orbital phase (linear term reduced by precise whole periods).
-    ttasc_red_sec = jnp.asarray(reduce_binary_time_sec(
-        ttasc_sec_ld,
-        pb_days=pb_ld,
-        fb0_hz=fb0_ld,
-    ))
-    phi = compute_orbital_phase_ell1(
-        ttasc_sec, pb, pbdot, fb_coeffs, ttasc_red_sec=ttasc_red_sec
-    )
-
+    # Compute orbital phase
+    phi = compute_orbital_phase_ell1(toas_bary_mjd, pb, tasc, pbdot, fb_coeffs)
+    
     # nhat = instantaneous orbital angular frequency (rad/s). For FB-parameterized
     # binaries (no PB) it must be derived from the FB series like the kernel
     # (combined.py:branch_ell1 compute_n0_fb): nhat = 2*pi*sum(FB_i * dt^i / i!).
@@ -1266,7 +1175,7 @@ def compute_binary_derivatives_ell1(
         nhat = 2.0 * jnp.pi * _F_orb
     else:
         nhat = 2.0 * jnp.pi / pb_sec
-
+    
     # Compute Dre, Drep, Drepp (inverse delay quantities)
     # Dre = (a1/c) * d_delayR_da1 - but a1 is already in light-seconds,
     # so Dre = a1 * d_delayR_da1 has units of light-seconds = seconds (with c=1)

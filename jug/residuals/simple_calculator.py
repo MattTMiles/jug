@@ -813,11 +813,15 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
     if verbose: print(f"\n5. Detecting binary model: {binary_model} (ID: {model_id})")
 
     # --- Scalar parameter extraction ---
-    pb_val = float(params.get('PB', 0.0))
+    pb_ld = get_longdouble(params, 'PB', default=0.0)
+    pb_val = float(pb_ld)
     if pb_val == 0.0 and 'FB0' in params:
         fb0 = float(params['FB0'])
         if fb0 != 0.0:
-            pb_val = (1.0 / fb0) / SECS_PER_DAY
+            pb_ld = np.longdouble(1.0) / (
+                np.longdouble(fb0) * np.longdouble(SECS_PER_DAY)
+            )
+            pb_val = float(pb_ld)
 
     a1_val = float(params.get('A1', 0.0))
     t0_val = float(params.get('T0', 0.0))
@@ -858,11 +862,39 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
     else:
         sini_val = float(sini_param)
 
+    # DDS model: SHAPMAX = -log(1 - sin i) (Kramer et al. 2006; PINT
+    # DDS_model.SINI = 1 - exp(-SHAPMAX)). A DDS par has no SINI, so without
+    # this the Shapiro delay (sini_val=0) would be silently dropped.
+    if sini_val == 0.0 and 'SHAPMAX' in params:
+        sini_val = float(1.0 - jnp.exp(-float(params['SHAPMAX'])))
+
     kin_val = float(params.get('KIN', 0.0))
     kom_val = float(params.get('KOM', 0.0))
     h3_val = float(params.get('H3', 0.0))
     h4_val = float(params.get('H4', 0.0))
     stig_val = float(params.get('STIG', 0.0))
+    nharm_val = float(params.get('NHARMS', params.get('NHARM', 4.0)) or 4.0)
+
+    dr_val = 0.0
+    dth_val = 0.0
+    if binary_model == 'DDGR' and 'MTOT' in params and m2_val > 0.0 \
+            and pb_val > 0.0 and a1_val > 0.0:
+        from jug.delays.ddgr import compute_ddgr_pk_params
+        _pk = compute_ddgr_pk_params(
+            float(params['MTOT']), m2_val, pb_val, a1_val, ecc_val,
+            xomdot_deg_yr=float(params.get('XOMDOT', 0.0)),
+            xpbdot=float(params.get('XPBDOT', 0.0)))
+        sini_val = _pk['sini']
+        gamma_val = _pk['gamma_sec']
+        pbdot_val = _pk['pbdot']
+        omdot_val = _pk['omdot_deg_yr']
+        dr_val = _pk['dr']
+        dth_val = _pk['dth']
+        if verbose:
+            print(f"   DDGR PK from MTOT={float(params['MTOT']):.4f} "
+                  f"M2={m2_val:.4f}: SINI={sini_val:.6f} "
+                  f"GAMMA={gamma_val:.4e}s OMDOT={omdot_val:.4e}deg/yr "
+                  f"PBDOT={pbdot_val:.3e}")
 
     # Shapiro parameterization: H3/STIG, H3/H4, H3-only, or M2/SINI
     r_shap_val = 0.0
@@ -879,12 +911,17 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
 
     # FB mode
     has_fb0 = 'FB0' in params
-    has_higher_fb = any(f'FB{i}' in params for i in range(1, 13))
+    fb0_ld = get_longdouble(params, 'FB0') if has_fb0 else None
+    has_higher_fb = any(
+        key.startswith('FB') and key[2:].isdigit() and int(key[2:]) > 0
+        for key in params
+    )
     use_fb = has_fb0 or (has_higher_fb and 'PB' in params)
     if use_fb:
         if not has_fb0 and 'PB' in params:
             pb_sec = float(params['PB']) * SECS_PER_DAY
             params['FB0'] = 1.0 / pb_sec
+            fb0_ld = np.longdouble(1.0) / (pb_ld * np.longdouble(SECS_PER_DAY))
         fb_coeffs = []
         fb_idx = 0
         while f'FB{fb_idx}' in params:
@@ -892,7 +929,10 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
             fb_idx += 1
         fb_coeffs_jax = jnp.array(fb_coeffs, dtype=jnp.float64)
         fb_factorials_jax = jnp.array([float(math.factorial(i)) for i in range(len(fb_coeffs))], dtype=jnp.float64)
-        fb_epoch_jax = jnp.array(float(params.get('TASC', params.get('T0', params['PEPOCH']))))
+        fb_epoch_jax = jnp.array(float(
+            params['TASC'] if 'TASC' in params else
+            params['T0'] if 'T0' in params else params['PEPOCH']
+        ))
         use_fb_jax = jnp.array(True)
         if pb_val == 0.0:
             pb_val = 1.0
@@ -906,8 +946,12 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
     bp = {
         'model_id': model_id, 'has_binary': has_binary, 'binary_model': binary_model,
         # Scalar values (needed by TZR debug and orbital phase)
-        'pb_val': pb_val, 'a1_val': a1_val, 't0_val': t0_val, 'tasc_val': tasc_val,
+        'pb_val': pb_val, 'pb_ld': pb_ld,
+        'a1_val': a1_val, 't0_val': t0_val, 'tasc_val': tasc_val,
         'ecc_val': ecc_val, 'om_val': om_val, 'sini_val': sini_val,
+        'use_fb': use_fb,
+        'fb0_val': (fb_coeffs[0] if use_fb and fb_coeffs else None),
+        'fb0_ld': fb0_ld,
         # JAX scalars
         'has_binary_jax': jnp.array(has_binary),
         'binary_model_id_jax': jnp.array(model_id, dtype=jnp.int32),
@@ -919,10 +963,11 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
         'gamma_jax': jnp.array(gamma_val), 'pbdot_jax': jnp.array(pbdot_val),
         'xdot_jax': jnp.array(xdot_val), 'omdot_jax': jnp.array(omdot_val),
         'edot_jax': jnp.array(edot_val),
+        'dr_jax': jnp.array(dr_val), 'dth_jax': jnp.array(dth_val),
         'm2_jax': jnp.array(m2_val), 'sini_jax': jnp.array(sini_val),
         'kin_jax': jnp.array(kin_val), 'kom_jax': jnp.array(kom_val),
         'h3_jax': jnp.array(h3_val), 'h4_jax': jnp.array(h4_val),
-        'stig_jax': jnp.array(stig_val),
+        'stig_jax': jnp.array(stig_val), 'nharm_jax': jnp.array(nharm_val),
         'r_shap_jax': jnp.array(r_shap_val), 's_shap_jax': jnp.array(s_shap_val),
         # FB arrays
         'fb_coeffs_jax': fb_coeffs_jax, 'fb_factorials_jax': fb_factorials_jax,
@@ -1018,7 +1063,8 @@ def _prepare_ddk_kopeikin(params, model_id, is_ecliptic, ssb_obs_pos_km,
 
 def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
                        dm_jax, bp, ddk, roemer_shapiro_jax,
-                       tropo_jax, dmx_jax):
+                       tropo_jax, dmx_jax, tt_binary_jax=None,
+                       tt_binary_red_jax=None):
     """Call the JAX combined delay kernel with all parameters.
 
     Parameters
@@ -1027,6 +1073,10 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         ne_sw_jax, fd_coeffs_jax, has_fd_jax.
     bp : dict from _extract_binary_params.
     ddk : dict from _prepare_ddk_kopeikin.
+    tt_binary_jax : jnp.ndarray or None
+        Precomputed (tdb - binary_epoch)*86400 in float64.
+    tt_binary_red_jax : jnp.ndarray or None
+        Orbit-count-reduced tt_binary for high-precision phase.
     """
     return compute_total_delay_jax(
         tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
@@ -1043,7 +1093,8 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         ddk['obs_pos_ls_jax'], ddk['px_jax'],
         ddk['sin_ra_jax'], ddk['cos_ra_jax'], ddk['sin_dec_jax'], ddk['cos_dec_jax'],
         ddk['k96_jax'], ddk['pmra_rad_per_sec_jax'], ddk['pmdec_rad_per_sec_jax'],
-        tropo_jax, dmx_jax,
+        tropo_jax, dmx_jax, tt_binary_jax, tt_binary_red_jax,
+        bp['dr_jax'], bp['dth_jax'], bp['nharm_jax'],
     ).block_until_ready()
 
 
@@ -1679,7 +1730,11 @@ def compute_residuals_simple(
         source_coord = SkyCoord(ra=ra_rad*u.rad, dec=dec_rad*u.rad, frame='icrs')
         
         mjd_utc_arr = np.array([t.mjd_int + t.mjd_frac for t in toas])
-        
+
+        _elev_session_cache = None
+        if geometry_cache is not None:
+            _elev_session_cache = geometry_cache.setdefault('tropo_elev_deg', {})
+
         # Multi-observatory: compute tropospheric delay per observatory using correct location
         for obs_code in all_obs_codes:
             idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]

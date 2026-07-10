@@ -56,7 +56,7 @@ from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.residuals.engine_conventions import EngineConventionProfile
-from jug.io.par_reader import parse_par_file, _parse_float
+from jug.io.par_reader import parse_par_file, validate_par_timescale, _parse_float, get_longdouble
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
@@ -723,7 +723,7 @@ def fit_parameters_optimized(
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
-
+    fit_dmx: bool = True,
 ) -> Dict:
     """
     Fit timing model parameters to TOA data.
@@ -760,6 +760,11 @@ def fit_parameters_optimized(
         ``tempo2_delay``/``delay_only`` for delay derivatives or
         ``pint_phase_scaled`` for PINT-style phase-chain scaling.
         If omitted, defaults by compatibility mode.
+    fit_dmx : bool or str, default True
+        Controls which DMX_* bins are auto-added as fitted timing parameters.
+        - True (default): fit each DMX bin iff it is flagged free in the PAR.
+        - False: fit no DMX bins (PAR delays still applied).
+        - "all": force-fit every DMX bin regardless of flags.
 
     Returns
     -------
@@ -789,7 +794,7 @@ def fit_parameters_optimized(
     return _fit_parameters_general(
         par_file, tim_file, fit_params, max_iter, convergence_threshold,
         clock_dir, verbose, device, compatibility, engine_conventions, fd_column_mode,
-
+        fit_dmx=fit_dmx,
     )
 
 
@@ -1118,7 +1123,7 @@ def _build_setup_common(
     design_matrix_method: str = "analytic",
     verbose: bool = False,
     subtract_noise_sec: Optional[np.ndarray] = None,
-
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Shared setup builder for both file-based and cache-based paths.
 
@@ -1319,17 +1324,31 @@ def _build_setup_common(
                         print(f"  DMEFAC: Applied scaling to {n_scaled}/{len(toas_mjd)} TOAs "
                               f"({len(dmefac_entries)} backend groups)")
 
-    if dmx_labels:
+    if dmx_labels and fit_dmx:
         # DMX is deterministic timing-model structure, not stochastic noise.
         # It used to ride in the GLS noise basis because its design matrix is
         # basis-like, but keeping it in fit_params makes each nonlinear
         # iteration update the DMX baseline just like PINT.
+        #
+        # WHICH bins to fit follows the per-bin PAR fit flag, exactly like every
+        # other parameter and exactly like PINT (a bin is fit iff flagged free).
         existing = set(fit_params)
-        added_dmx = [label for label in dmx_labels if label not in existing]
+        if fit_dmx == "all":
+            candidate_dmx = list(dmx_labels)
+        else:
+            dmx_flags = params.get("_fit_flags", {}) or {}
+            candidate_dmx = [label for label in dmx_labels if dmx_flags.get(label)]
+        added_dmx = [label for label in candidate_dmx if label not in existing]
         if added_dmx:
             fit_params = list(fit_params) + added_dmx
             if verbose:
-                print(f"  Auto-added {len(added_dmx)} DMX timing parameters")
+                how = "all bins" if fit_dmx == "all" else "PAR-flagged free"
+                print(f"  Auto-added {len(added_dmx)} DMX timing parameters ({how})")
+        elif verbose:
+            print(f"  Holding {len(dmx_labels)} DMX bins fixed at PAR values "
+                  f"(no free DMX flags)")
+    elif dmx_labels and not fit_dmx and verbose:
+        print(f"  fit_dmx=False: holding {len(dmx_labels)} DMX bins fixed at PAR values")
 
     # --- DMJUMP design matrix ----------------------------------------------
     dmjump_design_matrix = None
@@ -1702,7 +1721,7 @@ def _build_general_fit_setup_from_files(
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
     design_matrix_method: str = "analytic",
-
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
@@ -1789,7 +1808,7 @@ def _build_general_fit_setup_from_files(
         fd_column_mode=fd_column_mode,
         design_matrix_method=design_matrix_method,
         verbose=verbose,
-
+        fit_dmx=fit_dmx,
     )
 
 
@@ -2008,6 +2027,8 @@ def _run_general_fit_iterations(
     _saved_lambda = 1.0
     condition_diagnostics_history: List[Dict[str, Any]] = []
     condition_threshold = 1e12
+    _saved_M_labels = None
+    _saved_M_n_timing = 0
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
@@ -2794,29 +2815,12 @@ def _run_general_fit_iterations(
     # For WLS fits, the delta-based nonlinear evaluation accumulates cross-term
     # errors over iterations; the linearized postfit from the final iteration is
     # more accurate (matching Tempo2's approach).
-    if _saved_residuals_sec is not None:
-        if n_augmented > 0:
-            # GLS: Subtract only the timing model correction (timing params + offset
-            # + deterministic timing columns such as DMX/DMJUMP). Noise realizations (Red, DM, Chromatic, ECORR,
-            # Band, Group) are left in the residuals for GUI subtract workflow.
-            delta_model_only = _saved_delta_all.copy()
-            noise_start = n_timing_cols
-            noise_end = (n_timing_cols + n_red_noise_cols + n_dm_noise_cols
-                         + n_chromatic_noise_cols + n_ecorr_cols)
-            delta_model_only[noise_start:noise_end] = 0.0
-            # Band and group noise columns sit after deterministic DMJUMP columns
-            bg_start = noise_end + n_dmx_cols + n_dmjump_cols
-            bg_end = bg_start + n_band_noise_total + n_group_noise_total
-            delta_model_only[bg_start:bg_end] = 0.0
-            linear_correction = _saved_M @ delta_model_only
-        else:
-            # WLS: Subtract full linearized correction
-            linear_correction = _saved_M @ _saved_delta_all
-        residuals_final_sec = _saved_residuals_sec - linear_correction
-        residuals_final_us = residuals_final_sec * 1e6
-    else:
-        residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = _compute_full_model_residuals(params, setup)
-        residuals_final_us = residuals_final_sec * 1e6
+    # Returned residuals must match the returned final parameters. TNsubtractPoly
+    # can change F0/F1/DM after the final GLS solve; always recompute nonlinearly.
+    residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = (
+        _compute_full_model_residuals(params, setup)
+    )
+    residuals_final_us = residuals_final_sec * 1e6
     
     # Compute prefit residuals.  Do not recompute them from ``setup`` here:
     # accepted fitter steps re-baseline setup.dt_sec_* and setup.initial_*_delay
@@ -3006,20 +3010,10 @@ def _run_general_fit_iterations(
     final_rms_us = np.sqrt(np.sum(residuals_final_sec**2 * weights) / sum_weights) * 1e6
     final_wrms_us = np.sqrt(np.sum((residuals_final_sec * 1e6)**2 * weights) / sum_weights)
 
-    # Always compute full nonlinear RMS for accurate reporting.
-    nl_residuals_sec, nl_chi2, nl_rms_us, nl_wrms_us = _compute_full_model_residuals(params, setup)
-
-    # For GLS fits, the linearized postfit residuals (r_wls - M_timing @ dp)
-    # are consistent with the SVD noise coefficients by construction:
-    #   SVD: r_wls ≈ M_timing @ dp + F @ a
-    #   => postfit = r_wls - M_timing @ dp ≈ F @ a = noise
-    #   => postfit - noise ≈ measurement noise (small)
-    # Using nonlinear residuals instead would break this consistency because
-    # the NL residuals differ from the linearized ones by ~3-4 µs of
-    # nonlinear timing model response. Keep the linearized postfit and
-    # compute chi2 from noise-subtracted linearized residuals.
-    # Report the noise-subtracted RMS as final_rms (matches what user sees
-    # after subtracting noise in the GUI).
+    raw_final_rms_us = final_rms_us
+    raw_final_chi2 = final_chi2
+    noise_subtracted_rms_us = None
+    noise_subtracted_chi2 = None
     if n_augmented > 0 and noise_realizations:
         noise_total_us = np.zeros(len(residuals_final_us))
         for key, vals in noise_realizations.items():
@@ -3028,21 +3022,21 @@ def _run_general_fit_iterations(
                     noise_total_us += vals
         whitened_us = residuals_final_us - noise_total_us
         whitened_sec = whitened_us * 1e-6
+        whitened_sec -= np.sum(weights * whitened_sec) / sum_weights
         if ecorr_w is not None:
             ecorr_w.prepare(errors_sec)
-            final_chi2 = ecorr_w.chi2(whitened_sec)
+            noise_subtracted_chi2 = ecorr_w.chi2(whitened_sec)
         else:
-            final_chi2 = np.sum((whitened_sec / errors_sec) ** 2)
-        # Report noise-subtracted RMS as the "final_rms" for GLS fits
-        final_rms_us = np.sqrt(np.sum(whitened_sec**2 * weights) / sum_weights) * 1e6
-    else:
-        final_rms_us = nl_rms_us
-        final_chi2 = nl_chi2
+            noise_subtracted_chi2 = np.sum((whitened_sec / errors_sec) ** 2)
+        noise_subtracted_rms_us = (
+            np.sqrt(np.sum(whitened_sec**2 * weights) / sum_weights) * 1e6
+        )
 
     return {
         'final_params': {param: params[param] for param in fit_params},
         'uncertainties': uncertainties,
-        'final_rms': final_rms_us,  # TRUE full-model RMS
+        'final_rms': raw_final_rms_us,
+        'noise_subtracted_rms': noise_subtracted_rms_us,
         'prefit_rms': prefit_rms_us,
         'converged': converged,
         'iterations': iteration + 1,
@@ -3051,19 +3045,25 @@ def _run_general_fit_iterations(
         'errors_us': errors_us,
         'tdb_mjd': tdb_mjd,
         'covariance': cov,
-        'final_chi2': final_chi2,
+        'final_chi2': raw_final_chi2,
+        'noise_subtracted_chi2': noise_subtracted_chi2,
         'noise_realizations': noise_realizations,
         'noise_coefficients': noise_coefficients,
         'gls_debug': gls_debug,
         'final_dmx_params': final_dmx_params,
         'final_dmx_uncertainties': final_dmx_uncertainties,
         'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
+        'final_dmx_params': final_dmx_params,
+        'final_dmx_uncertainties': final_dmx_uncertainties,
         'fit_diagnostics': {
             'condition_threshold': condition_threshold,
             'ill_conditioned': any(d.get('ill_conditioned', False) for d in condition_diagnostics_history),
             'condition_history': condition_diagnostics_history,
             'requested_fit_params': list(fit_params),
         },
+        'design_matrix': (_saved_M[:, :_saved_M_n_timing].copy()
+                          if _saved_M is not None else None),
+        'design_matrix_labels': _saved_M_labels,
     }
 
 
@@ -3079,7 +3079,7 @@ def _build_general_fit_setup_from_cache(
     compatibility: str = "pint",
     fd_column_mode: str | None = None,
     design_matrix_method: str = "analytic",
-
+    fit_dmx: bool = True,
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -3203,7 +3203,7 @@ def _build_general_fit_setup_from_cache(
         design_matrix_method=design_matrix_method,
         verbose=False,
         subtract_noise_sec=subtract_noise_sec,
-
+        fit_dmx=fit_dmx,
     )
 
 
@@ -3266,7 +3266,7 @@ def _fit_parameters_general(
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
-
+    fit_dmx: bool = True,
 ) -> Dict:
     """General parameter fitter -- handles any parameter combination.
 
@@ -3284,7 +3284,7 @@ def _fit_parameters_general(
         compatibility=compatibility,
         engine_conventions=engine_conventions,
         fd_column_mode=fd_column_mode,
-
+        fit_dmx=fit_dmx,
     )
     cache_time = time.time() - cache_start
     

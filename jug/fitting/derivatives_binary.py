@@ -60,22 +60,6 @@ from typing import Dict, List, Tuple
 
 from jug.utils.constants import SECS_PER_DAY, T_SUN
 
-
-def _resolve_pb_days(params: Dict) -> float:
-    """Orbital period in days, FB-aware.
-
-    FB-parameterized binaries (black widows etc.) carry no PB, so a bare
-    params.get('PB', 1.0) silently returns 1 day and corrupts every pb-based
-    formula (orbital phase, nhat, PB/PBDOT derivatives). Fall back to PB = 1/FB0.
-    """
-    if 'PB' in params:
-        return float(params['PB'])
-    fb0 = params.get('FB0')
-    if fb0 is not None and float(fb0) != 0.0:
-        return 1.0 / (float(fb0) * SECS_PER_DAY)
-    return 1.0
-
-
 # Ensure 64-bit precision for pulsar timing accuracy
 jax.config.update('jax_enable_x64', True)
 

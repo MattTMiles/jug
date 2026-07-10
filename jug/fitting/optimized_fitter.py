@@ -2714,6 +2714,7 @@ def _run_general_fit_iterations(
     # in DM noise).  Applied once after convergence, matching Tempo2.
     # Controlled by par file parameter TNsubtractPoly (default: 1 = on).
     _tn_subtract_poly = int(params.get('TNSUBTRACTPOLY', 1))
+    _tn_poly_applied = False
     if n_augmented > 0 and _tn_subtract_poly and (
             np.any(_accumulated_red_noise_sec != 0)
             or np.any(_accumulated_dm_noise_sec != 0)):
@@ -2744,6 +2745,7 @@ def _run_general_fit_iterations(
                     param_values_curr[pi] += dp[ci]
                     _update_param(params, sp, param_values_curr[pi])
                     best_param_values[pi] = param_values_curr[pi]
+                _tn_poly_applied = True
                 if verbose:
                     dp_strs = [f"{sp}={dp[ci]:+.6e}" for ci, sp in enumerate(_tn_spin_fit)]
                     print(f"TNsubtractPoly (red): {', '.join(dp_strs)}")
@@ -2769,6 +2771,7 @@ def _run_general_fit_iterations(
                     param_values_curr[pi] += dp[ci]
                     _update_param(params, dp_name, param_values_curr[pi])
                     best_param_values[pi] = param_values_curr[pi]
+                _tn_poly_applied = True
                 if verbose:
                     dp_strs = [f"{dp_name}={dp[ci]:+.6e}" for ci, dp_name in enumerate(_tn_dm_fit)]
                     print(f"TNsubtractPoly (DM):  {', '.join(dp_strs)}")

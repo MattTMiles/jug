@@ -70,8 +70,15 @@ Environment Variable:
     # Fit parameters
     parser.add_argument('--fit', nargs='+',
                        metavar='PARAM',
-                       help='Parameters to fit (e.g., F0 F1 DM)')
-    
+                       help='Parameters to fit IN ADDITION to the par file '
+                            'fit-flagged params (e.g., F0 F1 DM). Default '
+                            '(no --fit): the par fit flags only. Order vs '
+                            '--no-fit matters (later wins).')
+    parser.add_argument('--no-fit', action='store_true',
+                       help='Clear the fit set (prefit residuals only). '
+                            'A later --fit on the command line re-adds '
+                            'those params; a later --no-fit clears again.')
+
     # Device selection
     parser.add_argument('--device', type=str, choices=['cpu', 'gpu', 'auto'],
                        default=None,
@@ -111,20 +118,51 @@ Environment Variable:
         parser.error("par_file and tim_file are required unless using --show-devices")
         return 1
     
-    # If --fit not specified, run in no-fit mode (just compute prefit residuals)
-    no_fit_mode = (args.fit is None or len(args.fit) == 0)
-    
     # Validate files exist
     par_file = Path(args.par_file)
     tim_file = Path(args.tim_file)
-    
+
     if not par_file.exists():
         print(f"Error: Par file not found: {par_file}", file=sys.stderr)
         return 1
-    
+
     if not tim_file.exists():
         print(f"Error: Tim file not found: {tim_file}", file=sys.stderr)
         return 1
+
+    # Parameter selection, processed as sequential toggles in command-line
+    # ORDER (later wins) starting from the par file's fit-flagged params:
+    #   --no-fit        -> clear the fit set (suppress par defaults)
+    #   --fit P1 P2 ... -> add P1 P2 ... to the current fit set
+    # Examples:
+    #   (none)                 -> par fit flags
+    #   --fit F2               -> par fit flags + F2
+    #   --no-fit               -> nothing (prefit only)
+    #   --no-fit --fit F2      -> F2 only   (no-fit cleared the par defaults)
+    #   --fit F2 --no-fit      -> nothing   (no-fit came last)
+    import re
+    _flags = parse_par_file(par_file).get('_fit_flags', {})
+    fit_set = [k for k in sorted(_flags) if not re.match(r'^DMX_\d+$', k)]
+
+    argv = sys.argv[1:]
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--no-fit':
+            fit_set = []
+            i += 1
+        elif tok == '--fit':
+            i += 1
+            while i < len(argv) and not argv[i].startswith('-'):
+                if argv[i] not in fit_set:
+                    fit_set.append(argv[i])
+                i += 1
+        else:
+            i += 1
+    args.fit = fit_set
+
+    # No-fit mode when nothing is left to fit
+    no_fit_mode = (len(args.fit) == 0)
     
     # Set device preference if specified
     if args.device:

@@ -12,6 +12,7 @@ import sys
 import os
 import copy
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import matplotlib
@@ -38,7 +39,7 @@ def test_fd_h3_stig_fitting():
 
     par_file = par_path
     tim_file = tim_path
-    
+
     print("=" * 70)
     print("Testing FD and H3/STIG Parameter Fitting")
     print("Pulsar: J0613-0200 (ELL1H binary model)")
@@ -85,11 +86,14 @@ def test_fd_h3_stig_fitting():
         print(f"  {p}: {orig:.6e} → {pert:.6e}")
     
     # Write perturbed par file
-    perturbed_par = data_dir / 'J0613-0200_tdb_perturbed.par'
     with open(par_file, 'r') as f:
         lines = f.readlines()
-    
-    with open(perturbed_par, 'w') as f:
+
+    perturbed_tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix="_perturbed.par", delete=False
+    )
+    perturbed_par = Path(perturbed_tmp.name)
+    with perturbed_tmp as f:
         for line in lines:
             written = False
             for param in perturbations:

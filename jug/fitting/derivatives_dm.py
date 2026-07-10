@@ -23,6 +23,7 @@ import math
 import numpy as np
 from typing import Dict
 
+from jug.io.par_reader import get_longdouble
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY, SECS_PER_YEAR
 
 
@@ -190,25 +191,24 @@ def compute_dm_derivatives(
     """
     # Get DMEPOCH (reference epoch for DM evolution)
     # If not specified, use first TOA as reference
-    dmepoch_mjd = params.get('DMEPOCH', toas_mjd[0])
-    
-    # Compute time difference from DMEPOCH in seconds
-    dt_sec = (toas_mjd - dmepoch_mjd) * SECS_PER_DAY
+    dmepoch_mjd = get_longdouble(params, 'DMEPOCH', default=float(toas_mjd[0]))
+
+    # Compute time difference from DMEPOCH in seconds using longdouble to avoid float64 cancellation
+    toas_ld = np.asarray(toas_mjd, dtype=np.longdouble)
+    dmepoch_ld = np.longdouble(dmepoch_mjd)
+    dt_sec = np.asarray((toas_ld - dmepoch_ld) * np.longdouble(SECS_PER_DAY), dtype=np.float64)
     
     # Compute derivatives for each requested DM parameter
     derivatives = {}
     
     for param in fit_params:
         if param == 'DM':
-            # Base DM residual derivative: -dtau/dDM = -K_DM / freq^2
             derivatives[param] = -d_delay_d_DM(freq_mhz)
             
         elif param == 'DM1':
-            # Linear DM residual derivative: -dtau/dDM1
             derivatives[param] = -d_delay_d_DM1(dt_sec, freq_mhz)
             
         elif param == 'DM2':
-            # Quadratic DM residual derivative: -dtau/dDM2
             derivatives[param] = -d_delay_d_DM2(dt_sec, freq_mhz)
             
         elif param.startswith('DM') and len(param) > 2:

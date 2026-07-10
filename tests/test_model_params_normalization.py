@@ -36,8 +36,12 @@ def test_normalize_model_params_converts_hms_raj_decj_to_radians(tempo2_fixture)
     )
     assert isinstance(params["RAJ"], float)
     assert isinstance(params["DECJ"], float)
-    np.testing.assert_allclose(params["RAJ"], parse_ra("19:09:47.4335779"))
-    np.testing.assert_allclose(params["DECJ"], parse_dec("-37:44:14.51584"))
+    np.testing.assert_allclose(
+        params["RAJ"], parse_ra("19:09:47.4335779"), rtol=1e-5, atol=0.0
+    )
+    np.testing.assert_allclose(
+        params["DECJ"], parse_dec("-37:44:14.51584"), rtol=1e-5, atol=0.0
+    )
 
 
 def test_timing_session_stores_numeric_raj_decj(tempo2_fixture):

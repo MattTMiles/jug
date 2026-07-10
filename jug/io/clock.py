@@ -104,6 +104,60 @@ def utc_mjd_to_continuous(mjd):
 
 
 # ---------------------------------------------------------------------------
+# Leap-second-aware MJD scale conversion
+# ---------------------------------------------------------------------------
+# Clock-correction files are tabulated against UTC MJD stamps (typically integer
+# day stamps). On a UTC day that contains a leap second, the day is 86401 s
+# rather than 86400 s long; a query MJD that falls inside such a day is not
+# linearly equidistant in physical seconds from the surrounding integer-day
+# clock entries unless we account for the inserted second.
+#
+# Astropy ``Time`` (used by PINT) handles this transparently via SOFA; JUG
+# previously interpolated directly on UTC MJD, giving ~ few-fs disagreement
+# with PINT on TOAs that fall on leap-second days.
+#
+# Fix: map both query and clock-file MJDs onto a continuous (TAI-like) scale by
+# adding cumulative leap-second offsets, then interpolate on that scale.  The
+# absolute zero-point cancels because the same transformation is applied to
+# both sides, so we omit the TAI-UTC base offset (10 s at MJD 41499) and just
+# add the cumulative count of leap seconds inserted at or before each MJD.
+
+# UTC MJD at the start of each day following a leap-second insertion.  For
+# every entry M, all UTC MJDs >= M have accumulated one additional leap second
+# relative to MJDs < M.  Table covers leaps from 1972-06-30 through 2016-12-31.
+_LEAP_INSERTION_MJDS = np.array([
+    41499, 41683, 42048, 42413, 42778, 43144, 43509, 43874, 44239,
+    44786, 45151, 45516, 46247, 47161, 47892, 48257, 48804, 49169,
+    49534, 50083, 50630, 51179, 53736, 54832, 56109, 57204, 57754,
+], dtype=np.int64)
+
+
+def utc_mjd_to_continuous(mjd):
+    """Map UTC MJD to a continuous (leap-second-aware) time coordinate.
+
+    Adds the cumulative count of leap seconds inserted at or before ``mjd``,
+    expressed in days, to convert from a UTC abscissa (where leap-second days
+    are 86401 s long) to a continuous abscissa suitable for linear
+    interpolation against clock-file MJDs treated the same way.
+
+    The absolute offset cancels when both query and clock-file MJDs are
+    converted; only the relative leap count between them matters.
+
+    Parameters
+    ----------
+    mjd : float or np.ndarray
+        UTC MJD value(s).
+
+    Returns
+    -------
+    Same shape as input; continuous-MJD scale.
+    """
+    mjd_arr = np.asarray(mjd, dtype=np.float64)
+    n_leaps = np.searchsorted(_LEAP_INSERTION_MJDS, mjd_arr, side='right')
+    return mjd_arr + n_leaps / 86400.0
+
+
+# ---------------------------------------------------------------------------
 # Graph-based clock chain (Tempo2-style Dijkstra path finding)
 # ---------------------------------------------------------------------------
 
@@ -121,7 +175,19 @@ def _read_clock_header(path) -> tuple[str, str, int] | None:
 
     Returns ``(from_scale, to_scale, weight)`` both timescales upper-cased,
     or ``None`` if the header cannot be parsed.
+
+    Timescale normalization: ``UTC(USNO)`` is collapsed to ``UTC``. The IPTA/
+    Tempo2 ``gps2utc.clk`` declares its target as the USNO realization of UTC
+    (``# UTC(GPS) UTC(USNO)``); without collapsing it, JUG's Dijkstra cannot
+    terminate on ``gps2utc.clk`` and reroutes GPS->UTC observatories onto a
+    *different* UTC realization (e.g. VLA via ``vla2nist.clk -> nist2utc.clk``),
+    which disagrees with Tempo2/PINT by ~µs. USNO is the canonical UTC
+    realization the GPS chain targets, so it IS ``UTC`` for routing purposes.
+    (A pure data refresh that only relabels this header would otherwise silently
+    flip the clock chain -- the cause of the 2026-06-22 NG-GBT/VLA regression.)
     """
+    def _norm(scale: str) -> str:
+        return "UTC" if scale == "UTC(USNO)" else scale
     try:
         with open(path) as f:
             for line in f:
@@ -135,7 +201,7 @@ def _read_clock_header(path) -> tuple[str, str, int] | None:
                                 weight = int(parts[2])
                             except ValueError:
                                 pass
-                        return parts[0].upper(), parts[1].upper(), weight
+                        return _norm(parts[0].upper()), _norm(parts[1].upper()), weight
                     return None
     except OSError:
         pass

@@ -11,422 +11,6 @@
 #                               from: update_clkcorr -t pksgps6 pkclk00.*
 # -- Russell Edwards 24 September 2004
 #-------------------------------------------------------------------------
-#Comments from merged data file:
-#>Fri Oct  1 13:08:03 2004 Imported from file pkclk00.2004
-#Comments from merged data file:
-#>Fri Nov 12 11:04:46 2004 Imported from file pkclk00.2004
-#Comments from merged data file:
-#>Thu Feb 17 10:28:59 2005 Imported from file pkclk00.2004
-#Comments from merged data file:
-#>Thu Feb 17 10:30:07 2005 Imported from file pkclk00.2005
-#Comments from merged data file:
-#>Thu Apr  7 14:23:13 2005 Imported from file pkclk00.2005
-#Comments from merged data file:
-#>Wed May 18 12:03:27 2005 Imported from file pkclk00.2005
-#Comments from merged data file:
-#>Mon Jul 18 15:52:05 2005 Imported from file pkclk00.2005
-#Comments from merged data file:
-#>Thu Sep 29 16:14:28 2005 Imported from file pkclk00.2005
-#Comments from merged data file:
-#>Wed Dec  7 12:26:23 2005 Imported from file pkclk00.2005
-#Comments from merged data file:
-#>Thu Mar 16 14:09:14 2006 Imported from file pkclk00.2005
-#Comments from merged data file:
-#>Thu Mar 16 14:09:16 2006 Imported from file pkclk00.2006
-#Comments from merged data file:
-#>Tue Jun 13 15:25:56 2006 Imported from file pkclk00.2006
-#Comments from merged data file:
-#>Mon Aug 14 14:31:51 2006 Imported from file pkclk00.2006
-#Comments from merged data file:
-#>Thu Jan 11 11:55:21 2007 Imported from file pkclk00.2006
-#Comments from merged data file:
-#>Thu Mar  8 12:15:38 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Thu Apr  5 11:03:28 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Thu May  3 11:47:49 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Thu Jun 14 14:50:54 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Tue Jul 17 11:15:38 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Mon Aug  6 11:16:50 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Thu Sep  6 11:01:30 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Wed Oct  3 15:25:51 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Thu Nov  8 14:01:45 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Fri Dec  7 14:37:15 2007 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Thu Jan 31 12:32:23 2008 Imported from file pkclk00.2007
-#Comments from merged data file:
-#>Thu Jan 31 13:12:37 2008 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Wed Mar 12 15:01:02 2008 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Wed Apr 23 02:05:15 2008 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Thu Jul 10 13:37:48 2008 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Wed Aug 13 15:33:15 2008 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Wed Oct  8 10:57:16 2008 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Tue Nov 11 15:14:16 2008 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Wed Dec 10 10:40:19 2008 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Thu Jan 15 15:09:23 2009 Imported from file pkclk00.2008
-#Comments from merged data file:
-#>Thu Jan 15 15:12:43 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Thu Feb 19 11:31:27 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Wed Mar 25 16:00:11 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Wed May  6 17:06:57 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Thu Jun 11 14:30:30 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Mon Aug 17 16:07:37 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Tue Sep 15 11:19:19 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Tue Oct  6 11:03:50 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Mon Oct 12 16:40:55 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Wed Nov 18 11:15:00 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Tue Dec  8 11:38:18 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Thu Dec 17 11:35:40 2009 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Thu Jan 14 11:23:36 2010 Imported from file pkclk00.2009
-#Comments from merged data file:
-#>Thu Jan 14 12:20:40 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Wed Feb 24 14:53:42 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Thu Mar 18 10:49:19 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Wed Apr 14 14:12:26 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Wed May 19 15:54:51 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Tue Jun 22 12:09:22 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Tue Jul 20 15:26:11 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Tue Aug 24 11:57:19 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Thu Sep 23 19:03:15 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Tue Oct 26 17:34:19 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Wed Nov 24 14:40:45 2010 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Thu Jan  6 14:46:16 2011 Imported from file pkclk00.2010
-#Comments from merged data file:
-#>Fri Jan 14 16:46:24 2011 Imported from file pkclk00.2011
-#Comments from merged data file:
-#>Wed Feb 23 10:11:26 2011 Imported from file pkclk00.2011
-#Comments from merged data file:
-#>Wed Mar 23 16:12:17 2011 Imported from file pkclk00.2011
-#Comments from merged data file:
-#>Mon May  2 16:44:08 2011 Imported from file pkclk00.2011
-#Comments from merged data file:
-#>Tue Jul  5 10:18:45 2011 Imported from file pkclk00.2011
-#Comments from merged data file:
-#>Wed Nov 16 19:34:21 2011 Imported from file pkclk00.2011
-#Comments from merged data file:
-#>Sat Oct 27 20:54:21 2012 Imported from file pkclk00.2011
-#Comments from merged data file:
-#>Sat Oct 27 20:57:35 2012 Imported from file pkclk00.2012
-#Comments from merged data file:
-#>Wed Aug 14 10:28:35 2013 Imported from file pkclk00.2012
-#Comments from merged data file:
-#>Fri Nov 28 10:27:58 2014 Imported from file pkclk00.2014
-#Comments from merged data file:
-#>Tue Dec 23 10:19:31 2014 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Wed Dec 31 13:21:04 2014 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Wed Jan  7 12:26:12 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Sun Jan 11 15:22:07 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Tue Feb  3 15:30:26 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Mar  9 05:34:04 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Fri May 29 16:23:20 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Tue Jun 30 15:42:46 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Thu Jul  2 12:00:28 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Thu Aug 20 11:46:54 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Sat Sep 19 14:29:46 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Sep 21 17:06:01 2015 Imported from file big.log
-#Comments from merged data file:
-#>Tue Sep 22 13:07:23 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Sat Oct 17 15:33:50 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Sun Nov  8 19:01:56 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Sat Dec 19 15:35:52 2015 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Jan 11 18:32:23 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Jan 18 18:42:33 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Jan 18 20:29:49 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Wed Mar 16 12:22:40 2016 Imported from file all.log
-#Comments from merged data file:
-#>Wed Mar 16 14:18:43 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Thu Mar 17 18:50:14 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Mar 21 10:41:56 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Sun May  8 15:08:56 2016 Imported from file pkclk00.log.201604
-#Comments from merged data file:
-#>Sun May  8 15:12:17 2016 Imported from file pkclk00.log.201605
-#Comments from merged data file:
-#>Sun May  8 15:12:51 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Tue Jul 12 18:16:59 2016 Imported from file pkclk00.log.201606
-#Comments from merged data file:
-#>Tue Jul 12 18:18:30 2016 Imported from file pkclk00.log.201607
-#Comments from merged data file:
-#>Tue Jul 12 18:19:20 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Fri Sep 16 16:06:29 2016 Imported from file grand.log
-#Comments from merged data file:
-#>Wed Oct  5 10:24:56 2016 Imported from file pkclk00.log.201610
-#Comments from merged data file:
-#>Wed Oct  5 10:26:12 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Wed Nov  2 13:37:38 2016 Imported from file pkclk00.log.201611
-#Comments from merged data file:
-#>Sat Nov 19 13:04:36 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Fri Dec  2 17:00:21 2016 Imported from file pkclk00.log.201612
-#Comments from merged data file:
-#>Fri Dec  2 17:01:17 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Dec 19 09:45:09 2016 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Fri Jan 20 11:33:31 2017 Imported from file grand.log
-#Comments from merged data file:
-#>Fri Jan 27 11:29:38 2017 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Jan 30 12:14:00 2017 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Feb 20 14:49:04 2017 Imported from file pkclk00.log.201702
-#Comments from merged data file:
-#>Mon Feb 20 14:50:08 2017 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Thu Feb 23 15:07:51 2017 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Mon Feb 27 12:21:25 2017 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Sat Mar 25 18:09:22 2017 Imported from file pkclk00.log.201703
-#Comments from merged data file:
-#>Sat Mar 25 18:10:32 2017 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Wed Apr 12 11:32:16 2017 Imported from file pkclk00.log.201704
-#Comments from merged data file:
-#>Wed Apr 12 11:34:38 2017 Imported from file pkclk00.log
-#Comments from merged data file:
-#>Tue Jun  6 16:33:07 2017 Imported from file pkclk00.log.201706
-#Comments from merged data file:
-#>Tue Jul 18 13:53:20 2017 Imported from file pkclk00.log.201707
-#Comments from merged data file:
-#>Tue Aug  1 20:20:53 2017 Imported from file pkclk00.log.201708
-#Comments from merged data file:
-#>Wed Oct  4 10:00:52 2017 Imported from file pkclk00.log.201710
-#Comments from merged data file:
-#>Tue Jan 16 16:03:45 2018 Imported from file pkclk00.log.201801
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201704
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201705
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201706
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201707
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201708
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201709
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201710
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201711
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201712
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201801
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201802
-#Comments from merged data file:
-#>Fri Mar  9 12:22:43 2018 Imported from file pkclk00.log.201803
-#Comments from merged data file:
-#>Thu Aug 16 14:25:38 2018 Imported from file pkclk00.log.201802
-#Comments from merged data file:
-#>Thu Aug 16 14:25:38 2018 Imported from file pkclk00.log.201803
-#Comments from merged data file:
-#>Thu Aug 16 14:25:38 2018 Imported from file pkclk00.log.201804
-#Comments from merged data file:
-#>Thu Aug 16 14:25:38 2018 Imported from file pkclk00.log.201805
-#Comments from merged data file:
-#>Thu Aug 16 14:25:38 2018 Imported from file pkclk00.log.201806
-#Comments from merged data file:
-#>Thu Aug 16 14:25:38 2018 Imported from file pkclk00.log.201807
-#Comments from merged data file:
-#>Thu Aug 16 14:25:38 2018 Imported from file pkclk00.log.201808
-#Comments from merged data file:
-#>Fri Feb  8 10:11:47 2019 Imported from file pkclk00.log.201704
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201705
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201706
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201707
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201708
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201709
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201710
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201711
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201712
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201801
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201802
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201803
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201804
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201805
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201806
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201807
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201808
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201809
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201810
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201811
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201812
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201901
-#Comments from merged data file:
-#>Fri Feb  8 10:11:48 2019 Imported from file pkclk00.log.201902
-#Comments from merged data file:
-#>Fri Aug 30 14:27:54 2019 Imported from file pkclk00.log.201601
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201602
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201603
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201604
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201605
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201606
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201607
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201608
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201609
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201610
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201611
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201612
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201701
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201702
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201703
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201704
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201705
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201706
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201707
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201708
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201709
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201710
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201711
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201712
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201801
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201802
-#Comments from merged data file:
-#>Fri Aug 30 14:27:55 2019 Imported from file pkclk00.log.201803
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201804
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201805
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201806
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201807
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201808
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201809
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201810
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201811
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201812
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201901
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201902
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201903
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201904
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201905
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201906
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201907
-#Comments from merged data file:
-#>Fri Aug 30 14:27:56 2019 Imported from file pkclk00.log.201908
     0.00521 0.000001042867
 50844.72917 -0.000000749068
 50845.77083 -0.000000747637
@@ -46752,3 +46336,487 @@
 60642.12167 -0.000000168050
 60643.12514 -0.000000176960
 60644.08347 -0.000000178784
+60645.04052 -0.000000186589
+60646.04271 -0.000000182375
+60647.04618 -0.000000191971
+60648.04965 -0.000000189545
+60649.05312 -0.000000191554
+60650.05660 -0.000000197221
+60651.06007 -0.000000199731
+60652.06354 -0.000000187692
+60653.06701 -0.000000189405
+60654.07049 -0.000000181970
+60655.07396 -0.000000179491
+60656.07743 -0.000000185800
+60657.08090 -0.000000187549
+60658.08437 -0.000000184799
+60659.08785 -0.000000177634
+60660.09132 -0.000000179806
+60661.09479 -0.000000186246
+60662.09826 -0.000000171373
+60663.10174 -0.000000184754
+60664.10521 -0.000000189775
+60665.10868 -0.000000193124
+60666.11215 -0.000000184980
+60667.11562 -0.000000189962
+60668.11910 -0.000000196051
+60669.12257 -0.000000206436
+60670.12604 -0.000000215937
+60671.12951 -0.000000229853
+60672.13299 -0.000000227496
+60673.13646 -0.000000238152
+60674.13993 -0.000000235283
+60675.09132 -0.000000238762
+60676.04271 -0.000000245033
+60677.04618 -0.000000232360
+60678.04965 -0.000000247113
+60679.05312 -0.000000268403
+60679.56875 -0.000000290000
+60683.41146 -0.000000286721
+60684.41493 -0.000000299370
+60685.41840 -0.000000312299
+60686.42188 -0.000000306784
+60687.42535 -0.000000320040
+60688.42882 -0.000000327322
+60689.43229 -0.000000324039
+60690.43576 -0.000000333155
+60691.43924 -0.000000331330
+60692.44271 -0.000000326987
+60693.44618 -0.000000324817
+60694.44965 -0.000000323702
+60695.45312 -0.000000320006
+60696.45660 -0.000000321490
+60697.46007 -0.000000318474
+60698.46354 -0.000000318163
+60699.46701 -0.000000310296
+60700.47049 -0.000000318067
+60701.47396 -0.000000323979
+60702.47743 -0.000000324098
+60703.48090 -0.000000314860
+60704.48438 -0.000000314962
+60705.48785 -0.000000318177
+60706.26562 -0.000000325702
+60707.04340 -0.000000320548
+60708.04687 -0.000000304144
+60709.05034 -0.000000301220
+60710.05381 -0.000000312878
+60711.05728 -0.000000315231
+60712.06075 -0.000000317899
+60713.06422 -0.000000317407
+60714.06770 -0.000000320547
+60715.07117 -0.000000311104
+60716.07464 -0.000000307755
+60717.07811 -0.000000315534
+60718.08159 -0.000000316286
+60719.08506 -0.000000321107
+60720.08853 -0.000000313002
+60721.09200 -0.000000314030
+60722.09547 -0.000000316327
+60723.09895 -0.000000321084
+60724.10242 -0.000000332441
+60725.10589 -0.000000340193
+60726.10936 -0.000000344976
+60727.11284 -0.000000338612
+60728.11631 -0.000000334044
+60729.11978 -0.000000328420
+60730.12325 -0.000000326152
+60731.12672 -0.000000315138
+60732.13020 -0.000000316188
+60733.13367 -0.000000317209
+60734.08853 -0.000000308556
+60735.04339 -0.000000304181
+60736.04516 -0.000000304737
+60737.04693 -0.000000309879
+60738.05041 -0.000000310125
+60739.05388 -0.000000310911
+60740.05735 -0.000000301165
+60741.06082 -0.000000300550
+60742.06429 -0.000000305166
+60743.06777 -0.000000291246
+60744.07124 -0.000000292001
+60745.07471 -0.000000293709
+60746.07818 -0.000000293213
+60747.08166 -0.000000294719
+60748.08513 -0.000000301401
+60749.08860 -0.000000302726
+60750.09207 -0.000000303370
+60751.09554 -0.000000297016
+60752.09902 -0.000000307529
+60753.10249 -0.000000314200
+60754.10596 -0.000000304238
+60755.10943 -0.000000310182
+60756.11291 -0.000000313296
+60757.11638 -0.000000307867
+60758.11985 -0.000000298892
+60759.12332 -0.000000295566
+60760.12679 -0.000000280809
+60761.13027 -0.000000283885
+60762.13374 -0.000000282833
+60763.13721 -0.000000283773
+60764.14068 -0.000000281457
+60765.09207 -0.000000278076
+60766.04346 -0.000000272896
+60767.04693 -0.000000275639
+60768.05041 -0.000000262139
+60769.05388 -0.000000264451
+60770.05735 -0.000000267117
+60771.06082 -0.000000253406
+60772.06428 -0.000000261929
+60773.06775 -0.000000271766
+60774.07123 -0.000000280762
+60775.07470 -0.000000276766
+60776.07817 -0.000000280637
+60777.08164 -0.000000284191
+60778.08512 -0.000000275494
+60779.08859 -0.000000281112
+60780.09206 -0.000000284588
+60781.09553 -0.000000287791
+60782.09900 -0.000000285603
+60783.10248 -0.000000296087
+60784.10595 -0.000000299909
+60785.10942 -0.000000303627
+60786.11289 -0.000000312755
+60787.11637 -0.000000322501
+60788.11984 -0.000000327483
+60789.12331 -0.000000320954
+60790.12678 -0.000000307328
+60791.13025 -0.000000299372
+60792.13373 -0.000000289260
+60793.13720 -0.000000278383
+60794.14067 -0.000000263961
+60795.11289 -0.000000253449
+60796.08512 -0.000000247900
+60797.08859 -0.000000236657
+60798.09206 -0.000000224955
+60799.09553 -0.000000211260
+60800.09900 -0.000000202994
+60801.10248 -0.000000188353
+60802.10595 -0.000000177756
+60803.10942 -0.000000167350
+60804.11289 -0.000000165643
+60805.11637 -0.000000154820
+60806.11984 -0.000000150497
+60807.12331 -0.000000145707
+60808.12678 -0.000000139389
+60809.13025 -0.000000131896
+60810.13373 -0.000000126462
+60811.13720 -0.000000120079
+60812.14067 -0.000000115151
+60813.14414 -0.000000106717
+60814.14762 -0.000000101504
+60815.15109 -0.000000097292
+60816.15456 -0.000000096418
+60817.15803 -0.000000090084
+60818.16150 -0.000000085106
+60819.16498 -0.000000081145
+60820.16845 -0.000000076435
+60821.17192 -0.000000072600
+60822.17539 -0.000000070277
+60823.17887 -0.000000071607
+60824.18234 -0.000000067184
+60825.18581 -0.000000060989
+60826.13546 -0.000000059737
+60827.08511 -0.000000057154
+60828.08858 -0.000000056071
+60829.09205 -0.000000050749
+60830.09552 -0.000000046568
+60831.09899 -0.000000049098
+60832.10247 -0.000000051613
+60833.10594 -0.000000054707
+60834.10941 -0.000000059666
+60835.11288 -0.000000063784
+60836.11635 -0.000000063437
+60837.11983 -0.000000069409
+60838.12330 -0.000000077454
+60839.12677 -0.000000079363
+60840.13023 -0.000000076418
+60841.13370 -0.000000076529
+60842.13718 -0.000000084642
+60843.14065 -0.000000093462
+60844.14412 -0.000000101153
+60845.14759 -0.000000109467
+60846.15106 -0.000000114236
+60847.15454 -0.000000120604
+60848.15801 -0.000000131896
+60849.16148 -0.000000137064
+60850.16495 -0.000000134197
+60851.16843 -0.000000131191
+60852.17190 -0.000000134256
+60853.17537 -0.000000129758
+60854.17884 -0.000000127857
+60855.18231 -0.000000128062
+60856.13370 -0.000000130723
+60857.08509 -0.000000130289
+60858.08856 -0.000000131145
+60859.09204 -0.000000131818
+60860.09551 -0.000000135686
+60861.09898 -0.000000135085
+60862.10079 -0.000000137322
+60863.10259 -0.000000137124
+60864.10606 -0.000000134557
+60865.10954 -0.000000135962
+60866.11301 -0.000000136800
+60867.11648 -0.000000140997
+60868.11995 -0.000000146367
+60869.12343 -0.000000149361
+60870.12690 -0.000000149231
+60871.13037 -0.000000154932
+60872.13384 -0.000000159375
+60873.13731 -0.000000167647
+60874.14079 -0.000000170633
+60875.14426 -0.000000175604
+60876.14773 -0.000000182704
+60877.15120 -0.000000188575
+60878.15468 -0.000000196207
+60879.15815 -0.000000208747
+60880.16162 -0.000000211511
+60881.16509 -0.000000214615
+60882.16856 -0.000000220492
+60883.17204 -0.000000226960
+60884.17551 -0.000000234755
+60885.17898 -0.000000245003
+60886.18245 -0.000000249138
+60887.13384 -0.000000249574
+60888.08523 -0.000000248465
+60889.08870 -0.000000250775
+60890.09047 -0.000000250032
+60891.09225 -0.000000252674
+60892.09572 -0.000000254801
+60893.09919 -0.000000252496
+60894.10266 -0.000000246397
+60895.10613 -0.000000246468
+60896.10961 -0.000000255731
+60897.11308 -0.000000247566
+60898.11655 -0.000000241802
+60899.12002 -0.000000243694
+60900.12350 -0.000000242302
+60901.12697 -0.000000243484
+60902.13044 -0.000000243347
+60903.13391 -0.000000242728
+60904.13738 -0.000000246834
+60905.14086 -0.000000249242
+60906.14433 -0.000000253396
+60907.14780 -0.000000256663
+60908.15127 -0.000000250454
+60909.15475 -0.000000246173
+60910.15822 -0.000000243291
+60911.16169 -0.000000237863
+60912.16516 -0.000000235889
+60913.16863 -0.000000234615
+60914.17211 -0.000000227585
+60915.17558 -0.000000223998
+60916.17905 -0.000000215592
+60917.18252 -0.000000214963
+60918.13218 -0.000000220043
+60919.08183 -0.000000217122
+60920.08530 -0.000000226861
+60921.08877 -0.000000215328
+60922.09225 -0.000000217933
+60923.09572 -0.000000221808
+60924.09919 -0.000000229240
+60925.10266 -0.000000220895
+60926.10442 -0.000000224407
+60927.10449 -0.000000215451
+60928.10626 -0.000000223203
+60929.10973 -0.000000220094
+60930.11321 -0.000000210242
+60931.11668 -0.000000203617
+60932.12015 -0.000000202828
+60933.12362 -0.000000208178
+60934.12709 -0.000000201453
+60935.13057 -0.000000195063
+60936.13404 -0.000000184151
+60937.13751 -0.000000180639
+60938.14098 -0.000000179585
+60939.14446 -0.000000180352
+60940.14793 -0.000000182888
+60941.15140 -0.000000179909
+60942.15487 -0.000000181677
+60943.15834 -0.000000179696
+60944.16181 -0.000000174615
+60945.16528 -0.000000180979
+60946.16705 -0.000000181041
+60947.16882 -0.000000178060
+60948.12542 -0.000000163937
+60949.08201 -0.000000164072
+60950.08549 -0.000000160768
+60951.08896 -0.000000169354
+60952.09243 -0.000000173780
+60953.09424 -0.000000166083
+60954.09604 -0.000000177089
+60955.09951 -0.000000182440
+60956.10299 -0.000000183259
+60957.10646 -0.000000180442
+60958.10993 -0.000000186153
+60959.11340 -0.000000186113
+60960.11687 -0.000000173678
+60961.12035 -0.000000173635
+60962.12382 -0.000000173038
+60963.12729 -0.000000173585
+60964.13076 -0.000000176666
+60965.13424 -0.000000178292
+60966.13771 -0.000000176265
+60967.14118 -0.000000161066
+60968.14465 -0.000000173045
+60969.14812 -0.000000181582
+60970.15160 -0.000000186696
+60971.15507 -0.000000186384
+60972.15854 -0.000000191792
+60973.16200 -0.000000187867
+60974.16547 -0.000000193720
+60975.16895 -0.000000203107
+60976.17072 -0.000000209935
+60977.17248 -0.000000202653
+60978.17595 -0.000000206173
+60979.10824 -0.000000198621
+60980.04053 -0.000000212057
+60981.04400 -0.000000220582
+60982.04748 -0.000000222064
+60983.05095 -0.000000213276
+60984.05442 -0.000000213638
+60985.05789 -0.000000213958
+60986.06137 -0.000000230163
+60987.06484 -0.000000224520
+60988.06831 -0.000000222668
+60989.07178 -0.000000240662
+60990.07525 -0.000000239430
+60991.07873 -0.000000262735
+60992.08220 -0.000000251300
+60993.08567 -0.000000251206
+60994.08914 -0.000000279038
+60995.09262 -0.000000275839
+60996.09609 -0.000000282476
+60997.09956 -0.000000285805
+60998.10303 -0.000000290796
+60999.10650 -0.000000300218
+61000.10998 -0.000000301446
+61001.11345 -0.000000304856
+61002.11692 -0.000000306349
+61003.12039 -0.000000309355
+61004.12387 -0.000000299142
+61005.12734 -0.000000292887
+61006.13081 -0.000000300652
+61007.13428 -0.000000301844
+61008.13775 -0.000000301320
+61009.08914 -0.000000305279
+61010.04053 -0.000000307008
+61011.04400 -0.000000310763
+61012.04748 -0.000000317215
+61013.05095 -0.000000316485
+61014.05442 -0.000000323533
+61015.05789 -0.000000337439
+61016.06137 -0.000000344385
+61017.06483 -0.000000347013
+61018.06830 -0.000000363763
+61019.07177 -0.000000371902
+61020.07524 -0.000000385398
+61021.07872 -0.000000385186
+61022.08219 -0.000000387339
+61023.08566 -0.000000398450
+61024.08913 -0.000000416730
+61025.09260 -0.000000425591
+61026.09608 -0.000000431525
+61027.09955 -0.000000430954
+61028.10302 -0.000000429007
+61029.10649 -0.000000424948
+61030.10997 -0.000000428001
+61031.11344 -0.000000422370
+61032.11691 -0.000000415571
+61033.12038 -0.000000410215
+61034.12385 -0.000000407223
+61035.12733 -0.000000409879
+61036.13080 -0.000000406928
+61037.13427 -0.000000407997
+61038.13774 -0.000000405352
+61039.14122 -0.000000405798
+61040.09087 -0.000000403716
+61041.04052 -0.000000412698
+61042.04399 -0.000000407328
+61043.04747 -0.000000401631
+61044.05093 -0.000000406987
+61045.05439 -0.000000414146
+61046.05786 -0.000000407012
+61047.06133 -0.000000412415
+61048.06480 -0.000000411088
+61049.06828 -0.000000407625
+61050.07175 -0.000000405728
+61051.07522 -0.000000394293
+61052.07869 -0.000000400809
+61053.08216 -0.000000402541
+61054.08564 -0.000000412060
+61055.08911 -0.000000407313
+61056.09258 -0.000000405180
+61057.09605 -0.000000408121
+61058.09953 -0.000000408747
+61059.10300 -0.000000406441
+61060.10646 -0.000000395552
+61061.10993 -0.000000405609
+61062.11340 -0.000000413514
+61063.11687 -0.000000418865
+61064.12034 -0.000000415873
+61065.12381 -0.000000426803
+61066.12728 -0.000000427914
+61067.13075 -0.000000432904
+61068.13422 -0.000000430197
+61069.13770 -0.000000429135
+61070.13950 -0.000000432934
+61071.08922 -0.000000445209
+61072.03895 -0.000000452141
+61073.04075 -0.000000450487
+61074.04422 -0.000000450449
+61075.04770 -0.000000455400
+61076.05117 -0.000000465314
+61077.05464 -0.000000459169
+61078.05811 -0.000000451512
+61079.06159 -0.000000447135
+61080.06506 -0.000000444664
+61081.06853 -0.000000437490
+61082.07200 -0.000000431534
+61083.07547 -0.000000428624
+61084.07895 -0.000000432821
+61085.08241 -0.000000432994
+61086.08588 -0.000000432274
+61087.08935 -0.000000429712
+61088.09282 -0.000000423081
+61089.09630 -0.000000420354
+61090.09976 -0.000000422960
+61091.10323 -0.000000430185
+61092.10670 -0.000000431708
+61093.11017 -0.000000431035
+61094.11365 -0.000000422388
+61095.11712 -0.000000423103
+61096.12059 -0.000000424728
+61097.12406 -0.000000425147
+61098.12753 -0.000000409872
+61099.08412 -0.000000407578
+61100.03901 -0.000000403700
+61101.04078 -0.000000399637
+61102.04424 -0.000000395317
+61103.04771 -0.000000389132
+61104.05118 -0.000000383717
+61105.05465 -0.000000383892
+61106.05813 -0.000000386321
+61107.06160 -0.000000379681
+61108.06507 -0.000000372241
+61109.06854 -0.000000373130
+61110.07201 -0.000000362959
+61111.07549 -0.000000372621
+61112.07896 -0.000000372460
+61113.08243 -0.000000380134
+61114.08590 -0.000000367421
+61115.08938 -0.000000365656
+61116.09285 -0.000000370644
+61117.09632 -0.000000365316
+61118.09979 -0.000000366303
+61119.10326 -0.000000368536
+61120.10674 -0.000000372935
+61121.11021 -0.000000367356
+61122.11368 -0.000000359715
+61123.11549 -0.000000359864
+61124.11729 -0.000000363803
+61125.12076 -0.000000358436
+61126.12424 -0.000000359818
+61127.12771 -0.000000361798
+61128.13117 -0.000000362781
+61129.13464 -0.000000367475
+61130.08777 -0.000000365922

@@ -28,6 +28,7 @@ Usage:
 
 from dataclasses import dataclass, replace
 from enum import Enum, auto
+import re
 from typing import Optional, Tuple, Dict, List
 import re
 
@@ -384,6 +385,7 @@ _BINARY_PARAMS = [
         aliases=("PORB",),
         display_format=".15f",
         tcb_scaling_dim=1,
+        high_precision=True,
     ),
     ParameterSpec(
         name="A1",
@@ -428,6 +430,7 @@ _BINARY_PARAMS = [
         par_codec_name="epoch_mjd",
         display_format=".12f",
         is_epoch=True,
+        high_precision=True,
     ),
     # ELL1 parameters
     ParameterSpec(
@@ -440,6 +443,7 @@ _BINARY_PARAMS = [
         par_codec_name="epoch_mjd",
         display_format=".12f",
         is_epoch=True,
+        high_precision=True,
     ),
     ParameterSpec(
         name="EPS1",
@@ -501,6 +505,50 @@ _BINARY_PARAMS = [
         par_unit_str="Msun",
         display_unit="MSun",
         display_format=".12f",
+        tcb_scaling_dim=0,
+    ),
+    # DDS alternate Shapiro inclination: SHAPMAX = -log(1 - sin i).
+    ParameterSpec(
+        name="SHAPMAX",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="",
+        par_unit_str="",
+        display_format=".12f",
+        tcb_scaling_dim=0,
+    ),
+    # DDGR total system mass (derives SINI/GAMMA/PBDOT/OMDOT/DR/DTH via GR).
+    ParameterSpec(
+        name="MTOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="Msun",
+        par_unit_str="Msun",
+        display_unit="MSun",
+        display_format=".12f",
+        tcb_scaling_dim=0,
+    ),
+    # DDGR excess periastron advance / orbital decay beyond GR.
+    ParameterSpec(
+        name="XOMDOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="deg/yr",
+        par_unit_str="deg/yr",
+        display_format=".6e",
+        tcb_scaling_dim=0,
+    ),
+    ParameterSpec(
+        name="XPBDOT",
+        group="binary",
+        derivative_group=DerivativeGroup.BINARY,
+        dtype="float64",
+        internal_unit="s/s",
+        par_unit_str="s/s",
+        display_format=".6e",
         tcb_scaling_dim=0,
     ),
     # Time derivatives
@@ -669,6 +717,7 @@ for i in range(21):
             par_unit_str="",
             display_format=".6e",
             tcb_scaling_dim=-(i + 1),
+            high_precision=(i == 0),
         )
     )
 
@@ -888,7 +937,25 @@ def get_spec(name: str) -> Optional[ParameterSpec]:
     'F0'
     """
     canonical = canonicalize_param_name(name)
-    return PARAMETER_REGISTRY.get(canonical)
+    spec = PARAMETER_REGISTRY.get(canonical)
+    if spec is not None:
+        return spec
+
+    fb_match = re.fullmatch(r'FB(\d+)', canonical)
+    if fb_match:
+        index = int(fb_match.group(1))
+        return ParameterSpec(
+            name=canonical,
+            group="binary",
+            derivative_group=DerivativeGroup.BINARY,
+            dtype="float64",
+            internal_unit=f"Hz/s^{index}" if index > 0 else "Hz",
+            par_unit_str="",
+            display_format=".6e",
+            tcb_scaling_dim=-(index + 1),
+            high_precision=(index == 0),
+        )
+    return None
 
 
 def get_display_unit(name: str) -> str:
@@ -1360,19 +1427,14 @@ def validate_fit_param(name: str) -> bool:
             f"FD1-FD20 are registered; parametric families (FDn>20) are not yet implemented as first-class families."
         )
 
-    # Check FB pattern - registered FB0..FB20, higher indices not yet implemented
+    # FB is a true parametric family; the forward model and derivatives consume
+    # every contiguous FB0..FBN term present in the parameter dictionary.
     fb_match = re.match(r'^FB(\d+)$', canonical)
     if fb_match:
-        fb_idx = int(fb_match.group(1))
-        if 0 <= fb_idx <= 20:
-            return True  # FB0-FB20 are registered
-        raise ValueError(
-            f"Parameter '{name}' (FB{fb_idx}) is out of range. "
-            f"FB0-FB20 are registered; parametric families (FBn>20) are not yet implemented as first-class families."
-        )
+        return True
 
     # Unknown parameter
     raise ValueError(
         f"Parameter '{name}' is not registered. "
-        f"Parametric families (JUMP1..N, DMX_*, FDn>20, FBn>20) are not yet implemented as first-class families."
+        f"Parametric families (JUMP1..N, DMX_*, FDn>20) are not yet implemented as first-class families."
     )

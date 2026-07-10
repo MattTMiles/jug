@@ -1930,6 +1930,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Session", "Please load .par and .tim files first")
             return
 
+        # Averaging is a display-only transform that shrinks the per-TOA display
+        # arrays (mjd/residuals/errors/freqs/flags). The fit runs on the full
+        # per-TOA session data and the result is full-length, but the fit-result
+        # path does not refresh freqs/flags, leaving them at the averaged length
+        # (broken per-point brushes / scatter). Restore the un-averaged display
+        # first so the post-fit redraw is consistent.
+        if getattr(self, '_pre_avg_mjd', None) is not None:
+            self.on_restore_toas()
+
         # Get selected parameters, canonicalize, and validate
         from jug.model.parameter_spec import canonicalize_param_name, validate_fit_param
         fit_params = [canonicalize_param_name(param)
@@ -2878,9 +2887,17 @@ class MainWindow(QMainWindow):
             overrides=getattr(self, '_noise_color_overrides', {})
         )
 
+        length_mismatch = False
         for name in active_realise:
             real_us = self._noise_realizations.get(name)
             if real_us is None:
+                continue
+            # Noise realizations are per-TOA (full length). When the residuals are
+            # display-averaged, x_data is shorter, so the overlay cannot be aligned
+            # -- skip it rather than draw a broken/mismatched curve.
+            if len(real_us) != len(x_data):
+                length_mismatch = True
+                self._remove_noise_curve(name)
                 continue
             err_us = self._noise_realizations.get(f'{name}_err')
 
@@ -2917,6 +2934,12 @@ class MainWindow(QMainWindow):
                     )
                     self.plot_widget.addItem(errbar)
                     self._noise_errorbars[name] = errbar
+
+        if length_mismatch:
+            self.status_bar.showMessage(
+                "Noise realizations are per-TOA -- restore averaged TOAs "
+                "(Tools > Restore) to view them."
+            )
 
     def _remove_noise_curve(self, name: str):
         """Remove noise realization scatter and error bars from the plot."""
@@ -2967,6 +2990,7 @@ class MainWindow(QMainWindow):
         include_red = selections.get('include_red', True)
         include_dm = selections.get('include_dm', True)
         include_ecorr = selections.get('include_ecorr', False)
+        include_chrom = selections.get('include_chrom', False)
 
         self.status_bar.showMessage("Running MAP noise estimation...")
 
@@ -2977,12 +3001,13 @@ class MainWindow(QMainWindow):
             finished = QtSignal(object)  # NoiseEstimateResult or Exception
             progress = QtSignal(str)
 
-            def __init__(self, session, inc_red, inc_dm, inc_ecorr):
+            def __init__(self, session, inc_red, inc_dm, inc_ecorr, inc_chrom):
                 super().__init__()
                 self.session = session
                 self.inc_red = inc_red
                 self.inc_dm = inc_dm
                 self.inc_ecorr = inc_ecorr
+                self.inc_chrom = inc_chrom
 
             def run(self):
                 try:
@@ -3014,6 +3039,7 @@ class MainWindow(QMainWindow):
                         include_red_noise=self.inc_red,
                         include_dm_noise=self.inc_dm,
                         include_ecorr=self.inc_ecorr,
+                        include_chrom=self.inc_chrom,
                         batch_size=1000,
                         max_num_batches=30,
                         patience=3,
@@ -3024,7 +3050,7 @@ class MainWindow(QMainWindow):
 
         self._estimate_thread = QThread()
         self._estimate_worker = EstimateWorker(
-            self.session, include_red, include_dm, include_ecorr
+            self.session, include_red, include_dm, include_ecorr, include_chrom
         )
         self._estimate_worker.moveToThread(self._estimate_thread)
         self._estimate_thread.started.connect(self._estimate_worker.run)

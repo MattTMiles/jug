@@ -16,6 +16,8 @@ conversion lists from that registry, supplemented by indexed/pattern parameters
 Reference: Irwin & Fukushima (1999), A&A 348, 642-652
 """
 
+import re
+
 import numpy as np
 from typing import Dict, Any, List, Tuple, Optional
 
@@ -59,6 +61,10 @@ _INDEXED_EPOCH_PARAMS = {
     *(f'EXPEP_{i}' for i in range(1, 11)),
     *(f'GAUSEP_{i}' for i in range(1, 6)),
 }
+
+_DYNAMIC_EPOCH_RE = re.compile(
+    r'^(?:GLEP|EXPEP|GAUSEP|DMXR1|DMXR2|DMXEP|T0|TASC)_\d+$'
+)
 
 # Indexed scaled parameters (glitch, exponential dip, multi-companion, high F-deriv)
 _INDEXED_SCALED_PARAMS = [
@@ -294,9 +300,9 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                 except (ValueError, TypeError):
                     pass  # Skip non-numeric values
     
-    # Convert prefix epoch parameters (DMXR1_*, DMXR2_*, etc.)
+    # Convert dynamic/indexed epoch parameters not explicitly enumerated above.
     for key in list(params.keys()):
-        if key.startswith('DMXR1_') or key.startswith('DMXR2_'):
+        if key not in EPOCH_PARAMETERS and _DYNAMIC_EPOCH_RE.fullmatch(key):
             old_val = params[key]
             if old_val is not None:
                 try:
@@ -345,6 +351,15 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
                         )
                 except (ValueError, TypeError):
                     pass
+
+    # FB is an unbounded parametric family. Registry entries cover common
+    # indices; scale any higher terms present using FBn dimension -(n+1).
+    scaled_names = {name for name, _ in SCALED_PARAMETERS}
+    for key in list(params.keys()):
+        match = re.fullmatch(r'FB(\d+)', key)
+        if match and key not in scaled_names and params[key] is not None:
+            index = int(match.group(1))
+            params[key] = scale_parameter_tcb_to_tdb(float(params[key]), -(index + 1))
     
     # Convert prefix scaled parameters (DMX_* values)
     for key in list(params.keys()):
@@ -380,7 +395,6 @@ def convert_par_params_to_tdb(params: Dict[str, Any],
     jump_lines = params.get('_jump_lines', [])
     jump_count = 0
     if jump_lines:
-        import re
         scale_factor = float(IFTE_K ** (-1))  # 1/(1+LB) for time dimension
         new_jump_lines = []
         for line in jump_lines:
@@ -461,25 +475,32 @@ def convert_par_params_to_tcb(params: Dict[str, Any],
         return params, log
     
     log.append(f"Converting parameters from TDB to TCB")
+    hp = params.get('_high_precision', {})
     
     # Convert epoch parameters
     for param_name in EPOCH_PARAMETERS:
         if param_name in params and params[param_name] is not None:
             try:
-                old_ld = np.longdouble(params[param_name])
+                old_raw = hp.get(param_name, params[param_name])
+                old_ld = np.longdouble(str(old_raw).replace('D', 'E').replace('d', 'e'))
                 new_ld = convert_tdb_epoch_to_tcb(old_ld)
                 params[param_name] = float(new_ld)
+                if hp is not None:
+                    hp[param_name] = f"{new_ld:.20g}"
             except (ValueError, TypeError):
                 pass
     
-    # Convert prefix epoch parameters
+    # Convert dynamic/indexed epoch parameters not explicitly enumerated above.
     for key in list(params.keys()):
-        if key.startswith('DMXR1_') or key.startswith('DMXR2_'):
+        if key not in EPOCH_PARAMETERS and _DYNAMIC_EPOCH_RE.fullmatch(key):
             if params[key] is not None:
                 try:
-                    old_ld = np.longdouble(params[key])
+                    old_raw = hp.get(key, params[key])
+                    old_ld = np.longdouble(str(old_raw).replace('D', 'E').replace('d', 'e'))
                     new_ld = convert_tdb_epoch_to_tcb(old_ld)
                     params[key] = float(new_ld)
+                    if hp is not None:
+                        hp[key] = f"{new_ld:.20g}"
                 except (ValueError, TypeError):
                     pass
     
@@ -492,6 +513,13 @@ def convert_par_params_to_tcb(params: Dict[str, Any],
                 )
             except (ValueError, TypeError):
                 pass
+
+    scaled_names = {name for name, _ in SCALED_PARAMETERS}
+    for key in list(params.keys()):
+        match = re.fullmatch(r'FB(\d+)', key)
+        if match and key not in scaled_names and params[key] is not None:
+            index = int(match.group(1))
+            params[key] = scale_parameter_tdb_to_tcb(float(params[key]), -(index + 1))
     
     # Convert DMX_* values
     for key in list(params.keys()):

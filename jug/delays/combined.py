@@ -12,15 +12,22 @@ import jax
 
 import jax.numpy as jnp
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY, T_SUN_SEC, PC_TO_LIGHT_SEC, AU_KM, AU_PC
-from jug.delays.binary_bt import bt_binary_delay
+from jug.delays.binary_bt import bt_binary_delay_from_tt0
 from jug.delays.binary_dd import (
     dd_binary_delay,
     ddk_binary_delay,
+    dd_binary_delay_from_tt0,
 )
 # Note: Kopeikin corrections (K96 proper motion, annual orbital parallax) are
 # implemented inline in branch_ddk() below, not as separate importable functions.
 from jug.delays.binary_t2 import t2_binary_delay
 from jug.delays.binary_t2_tempo2 import t2_tempo2_binary_delay
+
+# Highest ELL1H H3/H4 Shapiro harmonic JUG evaluates when a par sets NHARMS.
+# Tempo2's calcDH sums harmonics 3..NHARMS; realistic NHARMS is <=7, so 12 is a
+# safe ceiling. Harmonics k>nharm are masked (base->0) so the partial sum is exact
+# for the requested nharm and never diverges (the H3/H4 series grows as (H4/H3)^k).
+_ELL1H_MAX_NHARM = 12
 
 
 @jax.jit
@@ -39,7 +46,22 @@ def combined_delays(
     # Tropospheric delay (for PINT-compatible pre-binary time)
     tropo_sec=None,
     # DMX delay (for PINT-compatible pre-binary time)
-    dmx_sec=None
+    dmx_sec=None,
+    # Precomputed (tdb - binary_epoch)*86400 in longdouble, then cast to float64.
+    # Avoids float64 cancellation when computing t - T0 inside JAX at MJD ~58000.
+    tt_binary_sec=None,
+    # tt_binary_sec reduced by a whole number of orbital periods in longdouble
+    # (jug.utils.orbit_reduction.reduce_binary_time_sec). Used for the LINEAR
+    # orbital phase term only — integer orbits drop out of all trig — removing
+    # the ~ps float64 phase-quantization floor at ~1e4 orbits. Falls back to
+    # tt_binary_sec when not provided.
+    tt_binary_red_sec=None,
+    # DD relativistic-deformation parameters (DDGR-derived; standard DD = 0).
+    # er = ecc*(1+dr), eTheta = ecc*(1+dth) in the DD Roemer.
+    dr=0.0, dth=0.0,
+    # ELL1H H3/H4 Shapiro harmonic count (par NHARMS, Tempo2 default 4). Only the
+    # H3+H4 branch uses it; H3+STIGMA (exact) and H3-only are unaffected.
+    nharm=4.0
 ):
     """Combined delay calculation - single JAX kernel for maximum performance.
 
@@ -98,48 +120,74 @@ def combined_delays(
         dmx_sec
     ) if dmx_sec is not None else jnp.zeros_like(tdbld)
 
+    # High-precision binary epoch offset (precomputed in longdouble outside JAX)
+    tt_binary_arr = jnp.where(
+        tt_binary_sec is None,
+        jnp.zeros_like(tdbld),
+        tt_binary_sec
+    ) if tt_binary_sec is not None else jnp.zeros_like(tdbld)
+
+    # Orbit-count-reduced binary time; falls back to the full time (the
+    # reduced linear-phase formulas are then algebraically identical to the
+    # original ones, differing only at the float64 rounding level).
+    tt_binary_red_arr = (tt_binary_red_sec
+                         if tt_binary_red_sec is not None
+                         else tt_binary_arr)
+
     # === Universal Binary Delay Dispatch ===
     def compute_binary_universal(args):
-        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val, dmx_val) = args
+        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val, dmx_val, tt_binary_val, tt_binary_red_val) = args
 
-        # Binary evaluation time: PINT-compatible "pre-binary" time
-        #
-        # PINT's delay component order is:
-        #   AstrometryEquatorial -> TroposphereDelay -> SolarSystemShapiro ->
-        #   SolarWindDispersion -> DispersionDM -> DispersionDMX -> BinaryDD -> FD
-        #
-        # So PINT evaluates BinaryDD at:
-        #   t_prebinary = tdbld - (all delays before BinaryDD) / 86400
-        #
-        # This includes: Roemer (astrometry), Troposphere, SS Shapiro, Solar Wind, DM, DMX
-        # but NOT FD (which comes after BinaryDD).
-        #
+        # Pre-binary delay sum: sum of all delays before BinaryDD in PINT's order.
         # roemer_shapiro_val includes: Roemer + SS Shapiro (Sun + planets)
         # We add: DM, DMX, Solar Wind, Troposphere
-        t_prebinary = tdbld_val - (roemer_shapiro_val + dm_val + dmx_val + sw_val + tropo_val) / SECS_PER_DAY
+        prebinary_sum = roemer_shapiro_val + dm_val + dmx_val + sw_val + tropo_val
+
+        # High-precision time for binary model:
+        #   tt_binary_val = (tdb - binary_epoch) * SECS_PER_DAY, precomputed in longdouble.
+        # Subtract the pre-binary delays to get the time at which the binary model is evaluated.
+        # This avoids float64 cancellation when computing (tdb_mjd - T0) inside JAX at MJD ~58000.
+        tt_binary_prebinary = tt_binary_val - prebinary_sum
+
+        # Reduced counterpart: same prebinary shift, integer orbits already
+        # subtracted in longdouble outside JIT. Only valid in the LINEAR
+        # phase term of each model (secular terms must keep the full time).
+        tt_binary_red_prebinary = tt_binary_red_val - prebinary_sum
+
+        # MJD-based prebinary time (still needed for DDK observer position geometry)
+        t_prebinary = tdbld_val - prebinary_sum / SECS_PER_DAY
 
         # Branch 0: None
-        def branch_none(t): return 0.0
+        def branch_none(tt_pair): return 0.0
 
         # Branch 1: ELL1 / ELL1H (Inline Optimized)
-        def branch_ell1(t):
-            dt_days = t - tasc
-            dt_sec_bin = dt_days * SECS_PER_DAY
+        # tt_binary_val was computed as (tdb - TASC)*86400, so tt_binary_prebinary
+        # is already (t_prebinary - TASC) in seconds.
+        def branch_ell1(tt_pair):
+            dt_sec_bin, dt_red_bin = tt_pair
+            dt_days = dt_sec_bin / SECS_PER_DAY
 
-            # Phase calculation (FB or PB)
+            # Phase calculation (FB or PB). The LINEAR term uses the
+            # orbit-count-reduced time (integer orbits drop out of all trig);
+            # PBDOT / higher-order FB terms keep the full time.
             def compute_phase_fb():
-                dt_fb = dt_sec_bin
                 n_coeffs = len(fb_coeffs)
                 indices = jnp.arange(n_coeffs)
                 powers_plus1 = indices + 1
-                dt_powers_plus1 = dt_fb ** powers_plus1
+                dt_powers_plus1 = dt_sec_bin ** powers_plus1
                 factorials_plus1 = fb_factorials * (indices + 1)
-                phase_integral = jnp.sum(fb_coeffs * dt_powers_plus1 / factorials_plus1)
+                terms = jnp.where(indices > 0,
+                                  fb_coeffs * dt_powers_plus1 / factorials_plus1,
+                                  0.0)
+                # Shape check is static; both lax.switch branches are traced
+                # even for non-FB pulsars, where fb_coeffs can be empty.
+                fb0 = fb_coeffs[0] if fb_coeffs.shape[0] > 0 else 0.0
+                phase_integral = jnp.sum(terms) + fb0 * dt_red_bin
                 return 2.0 * jnp.pi * phase_integral
 
             def compute_phase_pb():
                 n0_local = 2.0 * jnp.pi / (pb * SECS_PER_DAY)
-                return n0_local * dt_sec_bin * (1.0 - pbdot / 2.0 / pb * dt_days)
+                return n0_local * dt_red_bin - n0_local * dt_sec_bin * (pbdot / 2.0 / pb * dt_days)
 
             Phi = jnp.where(use_fb, compute_phase_fb(), compute_phase_pb())
 
@@ -203,13 +251,22 @@ def combined_delays(
 
             einstein_binary = jnp.where(gamma != 0.0, gamma * sin_Phi, 0.0)
             
-            # ELL1H Shapiro delay (Freire & Wex 2010)
-            # When STIG is set, use the orthometric lsc formula that separates
-            # harmonics absorbed by other orbital parameters:
-            #   fs = 1 + stig^2 - 2*stig*sin(Phi)
-            #   lsc = log(fs) + 2*stig*sin(Phi) - stig^2*cos(2*Phi)
-            #   ds = -2*(H3/stig^3)*lsc
-            # This matches Tempo2 ELL1Hmodel.C mode 1.
+            # ELL1H Shapiro delay, H3 + STIGMA -> "3rd-harmonic-and-up" EXACT form
+            # (Freire & Wex 2010 Eq. 28), matching Tempo2 ELL1Hmodel.C mode 1:
+            #   lsc = log(1+stig^2-2*stig*sin(Phi)) + 2*stig*sin(Phi)
+            #                                       - stig^2*cos(2*Phi)
+            #   ds  = -2*(H3/stig^3) * lsc
+            # The k=1,2 harmonics (+2*stig*sin(Phi) - stig^2*cos(2*Phi)) are
+            # EXACTLY degenerate with the ELL1 Roemer a1/EPS1/EPS2 terms, so the
+            # par's Keplerian values (fit by Tempo2 with this Eq.28 form) already
+            # absorb them. Using the FULL log (Eq.29, as PINT's default
+            # delayS_H3_STIGMA_exact does) at these fixed params DOUBLE-COUNTS k=1,2
+            # -- verified on J1902-5105 (STIG=1.154): Eq.29 -> own WRMS 2.356 us
+            # with sin(Phi)/cos(2Phi) structure (corr -0.52/+0.28); Eq.28 -> 1.694 us
+            # flat == par TRES 1.637. (An earlier change to Eq.29 chased PINT parity
+            # but was only ever validated on stig->0 pulsars where Eq.28 == Eq.29.)
+            # PINT can match via its delayS3p_H3_STIGMA_exact (Eq.28); the batch
+            # harness selects it. stig->0 (H3-only) path below is unaffected.
             fs = 1.0 + stig**2 - 2.0 * stig * sin_Phi
             lsc = jnp.log(fs) + 2.0 * stig * sin_Phi - stig**2 * cos_2Phi
             r_ell1h = h3 / jnp.maximum(stig**3, 1e-30)
@@ -227,51 +284,88 @@ def combined_delays(
                 -(4.0 / 3.0) * h3 * sin_3Phi,
                 0.0
             )
-            # ELL1H mode 2: H3/H4 harmonic expansion (Freire & Wex 2010, nharm=4)
-            # ds = -4/3*H3*sin(3Phi) + H4*cos(4Phi)
+            # ELL1H mode 2/3: H3/H4 harmonic Shapiro (Tempo2 ELL1Hmodel.C calcDH):
+            #   ds = sd3 + sd4 + sd5
+            #   sd3 = -4/3*H3*sin(3Phi),  sd4 = H4*cos(4Phi),  sd5 = 4*H4*fs
+            #   fs  = sum_{k=5}^{nharm} c_k * s^(k-4) * trig_k(k*Phi),  s = H4/H3
+            #     k odd : c_k = (-1)^((k-1)/2)/k, trig = sin
+            #     k even: c_k = (-1)^(k/2)/k,     trig = cos
+            # sd5 vanishes for nharm<=4 (Tempo2 default), recovering the classic
+            # -4/3*H3*sin(3Phi) + H4*cos(4Phi). nharm is a runtime scalar (par
+            # NHARMS, default 4); harmonics k>nharm are masked by zeroing the base
+            # so s^(k-4)=0 even when s>1 and the series diverges (e.g. J0613-0200
+            # s=H4/H3=1.11) -- no inf*0=nan.
             cos_4Phi = jnp.cos(4.0 * Phi)
+            s_h4 = h4 / jnp.where(h3 != 0.0, h3, 1.0)
+            fs_h3h4 = 0.0
+            for _k in range(5, _ELL1H_MAX_NHARM + 1):
+                base = jnp.where(_k <= nharm, s_h4, 0.0)
+                term = base ** (_k - 4)
+                if _k % 2 == 1:
+                    coeff = ((-1.0) ** ((_k - 1) // 2)) / _k
+                    fs_h3h4 = fs_h3h4 + coeff * term * jnp.sin(_k * Phi)
+                else:
+                    coeff = ((-1.0) ** (_k // 2)) / _k
+                    fs_h3h4 = fs_h3h4 + coeff * term * jnp.cos(_k * Phi)
+            sd5_h3h4 = 4.0 * h4 * fs_h3h4
             shapiro_h3h4 = jnp.where(
                 (h4 != 0.0) & (stig == 0.0),
-                -(4.0 / 3.0) * h3 * sin_3Phi + h4 * cos_4Phi,
+                -(4.0 / 3.0) * h3 * sin_3Phi + h4 * cos_4Phi + sd5_h3h4,
                 0.0
             )
-            # Select: ELL1H lsc if 0 < stig <= 1, else h3h4/h3only/standard
+            # Select: ELL1H lsc if stig > 0 (H3+STIGMA), else h3h4/h3only/standard.
+            # No stig<=1 upper bound: PINT's delayS_H3_STIGMA_exact applies the
+            # exact log for ANY STIGMA (ELL1H does not validate STIGMA<=1), and the
+            # log argument (1+stig^2-2*stig*sin(Phi)) stays positive for the
+            # mildly-superunity STIGMA that fits sometimes produce (e.g. J1902-5105
+            # STIG=1.154). Guarding stig<=1 silently dropped the entire ELL1H
+            # Shapiro for those pulsars (~1.2 us at orbital frequency vs PINT).
             shapiro_binary = jnp.where(
-                (stig > 0.0) & (stig <= 1.0),
+                stig > 0.0,
                 shapiro_ell1h,
                 shapiro_standard + shapiro_h3only + shapiro_h3h4
             )
             return binary_roemer + einstein_binary + shapiro_binary
 
         # Branch 2: DD / DDK
-        def branch_dd(t):
-            return dd_binary_delay(
-                t, pb, a1, ecc, om, t0, gamma, pbdot, omdot, xdot, edot,
-                sini, m2, h3, h4, stig
+        # tt0 = (t_prebinary - T0) * SECS_PER_DAY (precomputed in longdouble)
+        def branch_dd(tt_pair):
+            tt0, tt0_red = tt_pair
+            return dd_binary_delay_from_tt0(
+                tt0, pb, a1, ecc, om, gamma, pbdot, omdot, xdot, edot,
+                sini, m2, h3, h4, stig, tt0_red_sec=tt0_red, dr=dr, dth=dth
             )
 
-        # Branch 3: T2
-        def branch_t2(t):
+        # Branch 3: T2. Evaluate in a relative-day coordinate so both the
+        # PB/T0 and FB/TASC parameterizations use the longdouble-derived
+        # binary epoch offset supplied by the caller.
+        # NOTE: T2 does not yet take the orbit-count-reduced time, so it keeps
+        # the ~ps float64 phase floor (t2_binary_delay handles its own phase).
+        def branch_t2(tt_pair):
+            tt0, _ = tt_pair
+            t = tt0 / SECS_PER_DAY
             return t2_binary_delay(
-                t, pb, a1, ecc, om, t0, gamma, pbdot, xdot, edot, omdot,
+                t, pb, a1, ecc, om, 0.0, gamma, pbdot, xdot, edot, omdot,
                 m2, sini, kin, kom,
-                fb_coeffs, fb_factorials, fb_epoch, use_fb
+                fb_coeffs, fb_factorials, 0.0, use_fb
             )
 
         # Branch 4: BT
-        def branch_bt(t):
-            return bt_binary_delay(
-                t, pb, a1, ecc, om, t0, gamma, pbdot, m2, sini, omdot, xdot
+        def branch_bt(tt_pair):
+            tt0, tt0_red = tt_pair
+            return bt_binary_delay_from_tt0(
+                tt0, pb, a1, ecc, om, gamma, pbdot, omdot, xdot, edot,
+                tt0_red_sec=tt0_red
             )
 
         # Branch 5: DDK (DD with Kopeikin annual orbital parallax + K96 proper motion)
-        def branch_ddk(t):
+        def branch_ddk(tt_pair):
+            tt0, tt0_red = tt_pair
             # Apply Kopeikin corrections if we have the required parameters
             # obs_pos_ls_val is the per-TOA observer position in light-seconds
 
-            # Time since T0 in seconds (for K96 proper motion corrections)
-            dt_days = t - t0
-            tt0_sec = dt_days * SECS_PER_DAY
+            # Time since T0 in seconds (precomputed in longdouble for precision)
+            tt0_sec = tt0
 
             # Base values
             kin_rad = jnp.deg2rad(kin)
@@ -371,9 +465,9 @@ def combined_delays(
                 sini
             )
 
-            return dd_binary_delay(
-                t, pb, a1_eff, ecc, om_eff, t0, gamma, pbdot, omdot, xdot, edot,
-                sini_eff, m2, h3, h4, stig
+            return dd_binary_delay_from_tt0(
+                tt0, pb, a1_eff, ecc, om_eff, gamma, pbdot, omdot, xdot, edot,
+                sini_eff, m2, h3, h4, stig, tt0_red_sec=tt0_red
             )
 
         # Branch 6: tempo2-native T2 DD branch with additive Kopeikin terms
@@ -408,7 +502,7 @@ def combined_delays(
 
     binary_sec = jnp.where(
         has_binary,
-        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr, dmx_arr)),
+        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr, dmx_arr, tt_binary_arr, tt_binary_red_arr)),
         0.0
     )
 
@@ -433,7 +527,15 @@ def compute_total_delay_jax(
     # Tropospheric delay (for PINT-compatible pre-binary time)
     tropo_sec=None,
     # DMX delay (for PINT-compatible pre-binary time)
-    dmx_sec=None
+    dmx_sec=None,
+    # Precomputed (tdb - binary_epoch)*86400 in longdouble then cast to float64.
+    tt_binary_sec=None,
+    # Orbit-count-reduced tt_binary_sec (see combined_delays / orbit_reduction).
+    tt_binary_red_sec=None,
+    # DD relativistic-deformation parameters (DDGR-derived; standard DD = 0).
+    dr=0.0, dth=0.0,
+    # ELL1H H3/H4 Shapiro harmonic count (par NHARMS, Tempo2 default 4).
+    nharm=4.0
 ):
     """Compute total delay in a single JAX kernel.
 
@@ -470,8 +572,12 @@ def compute_total_delay_jax(
         obs_pos_ls, px, sin_ra, cos_ra, sin_dec, cos_dec,
         k96, pmra_rad_per_sec, pmdec_rad_per_sec,
         tropo_sec,
-        dmx_sec
+        dmx_sec,
+        tt_binary_sec,
+        tt_binary_red_sec,
+        dr,
+        dth,
+        nharm
     )
 
     return roemer_shapiro + combined_sec
-

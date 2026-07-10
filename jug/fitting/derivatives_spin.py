@@ -16,6 +16,7 @@ import numpy as np
 import math
 from typing import Dict
 
+from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY
 
 
@@ -202,9 +203,14 @@ def compute_spin_derivatives(
             derivatives[param] = jnp.asarray(col, dtype=jnp.float64)
         return derivatives
 
-    pepoch_mjd = params.get("PEPOCH", toas_mjd[0])
-    dt_jax = (toas_mjd - pepoch_mjd) * SECS_PER_DAY
+    pepoch_mjd = get_longdouble(params, 'PEPOCH', default=float(toas_mjd[0]))
 
+    # Compute dt in seconds using longdouble to avoid float64 cancellation at MJD ~58000
+    toas_ld = np.asarray(toas_mjd, dtype=np.longdouble)
+    pepoch_ld = np.longdouble(pepoch_mjd)
+    dt_sec = np.asarray((toas_ld - pepoch_ld) * np.longdouble(SECS_PER_DAY), dtype=np.float64)
+
+    # Get all F terms for API compatibility (not used in derivative)
     f_terms = []
     for i in range(10):
         f_key = f"F{i}"
@@ -215,9 +221,11 @@ def compute_spin_derivatives(
 
     derivatives = {}
     for param in spin_params:
-        deriv_phase = d_phase_d_F(dt_jax, param, f_terms)
-        derivatives[param] = -deriv_phase / f0
-
+        deriv_phase = d_phase_d_F(dt_sec, param, f_terms)  # cycles/Hz (POSITIVE)
+        # Apply PINT's convention (timing_model.py line 2365):
+        # q = -self.d_phase_d_param(toas, delay, param)
+        # Then divide by F0 to convert phase -> time units (line 2368)
+        derivatives[param] = -deriv_phase / f0  # seconds/Hz (NEGATIVE)
     return derivatives
 
 

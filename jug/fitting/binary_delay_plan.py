@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import jax.numpy as jnp
+import numpy as np
+
+from jug.utils.constants import SECS_PER_DAY
 
 from jug.fitting.binary_t2_dispatch import _is_ell1_parameterization
 from jug.fitting.derivatives_binary import _compute_ell1_binary_delay_jit, _extract_ell1_params
@@ -20,6 +23,13 @@ from jug.fitting.derivatives_dd import (
 def _pval(params, key, default):
     v = params.get(key, None)
     return default if v is None else v
+
+
+def _as_f64(x):
+    """Cast a concrete or traced scalar to float64 for JAX kernels."""
+    if isinstance(x, (np.longdouble, np.float128)):
+        return jnp.float64(float(x))
+    return jnp.asarray(x, dtype=jnp.float64)
 
 
 def _first_live_value(params, live_keys, keys, default):
@@ -107,6 +117,9 @@ class BinaryDelayPlan:
     structural_args: frozenset
     fb_ref: tuple
     kopeikin: Optional[Any] = None
+    pb_ld: Any = None
+    fb0_ld: Any = None
+    nharm: float = 4.0
 
     def _arg(self, arg, params, arg_keys):
         if arg not in self.structural_args:
@@ -149,24 +162,28 @@ class BinaryDelayPlan:
                 eps2dot,
             ) = args
             fb = self._fb_array(params)
+            tasc_j = jnp.asarray(tasc, dtype=jnp.float64)
+            ttasc_sec = (t - tasc_j) * SECS_PER_DAY
+            # Longdouble orbit-count reduction is applied in the NumPy
+            # compute_ell1_binary_delay path; autodiff uses float64 here.
             return _compute_ell1_binary_delay_jit(
-                t,
-                a1,
-                pb,
-                tasc,
-                eps1,
-                eps2,
-                pbdot,
-                a1dot,
-                sini,
-                m2,
-                gamma,
-                h3,
-                h4,
-                stig,
+                ttasc_sec,
+                _as_f64(a1),
+                _as_f64(pb),
+                _as_f64(eps1),
+                _as_f64(eps2),
+                _as_f64(pbdot),
+                _as_f64(a1dot),
+                _as_f64(sini),
+                _as_f64(m2),
+                _as_f64(gamma),
+                _as_f64(h3),
+                _as_f64(h4),
+                _as_f64(stig),
                 fb,
-                eps1dot,
-                eps2dot,
+                _as_f64(eps1dot),
+                _as_f64(eps2dot),
+                nharm=_as_f64(self.nharm),
             )
 
         args = [self._arg(a, params, _DD_ARG_KEYS) for a in _DD_ARG_ORDER]
@@ -190,8 +207,21 @@ class BinaryDelayPlan:
             a1 = a1 + d_a1
             om_deg = om_deg + d_om
             sini = sini_eff
+        t0_j = jnp.asarray(t0, dtype=jnp.float64)
+        tt0_sec = (t - t0_j) * SECS_PER_DAY
         return _compute_dd_binary_delay_jit(
-            t, a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, sini, m2, xdot, edot
+            tt0_sec,
+            _as_f64(a1),
+            _as_f64(pb),
+            _as_f64(ecc),
+            _as_f64(om_deg),
+            _as_f64(omdot),
+            _as_f64(pbdot),
+            _as_f64(gamma),
+            _as_f64(sini),
+            _as_f64(m2),
+            _as_f64(xdot),
+            _as_f64(edot),
         )
 
 
@@ -224,10 +254,19 @@ def resolve_binary_structure(ref_params, fit_params, *, obs_pos_ls=None):
 
     if family == "ELL1":
         p = _extract_ell1_params(ref_params)
-        ref_scalars = {k: p[k] for k in _ELL1_ARG_ORDER}
+        ref_scalars = {k: float(p[k]) for k in _ELL1_ARG_ORDER}
         fb_ref = tuple(p["fb_coeffs"])
         structural = frozenset({"pb"}) if fb_ref else frozenset()
-        return BinaryDelayPlan(family, ref_scalars, live, structural, fb_ref)
+        return BinaryDelayPlan(
+            family,
+            ref_scalars,
+            live,
+            structural,
+            fb_ref,
+            pb_ld=p["pb_ld"],
+            fb0_ld=p.get("fb0_ld"),
+            nharm=float(p.get("nharm", 4.0)),
+        )
 
     if live & _ORTHOMETRIC_KEYS:
         raise NotImplementedError(
@@ -235,7 +274,7 @@ def resolve_binary_structure(ref_params, fit_params, *, obs_pos_ls=None):
             "for DD-family binaries via autodiff. Use ELL1H or fit M2/SINI."
         )
     p = _extract_dd_params(ref_params)
-    ref_scalars = {k: p[k] for k in _DD_ARG_ORDER}
+    ref_scalars = {k: float(p[k]) for k in _DD_ARG_ORDER}
     structural = (
         frozenset({"pb"})
         if ("PB" not in ref_params and "FB0" in ref_params)

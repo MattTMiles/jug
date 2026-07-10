@@ -32,10 +32,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from jug.fitting.forward_delay import compute_side_delay_change, compute_total_delay_change
 from jug.residuals.engine_conventions import normalize_compatibility_mode
 from jug.residuals.tempo2.common import NativeDeltaPack
 from jug.residuals.tempo2.delta_pack import build_delta_pack_for_setup
-from jug.fitting.forward_delay import compute_side_delay_change
 from jug.residuals.tempo2.terms import compute_bbat_delay_change_sec_jax
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.units import native_derivative_to_fit_column
@@ -304,30 +304,6 @@ def _spin_terms_from_params(params: dict) -> list:
     return terms
 
 
-def _binary_delay_change_jax(params: dict, setup: "GeneralFitSetup", *, binary_plan):
-    """Traceable binary-delay change, matching the shared Taylor delay path."""
-    if not setup.binary_params or setup.initial_binary_delay is None:
-        return None
-    if setup.prebinary_delay_sec is None:
-        raise ValueError("Binary delay-change requires prebinary_delay_sec in setup.")
-    plan = binary_plan
-    if plan is None:
-        from jug.fitting.binary_delay_plan import resolve_binary_structure
-
-        plan = resolve_binary_structure(
-            setup.params, setup.fit_param_list, obs_pos_ls=setup.ssb_obs_pos_ls
-        )
-    tdb_mjd = jnp.asarray(setup.tdb_mjd, dtype=jnp.float64)
-    toas_prebinary = tdb_mjd - (
-        jnp.asarray(setup.prebinary_delay_sec, dtype=jnp.float64) / SECS_PER_DAY
-    )
-    new_binary = jnp.asarray(
-        plan.evaluate(toas_prebinary, params, setup.ssb_obs_pos_ls, jnp),
-        dtype=jnp.float64,
-    )
-    return new_binary - jnp.asarray(setup.initial_binary_delay, dtype=jnp.float64)
-
-
 def _compute_residual_delta_jax(
     params_ref: dict,
     params_pert: dict,
@@ -382,7 +358,6 @@ def _compute_residual_delta_jax(
         )
 
     del native_pack
-    from jug.fitting.forward_delay import compute_total_delay_change
 
     dt_base_np = (
         setup.dt_sec_ld

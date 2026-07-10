@@ -106,7 +106,10 @@ def compute_residual_stats(
     else:
         r = residuals_us
     
-    # Weighted RMS: sqrt(sum(w * r^2) / sum(w))
+    # Weighted RMS: sqrt(sum(w * r^2) / sum(w)).
+    # Identical formula to the inline weighted_rms in
+    # jug.residuals.simple_calculator.compute_residuals_simple (which uses the
+    # subtract_mean=False branch). Keep the two in sync if either is changed.
     weighted_rms = np.sqrt(np.sum(weights * r * r) / wsum)
     
     # Unweighted RMS (standard deviation)

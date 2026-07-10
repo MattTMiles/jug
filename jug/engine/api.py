@@ -175,13 +175,13 @@ def fit_parameters(
     compatibility: str = "pint",
     tempo2_native: str | None = None,
     tempo2_jug_options: dict[str, Any] | None = None,
+    fit_dmx: bool = True,
 ) -> Dict[str, Any]:
     """
     Fit timing model parameters (legacy one-shot API).
-    
+
     This function provides backward compatibility with existing code.
     For multiple operations on the same files, use open_session() instead.
-    
     Parameters
     ----------
     par_file : Path or str
@@ -206,7 +206,10 @@ def fit_parameters(
         Tempo2 JAX graph mode (see :func:`open_session`).
     tempo2_jug_options : dict, optional
         Tempo2 options dict (see :func:`open_session`).
-    
+    fit_dmx : bool, default True
+        If True (default), DMX_* bins in the PAR are auto-added as fitted
+        timing parameters. If False, fixed DMX delays from the PAR are still
+        applied but DMX_* are not fitted (use for global-DM recovery checks).
     Returns
     -------
     result : dict
@@ -217,14 +220,14 @@ def fit_parameters(
         - 'iterations': Number of iterations
         - 'converged': Whether fit converged
         - etc.
-    
+
     Examples
     --------
     >>> from jug.engine import fit_parameters
     >>> result = fit_parameters('J1909.par', 'J1909.tim', ['F0', 'F1'])
     >>> print(f"F0 = {result['final_params']['F0']:.15f} Hz")
     >>> print(f"RMS = {result['final_rms']:.3f} mus")
-    
+
     Notes
     -----
     This calls fit_parameters_optimized() directly without caching.
@@ -242,4 +245,5 @@ def fit_parameters(
         compatibility=compatibility,
         tempo2_native=tempo2_native,
         tempo2_jug_options=tempo2_jug_options,
+        fit_dmx=fit_dmx,
     )

@@ -48,19 +48,27 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Literal
 import time
 import math
+import warnings
 from dataclasses import dataclass
 
 from jug.residuals.simple_calculator import compute_residuals_simple
-from jug.io.par_reader import parse_par_file, validate_par_timescale, _parse_float
+from jug.residuals.engine_conventions import EngineConventionProfile
+from jug.io.par_reader import parse_par_file, _parse_float
 from jug.io.tim_reader import parse_tim_file_mjds
 from jug.fitting.derivatives_dm import compute_dm_derivatives
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 from jug.fitting.wls_fitter import wls_solve_svd
 from jug.fitting.binary_registry import compute_binary_delay, compute_binary_derivatives
+from jug.utils.units import (
+    native_derivative_to_fit_column,
+    validate_column_units,
+)
 import scipy.linalg as _scipy_linalg
+
+DesignMatrixMethod = Literal["analytic", "autodiff"]
 
 # Import ParameterSpec system for spec-driven routing
 from jug.model.parameter_spec import (
@@ -77,6 +85,105 @@ from jug.model.parameter_spec import (
     validate_fit_param,
 )
 from jug.utils.constants import HIGH_PRECISION_PARAMS
+
+FDColumnMode = Literal["tempo2_delay", "delay_only", "pint_phase_scaled"]
+
+# ``tempo2_delay`` and ``delay_only`` are aliases: both return raw log(f)^n delay
+# derivatives (tempo2-style FD in delay space).  Defaults differ by compatibility
+# only so callers can document intent; only ``pint_phase_scaled`` changes physics.
+_DELAY_DERIVATIVE_MODES = frozenset({"tempo2_delay", "delay_only"})
+
+
+@dataclass
+class DesignMatrixResult:
+    """Unweighted timing design matrix and associated column labels."""
+
+    matrix: np.ndarray
+    labels: List[str]
+    column_units: List[str]
+    unit_convention: str
+    residuals_us: np.ndarray
+    errors_us: np.ndarray
+
+
+def _normalize_fd_column_mode(
+    fd_column_mode: str | None,
+    *,
+    compatibility: str,
+) -> FDColumnMode:
+    """Resolve FD design-matrix convention for fitter and export APIs.
+
+    Modes
+    -----
+    tempo2_delay / delay_only
+        Identical: ``d(delay)/d(FDn) = log(f/1 GHz)^n`` (tempo2 delay convention).
+        Default for ``compatibility="tempo2"`` is ``tempo2_delay``; for pint
+        mode it is ``delay_only`` (conservative; does not enable PINT chain rule).
+    pint_phase_scaled
+        Above multiplied by ``f(t)/F0`` (PINT phase chain rule on FD columns).
+    """
+    if fd_column_mode is None:
+        return "delay_only"
+
+    norm = str(fd_column_mode).strip().lower().replace("-", "_")
+    aliases = {
+        "tempo2": "tempo2_delay",
+        "tempo2_delay": "tempo2_delay",
+        "delay_only": "delay_only",
+        "legacy_delay": "delay_only",
+        "pint_phase_scaled": "pint_phase_scaled",
+        "pint_phase": "pint_phase_scaled",
+        "phase_scaled": "pint_phase_scaled",
+    }
+    if norm not in aliases:
+        raise ValueError(
+            f"Unknown fd_column_mode={fd_column_mode!r}. "
+            "Expected one of: 'tempo2_delay', 'delay_only', 'pint_phase_scaled'."
+        )
+    return aliases[norm]  # type: ignore[return-value]
+
+
+def _is_delay_derivative_fd_mode(fd_column_mode: FDColumnMode) -> bool:
+    return fd_column_mode in _DELAY_DERIVATIVE_MODES
+
+
+def _instantaneous_spin_frequency_hz(params: Dict[str, Any], tdb_mjd: np.ndarray) -> np.ndarray:
+    """Evaluate f(t) = F0 + F1*dt + F2*dt^2/2 + ... in Hz."""
+    pepoch = float(params.get("PEPOCH", tdb_mjd[0]))
+    dt_sec = (np.asarray(tdb_mjd, dtype=np.float64) - pepoch) * SECS_PER_DAY
+    freq = np.zeros_like(dt_sec, dtype=np.float64)
+    for order in range(21):
+        key = f"F{order}"
+        if key not in params:
+            if order == 0:
+                freq.fill(1.0)
+            break
+        coeff = float(params[key])
+        if order == 0:
+            freq += coeff
+        else:
+            freq += coeff * (dt_sec ** order) / float(math.factorial(order))
+    return freq
+
+
+def _compute_fd_derivatives_for_mode(
+    *,
+    params: Dict[str, Any],
+    freq_mhz: np.ndarray,
+    fit_params: List[str],
+    tdb_mjd: np.ndarray,
+    fd_column_mode: FDColumnMode,
+) -> Dict[str, np.ndarray]:
+    """Compute FD derivative columns with explicit convention dispatch."""
+    from jug.fitting.designmatrix_assembly import compute_fd_derivatives_for_mode
+
+    return compute_fd_derivatives_for_mode(
+        params=params,
+        freq_mhz=freq_mhz,
+        fit_params=fit_params,
+        tdb_mjd=tdb_mjd,
+        fd_column_mode=fd_column_mode,
+    )
 
 
 def _format_longdouble(value: np.longdouble) -> str:
@@ -113,25 +220,9 @@ def _update_param(params: Dict, param: str, value: float) -> None:
     """
     param_upper = param.upper()
 
-    if param_upper == 'ELONG':
-        params['ELONG'] = value
-        params['_ecliptic_lon_deg'] = value
-        _reconvert_ecliptic_to_equatorial(params)
-        return
-    elif param_upper == 'ELAT':
-        params['ELAT'] = value
-        params['_ecliptic_lat_deg'] = value
-        _reconvert_ecliptic_to_equatorial(params)
-        return
-    elif param_upper == 'PMELONG':
-        params['PMELONG'] = value
-        params['_ecliptic_pm_lon'] = value
-        _reconvert_ecliptic_to_equatorial(params)
-        return
-    elif param_upper == 'PMELAT':
-        params['PMELAT'] = value
-        params['_ecliptic_pm_lat'] = value
-        _reconvert_ecliptic_to_equatorial(params)
+    if param_upper in ('ELONG', 'ELAT', 'PMELONG', 'PMELAT'):
+        from jug.io.astrometry_state import sync_ecliptic_public_to_internal
+        sync_ecliptic_public_to_internal(params, {param_upper: value})
         return
 
     hp_value = None
@@ -150,50 +241,8 @@ def _update_param(params: Dict, param: str, value: float) -> None:
 
 def _reconvert_ecliptic_to_equatorial(params: Dict) -> None:
     """Reconvert ecliptic coords to equatorial after an ecliptic param update."""
-    from jug.io.par_reader import (
-        OBLIQUITY_ARCSEC, format_ra, format_dec
-    )
-    import numpy as np_
-
-    ecl_lon_deg = params.get('_ecliptic_lon_deg', 0.0)
-    ecl_lat_deg = params.get('_ecliptic_lat_deg', 0.0)
-    ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010'))
-    obl_rad = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC['IERS2010']) * np_.pi / (180.0 * 3600.0)
-
-    lon_rad = np_.radians(ecl_lon_deg)
-    lat_rad = np_.radians(ecl_lat_deg)
-    cos_lon, sin_lon = np_.cos(lon_rad), np_.sin(lon_rad)
-    cos_lat, sin_lat = np_.cos(lat_rad), np_.sin(lat_rad)
-    cos_obl, sin_obl = np_.cos(obl_rad), np_.sin(obl_rad)
-
-    x = cos_lon * cos_lat
-    y = sin_lon * cos_lat * cos_obl - sin_lat * sin_obl
-    z = sin_lon * cos_lat * sin_obl + sin_lat * cos_obl
-
-    ra_rad = np_.arctan2(y, x) % (2 * np_.pi)
-    dec_rad = np_.arctan2(z, np_.sqrt(x**2 + y**2))
-
-    params['RAJ'] = format_ra(ra_rad)
-    params['DECJ'] = format_dec(dec_rad)
-    params['_raj_rad'] = float(ra_rad)
-    params['_decj_rad'] = float(dec_rad)
-
-    # Reconvert proper motions if present
-    pm_lon = params.get('_ecliptic_pm_lon', 0.0)
-    pm_lat = params.get('_ecliptic_pm_lat', 0.0)
-    if pm_lon != 0.0 or pm_lat != 0.0:
-        dx = -sin_lon * pm_lon - cos_lon * sin_lat * pm_lat
-        dy = cos_lon * pm_lon - sin_lon * sin_lat * pm_lat
-        dz = cos_lat * pm_lat
-
-        dx_eq = dx
-        dy_eq = dy * cos_obl - dz * sin_obl
-        dz_eq = dy * sin_obl + dz * cos_obl
-
-        cos_ra, sin_ra = np_.cos(ra_rad), np_.sin(ra_rad)
-        cos_dec, sin_dec = np_.cos(dec_rad), np_.sin(dec_rad)
-        params['PMRA'] = -sin_ra * dx_eq + cos_ra * dy_eq
-        params['PMDEC'] = -cos_ra * sin_dec * dx_eq - sin_ra * sin_dec * dy_eq + cos_dec * dz_eq
+    from jug.io.astrometry_state import reconvert_ecliptic_to_equatorial
+    reconvert_ecliptic_to_equatorial(params)
 
 
 @dataclass
@@ -247,6 +296,9 @@ class GeneralFitSetup:
     """
     params: Dict[str, float]
     fit_param_list: List[str]
+    compatibility: str
+    fd_column_mode: FDColumnMode
+    design_matrix_method: DesignMatrixMethod
     param_values_start: List[float]
     toas_mjd: np.ndarray
     freq_mhz: np.ndarray
@@ -295,6 +347,7 @@ class GeneralFitSetup:
     # DMX design matrix (Phase 2 integration)
     dmx_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmx_ranges) DMX design matrix
     dmx_labels: Optional[List[str]]          # DMX parameter labels
+    initial_dmx_delay: Optional[np.ndarray]  # Initial DMX delay for deterministic DMX fitting
     # DMJUMP design matrix
     dmjump_design_matrix: Optional[np.ndarray]  # (n_toa, n_dmjumps) DMJUMP design matrix
     dmjump_labels: Optional[List[str]]          # DMJUMP parameter labels
@@ -310,6 +363,9 @@ class GeneralFitSetup:
     tzr_phase: Optional[float]
     # Noise configuration (Phase 3 integration)
     noise_config: object  # NoiseConfig or None
+    binary_plan: object = None  # BinaryDelayPlan (cached); built lazily if None
+    # Cached (core, residual_fn, jac_fn) bundles keyed by _residual_delta_jax_cache_key
+    residual_delta_jax_cache: dict | None = None
 
 
 # =============================================================================
@@ -407,35 +463,9 @@ def compute_dm_delay_fast(tdb_mjd: np.ndarray, freq_mhz: np.ndarray,
     dm_delay_sec : np.ndarray
         DM delay in seconds
     """
-    # Build DM polynomial coefficients
-    dm_coeffs = []
-    dm_factorials = []
-    for i in range(10):  # Support up to DM9
-        param = f'DM{i}' if i > 0 else 'DM'
-        if param in dm_params and dm_params[param] is not None:
-            dm_coeffs.append(dm_params[param])
-            dm_factorials.append(math.factorial(i))
-        elif param == 'DM':
-            dm_coeffs.append(0.0)
-            dm_factorials.append(1.0)
-        else:
-            break
+    from jug.fitting.forward_delay import _dm_delay
 
-    dm_coeffs = np.array(dm_coeffs)
-    dm_factorials = np.array(dm_factorials)
-
-    # Compute DM polynomial: DM(t) = sum(DM_i * (t-DMEPOCH)^i / i!)
-    # Note: PINT uses years, so convert MJD difference to years
-    dt_years = (tdb_mjd - dm_epoch) / 365.25
-
-    dm_eff = np.zeros_like(tdb_mjd)
-    for i, (coeff, factorial) in enumerate(zip(dm_coeffs, dm_factorials)):
-        dm_eff += coeff * (dt_years ** i) / factorial
-
-    # Compute DM delay: tau_DM = K_DM * DM(t) / freq^2
-    dm_delay_sec = K_DM_SEC * dm_eff / (freq_mhz ** 2)
-
-    return dm_delay_sec
+    return _dm_delay(np, tdb_mjd, freq_mhz, dm_params, dm_epoch)
 
 
 def _has_gpu():
@@ -685,6 +715,10 @@ def fit_parameters_optimized(
     clock_dir: str | None = None,
     verbose: bool = True,
     device: Optional[str] = None,
+    compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
+    fd_column_mode: str | None = None,
+
 ) -> Dict:
     """
     Fit timing model parameters to TOA data.
@@ -716,6 +750,11 @@ def fit_parameters_optimized(
     device : str, optional
         Device preference: 'cpu', 'gpu', or 'auto'.
         If None, uses global preference (default: 'cpu').
+    fd_column_mode : str, optional
+        FD derivative convention in fitter design-matrix columns:
+        ``tempo2_delay``/``delay_only`` for delay derivatives or
+        ``pint_phase_scaled`` for PINT-style phase-chain scaling.
+        If omitted, defaults by compatibility mode.
 
     Returns
     -------
@@ -744,7 +783,97 @@ def fit_parameters_optimized(
 
     return _fit_parameters_general(
         par_file, tim_file, fit_params, max_iter, convergence_threshold,
-        clock_dir, verbose, device
+        clock_dir, verbose, device, compatibility, engine_conventions, fd_column_mode,
+
+    )
+
+
+def _compute_designmatrix_from_setup(
+    setup: GeneralFitSetup,
+    fit_params: List[str],
+) -> np.ndarray:
+    """Assemble the public timing design matrix from cached derivative blocks.
+
+    The exported convention matches the documented ``compute_designmatrix`` API:
+    columns are the fitter timing basis (``-d residual / d param``, equivalently
+    delay derivatives for ordinary timing parameters) in seconds per PINT/Vela
+    fit unit. The calculation is one in-memory pass over the cached setup; it
+    does not perturb parameters or write temporary par files.
+    """
+    method = getattr(setup, "design_matrix_method", "analytic")
+    if method == "autodiff":
+        return _compute_designmatrix_autodiff_from_setup(setup, fit_params)
+    if method != "analytic":
+        raise ValueError(
+            "design_matrix_method must be 'analytic' or 'autodiff'; "
+            f"got {method!r}"
+        )
+
+    from jug.fitting.designmatrix_assembly import assemble_analytic_designmatrix
+
+    return assemble_analytic_designmatrix(
+        setup, fit_params, output_units="fit"
+    )
+
+
+def _compute_designmatrix_autodiff_from_setup(
+    setup: GeneralFitSetup,
+    fit_params: List[str],
+) -> np.ndarray:
+    """Compute the public design matrix via JAX autodiff of residual deltas."""
+    from jug.fitting.jax_residual_delta import compute_autodiff_designmatrix_from_setup
+
+    return compute_autodiff_designmatrix_from_setup(setup, fit_params)
+
+
+def compute_designmatrix(
+    par_file: Path | str,
+    tim_file: Path | str,
+    fit_params: List[str],
+    *,
+    compatibility: str = "pint",
+    fd_column_mode: str | None = None,
+    design_matrix_method: str = "analytic",
+    verbose: bool = False,
+) -> DesignMatrixResult:
+    """Return an unweighted timing design matrix.
+
+    Columns are returned in seconds per PINT/Vela-compatible fit unit
+    (see ``jug.utils.units.fit_unit``).  Spin (F*) and FD columns use the
+    same analytic conventions as the WLS fitter (including ``fd_column_mode``).
+    By default, columns are assembled in memory from the same analytic
+    derivative blocks as the WLS fitter.  With
+    ``design_matrix_method="autodiff"``, columns are computed as the Jacobian of
+    JUG's end-to-end JAX residual-delta function.
+
+    Note
+    ----
+    ``design_matrix_method="analytic"`` uses PINT-style simplified derivative
+    blocks (geometric astrometry, Taylor spin, etc.) for both pint and tempo2
+    sessions.  ``design_matrix_method="autodiff"`` differentiates the native
+    tempo2 JAX graph when ``compatibility="tempo2"``.
+    """
+    labels = [canonicalize_param_name(p) for p in fit_params]
+    setup = _build_general_fit_setup_from_files(
+        Path(par_file),
+        Path(tim_file),
+        labels,
+        clock_dir=None,
+        verbose=verbose,
+        compatibility=compatibility,
+        fd_column_mode=fd_column_mode,
+        design_matrix_method=design_matrix_method,
+    )
+    matrix = _compute_designmatrix_from_setup(setup, labels)
+    column_units = validate_column_units(labels)
+    residuals_sec, _, _, _ = _compute_full_model_residuals(dict(setup.params), setup)
+    return DesignMatrixResult(
+        matrix=matrix,
+        labels=labels,
+        column_units=column_units,
+        unit_convention="pint-vela",
+        residuals_us=np.asarray(residuals_sec, dtype=np.float64) * 1.0e6,
+        errors_us=np.asarray(setup.errors_us, dtype=np.float64),
     )
 
 
@@ -890,6 +1019,83 @@ def _drop_degenerate_jumps(
     return keep, drop
 
 
+def _compute_condition_diagnostics(
+    matrix: np.ndarray,
+    labels: List[str],
+    *,
+    threshold: float = 1e12,
+) -> Dict[str, Any]:
+    """Summarize conditioning/correlation for a timing design matrix.
+
+    This is diagnostics-only: it never removes or freezes parameters.
+    """
+    if matrix.ndim != 2:
+        raise ValueError("Condition diagnostics require a 2D matrix")
+
+    n_cols = matrix.shape[1]
+    if n_cols == 0:
+        return {
+            "n_params": 0,
+            "labels": list(labels),
+            "condition_number": 0.0,
+            "max_abs_correlation": 0.0,
+            "threshold": float(threshold),
+            "ill_conditioned": False,
+        }
+
+    gram = matrix.T @ matrix
+    try:
+        condition_number = float(np.linalg.cond(gram))
+    except Exception:
+        condition_number = float("inf")
+
+    col_norms = np.linalg.norm(matrix, axis=0)
+    valid = col_norms > 0.0
+    if np.count_nonzero(valid) >= 2:
+        normalized = matrix[:, valid] / col_norms[valid]
+        corr = np.abs(normalized.T @ normalized)
+        np.fill_diagonal(corr, 0.0)
+        max_abs_correlation = float(np.max(corr))
+    else:
+        max_abs_correlation = 0.0
+
+    return {
+        "n_params": n_cols,
+        "labels": list(labels),
+        "condition_number": condition_number,
+        "max_abs_correlation": max_abs_correlation,
+        "threshold": float(threshold),
+        "ill_conditioned": bool(condition_number > float(threshold)),
+    }
+
+
+def _mask_term_diagnostics_for_toas(term_diagnostics: dict, toa_mask: np.ndarray) -> dict:
+    """Apply a boolean TOA mask to per-TOA arrays inside term_diagnostics."""
+    mask = np.asarray(toa_mask, dtype=bool)
+    n = int(mask.sum())
+    out = dict(term_diagnostics)
+    for key, val in term_diagnostics.items():
+        if key == "tempo2_obs_state" and isinstance(val, dict):
+            obs = {}
+            for obs_key, obs_val in val.items():
+                arr = np.asarray(obs_val)
+                if arr.ndim >= 1 and arr.shape[0] == mask.shape[0]:
+                    obs[obs_key] = arr[mask]
+                else:
+                    obs[obs_key] = obs_val
+            out[key] = obs
+        else:
+            arr = np.asarray(val)
+            if arr.ndim >= 1 and arr.shape[0] == mask.shape[0]:
+                out[key] = arr[mask]
+    if "metadata" in term_diagnostics and isinstance(term_diagnostics["metadata"], dict):
+        meta = dict(term_diagnostics["metadata"])
+        if "n_toas" in meta:
+            meta["n_toas"] = n
+        out["metadata"] = meta
+    return out
+
+
 def _build_setup_common(
     params: Dict[str, Any],
     fit_params: List[str],
@@ -902,8 +1108,12 @@ def _build_setup_common(
     freq_mhz_bary: np.ndarray,
     extras: Dict[str, Any],
     noise_config: object,
+    compatibility: str = "pint",
+    fd_column_mode: str | None = None,
+    design_matrix_method: str = "analytic",
     verbose: bool = False,
     subtract_noise_sec: Optional[np.ndarray] = None,
+
 ) -> GeneralFitSetup:
     """Shared setup builder for both file-based and cache-based paths.
 
@@ -927,6 +1137,15 @@ def _build_setup_common(
         before fitting. This implements the Tempo2-style workflow where noise
         is subtracted from the data and then refit without that noise process.
     """
+    from jug.io.par_reader import normalize_model_params
+
+    normalize_model_params(
+        params,
+        compatibility=compatibility,
+        context="_build_setup_common",
+        verbose=verbose,
+    )
+
     # --- White noise scaling (EFAC/EQUAD) and ECORR whitener ---------------
     ecorr_whitener = None
     noise_entries = None
@@ -1095,6 +1314,18 @@ def _build_setup_common(
                         print(f"  DMEFAC: Applied scaling to {n_scaled}/{len(toas_mjd)} TOAs "
                               f"({len(dmefac_entries)} backend groups)")
 
+    if dmx_labels:
+        # DMX is deterministic timing-model structure, not stochastic noise.
+        # It used to ride in the GLS noise basis because its design matrix is
+        # basis-like, but keeping it in fit_params makes each nonlinear
+        # iteration update the DMX baseline just like PINT.
+        existing = set(fit_params)
+        added_dmx = [label for label in dmx_labels if label not in existing]
+        if added_dmx:
+            fit_params = list(fit_params) + added_dmx
+            if verbose:
+                print(f"  Auto-added {len(added_dmx)} DMX timing parameters")
+
     # --- DMJUMP design matrix ----------------------------------------------
     dmjump_design_matrix = None
     dmjump_labels = None
@@ -1240,6 +1471,7 @@ def _build_setup_common(
     # --- Classify parameters (spec-driven) ---------------------------------
     spin_params = get_spin_params_from_list(fit_params)
     dm_params = get_dm_params_from_list(fit_params)
+    dmx_params_list = [p for p in fit_params if dmx_labels and p in dmx_labels]
     binary_params = get_binary_params_from_list(fit_params)
     astrometry_params = get_astrometry_params_from_list(fit_params)
     fd_params = get_fd_params_from_list(fit_params)
@@ -1315,6 +1547,11 @@ def _build_setup_common(
     # Planet positions relative to observer (for planet Shapiro recomputation)
     obs_planet_pos_ls = extras.get('obs_planet_pos_ls')
 
+    initial_dmx_delay = None
+    if dmx_design_matrix is not None and dmx_labels:
+        initial_dmx_values = np.array([float(params.get(label, 0.0)) for label in dmx_labels])
+        initial_dmx_delay = np.asarray(dmx_design_matrix @ initial_dmx_values, dtype=np.float64)
+
     # --- Binary delay setup ------------------------------------------------
     roemer_shapiro_sec = extras.get('roemer_shapiro_sec')
     prebinary_delay_sec = extras.get('prebinary_delay_sec')
@@ -1330,6 +1567,13 @@ def _build_setup_common(
         toas_prebinary = tdb_mjd - prebinary_delay_sec / SECS_PER_DAY
         initial_binary_delay = np.array(compute_binary_delay(
             toas_prebinary, params, obs_pos_ls=ssb_obs_pos_ls))
+    binary_plan = None
+    if binary_params:
+        from jug.fitting.binary_delay_plan import resolve_binary_structure
+
+        binary_plan = resolve_binary_structure(
+            params, fit_params, obs_pos_ls=ssb_obs_pos_ls
+        )
 
     # --- Astrometry delay setup --------------------------------------------
     initial_astrometric_delay = None
@@ -1369,9 +1613,21 @@ def _build_setup_common(
                   f"RMS correction = {np.std(subtract_noise_sec)*1e6:.3f} mus")
 
     # --- Assemble GeneralFitSetup ------------------------------------------
+    resolved_fd_column_mode = _normalize_fd_column_mode(
+        fd_column_mode, compatibility=compatibility
+    )
+    method = str(design_matrix_method or "analytic").lower()
+    if method not in ("analytic", "autodiff"):
+        raise ValueError(
+            "design_matrix_method must be 'analytic' or 'autodiff'; "
+            f"got {design_matrix_method!r}"
+        )
     return GeneralFitSetup(
         params=dict(params),
         fit_param_list=fit_params,
+        compatibility=str(compatibility).lower(),
+        fd_column_mode=resolved_fd_column_mode,
+        design_matrix_method=method,
         param_values_start=param_values_start,
         toas_mjd=np.array(toas_mjd),
         freq_mhz=np.array(freq_mhz_bary),
@@ -1416,6 +1672,7 @@ def _build_setup_common(
         group_noise_labels=group_noise_labels,
         dmx_design_matrix=dmx_design_matrix,
         dmx_labels=dmx_labels,
+        initial_dmx_delay=initial_dmx_delay,
         dmjump_design_matrix=dmjump_design_matrix,
         dmjump_labels=dmjump_labels,
         jump_masks=jump_masks,
@@ -1425,6 +1682,7 @@ def _build_setup_common(
         jump_phase=jump_phase,
         tzr_phase=tzr_phase,
         noise_config=noise_config,
+        binary_plan=binary_plan,
     )
 
 
@@ -1434,13 +1692,21 @@ def _build_general_fit_setup_from_files(
     fit_params: List[str],
     clock_dir: str,
     verbose: bool,
-    noise_config: Optional[object] = None
+    noise_config: Optional[object] = None,
+    compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
+    fd_column_mode: str | None = None,
+    design_matrix_method: str = "analytic",
+
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
     Parses files, computes residuals, then delegates to the shared
     ``_build_setup_common()`` builder for noise wiring and parameter setup.
     """
+    from jug.fitting.forward_delay import _assert_no_epoch_fit_params
+
+    _assert_no_epoch_fit_params(fit_params)
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
     # DMX_* are handled automatically via dmx_design_matrix; strip before validation
@@ -1452,24 +1718,20 @@ def _build_general_fit_setup_from_files(
 
     # Parse files
     params = parse_par_file(par_file)
-    validate_par_timescale(params, context="create_general_fit_setup")
-    toas_data = parse_tim_file_mjds(tim_file)
+    from jug.io.par_reader import normalize_model_params
 
-    # Convert RAJ/DECJ from strings to radians
-    from jug.io.par_reader import parse_ra, parse_dec
-    if 'RAJ' in params and isinstance(params['RAJ'], str):
-        params['RAJ'] = parse_ra(params['RAJ'])
-    if 'DECJ' in params and isinstance(params['DECJ'], str):
-        params['DECJ'] = parse_dec(params['DECJ'])
+    normalize_model_params(
+        params,
+        compatibility=compatibility,
+        context="create_general_fit_setup",
+        verbose=verbose,
+    )
+    toas_data = parse_tim_file_mjds(tim_file)
 
     # Tempo2's T2 model uses IAU convention for KIN/KOM.
     # JUG's DDK code (from PINT) uses DT92 convention.
-    binary = params.get('BINARY', '').upper()
-    if binary == 'T2' and ('KIN' in params or 'KOM' in params):
-        if 'KIN' in params:
-            params['KIN'] = 180.0 - float(params['KIN'])
-        if 'KOM' in params:
-            params['KOM'] = 90.0 - float(params['KOM'])
+    from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+    convert_t2_kin_kom_to_ddk_convention(params)
 
     # Extract TOA arrays
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in toas_data])
@@ -1487,7 +1749,11 @@ def _build_general_fit_setup_from_files(
     result = compute_residuals_simple(
         par_file, tim_file, clock_dir=clock_dir,
         subtract_tzr=False, verbose=False,
+        compatibility=compatibility,
+        engine_conventions=engine_conventions,
+
     )
+    toas = toas_data
 
     return _build_setup_common(
         params=params,
@@ -1507,9 +1773,18 @@ def _build_general_fit_setup_from_files(
             'obs_planet_pos_ls': result.get('obs_planet_pos_ls'),
             'sw_geometry_pc': result.get('sw_geometry_pc'),
             'jump_phase': result.get('jump_phase'),
+            'term_diagnostics': result.get('term_diagnostics'),
+            'dt_sec': result.get('dt_sec'),
+            'freq_bary_mhz': result.get('freq_bary_mhz'),
+            'model_mjd': result.get('model_mjd'),
+            'toas': toas,
         },
         noise_config=noise_config,
+        compatibility=compatibility,
+        fd_column_mode=fd_column_mode,
+        design_matrix_method=design_matrix_method,
         verbose=verbose,
+
     )
 
 
@@ -1543,74 +1818,18 @@ def _compute_full_model_residuals(
         Weighted RMS in microseconds
     """
     # Get cached arrays -- use longdouble dt_sec for phase precision
-    from jug.residuals.simple_calculator import compute_phase_residuals
+    from jug.residuals.phase import compute_phase_residuals
     dt_sec_base = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)
-    tdb_mjd = setup.tdb_mjd
-    freq_mhz = setup.freq_mhz
     weights = setup.weights
     errors_sec = setup.errors_sec
 
     # Start with longdouble dt_sec (contains initial delays)
     dt_sec_np = dt_sec_base.copy()
-
-    # Apply DM delay correction (float64 corrections promoted to longdouble)
-    dm_params = setup.dm_params
-    if dm_params:
-        dm_epoch = params.get('DMEPOCH', params.get('PEPOCH', 55000.0))
-        current_dm_params = {p: params[p] for p in dm_params}
-        new_dm_delay = compute_dm_delay_fast(tdb_mjd, freq_mhz, current_dm_params, dm_epoch)
-        dm_delay_change = new_dm_delay - setup.initial_dm_delay
-        dt_sec_np = dt_sec_np - dm_delay_change
-
-    # Apply binary delay correction (route to correct binary model)
-    binary_params = setup.binary_params
-    if binary_params and setup.initial_binary_delay is not None:
-        toas_prebinary = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
-        new_binary_delay = np.array(compute_binary_delay(
-            toas_prebinary, params, obs_pos_ls=setup.ssb_obs_pos_ls))
-        binary_delay_change = new_binary_delay - setup.initial_binary_delay
-        dt_sec_np = dt_sec_np - binary_delay_change
-
-    # Apply astrometric delay correction
-    astrometry_params = setup.astrometry_params
-    if astrometry_params and setup.initial_astrometric_delay is not None:
-        from jug.fitting.derivatives_astrometry import compute_astrometric_delay
-        new_astrometric_delay = np.array(compute_astrometric_delay(
-            params, tdb_mjd, setup.ssb_obs_pos_ls,
-            obs_sun_pos_ls=setup.obs_sun_pos_ls,
-            obs_planet_pos_ls=setup.obs_planet_pos_ls
-        ))
-        astrometric_delay_change = new_astrometric_delay - setup.initial_astrometric_delay
-        dt_sec_np = dt_sec_np - astrometric_delay_change
-
-    # Apply FD delay correction
-    fd_params = setup.fd_params
-    if fd_params and setup.initial_fd_delay is not None:
-        from jug.fitting.derivatives_fd import compute_fd_delay
-        current_fd_params = {p: params[p] for p in fd_params if p in params}
-        new_fd_delay = np.asarray(compute_fd_delay(freq_mhz, current_fd_params), dtype=np.float64)
-        fd_delay_change = new_fd_delay - setup.initial_fd_delay
-        dt_sec_np = dt_sec_np - fd_delay_change
-
-    # Apply FDJUMP delay correction
-    if setup.fdjump_params and setup.fdjump_masks:
-        from jug.fitting.derivatives_fdjump import compute_fdjump_delay
-        new_fdjump_delay = compute_fdjump_delay(
-            params, freq_mhz, setup.fdjump_params, setup.fdjump_masks
-        )
-        if setup.initial_fdjump_delay is not None:
-            fdjump_delay_change = new_fdjump_delay - setup.initial_fdjump_delay
-        else:
-            fdjump_delay_change = new_fdjump_delay
-        dt_sec_np = dt_sec_np - fdjump_delay_change
-
-    # Apply solar wind delay correction
-    sw_params = setup.sw_params
-    if sw_params and setup.initial_sw_delay is not None:
-        ne_sw_val = float(params.get('NE_SW', params.get('NE1AU', 0.0)))
-        new_sw_delay = K_DM_SEC * ne_sw_val * setup.sw_geometry_pc / (freq_mhz ** 2)
-        sw_delay_change = new_sw_delay - setup.initial_sw_delay
-        dt_sec_np = dt_sec_np - sw_delay_change
+    from jug.fitting.forward_delay import compute_total_delay_change
+    delay_change = compute_total_delay_change(
+        params, setup, xp=np, binary_plan=getattr(setup, "binary_plan", None)
+    )
+    dt_sec_np = dt_sec_np - np.asarray(delay_change, dtype=np.longdouble)
 
     # Update jump_phase for fitted JUMP parameters (JUMPs are phase offsets, not delays)
     current_jump_phase = setup.jump_phase
@@ -1701,6 +1920,7 @@ def _run_general_fit_iterations(
     dt_sec_cached = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)
     tdb_mjd = setup.tdb_mjd
     initial_dm_delay = setup.initial_dm_delay
+    initial_dmx_delay = setup.initial_dmx_delay
     dm_params = setup.dm_params
     spin_params = setup.spin_params
     binary_params = setup.binary_params
@@ -1710,6 +1930,8 @@ def _run_general_fit_iterations(
     initial_astrometric_delay = setup.initial_astrometric_delay
     ssb_obs_pos_ls = setup.ssb_obs_pos_ls
     fd_params = setup.fd_params
+    fd_column_mode = setup.fd_column_mode
+    fit_compatibility = setup.compatibility
     initial_fd_delay = setup.initial_fd_delay
     sw_params_iter = setup.sw_params
     initial_sw_delay = setup.initial_sw_delay
@@ -1734,6 +1956,7 @@ def _run_general_fit_iterations(
     # Pre-compute param list categorization ONCE (these never change during fitting)
     spin_params_list = get_spin_params_from_list(fit_params)
     dm_params_list = get_dm_params_from_list(fit_params)
+    dmx_params_list = [p for p in fit_params if setup.dmx_labels and p in setup.dmx_labels]
     binary_params_list = get_binary_params_from_list(fit_params)
     astrometry_params_list = get_astrometry_params_from_list(fit_params)
     fd_params_list = get_fd_params_from_list(fit_params)
@@ -1745,9 +1968,9 @@ def _run_general_fit_iterations(
     from jug.fitting.derivatives_astrometry import (
         compute_astrometric_delay, compute_astrometry_derivatives
     )
-    from jug.fitting.derivatives_fd import compute_fd_delay, compute_fd_derivatives
+    from jug.fitting.derivatives_fd import compute_fd_delay
     from jug.fitting.derivatives_sw import compute_sw_derivatives
-    from jug.residuals.simple_calculator import compute_phase_residuals
+    from jug.residuals.phase import compute_phase_residuals
     from jug.io.par_reader import get_longdouble
 
     # Convergence criteria
@@ -1778,6 +2001,8 @@ def _run_general_fit_iterations(
     _saved_M = None
     _saved_delta_all = None
     _saved_lambda = 1.0
+    condition_diagnostics_history: List[Dict[str, Any]] = []
+    condition_threshold = 1e12
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
@@ -1796,7 +2021,9 @@ def _run_general_fit_iterations(
     n_dm_noise_cols = setup.dm_noise_basis.shape[1] if getattr(setup, 'dm_noise_basis', None) is not None else 0
     n_chromatic_noise_cols = setup.chromatic_noise_basis.shape[1] if getattr(setup, 'chromatic_noise_basis', None) is not None else 0
     n_ecorr_cols = setup.ecorr_basis.shape[1] if getattr(setup, 'ecorr_basis', None) is not None else 0
-    n_dmx_cols = setup.dmx_design_matrix.shape[1] if getattr(setup, 'dmx_design_matrix', None) is not None else 0
+    # DMX columns are deterministic timing parameters now, not stochastic
+    # noise amplitudes. Keep them out of the augmented noise basis.
+    n_dmx_cols = 0
     n_dmjump_cols = setup.dmjump_design_matrix.shape[1] if getattr(setup, 'dmjump_design_matrix', None) is not None else 0
     n_band_noise_cols_list = []
     n_band_noise_total = 0
@@ -1957,6 +2184,14 @@ def _run_general_fit_iterations(
             dm_delay_change = new_dm_delay - initial_dm_delay
             dt_sec_np = dt_sec_np - dm_delay_change
 
+        # If fitting DMX parameters, update dt_sec with new DMX delay.
+        # DMX uses the same fixed design matrix as PINT; only bin values move.
+        if dmx_params_list and setup.dmx_design_matrix is not None and initial_dmx_delay is not None:
+            current_dmx_values = np.array([float(params.get(label, 0.0)) for label in setup.dmx_labels])
+            new_dmx_delay = np.asarray(setup.dmx_design_matrix @ current_dmx_values, dtype=np.float64)
+            dmx_delay_change = new_dmx_delay - initial_dmx_delay
+            dt_sec_np = dt_sec_np - dmx_delay_change
+
         # If fitting binary parameters, update dt_sec with new binary delay
         # Use PINT-compatible pre-binary time (roemer_shapiro + DM + SW + tropo)
         if binary_params and initial_binary_delay is not None:
@@ -2034,110 +2269,16 @@ def _run_general_fit_iterations(
         if n_augmented > 0 and np.any(_accumulated_noise_sec != 0) and not _full_noise_gls:
             residuals = residuals - _accumulated_noise_sec
 
-        # Build design matrix - BATCHED derivative computation
-        M_columns = []
+        from jug.fitting.designmatrix_assembly import assemble_analytic_designmatrix
 
-        # Batch spin parameters (spec-driven routing via component)
-        spin_derivs = {}
-        if spin_params_list:
-            # PINT spin derivatives are evaluated at barycentric TDB TOAs.
-            spin_derivs = compute_spin_derivatives(params, tdb_mjd, spin_params_list)
+        timing_matrix_native = assemble_analytic_designmatrix(
+            setup,
+            fit_params,
+            params=params,
+            output_units="native",
+        )
+        M_columns = [timing_matrix_native[:, i] for i in range(timing_matrix_native.shape[1])]
 
-        # Batch DM parameters (spec-driven routing via component)
-        dm_derivs = {}
-        if dm_params_list:
-            # DM polynomial terms are evaluated at barycentric TDB TOAs in the
-            # forward model; use the same time argument for derivative parity.
-            dm_derivs = compute_dm_derivatives(params, tdb_mjd, freq_mhz, dm_params_list)
-
-        # Batch binary parameters (routed via binary_registry)
-        # Use PINT-compatible pre-binary time (roemer_shapiro + DM + SW + tropo)
-        binary_derivs = {}
-        if binary_params_list:
-            if setup.prebinary_delay_sec is None:
-                raise ValueError(
-                    "Binary fitting requires prebinary_delay_sec in setup. "
-                    "Ensure compute_residuals_simple returns 'prebinary_delay_sec'."
-                )
-            # PINT evaluates binary derivatives at the pre-binary barycentric
-            # arrival time, not raw topocentric/SAT MJD.
-            toas_prebinary_mjd = tdb_mjd - setup.prebinary_delay_sec / SECS_PER_DAY
-            # Pass obs_pos_ls for DDK Kopeikin parallax corrections
-            binary_derivs = compute_binary_derivatives(
-                params, toas_prebinary_mjd, binary_params_list, 
-                obs_pos_ls=setup.ssb_obs_pos_ls
-            )
-
-        # Batch astrometry parameters (spec-driven routing via component)
-        astrometry_derivs = {}
-        if astrometry_params_list:
-            if setup.ssb_obs_pos_ls is None:
-                raise ValueError(
-                    "Astrometry fitting requires ssb_obs_pos_ls in setup. "
-                    "Ensure compute_residuals_simple returns 'ssb_obs_pos_ls'."
-                )
-            astrometry_derivs = compute_astrometry_derivatives(
-                params, toas_mjd, setup.ssb_obs_pos_ls, astrometry_params_list
-            )
-
-        # Batch FD parameters (frequency-dependent delay derivatives)
-        fd_derivs = {}
-        if fd_params_list:
-            fd_derivs = compute_fd_derivatives(params, freq_mhz, fd_params_list)
-
-        # Batch solar wind parameters (NE_SW)
-        sw_derivs = {}
-        if sw_params_list:
-            if setup.sw_geometry_pc is None:
-                raise ValueError(
-                    "NE_SW fitting requires sw_geometry_pc in setup."
-                )
-            sw_derivs = compute_sw_derivatives(setup.sw_geometry_pc, freq_mhz, sw_params_list)
-
-        # JUMP parameters: derivative is the NEGATIVE mask.
-        # JUMPs add phase: phase += F0 * JUMP_val, so d(residual)/d(JUMP) = +1.
-        # All other params use M = -d(residual)/d(param) = d(delay)/d(param),
-        # so the jump column must also be negated: M_jump = -1 on masked TOAs.
-        # This matches Tempo2's t2FitFunc_jump which returns -jumpScale.
-        jump_derivs = {}
-        if jump_params_list and jump_masks:
-            for jp in jump_params_list:
-                mask = jump_masks.get(jp)
-                if mask is not None:
-                    jump_derivs[jp] = -mask.astype(np.float64)
-
-        # FDJUMP parameters: frequency-dependent jumps
-        fdjump_derivs = {}
-        fdjump_params_list = setup.fdjump_params
-        fdjump_masks = setup.fdjump_masks
-        if fdjump_params_list and fdjump_masks:
-            from jug.fitting.derivatives_fdjump import compute_fdjump_derivatives
-            fdjump_derivs = compute_fdjump_derivatives(
-                params, freq_mhz, fdjump_params_list,
-                fdjump_masks=fdjump_masks,
-            )
-
-        # Merge all derivative dicts into one lookup table
-        all_derivs = {}
-        all_derivs.update(spin_derivs)
-        all_derivs.update(dm_derivs)
-        all_derivs.update(binary_derivs)
-        all_derivs.update(astrometry_derivs)
-        all_derivs.update(fd_derivs)
-        all_derivs.update(sw_derivs)
-        all_derivs.update(jump_derivs)
-        all_derivs.update(fdjump_derivs)
-
-        # Assemble columns in original fit_params order
-        for param in fit_params:
-            if param not in all_derivs:
-                raise ValueError(
-                    f"No derivative computed for parameter '{param}'. "
-                    f"Check that it is registered in parameter_spec.py and has a derivative function."
-                )
-            M_columns.append(all_derivs[param])
-        
-        # Column counts already precomputed outside loop
         n_timing_params = len(M_columns)
         has_offset = n_augmented_iter > 0
         total_cols = (1 if has_offset else 0) + n_timing_params + n_augmented_iter
@@ -2183,6 +2324,24 @@ def _run_general_fit_iterations(
             M_solve = M
             sigma_solve = errors_sec
 
+        t0 = 1 if has_offset else 0
+        timing_matrix = np.asarray(M_solve[:, t0:t0 + n_timing_params], dtype=np.float64)
+        condition_diag = _compute_condition_diagnostics(
+            timing_matrix,
+            fit_params,
+            threshold=condition_threshold,
+        )
+        condition_diag["iteration"] = iteration + 1
+        condition_diagnostics_history.append(condition_diag)
+        if condition_diag["ill_conditioned"]:
+            warnings.warn(
+                "Ill-conditioned multi-parameter fit detected "
+                f"(cond={condition_diag['condition_number']:.3e}, "
+                f"max|corr|={condition_diag['max_abs_correlation']:.4f}). "
+                "Keeping all requested fit parameters (no silent fixing).",
+                RuntimeWarning,
+            )
+
         _iter_noise_coeffs = None  # noise Fourier/DMX coefficients this iteration
         _wls_delta_all = None  # full delta including offset for WLS linearized RMS
 
@@ -2216,7 +2375,6 @@ def _run_general_fit_iterations(
                 cov_normalized = np.asarray(jnp.linalg.pinv(M2tM2_j))
             cov_all = (cov_normalized / col_norms).T / col_norms
             # Strip offset column from delta_params and cov
-            t0 = 1 if has_offset else 0
             delta_params = delta_all[t0:]
             cov = cov_all[t0:, t0:]
             _wls_delta_all = delta_all
@@ -2232,7 +2390,6 @@ def _run_general_fit_iterations(
             delta_all = np.array(delta_all)
             cov_all = np.array(cov_all)
             # Strip offset column
-            t0 = 1 if has_offset else 0
             delta_params = delta_all[t0:]
             cov = cov_all[t0:, t0:]
             _wls_delta_all = delta_all
@@ -2393,6 +2550,13 @@ def _run_general_fit_iterations(
                 initial_dm_delay = accepted_dm
                 setup.initial_dm_delay = accepted_dm
 
+            if dmx_params_list and setup.dmx_design_matrix is not None and initial_dmx_delay is not None:
+                accepted_dmx_values = np.array([float(params.get(label, 0.0)) for label in setup.dmx_labels])
+                accepted_dmx = np.asarray(setup.dmx_design_matrix @ accepted_dmx_values, dtype=np.float64)
+                dt_sec_cached = dt_sec_cached - (accepted_dmx - initial_dmx_delay)
+                initial_dmx_delay = accepted_dmx
+                setup.initial_dmx_delay = accepted_dmx
+
             if binary_params and initial_binary_delay is not None:
                 accepted_binary = np.array(compute_binary_delay(
                     toas_prebinary_for_binary, params, obs_pos_ls=ssb_obs_pos_ls))
@@ -2552,8 +2716,14 @@ def _run_general_fit_iterations(
         # Red noise → F0/F1 + offset
         _tn_spin_fit = [p for p in ['F0', 'F1'] if p in fit_params]
         if n_red_noise_cols > 0 and _tn_spin_fit:
+            dt_for_spin = setup.dt_sec_ld if setup.dt_sec_ld is not None else setup.dt_sec_cached
             _tn_spin_derivs = compute_spin_derivatives(
-                params, tdb_mjd, _tn_spin_fit)
+                params,
+                tdb_mjd,
+                _tn_spin_fit,
+                compatibility=fit_compatibility,
+                dt_sec=np.asarray(dt_for_spin, dtype=np.float64),
+            )
             _tn_cols = [_tn_spin_derivs[p] for p in _tn_spin_fit]
             _tn_cols.append(np.ones(len(toas_mjd)))  # constant offset
             M_poly = np.column_stack(_tn_cols)
@@ -2607,7 +2777,7 @@ def _run_general_fit_iterations(
         )
     
     # Compute final residuals.
-    # For augmented fits (DMX/noise basis columns), use LINEAR postfit residuals
+    # For augmented fits (noise basis columns), use LINEAR postfit residuals
     # (r_pre - M @ delta). The nonlinear recompute + separate DMX subtraction
     # introduces an offset mismatch because the solver jointly optimizes timing,
     # DMX, and an offset column, but the split approach doesn't correctly account
@@ -2619,14 +2789,14 @@ def _run_general_fit_iterations(
     if _saved_residuals_sec is not None:
         if n_augmented > 0:
             # GLS: Subtract only the timing model correction (timing params + offset
-            # + DMX + DMJUMP). All noise realizations (Red, DM, Chromatic, ECORR,
+            # + deterministic timing columns such as DMX/DMJUMP). Noise realizations (Red, DM, Chromatic, ECORR,
             # Band, Group) are left in the residuals for GUI subtract workflow.
             delta_model_only = _saved_delta_all.copy()
             noise_start = n_timing_cols
             noise_end = (n_timing_cols + n_red_noise_cols + n_dm_noise_cols
                          + n_chromatic_noise_cols + n_ecorr_cols)
             delta_model_only[noise_start:noise_end] = 0.0
-            # Band and group noise columns sit after DMX/DMJUMP
+            # Band and group noise columns sit after deterministic DMJUMP columns
             bg_start = noise_end + n_dmx_cols + n_dmjump_cols
             bg_end = bg_start + n_band_noise_total + n_group_noise_total
             delta_model_only[bg_start:bg_end] = 0.0
@@ -2666,6 +2836,34 @@ def _run_general_fit_iterations(
     noise_realizations = {}
     noise_coefficients = {}
     gls_debug = {}
+    final_dmx_params = {}
+    final_dmx_uncertainties = {}
+
+    # GUI/backward-compatibility: expose deterministic DMX as the same
+    # per-TOA realization keys the GUI already knows how to overlay/subtract.
+    # Internally DMX is now fitted through timing columns, not F_noise.
+    if setup.dmx_design_matrix is not None and setup.dmx_labels is not None:
+        initial_dmx_values = np.array([float(param_values_start[fit_params.index(label)])
+                                       for label in setup.dmx_labels if label in fit_params])
+        final_dmx_values = np.array([float(params.get(label, 0.0))
+                                     for label in setup.dmx_labels if label in fit_params])
+        dmx_fit_labels = [label for label in setup.dmx_labels if label in fit_params]
+        if dmx_fit_labels:
+            dmx_cols = [setup.dmx_labels.index(label) for label in dmx_fit_labels]
+            F_dmx = setup.dmx_design_matrix[:, dmx_cols]
+            dmx_delta = final_dmx_values - initial_dmx_values
+            noise_realizations['DMX'] = (F_dmx @ dmx_delta) * 1e6
+            dmx_fit_indices = [fit_params.index(label) for label in dmx_fit_labels]
+            if cov is not None and cov.shape[0] >= len(fit_params):
+                C_dmx = cov[np.ix_(dmx_fit_indices, dmx_fit_indices)]
+                noise_realizations['DMX_err'] = np.sqrt(
+                    np.maximum(np.sum((F_dmx @ C_dmx) * F_dmx, axis=1), 0.0)
+                ) * 1e6
+            for label in dmx_fit_labels:
+                final_dmx_params[label] = float(params.get(label, 0.0))
+                if label in uncertainties:
+                    final_dmx_uncertainties[label] = float(uncertainties[label])
+
     if n_augmented > 0:
         # Re-solve noise at the final nonlinear residuals
         nl_resid_sec, _, _, _ = _compute_full_model_residuals(params, setup)
@@ -2763,6 +2961,18 @@ def _run_general_fit_iterations(
 
                 # DMX/DMJUMP: subtract from residuals (timing model, not noise)
                 if label == 'DMX':
+                    if setup.dmx_labels is not None:
+                        dmx_sigmas = None
+                        if C_post is not None:
+                            dmx_sigmas = np.sqrt(np.maximum(np.diag(C_block), 0.0))
+                        for i_dmx, (dmx_name, dmx_delta) in enumerate(zip(setup.dmx_labels, coeffs)):
+                            final_dmx_params[dmx_name] = (
+                                float(params.get(dmx_name, 0.0)) + float(dmx_delta)
+                            )
+                            if dmx_sigmas is not None:
+                                dmx_sigma = float(dmx_sigmas[i_dmx])
+                                final_dmx_uncertainties[dmx_name] = dmx_sigma
+                                uncertainties[dmx_name] = dmx_sigma
                     if _saved_residuals_sec is None:
                         residuals_final_sec = residuals_final_sec - F @ coeffs
                         residuals_final_us = residuals_final_sec * 1e6
@@ -2837,7 +3047,15 @@ def _run_general_fit_iterations(
         'noise_realizations': noise_realizations,
         'noise_coefficients': noise_coefficients,
         'gls_debug': gls_debug,
+        'final_dmx_params': final_dmx_params,
+        'final_dmx_uncertainties': final_dmx_uncertainties,
         'n_noise_params': n_augmented + (1 if n_augmented > 0 else 0),
+        'fit_diagnostics': {
+            'condition_threshold': condition_threshold,
+            'ill_conditioned': any(d.get('ill_conditioned', False) for d in condition_diagnostics_history),
+            'condition_history': condition_diagnostics_history,
+            'requested_fit_params': list(fit_params),
+        },
     }
 
 
@@ -2849,7 +3067,11 @@ def _build_general_fit_setup_from_cache(
     fit_params: List[str],
     toa_mask: Optional[np.ndarray] = None,
     noise_config: Optional[object] = None,
-    subtract_noise_sec: Optional[np.ndarray] = None
+    subtract_noise_sec: Optional[np.ndarray] = None,
+    compatibility: str = "pint",
+    fd_column_mode: str | None = None,
+    design_matrix_method: str = "analytic",
+
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -2863,6 +3085,9 @@ def _build_general_fit_setup_from_cache(
         Per-TOA noise realization (in seconds) to subtract from dt_sec_cached.
         If provided, toa_mask is applied before passing to _build_setup_common.
     """
+    from jug.fitting.forward_delay import _assert_no_epoch_fit_params
+
+    _assert_no_epoch_fit_params(fit_params)
     # Canonicalize and validate fit_params
     fit_params = [canonicalize_param_name(p) for p in fit_params]
     import re as _re
@@ -2870,6 +3095,8 @@ def _build_general_fit_setup_from_cache(
     fit_params = [p for p in fit_params if not _dmx_pat.match(p)]
     for p in fit_params:
         validate_fit_param(p)
+
+
 
     # Extract cached arrays
     dt_sec_cached = session_cached_data['dt_sec']
@@ -2885,9 +3112,16 @@ def _build_general_fit_setup_from_cache(
         'prebinary_delay_sec': session_cached_data.get('prebinary_delay_sec'),
         'roemer_shapiro_sec': session_cached_data.get('roemer_shapiro_sec'),
         'ssb_obs_pos_ls': session_cached_data.get('ssb_obs_pos_ls'),
+        'obs_sun_pos_ls': session_cached_data.get('obs_sun_pos_ls'),
+        'obs_planet_pos_ls': session_cached_data.get('obs_planet_pos_ls'),
         'sw_geometry_pc': session_cached_data.get('sw_geometry_pc'),
         'jump_phase': session_cached_data.get('jump_phase'),
         'tzr_phase': session_cached_data.get('tzr_phase'),
+        'term_diagnostics': session_cached_data.get('term_diagnostics'),
+        'dt_sec': session_cached_data.get('dt_sec'),
+        'freq_bary_mhz': session_cached_data.get('freq_bary_mhz'),
+        'model_mjd': session_cached_data.get('model_mjd'),
+        'toas': session_cached_data.get('toas'),
     }
 
     # Apply TOA mask if provided
@@ -2903,10 +3137,28 @@ def _build_general_fit_setup_from_cache(
             toa_flags = [toa_flags[i] for i, m in enumerate(toa_mask) if m]
         if subtract_noise_sec is not None:
             subtract_noise_sec = subtract_noise_sec[toa_mask]
-        for key in ('prebinary_delay_sec', 'roemer_shapiro_sec',
-                     'ssb_obs_pos_ls', 'sw_geometry_pc', 'jump_phase'):
-            if extras[key] is not None:
+        for key in (
+            'prebinary_delay_sec',
+            'roemer_shapiro_sec',
+            'ssb_obs_pos_ls',
+            'obs_sun_pos_ls',
+            'obs_planet_pos_ls',
+            'sw_geometry_pc',
+            'jump_phase',
+            'dt_sec',
+            'freq_bary_mhz',
+            'model_mjd',
+        ):
+            if extras.get(key) is not None:
                 extras[key] = extras[key][toa_mask]
+        if extras.get('term_diagnostics') is not None:
+            extras['term_diagnostics'] = _mask_term_diagnostics_for_toas(
+                extras['term_diagnostics'], toa_mask
+            )
+        if extras.get('toas') is not None:
+            extras['toas'] = [
+                toa for toa, keep in zip(extras['toas'], toa_mask) if keep
+            ]
 
     # Handle missing prebinary_delay_sec with informative warning
     if extras.get('prebinary_delay_sec') is None and extras.get('roemer_shapiro_sec') is not None:
@@ -2938,8 +3190,12 @@ def _build_general_fit_setup_from_cache(
         freq_mhz_bary=freq_mhz_bary,
         extras=extras,
         noise_config=noise_config,
+        compatibility=compatibility,
+        fd_column_mode=fd_column_mode,
+        design_matrix_method=design_matrix_method,
         verbose=False,
         subtract_noise_sec=subtract_noise_sec,
+
     )
 
 
@@ -2998,7 +3254,11 @@ def _fit_parameters_general(
     convergence_threshold: float,
     clock_dir: str,
     verbose: bool,
-    device: Optional[str]
+    device: Optional[str],
+    compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
+    fd_column_mode: str | None = None,
+
 ) -> Dict:
     """General parameter fitter -- handles any parameter combination.
 
@@ -3012,7 +3272,11 @@ def _fit_parameters_general(
     # STEP 1: Build setup from files (expensive)
     cache_start = time.time()
     setup = _build_general_fit_setup_from_files(
-        par_file, tim_file, fit_params, clock_dir, verbose
+        par_file, tim_file, fit_params, clock_dir, verbose,
+        compatibility=compatibility,
+        engine_conventions=engine_conventions,
+        fd_column_mode=fd_column_mode,
+
     )
     cache_time = time.time() - cache_start
     

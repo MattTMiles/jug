@@ -27,6 +27,10 @@ DerivativesFunc = Callable[[Dict, np.ndarray, List[str]], Dict[str, np.ndarray]]
 
 # The registry: maps model names to (delay_func, derivatives_func)
 _BINARY_MODEL_REGISTRY: Dict[str, Tuple[DelayFunc, DerivativesFunc]] = {}
+_TRACEABLE_BUILTIN_MODELS = frozenset({
+    "DD", "DDS", "DDH", "DDGR", "BT", "BTX", "DDK",
+    "ELL1", "ELL1H", "ELL1K", "T2",
+})
 
 
 def register_binary_model(
@@ -130,16 +134,23 @@ def compute_binary_delay(toas_bary: np.ndarray, params: Dict, **kwargs) -> np.nd
     if not binary_model:
         return np.zeros_like(toas_bary)
 
-    delay_func = get_binary_delay_func(binary_model)
-    if delay_func is None:
-        registered = list(_BINARY_MODEL_REGISTRY.keys())
+    if not is_model_registered(binary_model):
+        registered = list_registered_models()
         raise ValueError(
             f"Unknown binary model: '{binary_model}'. "
             f"Registered models: {registered}. "
             f"To add support, use register_binary_model() in binary_registry.py."
         )
 
-    return np.asarray(delay_func(toas_bary, params, **kwargs))
+    if binary_model not in _TRACEABLE_BUILTIN_MODELS:
+        delay_func = get_binary_delay_func(binary_model)
+        return np.asarray(delay_func(toas_bary, params, **kwargs))
+
+    import jax.numpy as jnp
+    from jug.fitting.binary_delay_plan import resolve_binary_structure
+
+    plan = resolve_binary_structure(params, fit_params=(), obs_pos_ls=kwargs.get("obs_pos_ls"))
+    return np.asarray(plan.evaluate(toas_bary, params, kwargs.get("obs_pos_ls"), jnp))
 
 
 def compute_binary_derivatives(

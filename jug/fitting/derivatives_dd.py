@@ -20,6 +20,7 @@ Reference: Damour & Deruelle (1986), PINT src/pint/models/binary_dd.py
 """
 
 import warnings
+from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
@@ -29,6 +30,22 @@ from jug.utils.constants import SECS_PER_DAY, SECS_PER_YEAR, T_SUN, DEG_TO_RAD, 
 
 # Enable float64 for precision
 jax.config.update("jax_enable_x64", True)
+
+
+def _resolve_pb_days(params: Dict) -> float:
+    """Orbital period in days, FB-aware (PB = 1/FB0 when PB is absent).
+
+    Prevents a bare params.get('PB', 1.0) from silently returning 1 day for
+    FB-parameterized binaries, which would corrupt pb-based formulas in the DD
+    derivative routines. See also _extract_dd_params (which additionally derives
+    PBDOT from FB1 for the forward model).
+    """
+    if 'PB' in params:
+        return float(params['PB'])
+    fb0 = params.get('FB0')
+    if fb0 is not None and float(fb0) != 0.0:
+        return 1.0 / (float(fb0) * SECS_PER_DAY)
+    return 1.0
 
 
 # =============================================================================
@@ -255,7 +272,7 @@ def _extract_dd_params(params: Dict):
     sini, omdot, xdot, edot.
     """
     a1 = float(params.get('A1', 0.0))
-    pb = float(params.get('PB', 1.0))
+    pb = _resolve_pb_days(params)
     t0 = float(params.get('T0', 0.0))
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))
@@ -300,8 +317,216 @@ def _extract_dd_params(params: Dict):
     xdot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
     edot = float(params.get('EDOT', 0.0))
 
+    # FB-parameterization guard: this DD core takes PB directly, so if a DD/BT
+    # pulsar uses FB instead of PB, PB would default to 1.0 day and silently
+    # corrupt the orbital phase, periastron accumulation, and the eq[52]
+    # inverse-correction nhat (this is the FB bug that hit ELL1; see
+    # derivatives_binary._compute_ell1_binary_delay_jit). Derive PB from FB0 and
+    # PBDOT from FB1 (PB = 1/FB0; PBDOT = dPB/dt = -FB1/FB0^2) so the DD core gets
+    # the right period. FB2+ are not representable by the DD PB/PBDOT pair.
+    if 'PB' not in params and 'FB0' in params:
+        fb0 = float(params['FB0'])
+        if fb0 != 0.0:
+            pb = 1.0 / (fb0 * SECS_PER_DAY)  # days
+            if 'PBDOT' not in params and 'FB1' in params:
+                fb1 = float(params['FB1'])
+                pbdot = -fb1 / fb0 ** 2  # dimensionless dPB/dt
+            if any(f'FB{i}' in params for i in range(2, 20)):
+                warnings.warn(
+                    "DD binary with FB2+ terms: the DD core only supports PB/PBDOT, "
+                    "so FB2+ orbital-frequency evolution is ignored. Use ELL1/T2 for "
+                    "full FB support.", UserWarning, stacklevel=2)
+
     return dict(a1=a1, pb=pb, t0=t0, ecc=ecc, om_deg=om_deg, pbdot=pbdot,
                 gamma=gamma, m2=m2, sini=sini, omdot=omdot, xdot=xdot, edot=edot)
+
+
+@dataclass(frozen=True)
+class KopeikinStructure:
+    kin_deg_ref: float
+    kom_deg_ref: float
+    px_mas_ref: float
+    pmra_ref: float
+    pmdec_ref: float
+    pm_factor: float
+    pmra_keys: tuple[str, ...]
+    pmdec_keys: tuple[str, ...]
+    use_k96: bool
+    has_parallax: bool
+    is_ecliptic: bool
+    sin_ra: float
+    cos_ra: float
+    sin_dec: float
+    cos_dec: float
+    obl_rad: float
+    sini_explicit: float
+
+
+def resolve_kopeikin_flags(params: Dict) -> KopeikinStructure:
+    """Resolve concrete DDK structure once from reference params."""
+    import math
+    from jug.io.par_reader import OBLIQUITY_ARCSEC, parse_ra, parse_dec
+
+    kin_deg_ref = float(params.get("KIN", 0.0))
+    kom_deg_ref = float(params.get("KOM", 0.0))
+    px_mas_ref = float(params.get("PX", 0.0))
+    pm_factor = float((math.pi / 180.0 / 3600.0 / 1000.0) / SECS_PER_YEAR)
+
+    is_ecliptic = bool(params.get("_ecliptic_coords", False))
+    if is_ecliptic:
+        pmra_keys = ("_ecliptic_pm_lon", "PMLAMBDA", "PMELONG")
+        pmdec_keys = ("_ecliptic_pm_lat", "PMBETA", "PMELAT")
+        pmra_ref = float(
+            params.get("_ecliptic_pm_lon", params.get("PMLAMBDA", params.get("PMELONG", 0.0)))
+        )
+        pmdec_ref = float(
+            params.get("_ecliptic_pm_lat", params.get("PMBETA", params.get("PMELAT", 0.0)))
+        )
+    else:
+        pmra_keys = ("PMRA",)
+        pmdec_keys = ("PMDEC",)
+        pmra_ref = float(params.get("PMRA", 0.0))
+        pmdec_ref = float(params.get("PMDEC", 0.0))
+
+    k96_flag = True
+    if "K96" in params and params["K96"] is not None:
+        k96_param = params["K96"]
+        if isinstance(k96_param, bool):
+            k96_flag = k96_param
+        elif isinstance(k96_param, str):
+            k96_flag = k96_param.upper() not in ("N", "NO", "FALSE", "0", "F")
+        else:
+            k96_flag = bool(k96_param)
+    use_k96 = k96_flag and (pmra_ref != 0.0 or pmdec_ref != 0.0)
+    has_parallax = px_mas_ref > 0.0 and abs(kin_deg_ref) > 0.0
+
+    obl_rad = 0.0
+    if is_ecliptic:
+        ecl_frame = str(params.get("_ecliptic_frame", "IERS2010")).upper()
+        obl_rad = (
+            OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC["IERS2010"])
+            * math.pi
+            / (180.0 * 3600.0)
+        )
+        lon_rad = math.pi / 180.0 * float(params.get("_ecliptic_lon_deg", 0.0))
+        lat_rad = math.pi / 180.0 * float(params.get("_ecliptic_lat_deg", 0.0))
+        sin_ra, cos_ra = math.sin(lon_rad), math.cos(lon_rad)
+        sin_dec, cos_dec = math.sin(lat_rad), math.cos(lat_rad)
+    else:
+        raj_val = params.get("RAJ", 0.0)
+        decj_val = params.get("DECJ", 0.0)
+        ra_rad = (
+            parse_ra(raj_val)
+            if isinstance(raj_val, str) and ":" in raj_val
+            else float(raj_val)
+        )
+        dec_rad = (
+            parse_dec(decj_val)
+            if isinstance(decj_val, str) and ":" in decj_val
+            else float(decj_val)
+        )
+        sin_ra, cos_ra = math.sin(ra_rad), math.cos(ra_rad)
+        sin_dec, cos_dec = math.sin(dec_rad), math.cos(dec_rad)
+
+    sini_raw = params.get("SINI", 0.0)
+    if isinstance(sini_raw, str) and sini_raw.upper() == "KIN":
+        sini_explicit = 0.0
+    else:
+        sini_explicit = float(sini_raw)
+
+    return KopeikinStructure(
+        kin_deg_ref=kin_deg_ref,
+        kom_deg_ref=kom_deg_ref,
+        px_mas_ref=px_mas_ref,
+        pmra_ref=pmra_ref,
+        pmdec_ref=pmdec_ref,
+        pm_factor=pm_factor,
+        pmra_keys=pmra_keys,
+        pmdec_keys=pmdec_keys,
+        use_k96=use_k96,
+        has_parallax=has_parallax,
+        is_ecliptic=is_ecliptic,
+        sin_ra=sin_ra,
+        cos_ra=cos_ra,
+        sin_dec=sin_dec,
+        cos_dec=cos_dec,
+        obl_rad=obl_rad,
+        sini_explicit=sini_explicit,
+    )
+
+
+def _compute_kopeikin_corrections_traceable(
+    toas_bary_mjd,
+    a1,
+    t0,
+    kin_deg,
+    kom_deg,
+    px_mas,
+    pmra_rad_per_sec,
+    pmdec_rad_per_sec,
+    obs_pos_ls,
+    struct: KopeikinStructure,
+):
+    """Compute DDK Kopeikin corrections with traceable numeric inputs."""
+    kin_rad = jnp.deg2rad(kin_deg)
+    kom_rad = jnp.deg2rad(kom_deg)
+    tt0_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
+    sin_kom = jnp.sin(kom_rad)
+    cos_kom = jnp.cos(kom_rad)
+    delta_kin_pm = jnp.where(
+        struct.use_k96,
+        (-pmra_rad_per_sec * sin_kom + pmdec_rad_per_sec * cos_kom) * tt0_sec,
+        0.0,
+    )
+    kin_eff_rad = kin_rad + delta_kin_pm
+    tan_safe = jnp.where(
+        jnp.abs(jnp.tan(kin_eff_rad)) < 1e-10, 1e-10, jnp.tan(kin_eff_rad)
+    )
+    sin_safe = jnp.where(
+        jnp.abs(jnp.sin(kin_eff_rad)) < 1e-10, 1e-10, jnp.sin(kin_eff_rad)
+    )
+    delta_a1_pm = jnp.where(struct.use_k96, a1 * delta_kin_pm / tan_safe, 0.0)
+    delta_om_pm = jnp.where(
+        struct.use_k96,
+        (1.0 / sin_safe)
+        * (pmra_rad_per_sec * cos_kom + pmdec_rad_per_sec * sin_kom)
+        * tt0_sec,
+        0.0,
+    )
+
+    if obs_pos_ls is None:
+        obs = jnp.zeros((toas_bary_mjd.shape[0], 3))
+    else:
+        obs = jnp.asarray(obs_pos_ls)
+    if struct.is_ecliptic:
+        c, s = jnp.cos(struct.obl_rad), jnp.sin(struct.obl_rad)
+        obs = jnp.column_stack(
+            [obs[:, 0], obs[:, 1] * c + obs[:, 2] * s, -obs[:, 1] * s + obs[:, 2] * c]
+        )
+
+    x, y, z = obs[:, 0], obs[:, 1], obs[:, 2]
+    dI0 = -x * struct.sin_ra + y * struct.cos_ra
+    dJ0 = (
+        -x * struct.sin_dec * struct.cos_ra
+        - y * struct.sin_dec * struct.sin_ra
+        + z * struct.cos_dec
+    )
+    d_ls = 1000.0 * PC_TO_LIGHT_SEC / jnp.maximum(jnp.abs(px_mas), 1e-10)
+    delta_a1_px = jnp.where(
+        struct.has_parallax, (a1 / tan_safe / d_ls) * (dI0 * sin_kom - dJ0 * cos_kom), 0.0
+    )
+    delta_om_px = jnp.where(
+        struct.has_parallax, -(1.0 / sin_safe / d_ls) * (dI0 * cos_kom + dJ0 * sin_kom), 0.0
+    )
+
+    delta_a1 = delta_a1_pm + delta_a1_px
+    delta_om_deg = jnp.rad2deg(delta_om_pm) + jnp.rad2deg(delta_om_px)
+    sini_eff = jnp.where(
+        (struct.sini_explicit == 0.0) & (jnp.abs(kin_deg) > 0.0),
+        jnp.sin(kin_eff_rad),
+        struct.sini_explicit,
+    )
+    return delta_a1, delta_om_deg, sini_eff
 
 
 def _compute_kopeikin_corrections(
@@ -311,141 +536,20 @@ def _compute_kopeikin_corrections(
     t0: float,
     obs_pos_ls: jnp.ndarray = None,
 ):
-    """Compute DDK Kopeikin corrections to A1 and OM.
-
-    Returns (delta_a1, delta_om_deg, sini_eff) where delta_a1 and
-    delta_om_deg are per-TOA arrays, and sini_eff is sin(KIN_eff).
-    """
-    import numpy as np
-    n_toas = len(toas_bary_mjd)
-
-    kin_deg = float(params.get('KIN', 0.0))
-    kom_deg = float(params.get('KOM', 0.0))
-    px_mas = float(params.get('PX', 0.0))
-    kin_rad = jnp.deg2rad(kin_deg)
-    kom_rad = jnp.deg2rad(kom_deg)
-
-    MAS_PER_YR_TO_RAD_PER_SEC = (jnp.pi / 180.0 / 3600.0 / 1000.0) / SECS_PER_YEAR
-    _is_ecliptic = bool(params.get('_ecliptic_coords', False))
-    if _is_ecliptic:
-        pmra_mas_yr = float(params.get('_ecliptic_pm_lon', 0.0))
-        pmdec_mas_yr = float(params.get('_ecliptic_pm_lat', 0.0))
-    else:
-        pmra_mas_yr = float(params.get('PMRA', 0.0))
-        pmdec_mas_yr = float(params.get('PMDEC', 0.0))
-    pmra_rad_per_sec = pmra_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
-    pmdec_rad_per_sec = pmdec_mas_yr * MAS_PER_YR_TO_RAD_PER_SEC
-
-    # K96 flag
-    k96_flag = True
-    if 'K96' in params and params['K96'] is not None:
-        k96_param = params['K96']
-        if isinstance(k96_param, bool):
-            k96_flag = k96_param
-        elif isinstance(k96_param, str):
-            k96_flag = k96_param.upper() not in ('N', 'NO', 'FALSE', '0', 'F')
-        else:
-            k96_flag = bool(k96_param)
-    use_k96 = k96_flag and (pmra_mas_yr != 0 or pmdec_mas_yr != 0)
-    has_parallax = px_mas > 0.0 and abs(kin_deg) > 0.0
-
-    dt_days = toas_bary_mjd - t0
-    tt0_sec = dt_days * SECS_PER_DAY
-
-    sin_kom = jnp.sin(kom_rad)
-    cos_kom = jnp.cos(kom_rad)
-
-    # K96 proper motion corrections
-    delta_kin_pm = jnp.where(
-        use_k96,
-        (-pmra_rad_per_sec * sin_kom + pmdec_rad_per_sec * cos_kom) * tt0_sec,
-        0.0
+    """Back-compatible wrapper around traceable Kopeikin kernel."""
+    struct = resolve_kopeikin_flags(params)
+    return _compute_kopeikin_corrections_traceable(
+        jnp.asarray(toas_bary_mjd),
+        a1,
+        t0,
+        struct.kin_deg_ref,
+        struct.kom_deg_ref,
+        struct.px_mas_ref,
+        struct.pmra_ref * struct.pm_factor,
+        struct.pmdec_ref * struct.pm_factor,
+        obs_pos_ls,
+        struct,
     )
-    kin_eff_rad = kin_rad + delta_kin_pm
-    tan_kin_eff = jnp.tan(kin_eff_rad)
-    tan_kin_eff_safe = jnp.where(jnp.abs(tan_kin_eff) < 1e-10, 1e-10, tan_kin_eff)
-    sin_kin_eff = jnp.sin(kin_eff_rad)
-    sin_kin_eff_safe = jnp.where(jnp.abs(sin_kin_eff) < 1e-10, 1e-10, sin_kin_eff)
-
-    delta_a1_pm = jnp.where(use_k96, a1 * delta_kin_pm / tan_kin_eff_safe, 0.0)
-    delta_omega_pm_rad = jnp.where(
-        use_k96,
-        (1.0 / sin_kin_eff_safe) * (pmra_rad_per_sec * cos_kom + pmdec_rad_per_sec * sin_kom) * tt0_sec,
-        0.0
-    )
-
-    # Kopeikin 1995 annual orbital parallax corrections
-    if obs_pos_ls is None:
-        obs_pos_ls = jnp.zeros((n_toas, 3))
-    obs_pos_ls = jnp.asarray(obs_pos_ls)
-
-    # Coordinate frame rotation for ecliptic pulsars
-    if _is_ecliptic:
-        from jug.io.par_reader import OBLIQUITY_ARCSEC
-        _ecl_frame = str(params.get('_ecliptic_frame', 'IERS2010')).upper()
-        _obl_rad = OBLIQUITY_ARCSEC.get(_ecl_frame, OBLIQUITY_ARCSEC['IERS2010']) * float(jnp.pi) / (180.0 * 3600.0)
-        _cos_obl = jnp.cos(_obl_rad)
-        _sin_obl = jnp.sin(_obl_rad)
-        _x = obs_pos_ls[:, 0]
-        _y = obs_pos_ls[:, 1] * _cos_obl + obs_pos_ls[:, 2] * _sin_obl
-        _z = -obs_pos_ls[:, 1] * _sin_obl + obs_pos_ls[:, 2] * _cos_obl
-        obs_pos_ls = jnp.column_stack([_x, _y, _z])
-
-    # Pulsar position for K95 projections
-    if _is_ecliptic:
-        _ecl_lon_rad = float(jnp.pi) / 180.0 * float(params.get('_ecliptic_lon_deg', 0.0))
-        _ecl_lat_rad = float(jnp.pi) / 180.0 * float(params.get('_ecliptic_lat_deg', 0.0))
-        sin_ra = jnp.sin(_ecl_lon_rad)
-        cos_ra = jnp.cos(_ecl_lon_rad)
-        sin_dec = jnp.sin(_ecl_lat_rad)
-        cos_dec = jnp.cos(_ecl_lat_rad)
-    else:
-        from jug.io.par_reader import parse_ra, parse_dec
-        raj_val = params.get('RAJ', 0.0)
-        decj_val = params.get('DECJ', 0.0)
-        ra_rad = parse_ra(raj_val) if isinstance(raj_val, str) and ':' in raj_val else float(raj_val)
-        dec_rad = parse_dec(decj_val) if isinstance(decj_val, str) and ':' in decj_val else float(decj_val)
-        sin_ra = jnp.sin(ra_rad)
-        cos_ra = jnp.cos(ra_rad)
-        sin_dec = jnp.sin(dec_rad)
-        cos_dec = jnp.cos(dec_rad)
-
-    x = obs_pos_ls[:, 0]
-    y = obs_pos_ls[:, 1]
-    z = obs_pos_ls[:, 2]
-    delta_I0 = -x * sin_ra + y * cos_ra
-    delta_J0 = -x * sin_dec * cos_ra - y * sin_dec * sin_ra + z * cos_dec
-
-    px_safe = max(abs(px_mas), 1e-10)
-    d_ls = 1000.0 * PC_TO_LIGHT_SEC / px_safe
-
-    delta_a1_px = jnp.where(
-        has_parallax,
-        (a1 / tan_kin_eff_safe / d_ls) * (delta_I0 * sin_kom - delta_J0 * cos_kom),
-        0.0
-    )
-    delta_omega_px_rad = jnp.where(
-        has_parallax,
-        -(1.0 / sin_kin_eff_safe / d_ls) * (delta_I0 * cos_kom + delta_J0 * sin_kom),
-        0.0
-    )
-
-    delta_a1 = delta_a1_pm + delta_a1_px
-    delta_om_deg = jnp.rad2deg(delta_omega_pm_rad) + jnp.rad2deg(delta_omega_px_rad)
-
-    # SINI from effective KIN
-    sini_raw = params.get('SINI', 0.0)
-    if isinstance(sini_raw, str) and sini_raw.upper() == 'KIN':
-        sini_explicit = 0.0
-    else:
-        sini_explicit = float(sini_raw)
-    sini_eff = jnp.where(
-        (sini_explicit == 0.0) & (jnp.abs(kin_deg) > 0.0),
-        jnp.sin(kin_eff_rad),
-        sini_explicit
-    )
-
-    return delta_a1, delta_om_deg, sini_eff
 
 
 def compute_dd_binary_delay(
@@ -560,6 +664,30 @@ def _compute_dd_binary_delay_jit(
     # Einstein delay
     einstein = compute_dd_einstein_delay(E, gamma, ecc_current)
 
+    # Damour & Deruelle (1986) eq [52] proper-time -> coordinate-time inverse
+    # correction. The kernel (jug/delays/binary_dd.py:dd_binary_delay) and PINT
+    # both apply this; omitting it here previously left this standalone helper
+    # ~200 us out of sync with the kernel for wide binaries (e.g. B1953+29).
+    # Dre = Roemer + Einstein; alpha/beta are the D&D [46],[47] terms.
+    sinE = jnp.sin(E)
+    cosE = jnp.cos(E)
+    alpha = a1_current * jnp.sin(om_rad)
+    beta = a1_current * jnp.sqrt(1.0 - ecc_current ** 2) * jnp.cos(om_rad)
+    Dre = roemer + einstein
+    Drep = -alpha * sinE + (beta + gamma) * cosE
+    Drepp = -alpha * cosE - (beta + gamma) * sinE
+    pb_sec = pb * SECS_PER_DAY
+    pb_prime_sec = pb_sec + pbdot * dt_sec
+    nhat = (2.0 * jnp.pi / pb_prime_sec) / (1.0 - ecc_current * cosE)
+    correction_factor = (
+        1.0
+        - nhat * Drep
+        + (nhat * Drep) ** 2
+        + 0.5 * nhat ** 2 * Dre * Drepp
+        - 0.5 * ecc_current * sinE / (1.0 - ecc_current * cosE) * nhat ** 2 * Dre * Drep
+    )
+    delay_inverse = Dre * correction_factor
+
     # Shapiro delay
     shapiro = jnp.where(
         (sini > 0) & (m2 > 0),
@@ -567,7 +695,7 @@ def _compute_dd_binary_delay_jit(
         0.0
     )
 
-    return roemer + einstein + shapiro
+    return delay_inverse + shapiro
 
 
 # =============================================================================
@@ -601,7 +729,7 @@ def compute_binary_derivatives_dd(
     
     # Extract base parameters
     a1 = float(params.get('A1', 0.0))
-    pb = float(params.get('PB', 1.0))
+    pb = _resolve_pb_days(params)
     t0 = float(params.get('T0', float(jnp.mean(toas_bary_mjd))))
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))
@@ -1289,7 +1417,7 @@ def compute_binary_derivatives_ddk(
     
     # Extract base DD parameters
     a1 = float(params.get('A1', 0.0))
-    pb = float(params.get('PB', 1.0))
+    pb = _resolve_pb_days(params)
     t0 = float(params.get('T0', float(jnp.mean(toas_bary_mjd))))
     ecc = float(params.get('ECC', 0.0))
     om_deg = float(params.get('OM', 0.0))

@@ -44,6 +44,54 @@ from jug.utils.constants import (
 from jug.io.par_reader import OBLIQUITY_ARCSEC
 
 
+def ecliptic_deg_to_equatorial_rad(
+    lon_deg,
+    lat_deg,
+    pm_lon_mas_yr,
+    pm_lat_mas_yr,
+    obl_rad,
+    *,
+    xp,
+):
+    """JAX-traceable ecliptic→equatorial conversion.
+
+    Formulas copied verbatim from ``astrometry_state.reconvert_ecliptic_to_equatorial``
+    (lines 87–123).  Pure scalar math only — no string formatting or dict mutation.
+    """
+    lon_rad = xp.deg2rad(lon_deg)
+    lat_rad = xp.deg2rad(lat_deg)
+    cos_lon, sin_lon = xp.cos(lon_rad), xp.sin(lon_rad)
+    cos_lat, sin_lat = xp.cos(lat_rad), xp.sin(lat_rad)
+    cos_obl, sin_obl = xp.cos(obl_rad), xp.sin(obl_rad)
+
+    x = cos_lon * cos_lat
+    y = sin_lon * cos_lat * cos_obl - sin_lat * sin_obl
+    z = sin_lon * cos_lat * sin_obl + sin_lat * cos_obl
+
+    ra_rad = xp.arctan2(y, x) % (2 * xp.pi)
+    dec_rad = xp.arctan2(z, xp.sqrt(x**2 + y**2))
+
+    dx = -sin_lon * pm_lon_mas_yr - cos_lon * sin_lat * pm_lat_mas_yr
+    dy = cos_lon * pm_lon_mas_yr - sin_lon * sin_lat * pm_lat_mas_yr
+    dz = cos_lat * pm_lat_mas_yr
+
+    dx_eq = dx
+    dy_eq = dy * cos_obl - dz * sin_obl
+    dz_eq = dy * sin_obl + dz * cos_obl
+
+    cos_ra, sin_ra = xp.cos(ra_rad), xp.sin(ra_rad)
+    cos_dec, sin_dec = xp.cos(dec_rad), xp.sin(dec_rad)
+
+    pmra = -sin_ra * dx_eq + cos_ra * dy_eq
+    pmdec = (
+        -cos_ra * sin_dec * dx_eq
+        - sin_ra * sin_dec * dy_eq
+        + cos_dec * dz_eq
+    )
+
+    return ra_rad, dec_rad, pmra, pmdec
+
+
 @jax.jit
 def compute_earth_position_angles(ssb_obs_pos: jnp.ndarray) -> Dict[str, jnp.ndarray]:
     """Compute Earth position angles from SSB-to-observatory position vectors.
@@ -300,7 +348,7 @@ def compute_pulsar_unit_vector(
     n_x, n_y, n_z : jnp.ndarray or float
         Components of unit vector pointing to pulsar
     """
-    if toas_mjd is not None and posepoch_mjd is not None and (pmra_rad_yr != 0 or pmdec_rad_yr != 0):
+    if toas_mjd is not None and posepoch_mjd is not None:
         # Apply proper motion correction
         dt_years = (toas_mjd - posepoch_mjd) / 365.25
         
@@ -572,7 +620,13 @@ def compute_astrometric_delay(
     else:
         psr_dec = jnp.float64(decj_value)
 
-    posepoch = jnp.float64(params.get('POSEPOCH', params.get('PEPOCH', float(jnp.mean(toas_mjd)))))
+    if 'POSEPOCH' in params:
+        posepoch_value = params['POSEPOCH']
+    elif 'PEPOCH' in params:
+        posepoch_value = params['PEPOCH']
+    else:
+        posepoch_value = jnp.mean(toas_mjd)
+    posepoch = jnp.asarray(posepoch_value, dtype=jnp.float64)
 
     # Get proper motion (convert from mas/yr to rad/yr if present)
     pmra_mas_yr = params.get('PMRA', 0.0)
@@ -728,6 +782,12 @@ def compute_astrometry_derivatives(
     
     for param in fit_params:
         param_upper = param.upper()
+        param_upper = {
+            "LAMBDA": "ELONG",
+            "BETA": "ELAT",
+            "PMLAMBDA": "PMELONG",
+            "PMBETA": "PMELAT",
+        }.get(param_upper, param_upper)
         
         if param_upper == 'RAJ':
             # d(delay)/d(RAJ) in seconds/radian

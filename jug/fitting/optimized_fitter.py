@@ -2815,29 +2815,12 @@ def _run_general_fit_iterations(
     # For WLS fits, the delta-based nonlinear evaluation accumulates cross-term
     # errors over iterations; the linearized postfit from the final iteration is
     # more accurate (matching Tempo2's approach).
-    if _saved_residuals_sec is not None and not _tn_poly_applied:
-        if n_augmented > 0:
-            # GLS: Subtract only the timing model correction (timing params + offset
-            # + deterministic timing columns such as DMX/DMJUMP). Noise realizations (Red, DM, Chromatic, ECORR,
-            # Band, Group) are left in the residuals for GUI subtract workflow.
-            delta_model_only = _saved_delta_all.copy()
-            noise_start = n_timing_cols
-            noise_end = (n_timing_cols + n_red_noise_cols + n_dm_noise_cols
-                         + n_chromatic_noise_cols + n_ecorr_cols)
-            delta_model_only[noise_start:noise_end] = 0.0
-            # Band and group noise columns sit after deterministic DMJUMP columns
-            bg_start = noise_end + n_dmx_cols + n_dmjump_cols
-            bg_end = bg_start + n_band_noise_total + n_group_noise_total
-            delta_model_only[bg_start:bg_end] = 0.0
-            linear_correction = _saved_M @ delta_model_only
-        else:
-            # WLS: Subtract full linearized correction
-            linear_correction = _saved_M @ _saved_delta_all
-        residuals_final_sec = _saved_residuals_sec - linear_correction
-        residuals_final_us = residuals_final_sec * 1e6
-    else:
-        residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = _compute_full_model_residuals(params, setup)
-        residuals_final_us = residuals_final_sec * 1e6
+    # Returned residuals must match the returned final parameters. TNsubtractPoly
+    # can change F0/F1/DM after the final GLS solve; always recompute nonlinearly.
+    residuals_final_sec, final_chi2, final_rms_us, final_wrms_us = (
+        _compute_full_model_residuals(params, setup)
+    )
+    residuals_final_us = residuals_final_sec * 1e6
     
     # Compute prefit residuals.  Do not recompute them from ``setup`` here:
     # accepted fitter steps re-baseline setup.dt_sec_* and setup.initial_*_delay
@@ -3027,20 +3010,10 @@ def _run_general_fit_iterations(
     final_rms_us = np.sqrt(np.sum(residuals_final_sec**2 * weights) / sum_weights) * 1e6
     final_wrms_us = np.sqrt(np.sum((residuals_final_sec * 1e6)**2 * weights) / sum_weights)
 
-    # Always compute full nonlinear RMS for accurate reporting.
-    nl_residuals_sec, nl_chi2, nl_rms_us, nl_wrms_us = _compute_full_model_residuals(params, setup)
-
-    # For GLS fits, the linearized postfit residuals (r_wls - M_timing @ dp)
-    # are consistent with the SVD noise coefficients by construction:
-    #   SVD: r_wls ≈ M_timing @ dp + F @ a
-    #   => postfit = r_wls - M_timing @ dp ≈ F @ a = noise
-    #   => postfit - noise ≈ measurement noise (small)
-    # Using nonlinear residuals instead would break this consistency because
-    # the NL residuals differ from the linearized ones by ~3-4 µs of
-    # nonlinear timing model response. Keep the linearized postfit and
-    # compute chi2 from noise-subtracted linearized residuals.
-    # Report the noise-subtracted RMS as final_rms (matches what user sees
-    # after subtracting noise in the GUI).
+    raw_final_rms_us = final_rms_us
+    raw_final_chi2 = final_chi2
+    noise_subtracted_rms_us = None
+    noise_subtracted_chi2 = None
     if n_augmented > 0 and noise_realizations:
         noise_total_us = np.zeros(len(residuals_final_us))
         for key, vals in noise_realizations.items():
@@ -3049,21 +3022,21 @@ def _run_general_fit_iterations(
                     noise_total_us += vals
         whitened_us = residuals_final_us - noise_total_us
         whitened_sec = whitened_us * 1e-6
+        whitened_sec -= np.sum(weights * whitened_sec) / sum_weights
         if ecorr_w is not None:
             ecorr_w.prepare(errors_sec)
-            final_chi2 = ecorr_w.chi2(whitened_sec)
+            noise_subtracted_chi2 = ecorr_w.chi2(whitened_sec)
         else:
-            final_chi2 = np.sum((whitened_sec / errors_sec) ** 2)
-        # Report noise-subtracted RMS as the "final_rms" for GLS fits
-        final_rms_us = np.sqrt(np.sum(whitened_sec**2 * weights) / sum_weights) * 1e6
-    else:
-        final_rms_us = nl_rms_us
-        final_chi2 = nl_chi2
+            noise_subtracted_chi2 = np.sum((whitened_sec / errors_sec) ** 2)
+        noise_subtracted_rms_us = (
+            np.sqrt(np.sum(whitened_sec**2 * weights) / sum_weights) * 1e6
+        )
 
     return {
         'final_params': {param: params[param] for param in fit_params},
         'uncertainties': uncertainties,
-        'final_rms': final_rms_us,  # TRUE full-model RMS
+        'final_rms': raw_final_rms_us,
+        'noise_subtracted_rms': noise_subtracted_rms_us,
         'prefit_rms': prefit_rms_us,
         'converged': converged,
         'iterations': iteration + 1,
@@ -3072,7 +3045,8 @@ def _run_general_fit_iterations(
         'errors_us': errors_us,
         'tdb_mjd': tdb_mjd,
         'covariance': cov,
-        'final_chi2': final_chi2,
+        'final_chi2': raw_final_chi2,
+        'noise_subtracted_chi2': noise_subtracted_chi2,
         'noise_realizations': noise_realizations,
         'noise_coefficients': noise_coefficients,
         'gls_debug': gls_debug,

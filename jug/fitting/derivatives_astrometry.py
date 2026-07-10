@@ -377,33 +377,33 @@ def compute_pulsar_unit_vector(
     n_x, n_y, n_z : jnp.ndarray or float
         Components of unit vector pointing to pulsar
     """
-    if dt_years is not None and (pmra_rad_yr != 0 or pmdec_rad_yr != 0):
-        # Update RA and DEC for proper motion
-        # Note: PMRA is mu_alpha* = dalpha/dt * cos(delta), so we divide by cos(dec) to get dalpha/dt
-        cos_dec = jnp.cos(psr_dec)
-        ra_corrected = psr_ra + (pmra_rad_yr / cos_dec) * dt_years
-        dec_corrected = psr_dec + pmdec_rad_yr * dt_years
-        
-        # Compute time-varying unit vector
-        cos_dec_t = jnp.cos(dec_corrected)
-        sin_dec_t = jnp.sin(dec_corrected)
-        cos_ra_t = jnp.cos(ra_corrected)
-        sin_ra_t = jnp.sin(ra_corrected)
-        
-        n_x = cos_dec_t * cos_ra_t
-        n_y = cos_dec_t * sin_ra_t
-        n_z = sin_dec_t
-    else:
-        # Fixed position (no proper motion correction)
-        cos_dec = jnp.cos(psr_dec)
-        sin_dec = jnp.sin(psr_dec)
-        cos_ra = jnp.cos(psr_ra)
-        sin_ra = jnp.sin(psr_ra)
-        
-        n_x = cos_dec * cos_ra
-        n_y = cos_dec * sin_ra
-        n_z = sin_dec
-    
+    cos_dec = jnp.cos(psr_dec)
+    sin_dec = jnp.sin(psr_dec)
+    cos_ra = jnp.cos(psr_ra)
+    sin_ra = jnp.sin(psr_ra)
+    n_x_fixed = cos_dec * cos_ra
+    n_y_fixed = cos_dec * sin_ra
+    n_z_fixed = sin_dec
+
+    if dt_years is None:
+        return n_x_fixed, n_y_fixed, n_z_fixed
+
+    # PM branch (JAX-safe: no Python bool on traced scalars)
+    ra_corrected = psr_ra + (pmra_rad_yr / cos_dec) * dt_years
+    dec_corrected = psr_dec + pmdec_rad_yr * dt_years
+    cos_dec_t = jnp.cos(dec_corrected)
+    sin_dec_t = jnp.sin(dec_corrected)
+    cos_ra_t = jnp.cos(ra_corrected)
+    sin_ra_t = jnp.sin(ra_corrected)
+    n_x_pm = cos_dec_t * cos_ra_t
+    n_y_pm = cos_dec_t * sin_ra_t
+    n_z_pm = sin_dec_t
+
+    has_pm = (jnp.abs(pmra_rad_yr) + jnp.abs(pmdec_rad_yr)) > 0.0
+    n_x = jnp.where(has_pm, n_x_pm, n_x_fixed)
+    n_y = jnp.where(has_pm, n_y_pm, n_y_fixed)
+    n_z = jnp.where(has_pm, n_z_pm, n_z_fixed)
+
     return n_x, n_y, n_z
 
 
@@ -637,10 +637,7 @@ def compute_astrometric_delay(
     """
     from jug.io.par_reader import parse_ra, parse_dec
 
-    # Save numpy toas before JAX cast so we can compute dt_years in longdouble
-    toas_mjd_np = np.asarray(toas_mjd)
-
-    # Ensure inputs are arrays
+    # Ensure inputs are arrays (must stay JAX-traceable for autodiff design matrices)
     ssb_obs_pos_ls = jnp.asarray(ssb_obs_pos_ls, dtype=jnp.float64)
     toas_mjd = jnp.asarray(toas_mjd, dtype=jnp.float64)
 
@@ -659,9 +656,10 @@ def compute_astrometric_delay(
         psr_dec = jnp.float64(decj_value)
 
     _posepoch_key = 'POSEPOCH' if 'POSEPOCH' in params else 'PEPOCH'
-    posepoch_f = get_longdouble(
-        params, _posepoch_key, default=float(np.mean(toas_mjd_np, dtype=np.float64))
-    )
+    if _posepoch_key in params:
+        posepoch = jnp.float64(float(get_longdouble(params, _posepoch_key)))
+    else:
+        posepoch = jnp.mean(toas_mjd)
 
     # Get proper motion (convert from mas/yr to rad/yr if present)
     pmra_mas_yr = params.get('PMRA', 0.0)
@@ -672,9 +670,8 @@ def compute_astrometric_delay(
     # Get parallax (in mas)
     px_mas = jnp.float64(params.get('PX', 0.0))
 
-    # Precompute dt_years in longdouble to avoid float64 MJD cancellation at MJD ~58000
-    dt_years_f64 = _compute_dt_years_ld(toas_mjd_np, posepoch_f)
-    dt_years_jax = jnp.asarray(dt_years_f64)
+    # Float64 years since POSEPOCH (JAX-traceable; TOAs are not fit parameters).
+    dt_years_jax = (toas_mjd - posepoch) / jnp.float64(365.25)
 
     # Compute pulsar unit vector (with proper motion correction)
     n_x, n_y, n_z = compute_pulsar_unit_vector(

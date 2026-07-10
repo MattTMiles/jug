@@ -123,6 +123,10 @@ def _normalize_fd_column_mode(
         Above multiplied by ``f(t)/F0`` (PINT phase chain rule on FD columns).
     """
     if fd_column_mode is None:
+        from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+        if normalize_compatibility_mode(compatibility) == "tempo2":
+            return "tempo2_delay"
         return "delay_only"
 
     norm = str(fd_column_mode).strip().lower().replace("-", "_")
@@ -364,6 +368,13 @@ class GeneralFitSetup:
     # Noise configuration (Phase 3 integration)
     noise_config: object  # NoiseConfig or None
     binary_plan: object = None  # BinaryDelayPlan (cached); built lazily if None
+    # Tempo2-native JAX chain cache (Phase 5)
+    native_chain_static: dict | None = None
+    native_bbat_mjd: np.ndarray | None = None
+    native_torb_sec: np.ndarray | None = None
+    native_dt_emission_sec: np.ndarray | None = None
+    tempo2_native: str | None = None
+    tempo2_jug_options: dict[str, Any] | None = None
     # Cached (core, residual_fn, jac_fn) bundles keyed by _residual_delta_jax_cache_key
     residual_delta_jax_cache: dict | None = None
 
@@ -718,7 +729,8 @@ def fit_parameters_optimized(
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
-
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict | None = None,
 ) -> Dict:
     """
     Fit timing model parameters to TOA data.
@@ -784,7 +796,8 @@ def fit_parameters_optimized(
     return _fit_parameters_general(
         par_file, tim_file, fit_params, max_iter, convergence_threshold,
         clock_dir, verbose, device, compatibility, engine_conventions, fd_column_mode,
-
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
 
 
@@ -1113,7 +1126,8 @@ def _build_setup_common(
     design_matrix_method: str = "analytic",
     verbose: bool = False,
     subtract_noise_sec: Optional[np.ndarray] = None,
-
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> GeneralFitSetup:
     """Shared setup builder for both file-based and cache-based paths.
 
@@ -1612,6 +1626,10 @@ def _build_setup_common(
             print(f"  Applied noise subtraction to dt_sec: "
                   f"RMS correction = {np.std(subtract_noise_sec)*1e6:.3f} mus")
 
+    from jug.timing import resolve_tempo2_jug_options
+
+    resolved_tempo2_jug_options = resolve_tempo2_jug_options(tempo2_jug_options)
+
     # --- Assemble GeneralFitSetup ------------------------------------------
     resolved_fd_column_mode = _normalize_fd_column_mode(
         fd_column_mode, compatibility=compatibility
@@ -1621,6 +1639,23 @@ def _build_setup_common(
         raise ValueError(
             "design_matrix_method must be 'analytic' or 'autodiff'; "
             f"got {design_matrix_method!r}"
+        )
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    use_native = normalize_compatibility_mode(str(compatibility)) == "tempo2"
+    native_chain_static = None
+    if use_native and extras.get("term_diagnostics") is not None:
+        from jug.residuals.tempo2.fit_cache import Tempo2NativeChainStatic
+
+        native_chain_static = Tempo2NativeChainStatic(
+            term_diagnostics=extras["term_diagnostics"],
+            dt_sec=np.asarray(extras.get("dt_sec", dt_sec_cached), dtype=np.float64),
+            freq_bary_mhz=np.array(freq_mhz_bary, dtype=np.float64),
+            model_mjd=np.array(extras.get("model_mjd", toas_mjd), dtype=np.float64),
+            ssb_obs_pos_ls=ssb_obs_pos_ls,
+            obs_sun_pos_ls=obs_sun_pos_ls,
+            obs_planet_pos_ls=obs_planet_pos_ls,
+            toas=extras.get("toas"),
         )
     return GeneralFitSetup(
         params=dict(params),
@@ -1683,6 +1718,9 @@ def _build_setup_common(
         tzr_phase=tzr_phase,
         noise_config=noise_config,
         binary_plan=binary_plan,
+        native_chain_static=native_chain_static,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=resolved_tempo2_jug_options,
     )
 
 
@@ -1697,7 +1735,8 @@ def _build_general_fit_setup_from_files(
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
     design_matrix_method: str = "analytic",
-
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict | None = None,
 ) -> GeneralFitSetup:
     """Build fitting setup from par/tim files (expensive I/O + compute).
 
@@ -1751,7 +1790,8 @@ def _build_general_fit_setup_from_files(
         subtract_tzr=False, verbose=False,
         compatibility=compatibility,
         engine_conventions=engine_conventions,
-
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
     toas = toas_data
 
@@ -1784,7 +1824,8 @@ def _build_general_fit_setup_from_files(
         fd_column_mode=fd_column_mode,
         design_matrix_method=design_matrix_method,
         verbose=verbose,
-
+        tempo2_native=result.get("tempo2_native"),
+        tempo2_jug_options=result.get("tempo2_jug_options"),
     )
 
 
@@ -3071,7 +3112,8 @@ def _build_general_fit_setup_from_cache(
     compatibility: str = "pint",
     fd_column_mode: str | None = None,
     design_matrix_method: str = "analytic",
-
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -3096,7 +3138,10 @@ def _build_general_fit_setup_from_cache(
     for p in fit_params:
         validate_fit_param(p)
 
-
+    if tempo2_native is None:
+        tempo2_native = session_cached_data.get("tempo2_native")
+    if tempo2_jug_options is None:
+        tempo2_jug_options = session_cached_data.get("tempo2_jug_options")
 
     # Extract cached arrays
     dt_sec_cached = session_cached_data['dt_sec']
@@ -3195,7 +3240,8 @@ def _build_general_fit_setup_from_cache(
         design_matrix_method=design_matrix_method,
         verbose=False,
         subtract_noise_sec=subtract_noise_sec,
-
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
 
 
@@ -3258,7 +3304,8 @@ def _fit_parameters_general(
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
     fd_column_mode: str | None = None,
-
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict | None = None,
 ) -> Dict:
     """General parameter fitter -- handles any parameter combination.
 
@@ -3276,7 +3323,8 @@ def _fit_parameters_general(
         compatibility=compatibility,
         engine_conventions=engine_conventions,
         fd_column_mode=fd_column_mode,
-
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
     cache_time = time.time() - cache_start
     

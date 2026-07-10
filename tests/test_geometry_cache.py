@@ -39,17 +39,13 @@ def get_proper_paths():
     return None, None
 
 
-def _skip_if_ephemeris_unavailable():
-    import os
-
-    from jug.residuals.simple_calculator import _resolve_ephemeris
-
+def _skip_if_tempo2_ephemeris_unavailable():
     try:
-        path = _resolve_ephemeris("de440")
+        from jug.delays.tempo2_ephemeris import resolve_tempo2_ephemeris_path
+
+        resolve_tempo2_ephemeris_path("de440")
     except FileNotFoundError:
-        pytest.skip("bundled ephemeris files not available in this environment")
-    if not os.path.isfile(path):
-        pytest.skip("bundled ephemeris files not available in this environment")
+        pytest.skip("tempo2 ephemeris files not available in this environment")
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +254,7 @@ def test_session_postfit_residuals_same_with_geometry_cache():
     )
 
 
-@pytest.mark.parametrize("compatibility", ["pint"])
+@pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
 def test_session_residuals_at_params_forwards_compatibility(compatibility, monkeypatch):
     """residuals_at_params must pass session compatibility into cached setup builder."""
     from jug.engine import session as session_mod
@@ -289,7 +285,7 @@ def test_session_residuals_at_params_forwards_compatibility(compatibility, monke
     assert captured.get('compatibility') == compatibility
 
 
-@pytest.mark.parametrize("compatibility", ["pint"])
+@pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
 def test_session_residuals_at_params_matches_override_path(compatibility):
     """Fast in-memory residuals_at_params agrees with compute_residuals override path."""
     from jug.engine.session import TimingSession
@@ -297,6 +293,9 @@ def test_session_residuals_at_params_matches_override_path(compatibility):
     par, tim = get_mini_paths()
     if par is None:
         pytest.skip("Mini dataset not found")
+    if compatibility == "tempo2":
+        _skip_if_tempo2_ephemeris_unavailable()
+
     session = TimingSession(par, tim, verbose=False, compatibility=compatibility)
     session.compute_residuals(subtract_tzr=True)
 
@@ -318,7 +317,7 @@ def test_session_residuals_at_params_matches_override_path(compatibility):
     assert fast['n_toas'] == slow['n_toas']
 
 
-@pytest.mark.parametrize("compatibility", ["pint"])
+@pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
 def test_session_residuals_at_params_avoids_temp_par_path(compatibility, monkeypatch):
     """residuals_at_params should not call _compute_residuals_with_params."""
     from jug.engine.session import TimingSession
@@ -326,6 +325,9 @@ def test_session_residuals_at_params_avoids_temp_par_path(compatibility, monkeyp
     par, tim = get_mini_paths()
     if par is None:
         pytest.skip("Mini dataset not found")
+    if compatibility == "tempo2":
+        _skip_if_tempo2_ephemeris_unavailable()
+
     session = TimingSession(par, tim, verbose=False, compatibility=compatibility)
     session.compute_residuals(subtract_tzr=True)
 

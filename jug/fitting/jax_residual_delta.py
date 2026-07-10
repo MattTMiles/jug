@@ -6,10 +6,20 @@ same nonlinear residual-delta function used for JAX-native timing likelihoods;
 there are no finite-difference perturbations and no hand-written derivative
 columns in this path.
 
+For ``compatibility="tempo2"``, native autodiff recomputes
+``residual_sec(θ+Δθ) − residual_sec(θ)`` through the tempo2-native JAX graph
+selected by ``setup.tempo2_native`` (default ``staged_bclt``). Set
+``tempo2_native="full"`` only to differentiate through the unified in-graph
+model; expect multi-minute JIT compile on first call.
+
 **Analytic design matrices** (default WLS) use PINT-style simplified tangents via
-``designmatrix_assembly.py``. The test oracle
-``compute_simplified_autodiff_designmatrix_from_setup`` differentiates the same
-Taylor ``compute_total_delay_change`` + ``_phase_residual_delta_jax`` path.
+``designmatrix_assembly.py`` and do not trace ``tempo2_native``. The test oracle
+``compute_simplified_autodiff_designmatrix_from_setup`` differentiates the Taylor
+``compute_total_delay_change`` + ``_phase_residual_delta_jax`` path instead.
+
+**Host vs fit model split:** production host residuals (``compute_residuals_simple``)
+use Taylor emission spin for TRACK −2 / absent TRACK; this module uses native
+``phase5@bbat`` in JAX. See ``jug.residuals.tempo2.host`` routing contract.
 """
 
 from __future__ import annotations
@@ -22,7 +32,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jug.fitting.forward_delay import compute_side_delay_change, compute_total_delay_change
+from jug.residuals.engine_conventions import normalize_compatibility_mode
+from jug.residuals.tempo2.common import NativeDeltaPack
+from jug.residuals.tempo2.delta_pack import build_delta_pack_for_setup
+from jug.fitting.forward_delay import compute_side_delay_change
+from jug.residuals.tempo2.terms import compute_bbat_delay_change_sec_jax
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.units import native_derivative_to_fit_column
 
@@ -55,6 +69,14 @@ _ECLIPTIC_INTERNAL_TO_LAMBDA_PUBLIC = {
 }
 
 
+def _phase_mean_mode(compatibility: str) -> str:
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    if normalize_compatibility_mode(compatibility) == "tempo2":
+        return "unweighted"
+    return "weighted"
+
+
 def _phase_residual_delta_jax(
     dt_base,
     delay_change,
@@ -65,7 +87,19 @@ def _phase_residual_delta_jax(
     mean_mode: str,
     f0,
 ):
-    """Precision-safe JAX residual delta from spin and delay changes."""
+    """Precision-safe JAX residual delta from spin and delay changes.
+
+    JAX has no longdouble, but JUG's host residual path needs longdouble for the
+    absolute spin phase.  This function only forms small differences relative to
+    the reference state:
+
+    * spin changes are ``(F_k - F_k_ref) * x**(k+1) / (k+1)!``;
+    * delay changes use the exact Taylor difference ``phase(x - d) - phase(x)``
+      with the current spin coefficients.
+
+    The reference pulse numbers and TZR phase cancel in this local residual
+    delta as long as the perturbation stays within the same phase connection.
+    """
     x = jnp.asarray(dt_base, dtype=jnp.float64)
     d = jnp.asarray(delay_change, dtype=jnp.float64)
     weights = jnp.asarray(weights, dtype=jnp.float64)
@@ -239,6 +273,8 @@ def _build_params_from_delta(
         )
         params["_raj_rad"] = ra_rad
         params["_decj_rad"] = dec_rad
+        # Match NumPy reconvert_ecliptic_to_equatorial: only refresh PMRA/PMDEC
+        # when ecliptic proper motion is nonzero; otherwise keep ref values.
         has_pm = jnp.not_equal(pm_lon, 0.0) | jnp.not_equal(pm_lat, 0.0)
         ref_pmra = jnp.asarray(float(ref_params.get("PMRA", 0.0)), dtype=jnp.float64)
         ref_pmdec = jnp.asarray(float(ref_params.get("PMDEC", 0.0)), dtype=jnp.float64)
@@ -297,11 +333,57 @@ def _compute_residual_delta_jax(
     params_pert: dict,
     setup: "GeneralFitSetup",
     *,
+    native_pack: NativeDeltaPack | None,
     ref_f_terms: Sequence[float],
     phase_mean_mode: str,
     binary_plan=None,
+    delay_model: str = "native",
 ):
-    """Residual delta (perturbed - reference) through JUG's PINT-family JAX model."""
+    """Residual delta (perturbed - reference) through JUG's JAX forward model."""
+    use_native_tempo2 = (
+        delay_model != "simplified"
+        and normalize_compatibility_mode(str(getattr(setup, "compatibility", ""))) == "tempo2"
+    )
+    if use_native_tempo2:
+        if native_pack is None:
+            static = getattr(setup, "native_chain_static", None)
+            if static is None:
+                raise ValueError(
+                    "tempo2 native residual_delta requires native_chain_static on "
+                    "GeneralFitSetup. Rebuild from a residual cache that includes "
+                    "term_diagnostics (e.g. call compute_residuals before "
+                    "export_jax_timing_state). "
+                    "Set tempo2_native to staged_bclt (default), "
+                    "fixed_state_bclt, fixed_state_stripped, or full."
+                )
+            raise ValueError(
+                "tempo2 native residual_delta could not build a native delta pack "
+                "(missing term_diagnostics['tempo2_obs_state'] or TOA list on setup)."
+            )
+        native_delay_change = compute_bbat_delay_change_sec_jax(
+            params_ref, params_pert, native_pack
+        )
+        binary_delay_change = _binary_delay_change_jax(
+            params_pert, setup, binary_plan=binary_plan
+        )
+        side_delay_change = compute_side_delay_change(params_pert, setup, xp=jnp)
+        total_delay_change = native_delay_change + side_delay_change
+        if binary_delay_change is not None:
+            total_delay_change = total_delay_change + binary_delay_change
+        f_terms = _spin_terms_from_params(params_pert)
+        return _phase_residual_delta_jax(
+            np.asarray(setup.dt_sec_cached, dtype=np.float64),
+            total_delay_change,
+            ref_f_terms,
+            f_terms,
+            jnp.asarray(setup.weights, dtype=jnp.float64),
+            mean_mode=phase_mean_mode,
+            f0=_param_scalar(params_pert, "F0", f_terms[0]),
+        )
+
+    del native_pack
+    from jug.fitting.forward_delay import compute_total_delay_change
+
     dt_base_np = (
         setup.dt_sec_ld
         if setup.dt_sec_ld is not None
@@ -315,11 +397,6 @@ def _compute_residual_delta_jax(
         xp=jnp,
         binary_plan=binary_plan,
     )
-    side_delay_change = compute_side_delay_change(params_pert, setup, xp=jnp)
-    delay_change = delay_change + side_delay_change
-    binary_delay_change = _binary_delay_change_jax(params_pert, setup, binary_plan=binary_plan)
-    if binary_delay_change is not None:
-        delay_change = delay_change + binary_delay_change
 
     f_terms = _spin_terms_from_params(params_pert)
     return _phase_residual_delta_jax(
@@ -340,12 +417,14 @@ def _residual_delta_core_for_setup(
     ref_params: Mapping[str, object],
     ref_theta: np.ndarray,
     phase_mean_mode: str,
+    native_pack: NativeDeltaPack | None,
     ref_f_terms: tuple[float, ...],
     binary_plan,
     ecliptic_coords: bool,
     obl_rad: float,
     ecliptic_init: dict,
     native_family: str,
+    delay_model: str = "native",
 ):
     """Un-jitted residual-delta closure shared by residual eval and jacfwd."""
 
@@ -375,9 +454,11 @@ def _residual_delta_core_for_setup(
             params_ref,
             params_pert,
             setup,
+            native_pack=native_pack,
             ref_f_terms=ref_f_terms,
             phase_mean_mode=phase_mean_mode,
             binary_plan=binary_plan,
+            delay_model=delay_model,
         )
 
     return core
@@ -390,6 +471,7 @@ def _residual_delta_jax_cache_key(
     ref_theta: np.ndarray,
     ref_f_terms: tuple[float, ...],
     phase_mean_mode: str,
+    delay_model: str = "native",
 ) -> tuple:
     """Hashable key for session-scoped residual/Jacobian JIT bundles."""
     return (
@@ -397,7 +479,10 @@ def _residual_delta_jax_cache_key(
         tuple(float(x) for x in ref_theta),
         ref_f_terms,
         phase_mean_mode,
+        delay_model,
+        str(getattr(setup, "tempo2_native", None)),
         str(setup.compatibility),
+        id(getattr(setup, "native_chain_static", None)),
     )
 
 
@@ -408,6 +493,7 @@ def _build_residual_delta_jax_bundle(
     ref_params: Mapping[str, object],
     ref_theta: np.ndarray,
     phase_mean_mode: str,
+    delay_model: str = "native",
 ):
     """Build shared residual core and jitted residual / Jacobian evaluators."""
     from jug.fitting.binary_delay_plan import resolve_binary_structure
@@ -419,6 +505,14 @@ def _build_residual_delta_jax_bundle(
     ecliptic_coords, obl_rad, ecliptic_init, native_family = _ecliptic_session_metadata(
         ref_params
     )
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    native_pack = None
+    if (
+        delay_model != "simplified"
+        and normalize_compatibility_mode(str(setup.compatibility)) == "tempo2"
+    ):
+        native_pack = build_delta_pack_for_setup(setup)
 
     core = _residual_delta_core_for_setup(
         setup=setup,
@@ -426,12 +520,14 @@ def _build_residual_delta_jax_bundle(
         ref_params=ref_params,
         ref_theta=ref_theta,
         phase_mean_mode=phase_mean_mode,
+        native_pack=native_pack,
         ref_f_terms=ref_f_terms,
         binary_plan=binary_plan,
         ecliptic_coords=ecliptic_coords,
         obl_rad=obl_rad,
         ecliptic_init=ecliptic_init,
         native_family=native_family,
+        delay_model=delay_model,
     )
     return core, jax.jit(core), jax.jit(jax.jacfwd(core))
 
@@ -443,6 +539,7 @@ def _prepare_residual_delta_jax(
     ref_params: Mapping[str, object] | None = None,
     ref_theta: np.ndarray | None = None,
     phase_mean_mode: str | None = None,
+    delay_model: str = "native",
 ):
     """Build or reuse session-cached residual core and JIT evaluators."""
     from jug.fitting.forward_delay import _assert_no_epoch_fit_params
@@ -461,13 +558,14 @@ def _prepare_residual_delta_jax(
         raise ValueError("ref_theta shape mismatch with fit_params.")
 
     ref_f_terms = tuple(float(x) for x in _spin_terms_from_params(ref_params))
-    phase_mean_mode = phase_mean_mode or "weighted"
+    phase_mean_mode = phase_mean_mode or _phase_mean_mode(setup.compatibility)
     cache_key = _residual_delta_jax_cache_key(
         setup,
         fit_params=fit_params,
         ref_theta=ref_theta,
         ref_f_terms=ref_f_terms,
         phase_mean_mode=phase_mean_mode,
+        delay_model=delay_model,
     )
     cache = setup.residual_delta_jax_cache
     if cache is None:
@@ -483,6 +581,7 @@ def _prepare_residual_delta_jax(
         ref_params=ref_params,
         ref_theta=ref_theta,
         phase_mean_mode=phase_mean_mode,
+        delay_model=delay_model,
     )
     cache[cache_key] = bundle
     return bundle
@@ -541,9 +640,32 @@ def compute_simplified_autodiff_designmatrix_from_setup(
     *,
     include_offset_column: bool = False,
 ) -> np.ndarray:
-    """Jacobian of the PINT-style Taylor residual delta (test oracle for analytic columns)."""
-    return compute_autodiff_designmatrix_from_setup(
-        setup,
-        fit_params,
-        include_offset_column=include_offset_column,
+    """Jacobian of the PINT-style Taylor residual delta (test oracle for analytic columns).
+
+    Uses ``compute_total_delay_change`` + ``_phase_residual_delta_jax`` regardless of
+    ``compatibility`` or ``tempo2_native``.  Does not require ``native_chain_static``.
+    """
+    fit_params = tuple(str(name).upper() for name in fit_params)
+    _, _, jac_fn = _prepare_residual_delta_jax(
+        setup=setup,
+        fit_params=fit_params,
+        delay_model="simplified",
     )
+    zero = jnp.zeros((len(fit_params),), dtype=jnp.float64)
+    jac_native = np.asarray(jac_fn(zero), dtype=np.float64)
+
+    cols = []
+    for col, param in enumerate(fit_params):
+        public_native_col = -jac_native[:, col]
+        cols.append(
+            np.asarray(
+                native_derivative_to_fit_column(param, public_native_col),
+                dtype=np.float64,
+            )
+        )
+    n_toa = len(np.asarray(setup.tdb_mjd))
+    if include_offset_column:
+        offset = np.full((n_toa,), -1.0, dtype=np.float64)
+        return np.column_stack([offset] + cols) if cols else offset.reshape(-1, 1)
+    return np.column_stack(cols) if cols else np.empty((n_toa, 0), dtype=np.float64)
+

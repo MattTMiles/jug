@@ -127,61 +127,104 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         and int(track_val) == -2
         and external_pulse_numbers is not None
     )
-    del use_native_bbat_phase5, bbat_mjd, torb_sec
+    use_tempo2_bbat_phase5 = (
+        use_native_bbat_phase5
+        and bbat_mjd is not None
+        and torb_sec is not None
+        and has_track_minus2_pn
+    )
 
-    # Collect all spin frequency derivatives F0, F1, F2, ... FN
-    f_coeffs = [F0]
-    k = 1
-    while f'F{k}' in params:
-        f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
-        k += 1
+    if use_tempo2_bbat_phase5:
+        from jug.residuals.tempo2_spin import compute_tempo2_phase5
 
-    dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
+        jump_arr = None
+        if jump_phase is not None:
+            jump_arr = np.asarray(jump_phase, dtype=np.float64)
+        torb_for_phase5 = np.asarray(torb_sec, dtype=np.float64)
+        phase = compute_tempo2_phase5(
+            bbat_mjd,
+            torb_for_phase5,
+            params,
+            jump_phase=jump_arr,
+            tzr_phase=tzr_phase,
+        )
+    else:
+        # Collect all spin frequency derivatives F0, F1, F2, ... FN
+        f_coeffs = [F0]
+        k = 1
+        while f'F{k}' in params:
+            f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
+            k += 1
 
-    # Phase via Taylor series: phase = sum(F_k * dt^(k+1) / (k+1)!)
-    n_coeffs = len(f_coeffs)
-    phase = np.longdouble(0.0)
-    for i in range(n_coeffs - 1, -1, -1):
-        phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
+        dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
 
-    # Glitch contributions at emission time (PINT convention).
-    glitch_idx = 1
-    while f'GLEP_{glitch_idx}' in params:
-        glep = get_longdouble(params, f'GLEP_{glitch_idx}')
-        glph = get_longdouble(params, f'GLPH_{glitch_idx}', default=0.0)
-        glf0 = get_longdouble(params, f'GLF0_{glitch_idx}', default=0.0)
-        glf1 = get_longdouble(params, f'GLF1_{glitch_idx}', default=0.0)
-        glf0d = get_longdouble(params, f'GLF0D_{glitch_idx}', default=0.0)
-        gltd = get_longdouble(params, f'GLTD_{glitch_idx}', default=0.0)
+        # Phase via Taylor series: phase = sum(F_k * dt^(k+1) / (k+1)!)
+        n_coeffs = len(f_coeffs)
+        phase = np.longdouble(0.0)
+        for i in range(n_coeffs - 1, -1, -1):
+            phase = (phase + f_coeffs[i] / np.longdouble(math.factorial(i + 1))) * dt
 
-        dt_glitch = dt
-        glep_dt = (glep - PEPOCH) * np.longdouble(SECS_PER_DAY)
-        active = dt_glitch > glep_dt
-        dt_since_glep = np.where(active, dt_glitch - glep_dt, np.longdouble(0.0))
+        # Glitch contributions at emission time (PINT convention).
+        glitch_idx = 1
+        while f'GLEP_{glitch_idx}' in params:
+            glep = get_longdouble(params, f'GLEP_{glitch_idx}')
+            glph = get_longdouble(params, f'GLPH_{glitch_idx}', default=0.0)
+            glf0 = get_longdouble(params, f'GLF0_{glitch_idx}', default=0.0)
+            glf1 = get_longdouble(params, f'GLF1_{glitch_idx}', default=0.0)
+            glf0d = get_longdouble(params, f'GLF0D_{glitch_idx}', default=0.0)
+            gltd = get_longdouble(params, f'GLTD_{glitch_idx}', default=0.0)
 
-        glitch_phase = (glph
-                       + glf0 * dt_since_glep
-                       + np.longdouble(0.5) * glf1 * dt_since_glep**2)
+            dt_glitch = dt
+            glep_dt = (glep - PEPOCH) * np.longdouble(SECS_PER_DAY)
+            active = dt_glitch > glep_dt
+            dt_since_glep = np.where(active, dt_glitch - glep_dt, np.longdouble(0.0))
 
-        if gltd != 0.0 and glf0d != 0.0:
-            gltd_sec = gltd * np.longdouble(SECS_PER_DAY)
-            glitch_phase += glf0d * gltd_sec * (
-                np.longdouble(1.0) - np.exp(-dt_since_glep / gltd_sec)
-            )
+            glitch_phase = (glph
+                           + glf0 * dt_since_glep
+                           + np.longdouble(0.5) * glf1 * dt_since_glep**2)
 
-        phase += np.where(active, glitch_phase, np.longdouble(0.0))
-        glitch_idx += 1
+            if gltd != 0.0 and glf0d != 0.0:
+                gltd_sec = gltd * np.longdouble(SECS_PER_DAY)
+                glitch_phase += glf0d * gltd_sec * (
+                    np.longdouble(1.0) - np.exp(-dt_since_glep / gltd_sec)
+                )
 
-    if jump_phase is not None:
-        phase = phase + np.asarray(jump_phase, dtype=np.longdouble)
+            phase += np.where(active, glitch_phase, np.longdouble(0.0))
+            glitch_idx += 1
 
-    if tzr_phase is not None:
-        phase = phase - np.longdouble(tzr_phase)
+        if jump_phase is not None:
+            phase = phase + np.asarray(jump_phase, dtype=np.longdouble)
 
-    phase = np.asarray(phase, dtype=np.longdouble)
+        if tzr_phase is not None:
+            phase = phase - np.longdouble(tzr_phase)
 
-    # Phase wrapping (TRACK -2 with -pn flags; sequential connection otherwise).
-    if has_track_minus2_pn:
+        # Keep longdouble through wrapping: the Taylor phase carries the full
+        # integer pulse count (~1e11 turns on decade-long data at F0~300 Hz),
+        # where a float64 downcast quantizes phase at ~2e-5 turns (~60 ns).
+        # tempo2 keeps phase5 in longdouble throughout formResiduals.C.
+        phase = np.asarray(phase, dtype=np.longdouble)
+
+    # Phase wrapping (Tempo2 formResiduals.C for TRACK -2; sequential connection otherwise).
+    # Native ``track_minus2_frac_phase`` (tempo2 pnNew) is used with ``phase5`` when
+    # ``use_tempo2_bbat_phase5``; legacy ``-pn_add`` wrapping remains for Taylor spin.
+    if has_track_minus2_pn and use_tempo2_bbat_phase5:
+        from jug.residuals.tempo2_spin import track_minus2_frac_phase
+
+        if external_pn_add is not None:
+            pn_add_arr = np.asarray(external_pn_add, dtype=np.int64)
+        else:
+            pn_add_arr = np.full(len(phase), -1, dtype=np.int64)
+
+        pn_tim = np.asarray(external_pulse_numbers, dtype=np.int64)
+        frac_phase, pulse_number = track_minus2_frac_phase(
+            np.asarray(phase, dtype=np.float64),
+            np.asarray(bbat_mjd, dtype=np.float64),
+            float(F0),
+            pn_tim,
+            pn_add_arr,
+        )
+        pulse_number = np.asarray(pulse_number, dtype=np.longdouble)
+    elif has_track_minus2_pn:
         # Legacy TRACK -2 on emission-time Taylor phase (PINT / partial tempo2).
         phas1 = _fortran_mod(phase[0], np.longdouble(1.0))
         phase5 = np.asarray(phase, dtype=np.longdouble) - phas1

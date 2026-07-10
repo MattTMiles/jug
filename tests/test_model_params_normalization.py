@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -13,30 +11,27 @@ from jug.fitting.optimized_fitter import (
     _compute_designmatrix_from_setup,
 )
 from jug.io.par_reader import normalize_model_params, parse_dec, parse_par_file, parse_ra
+from tempo2_fixtures import get_tempo2_fixture
 
-GOLDEN_DIR = Path(__file__).parent / "data_golden"
-PAR = GOLDEN_DIR / "J1909_proper.par"
-TIM = GOLDEN_DIR / "J1909_proper.tim"
+FIXTURE_ID = "epta_j1909_t2"
 
 
 @pytest.fixture(scope="module")
-def pint_fixture():
-    if not PAR.exists() or not TIM.exists():
-        pytest.skip("golden J1909 dataset not found")
-    return {"par_path": PAR, "tim_path": TIM}
+def tempo2_fixture():
+    return get_tempo2_fixture(FIXTURE_ID)
 
 
-def test_parse_par_file_leaves_hms_raj_decj_as_strings(pint_fixture):
-    params = parse_par_file(pint_fixture["par_path"])
+def test_parse_par_file_leaves_hms_raj_decj_as_strings(tempo2_fixture):
+    params = parse_par_file(tempo2_fixture["par_path"])
     assert isinstance(params["RAJ"], str)
     assert isinstance(params["DECJ"], str)
 
 
-def test_normalize_model_params_converts_hms_raj_decj_to_radians(pint_fixture):
-    params = parse_par_file(pint_fixture["par_path"])
+def test_normalize_model_params_converts_hms_raj_decj_to_radians(tempo2_fixture):
+    params = parse_par_file(tempo2_fixture["par_path"])
     normalize_model_params(
         params,
-        compatibility="pint",
+        compatibility="tempo2",
         context="test",
     )
     assert isinstance(params["RAJ"], float)
@@ -45,11 +40,11 @@ def test_normalize_model_params_converts_hms_raj_decj_to_radians(pint_fixture):
     np.testing.assert_allclose(params["DECJ"], parse_dec("-37:44:14.51584"))
 
 
-def test_timing_session_stores_numeric_raj_decj(pint_fixture):
+def test_timing_session_stores_numeric_raj_decj(tempo2_fixture):
     session = TimingSession(
-        pint_fixture["par_path"],
-        pint_fixture["tim_path"],
-        compatibility="pint",
+        tempo2_fixture["par_path"],
+        tempo2_fixture["tim_path"],
+        compatibility="tempo2",
         verbose=False,
     )
     assert isinstance(session.params["RAJ"], float)
@@ -58,12 +53,12 @@ def test_timing_session_stores_numeric_raj_decj(pint_fixture):
 
 @pytest.mark.parametrize("design_matrix_method", ["analytic", "autodiff"])
 def test_cached_session_designmatrix_accepts_hms_parfile(
-    pint_fixture, design_matrix_method
+    tempo2_fixture, design_matrix_method
 ):
     session = TimingSession(
-        pint_fixture["par_path"],
-        pint_fixture["tim_path"],
-        compatibility="pint",
+        tempo2_fixture["par_path"],
+        tempo2_fixture["tim_path"],
+        compatibility="tempo2",
         verbose=False,
     )
     cached_result = session.compute_residuals(subtract_tzr=False, force_recompute=True)
@@ -90,7 +85,7 @@ def test_cached_session_designmatrix_accepts_hms_parfile(
         session_cached_data,
         dict(session.params),
         ["RAJ"],
-        compatibility="pint",
+        compatibility="tempo2",
         design_matrix_method=design_matrix_method,
     )
     matrix = _compute_designmatrix_from_setup(setup, ["RAJ"])

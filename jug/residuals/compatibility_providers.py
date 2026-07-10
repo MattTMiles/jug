@@ -1,4 +1,9 @@
-"""Delay providers for PINT-family compatibility mode.
+"""Parallel delay providers for PINT-family and tempo2 compatibility modes.
+
+Phase B splits TDB geometry into independent provider paths:
+
+- ``PintDelayProvider`` — Astropy JPL ephemeris + PINT-family Roemer/Shapiro.
+- ``Tempo2DelayProvider`` — jplephem SPK + tempo2 Roemer/Shapiro conventions.
 
 Runtime physics conventions come from ``EngineConventionProfile``; comparison-only
 knobs remain in ``DiagnosticConventions``.
@@ -12,7 +17,7 @@ from typing import Any
 
 import numpy as np
 from astropy import units as u
-from astropy.coordinates import get_body_barycentric_posvel, solar_system_ephemeris
+from astropy.coordinates import EarthLocation, get_body_barycentric_posvel, solar_system_ephemeris
 from astropy.time import Time
 
 from jug.delays.barycentric import (
@@ -22,7 +27,22 @@ from jug.delays.barycentric import (
     compute_shapiro_delay,
     compute_ssb_obs_pos_vel,
     rotate_equatorial_to_ecliptic,
+)
+from jug.delays.tempo2_ephemeris import (
+    compute_tempo2_ephemeris_state,
+    compute_tempo2_observatory_state,
+    per_toa_obs_itrf_km,
+    resolve_tempo2_ephemeris_path,
+)
+from jug.delays.tempo2_geometry import (
+    build_pulsar_direction,
+    compute_tempo2_roemer_sec,
+    compute_tempo2_shapiro_sec,
     ecliptic_obliquity_rad,
+    planet_shapiro_sec,
+    ssb_obs_light_seconds,
+    tempo2_equ2ecl,
+    tempo2_observatory_chain_vectors,
 )
 from jug.io.par_reader import parse_dec, parse_ra
 from jug.residuals.diagnostic_conventions import DiagnosticConventions, TermDiagnosticMetadata
@@ -32,7 +52,7 @@ from jug.residuals.engine_conventions import (
     normalize_compatibility_mode,
     validate_engine_profile_matches_compatibility,
 )
-from jug.utils.constants import OBSERVATORIES, T_PLANET, T_SUN_SEC
+from jug.utils.constants import C_KM_S, OBSERVATORIES, T_PLANET, T_SUN_SEC
 
 
 @dataclass
@@ -59,6 +79,10 @@ class GeometryTerms:
     metadata: TermDiagnosticMetadata
 
 
+def _normalize_compatibility(compatibility: str) -> str:
+    return normalize_compatibility_mode(compatibility)
+
+
 class DelayProvider(ABC):
     """Backend-specific astrometry and propagation delay provider."""
 
@@ -71,7 +95,7 @@ class DelayProvider(ABC):
         profile: EngineConventionProfile | None = None,
         diagnostics: DiagnosticConventions | None = None,
     ):
-        mode = normalize_compatibility_mode(compatibility)
+        mode = _normalize_compatibility(compatibility)
         self.profile = profile or default_engine_profile(mode)
         self.diagnostics = diagnostics or DiagnosticConventions()
         validate_engine_profile_matches_compatibility(compatibility, self.profile)
@@ -137,6 +161,56 @@ class PintDelayProvider(DelayProvider):
         )
 
 
+class Tempo2DelayProvider(DelayProvider):
+    """Tempo2 compatibility geometry.
+
+    TCB: tempo2 epoch map + IFTE scaling + native ecliptic when requested.
+    TDB: jplephem SPK ephemeris + tempo2 Roemer/Shapiro (Phase B).
+    """
+
+    def compute_geometry_terms(
+        self,
+        *,
+        params: dict[str, Any],
+        tdb_mjd: np.ndarray,
+        toas: list[Any],
+        obs_itrf_km: np.ndarray,
+        all_obs_codes: list[str],
+        ephem: str,
+        geometry_cache: dict | None,
+        geo_hit: bool,
+        verbose: bool,
+    ) -> GeometryTerms:
+        model_timescale = str(
+            params.get("_timescale_in", params.get("_par_timescale", "TDB"))
+        ).upper()
+        if model_timescale == "TCB":
+            return _compute_tempo2_tcb_geometry_terms(
+                provider=self,
+                params=params,
+                tdb_mjd=tdb_mjd,
+                toas=toas,
+                obs_itrf_km=obs_itrf_km,
+                all_obs_codes=all_obs_codes,
+                ephem=ephem,
+                geometry_cache=geometry_cache,
+                geo_hit=geo_hit,
+                verbose=verbose,
+            )
+        return _compute_tempo2_tdb_geometry_terms(
+            provider=self,
+            params=params,
+            tdb_mjd=tdb_mjd,
+            toas=toas,
+            obs_itrf_km=obs_itrf_km,
+            all_obs_codes=all_obs_codes,
+            ephem=ephem,
+            geometry_cache=geometry_cache,
+            geo_hit=geo_hit,
+            verbose=verbose,
+        )
+
+
 def get_delay_provider(
     compatibility: str,
     profile: EngineConventionProfile | None = None,
@@ -144,9 +218,11 @@ def get_delay_provider(
     *,
     conventions: DiagnosticConventions | None = None,
 ) -> DelayProvider:
-    """Factory for the PINT-family delay provider."""
+    """Factory for pint vs tempo2 delay providers."""
     diag = diagnostics or conventions or DiagnosticConventions()
-    normalize_compatibility_mode(compatibility)
+    mode = _normalize_compatibility(compatibility)
+    if mode == "tempo2":
+        return Tempo2DelayProvider(compatibility, profile, diag)
     return PintDelayProvider(compatibility, profile, diag)
 
 
@@ -329,6 +405,252 @@ def _compute_pint_geometry_terms(
         obs_sun_pos_km=obs_sun_pos_km,
         obs_sun_pos_delay_km=obs_sun_pos_delay_km,
         obs_planet_pos_ls_cached=obs_planet_pos_ls_cached,
+        freq_bary_mhz=np.asarray(freq_bary_mhz, dtype=np.float64),
+        use_native_ecliptic=use_native_ecliptic,
+        obl_rad=obl_rad,
+        metadata=metadata,
+    )
+
+
+def _compute_tempo2_tcb_geometry_terms(
+    *,
+    provider: DelayProvider,
+    params: dict[str, Any],
+    tdb_mjd: np.ndarray,
+    toas: list[Any],
+    obs_itrf_km: np.ndarray,
+    all_obs_codes: list[str],
+    ephem: str,
+    geometry_cache: dict | None,
+    geo_hit: bool,
+    verbose: bool,
+) -> GeometryTerms:
+    """TCB branch: IFTE epoch map + scaling on top of Astropy ephemeris."""
+    from jug.utils.timescales import IFTE_K, convert_tdb_epoch_to_tempo2_tcb
+
+    terms = _compute_pint_geometry_terms(
+        provider=provider,
+        params=params,
+        tdb_mjd=tdb_mjd,
+        toas=toas,
+        obs_itrf_km=obs_itrf_km,
+        all_obs_codes=all_obs_codes,
+        ephem=ephem,
+        geometry_cache=geometry_cache,
+        geo_hit=geo_hit,
+        verbose=verbose,
+    )
+    model_mjd = np.array(
+        [convert_tdb_epoch_to_tempo2_tcb(np.longdouble(t)) for t in tdb_mjd],
+        dtype=np.longdouble,
+    )
+    ifte = float(IFTE_K)
+    ssb_obs_pos_delay_km = terms.ssb_obs_pos_delay_km * ifte
+    ssb_obs_vel_delay_km_s = terms.ssb_obs_vel_delay_km_s * ifte
+    obs_sun_pos_delay_km = terms.obs_sun_pos_delay_km * ifte
+
+    L_hat = terms.L_hat
+    parallax_mas = params.get("PX", 0.0)
+    roemer_sec = compute_roemer_delay(ssb_obs_pos_delay_km, L_hat, parallax_mas)
+    sun_shapiro_sec = (
+        compute_shapiro_delay(obs_sun_pos_delay_km, L_hat, T_SUN_SEC)
+        if provider.profile.solar_shapiro
+        else np.zeros(len(tdb_mjd), dtype=np.float64)
+    )
+    planet_shapiro_sec = terms.planet_shapiro_sec * ifte if provider.profile.planet_shapiro else terms.planet_shapiro_sec * 0.0
+    roemer_shapiro_sec = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
+
+    einstein_rate = None
+    if provider.profile.dilatefreq:
+        einstein_rate = compute_einstein_rate(tdb_mjd, units="TCB")
+    freq_mhz = np.array([toa.freq_mhz for toa in toas])
+    freq_bary_mhz = compute_barycentric_freq(
+        freq_mhz, ssb_obs_vel_delay_km_s, L_hat, einstein_rate=einstein_rate
+    )
+
+    terms.model_mjd = model_mjd
+    terms.ssb_obs_pos_delay_km = ssb_obs_pos_delay_km
+    terms.ssb_obs_vel_delay_km_s = ssb_obs_vel_delay_km_s
+    terms.obs_sun_pos_delay_km = obs_sun_pos_delay_km
+    terms.roemer_sec = np.asarray(roemer_sec, dtype=np.float64)
+    terms.sun_shapiro_sec = np.asarray(sun_shapiro_sec, dtype=np.float64)
+    terms.planet_shapiro_sec = np.asarray(planet_shapiro_sec, dtype=np.float64)
+    terms.roemer_shapiro_sec = np.asarray(roemer_shapiro_sec, dtype=np.float64)
+    terms.freq_bary_mhz = np.asarray(freq_bary_mhz, dtype=np.float64)
+    terms.metadata.geometry_backend = "tempo2_tcb_native"
+    terms.metadata.term_sources = {k: "tempo2_tcb_native" for k in terms.metadata.term_sources}
+    return terms
+
+
+def _compute_tempo2_tdb_geometry_terms(
+    *,
+    provider: DelayProvider,
+    params: dict[str, Any],
+    tdb_mjd: np.ndarray,
+    toas: list[Any],
+    obs_itrf_km: np.ndarray,
+    all_obs_codes: list[str],
+    ephem: str,
+    geometry_cache: dict | None,
+    geo_hit: bool,
+    verbose: bool,
+) -> GeometryTerms:
+    """TDB branch: fully native tempo2 Roemer/Shapiro delay evaluation.
+
+    Observatory ITRF→SSB vectors still come from Astropy (``get_obsCoord`` port
+    is a later phase), but all Roemer/Shapiro formulas in this branch are
+    evaluated by tempo2-native helpers from ``jug.delays.tempo2_geometry``.
+    """
+
+    model_timescale = "TDB"
+    model_mjd = np.array(tdb_mjd, dtype=np.longdouble)
+    use_native_ecliptic = bool(params.get("_ecliptic_coords", False))
+    obl_rad = ecliptic_obliquity_rad(params, use_native_ecliptic)
+    parallax_mas = float(params.get("PX", 0.0))
+
+    ephem_path = resolve_tempo2_ephemeris_path(provider.profile.ephem or ephem)
+    if verbose:
+        print(f"   Tempo2-native ephemeris: {ephem_path}")
+
+    # TDB pulsars: readEphemeris.C does not apply the IFTE_K one_au scaling.
+    # For T2CMETHOD TEMPO the UT1 argument needs SAT and the UTC->TT chain;
+    # (tdb - sat) folds in tt_tb (±1.6 ms → sub-metre site error), acceptable
+    # here because the native BCLT overlay recomputes Roemer from the exact
+    # bootstrap geometry.
+    sat_arr = np.array(
+        [t.mjd_int + t.mjd_frac for t in toas], dtype=np.float64
+    )
+    approx_tt_sec = (np.asarray(tdb_mjd, dtype=np.float64) - sat_arr) * 86400.0
+    obs_state = compute_tempo2_observatory_state(
+        np.asarray(tdb_mjd, dtype=np.float64),
+        per_toa_obs_itrf_km(
+            toas, np.asarray(obs_itrf_km, dtype=np.float64).reshape(3)
+        ),
+        ephem_path=ephem_path,
+        si_units=False,
+        t2c_method=str(getattr(provider.profile, "t2cmethod", "IAU2000B")),
+        sat_mjd=sat_arr,
+        correction_tt_sec=approx_tt_sec,
+    )
+    ssb_obs_pos_km, _, obs_sun_ls_raw, planets_obs_raw = tempo2_observatory_chain_vectors(
+        obs_state
+    )
+    ssb_obs_vel_km_s = obs_state.earth_ssb_km[:, 3:6] + obs_state.site_vel_km_s
+
+    ssb_obs_pos_delay_km = (
+        rotate_equatorial_to_ecliptic(ssb_obs_pos_km, obl_rad)
+        if use_native_ecliptic
+        else ssb_obs_pos_km
+    )
+    ssb_obs_vel_delay_km_s = (
+        rotate_equatorial_to_ecliptic(ssb_obs_vel_km_s, obl_rad)
+        if use_native_ecliptic
+        else ssb_obs_vel_km_s
+    )
+
+    L_hat, _pos_pulsar, vel_pulsar = build_pulsar_direction(
+        params,
+        model_mjd,
+        use_native_ecliptic=use_native_ecliptic,
+    )
+
+    # Tempo2 ``calculate_bclt.C`` keeps ``posPulsar`` fixed at POSEPOCH and applies
+    # PM via explicit ``dt_pm`` / ``dt_pmtt`` terms.  Evolving ``L_hat`` to each
+    # TOA and omitting those terms skews ``bbat`` by ~1 µs RMS on binary IPTA data,
+    # which maps to ~1 µs prefit residual scatter after TRACK −2 mean removal.
+    posepoch = float(params.get("POSEPOCH", params["PEPOCH"]))
+    model_mjd_f64 = np.asarray(model_mjd, dtype=np.float64)
+    L_hat_posepoch, _, vel_pulsar = build_pulsar_direction(
+        params,
+        np.array([posepoch], dtype=np.longdouble),
+        use_native_ecliptic=use_native_ecliptic,
+    )
+    L_hat_roemer = np.repeat(L_hat_posepoch, len(model_mjd_f64), axis=0)
+    delt_centuries = (model_mjd_f64 - posepoch) / 36525.0
+    pmrv_rad_century = 0.0
+    if "PMRV" in params:
+        pmrv_rad_century = float(params["PMRV"]) * (2.0 * np.pi / 360.0) / 36000.0
+
+    ssb_obs_delay_ls = ssb_obs_light_seconds(ssb_obs_pos_delay_km)
+    roemer_sec = compute_tempo2_roemer_sec(
+        ssb_obs_delay_ls,
+        L_hat_roemer,
+        parallax_mas=parallax_mas,
+        pmrv_rad_century=pmrv_rad_century,
+        vel_pulsar=vel_pulsar,
+        delt_centuries=delt_centuries,
+    )
+
+    obs_sun_ls = obs_sun_ls_raw
+    if use_native_ecliptic:
+        obs_sun_ls = tempo2_equ2ecl(obs_sun_ls)
+    obs_sun_pos_delay_km = obs_sun_ls * C_KM_S
+
+    sun_shapiro_sec = (
+        compute_tempo2_shapiro_sec(-obs_sun_ls, L_hat, T_SUN_SEC)
+        if provider.profile.solar_shapiro
+        else np.zeros(len(tdb_mjd), dtype=np.float64)
+    )
+
+    planets_obs = dict(planets_obs_raw)
+    if use_native_ecliptic:
+        planets_obs = {k: tempo2_equ2ecl(v) for k, v in planets_obs.items()}
+
+    planet_shapiro_sec_arr = planet_shapiro_sec(
+        planets_obs,
+        L_hat,
+        enabled=provider.profile.planet_shapiro,
+    )
+
+    roemer_shapiro_sec = roemer_sec + sun_shapiro_sec + planet_shapiro_sec_arr
+    obs_sun_pos_km = obs_sun_pos_delay_km
+
+    einstein_rate = None
+    if provider.profile.dilatefreq:
+        einstein_rate = compute_einstein_rate(tdb_mjd, units="TDB")
+    freq_mhz = np.array([toa.freq_mhz for toa in toas])
+    freq_bary_mhz = compute_barycentric_freq(
+        freq_mhz,
+        ssb_obs_vel_delay_km_s,
+        L_hat,
+        einstein_rate=einstein_rate,
+    )
+
+    if geometry_cache is not None and not geo_hit:
+        geometry_cache["tdb_mjd"] = tdb_mjd
+        geometry_cache["ssb_obs_pos_km"] = ssb_obs_pos_km
+        geometry_cache["ssb_obs_vel_km_s"] = ssb_obs_vel_km_s
+        geometry_cache["obs_sun_pos_km"] = obs_sun_pos_km
+        geometry_cache["obs_planet_pos_ls"] = planets_obs if provider.profile.planet_shapiro else None
+
+    backend = "tempo2_tdb_native"
+    metadata = TermDiagnosticMetadata(
+        compatibility=provider.compatibility,
+        provider=provider.provider_name,
+        geometry_backend=backend,
+        term_sources={
+            "roemer_sec": backend,
+            "sun_shapiro_sec": backend,
+            "planet_shapiro_sec": backend,
+            "freq_bary_mhz": backend,
+        },
+    )
+
+    return GeometryTerms(
+        model_mjd=model_mjd,
+        model_timescale=model_timescale,
+        L_hat=L_hat,
+        ssb_obs_pos_km=ssb_obs_pos_km,
+        ssb_obs_vel_km_s=ssb_obs_vel_km_s,
+        ssb_obs_pos_delay_km=ssb_obs_pos_delay_km,
+        ssb_obs_vel_delay_km_s=ssb_obs_vel_delay_km_s,
+        roemer_sec=np.asarray(roemer_sec, dtype=np.float64),
+        sun_shapiro_sec=np.asarray(sun_shapiro_sec, dtype=np.float64),
+        planet_shapiro_sec=np.asarray(planet_shapiro_sec_arr, dtype=np.float64),
+        roemer_shapiro_sec=np.asarray(roemer_shapiro_sec, dtype=np.float64),
+        obs_sun_pos_km=obs_sun_pos_km,
+        obs_sun_pos_delay_km=obs_sun_pos_delay_km,
+        obs_planet_pos_ls_cached=planets_obs if provider.profile.planet_shapiro else None,
         freq_bary_mhz=np.asarray(freq_bary_mhz, dtype=np.float64),
         use_native_ecliptic=use_native_ecliptic,
         obl_rad=obl_rad,

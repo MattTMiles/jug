@@ -46,7 +46,6 @@ from jug.residuals.diagnostic_conventions import (
 )
 from jug.residuals.engine_conventions import (
     EngineConventionProfile,
-    normalize_compatibility_mode,
     resolve_engine_profile,
 )
 from jug.residuals.phase import (
@@ -54,9 +53,13 @@ from jug.residuals.phase import (
 )
 from jug.residuals.tzr_geometry import (
     TzrEpochs,
+    compute_tempo2_tzr_wrapped_residual_sec,
     compute_tzr_astrometry_pint,
+    compute_tzr_astrometry_tempo2,
+    resolve_tempo2_tzr_apply_mode,
     resolve_tzrmjd_epochs,
 )
+from jug.residuals.tempo2.graph_config import USE_NATIVE_BBAT_PHASE5
 from jug.utils.constants import (
     SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
@@ -511,7 +514,9 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
     dict with keys: model_id, has_binary, binary_model, plus all scalar
     float values (*_val) and JAX arrays (*_jax) needed by the delay kernel.
     """
-    normalize_compatibility_mode(compatibility)
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    is_tempo2_mode = normalize_compatibility_mode(compatibility) == "tempo2"
 
     has_binary = 'PB' in params or 'FB0' in params
     binary_model = params.get('BINARY', 'NONE').upper() if has_binary else 'NONE'
@@ -530,9 +535,16 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
             if has_tasc or has_eps:
                 model_id = 1  # ELL1
             elif has_kin_kom:
-                model_id = 5  # DDK
-                from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
-                convert_t2_kin_kom_to_ddk_convention(params)
+                if is_tempo2_mode:
+                    # T2model.C port: IAU KIN/KOM with additive DAOP/DSR/DOP
+                    # Kopeikin delays (branch 6 in the combined kernel).
+                    model_id = 6
+                else:
+                    model_id = 5  # DDK
+                    # PINT path converts to the DT92-style convention expected
+                    # by the existing DDK kernel implementation.
+                    from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+                    convert_t2_kin_kom_to_ddk_convention(params)
             else:
                 model_id = 2  # DD
         elif binary_model in ('BT', 'BTX'):
@@ -845,9 +857,29 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     delta_tzr_sec = epochs.delta_tzr_sec
     tzrmjd_scale_resolved = epochs.tzrmjd_scale_resolved
 
-    if verbose:
-        print("   TZR astrometry: pint-family path")
-    tzr_astro = compute_tzr_astrometry_pint(
+    if delay_provider is not None:
+        use_tempo2_tzr = delay_provider.compatibility == "tempo2"
+    else:
+        use_tempo2_tzr = engine_profile.is_tempo2
+
+    if use_tempo2_tzr:
+        if verbose:
+            print("   TZR astrometry: tempo2-native path")
+        tzr_astro = compute_tzr_astrometry_tempo2(
+            params=params,
+            epochs=epochs,
+            tzr_obs_itrf_km=tzr_obs_itrf_km,
+            tzr_is_ssb=tzr_is_ssb,
+            ephem=ephem,
+            parallax_mas=parallax_mas,
+            engine_profile=engine_profile,
+            model_timescale=model_timescale,
+            verbose=verbose,
+        )
+    else:
+        if verbose:
+            print("   TZR astrometry: pint-family path")
+        tzr_astro = compute_tzr_astrometry_pint(
             params=params,
             epochs=epochs,
             tzr_obs_itrf_km=tzr_obs_itrf_km,
@@ -862,7 +894,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
             planet_shapiro_enabled=planet_shapiro_enabled,
             model_timescale=model_timescale,
             verbose=verbose,
-    )
+        )
 
     tzr_L_hat = tzr_astro.L_hat
     tzr_roemer_shapiro = tzr_astro.roemer_shapiro_sec
@@ -1026,7 +1058,8 @@ def compute_residuals_simple(
     diagnostic_conventions: DiagnosticConventions | None = None,
     engine_conventions: EngineConventionProfile | None = None,
     skip_native_bclt_overlay: bool = False,
-
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict | None = None,
 ) -> dict:
     """Compute pulsar timing residuals from .par and .tim files.
 
@@ -1103,8 +1136,12 @@ def compute_residuals_simple(
 
     clock_dir = resolve_clock_dir(clock_dir, compatibility=compatibility)
 
-    normalize_compatibility_mode(compatibility)
-    iers_policy = None
+    from jug.timing import resolve_tempo2_session_args
+
+    resolved_tempo2_native, resolved_tempo2_jug_options = resolve_tempo2_session_args(
+        compatibility, tempo2_native, tempo2_jug_options
+    )
+    iers_policy = resolved_tempo2_jug_options.get("iers_policy")
 
     # Parse files
     if verbose: print(f"\n1. Loading files...")
@@ -1346,8 +1383,12 @@ def compute_residuals_simple(
     # The resolved engine profile is the single source of truth so implicit
     # tempo2 defaults and explicit par overrides follow the same code path.
     correct_troposphere = bool(engine_profile.correct_troposphere)
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    is_tempo2_compat_early = normalize_compatibility_mode(compatibility_mode) == "tempo2"
+
     tropo_delay_sec = np.zeros(len(toas), dtype=np.float64)
-    if correct_troposphere:
+    if correct_troposphere and not is_tempo2_compat_early:
         if verbose: print(f"   Calculating tropospheric delay (Davis ZHD + Niell MF)...")
         from jug.delays.troposphere import compute_tropospheric_delay
         
@@ -1596,8 +1637,46 @@ def compute_residuals_simple(
     spin_model_mjd_ld = np.asarray(model_mjd, dtype=np.longdouble)
     dt_sec = (spin_model_mjd_ld - PEPOCH) * np.longdouble(SECS_PER_DAY) - delay_sec
 
-    phase_bbat_mjd = None
-    phase_torb_sec = None
+    is_tempo2_compat = normalize_compatibility_mode(compatibility_mode) == "tempo2"
+    bbat_mjd = None
+    torb_sec = None
+    bclt_dt_ssb_sec = None
+    tempo2_clock_terms = None
+    formbats_correction_tt = None
+    earth_ssb_vel_km_s = None
+    tempo2_obs_state = None
+    tempo2_obs_state_export = None
+    if is_tempo2_compat:
+        from jug.residuals.tempo2.host import run_tempo2_host_stage
+        _stage = run_tempo2_host_stage(
+            mjd_utc=mjd_utc, obs_clocks=obs_clocks, bipm_clock=bipm_clock, toas=toas,
+            all_obs_codes=all_obs_codes, obs_clock=obs_clock, time_offsets=time_offsets,
+            params=params, obs_itrf_km=obs_itrf_km, dm_eff=dm_eff,
+            freq_bary_mhz=freq_bary_mhz, dt_sec=dt_sec, model_mjd=model_mjd, PEPOCH=PEPOCH,
+            compatibility_mode=compatibility_mode, engine_profile=engine_profile,
+            correct_troposphere=correct_troposphere, roemer_sec=roemer_sec,
+            sun_shapiro_sec=sun_shapiro_sec, planet_shapiro_sec=planet_shapiro_sec,
+            roemer_shapiro=roemer_shapiro, dm_delay_sec=dm_delay_sec, sw_delay_sec=sw_delay_sec,
+            tropo_delay_sec=tropo_delay_sec, dmx_delay_sec=dmx_delay_sec,
+            skip_native_bclt_overlay=skip_native_bclt_overlay,
+            total_delay_sec=total_delay_sec, delay_sec=delay_sec,
+        )
+        (formbats_correction_tt, tempo2_clock_terms, tempo2_obs_state_export,
+         earth_ssb_vel_km_s, dm_delay_sec, sw_delay_sec, tropo_delay_sec, roemer_sec,
+         sun_shapiro_sec, planet_shapiro_sec, roemer_shapiro, prebinary_delay_sec,
+         ifte_delta_t_sec, bbat_mjd, torb_sec, model_mjd, total_delay_sec, delay_sec,
+         dt_sec, bclt_dt_ssb_sec) = (
+            _stage.formbats_correction_tt, _stage.tempo2_clock_terms,
+            _stage.tempo2_obs_state_export, _stage.earth_ssb_vel_km_s, _stage.dm_delay_sec,
+            _stage.sw_delay_sec, _stage.tropo_delay_sec, _stage.roemer_sec,
+            _stage.sun_shapiro_sec, _stage.planet_shapiro_sec, _stage.roemer_shapiro,
+            _stage.prebinary_delay_sec, _stage.ifte_delta_t_sec, _stage.bbat_mjd,
+            _stage.torb_sec, _stage.model_mjd, _stage.total_delay_sec, _stage.delay_sec,
+            _stage.dt_sec, _stage.bclt_dt_ssb_sec,
+        )
+
+    phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
+    phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None
 
     # Phase computation is done by the shared function below (after TZR block)
 
@@ -1670,28 +1749,93 @@ def compute_residuals_simple(
                     f"{f', {n_addsat} -addsat' if n_addsat else ''})"
                 )
 
-    tzr_apply_mode = "pre_wrap" if subtract_tzr else "none"
-    tzr_phase_for_residuals = tzr_phase if subtract_tzr else None
-    subtract_mean_in_phase = True
+    if is_tempo2_compat:
+        tzr_apply_mode = resolve_tempo2_tzr_apply_mode(
+            params, np.asarray(model_mjd, dtype=np.float64), subtract_tzr=subtract_tzr
+        )
+    else:
+        tzr_apply_mode = "pre_wrap" if subtract_tzr else "none"
 
-    from jug.residuals.host_pipeline import finalize_pint_host_residuals
+    if tzr_apply_mode == "pre_wrap":
+        tzr_phase_for_residuals = tzr_phase
+    else:
+        tzr_phase_for_residuals = None
 
-    residuals_us, residuals_sec, pulse_number = finalize_pint_host_residuals(
-        dt_sec=dt_sec,
-        params=params,
-        weights_scaled=weights_scaled,
-        subtract_mean_in_phase=subtract_mean_in_phase,
-        tzr_phase_for_residuals=tzr_phase_for_residuals,
-        jump_phase=jump_phase,
-        external_pn=external_pn,
-        track_val=track_val,
-        external_pn_add=external_pn_add,
-        phase_bbat_mjd=phase_bbat_mjd,
-        phase_torb_sec=phase_torb_sec,
-        addsat_sec=addsat_sec,
-        phase_mean_mode=delay_provider.phase_mean_mode,
-        use_native_bbat_phase5=False,
-    )
+    subtract_mean_in_phase = tzr_apply_mode != "post_wrap"
+
+    if is_tempo2_compat:
+        # Production tempo2 host routing (see pipeline.py):
+        #   TRACK absent  -> Taylor sequential
+        #   TRACK == -2   -> Taylor emission-time + legacy -pn (libstempo parity)
+        #   other TRACK   -> native two-part phase5@bbat
+        # JAX autodiff uses phase5@bbat via jax_residual_delta for all TRACK values.
+        from jug.residuals.tempo2.host import finalize_tempo2_host_residuals
+
+        _t2_final = finalize_tempo2_host_residuals(
+            params=params,
+            toas=toas,
+            dt_sec=dt_sec,
+            compatibility_mode=compatibility_mode,
+            tempo2_clock_terms=tempo2_clock_terms,
+            formbats_correction_tt=formbats_correction_tt,
+            tempo2_obs_state_export=tempo2_obs_state_export,
+            tropo_delay_sec=tropo_delay_sec,
+            dm_delay_sec=dm_delay_sec,
+            sw_delay_sec=sw_delay_sec,
+            freq_bary_mhz=freq_bary_mhz,
+            weights_scaled=weights_scaled,
+            subtract_mean_in_phase=subtract_mean_in_phase,
+            tzr_phase_for_residuals=tzr_phase_for_residuals,
+            jump_phase=jump_phase,
+            external_pn=external_pn,
+            external_pn_add=external_pn_add,
+            track_val=track_val,
+            addsat_sec=addsat_sec,
+            phase_mean_mode=delay_provider.phase_mean_mode,
+            phase_bbat_mjd=phase_bbat_mjd,
+            phase_torb_sec=phase_torb_sec,
+            prebinary_delay_sec=prebinary_delay_sec,
+            total_delay_sec=total_delay_sec,
+        )
+        residuals_us = _t2_final.residuals_us
+        residuals_sec = _t2_final.residuals_sec
+        pulse_number = _t2_final.pulse_number
+        dm_delay_sec = _t2_final.dm_delay_sec
+        sw_delay_sec = _t2_final.sw_delay_sec
+    else:
+        from jug.residuals.host_pipeline import finalize_pint_host_residuals
+
+        residuals_us, residuals_sec, pulse_number = finalize_pint_host_residuals(
+            dt_sec=dt_sec,
+            params=params,
+            weights_scaled=weights_scaled,
+            subtract_mean_in_phase=subtract_mean_in_phase,
+            tzr_phase_for_residuals=tzr_phase_for_residuals,
+            jump_phase=jump_phase,
+            external_pn=external_pn,
+            track_val=track_val,
+            external_pn_add=external_pn_add,
+            phase_bbat_mjd=phase_bbat_mjd,
+            phase_torb_sec=phase_torb_sec,
+            addsat_sec=addsat_sec,
+            phase_mean_mode=delay_provider.phase_mean_mode,
+            use_native_bbat_phase5=USE_NATIVE_BBAT_PHASE5,
+        )
+
+    if tzr_apply_mode == "post_wrap":
+        anchor_phase = _spin_taylor_phase(dt_sec[0], f_coeffs) + jump_phase[0]
+        tzr_residual_sec = compute_tempo2_tzr_wrapped_residual_sec(
+            tzr_phase, anchor_phase, F0,
+        )
+        residuals_sec = residuals_sec - tzr_residual_sec
+        residuals_us = residuals_sec * 1e6
+        if verbose:
+            print(
+                f"   TZR post-wrap shift: {tzr_residual_sec * 1e6:.3f} mus "
+                f"(REFPHS TZR)"
+            )
+    elif verbose and tzr_apply_mode == "none" and subtract_tzr and "TZRMJD" in params:
+        print("   TZR pre-wrap skipped (TOAs far from TZRMJD; tempo2 REFPHS MEAN path)")
 
     # Compute weighted RMS using raw errors
     weighted_rms = np.sqrt(np.sum(weights * residuals_us**2) / np.sum(weights))
@@ -1796,8 +1940,46 @@ def compute_residuals_simple(
         "binary_status": binary_status,
         "metadata": term_metadata.as_dict(),
     }
+    if tempo2_obs_state_export is not None:
+        term_diagnostics["tempo2_obs_state"] = tempo2_obs_state_export
+    if tempo2_clock_terms is not None:
+        sat_int_day = np.array([t.mjd_int for t in toas], dtype=np.float64)
+        sat_sec_in_day = np.array([t.mjd_frac * SECS_PER_DAY for t in toas], dtype=np.float64)
+        term_diagnostics.update(
+            {
+                "sat_mjd": np.asarray(tempo2_clock_terms.sat_mjd, dtype=np.float64),
+                "sat_int_day": sat_int_day,
+                "sat_sec_in_day": sat_sec_in_day,
+                "correction_tt_sec": np.asarray(
+                    tempo2_clock_terms.correction_tt_sec, dtype=np.float64
+                ),
+                "correction_tt_tb_sec": np.asarray(
+                    tempo2_clock_terms.correction_tt_tb_sec, dtype=np.float64
+                ),
+                "correction_tt_teph_sec": np.asarray(
+                    tempo2_clock_terms.correction_tt_teph_sec, dtype=np.float64
+                ),
+                "ifte_delta_t_sec": ifte_delta_t_sec,
+                "bat_mjd": np.asarray(tempo2_clock_terms.bat_mjd, dtype=np.float64),
+                "bbat_mjd": np.asarray(tempo2_clock_terms.bbat_mjd, dtype=np.float64),
+                "shklovskii_sec": np.asarray(
+                    tempo2_clock_terms.shklovskii_sec, dtype=np.float64
+                ),
+                "formbats_correction_tt_sec": np.asarray(
+                    formbats_correction_tt, dtype=np.float64
+                ),
+            }
+        )
+        if bclt_dt_ssb_sec is not None:
+            term_diagnostics["bclt_dt_ssb_sec"] = np.asarray(
+                bclt_dt_ssb_sec, dtype=np.float64
+            )
+            term_diagnostics["dt_ssb_sec"] = term_diagnostics["bclt_dt_ssb_sec"]
+
     return {
         'compatibility': compatibility_mode,
+        'tempo2_native': resolved_tempo2_native,
+        'tempo2_jug_options': resolved_tempo2_jug_options,
         'par_timescale': par_timescale,
         'diagnostic_conventions': {
             'residual_metric': diagnostic_conv.residual_metric,
@@ -1829,7 +2011,9 @@ def compute_residuals_simple(
         'total_delay_sec': np.array(total_delay_sec, dtype=np.float64),
         'freq_bary_mhz': np.array(freq_bary_mhz, dtype=np.float64),
         'tzr_phase': np.longdouble(tzr_phase),
-        'tzr_apply_mode': tzr_apply_mode,
+        'tzr_apply_mode': tzr_apply_mode if is_tempo2_compat else (
+            'pre_wrap' if subtract_tzr else 'none'
+        ),
         # JUMP phase offsets (longdouble, for fitter to use)
         'jump_phase': np.array(jump_phase, dtype=np.longdouble),
         # Emission time offset from PEPOCH (longdouble for phase precision)
@@ -1838,8 +2022,8 @@ def compute_residuals_simple(
         'dt_sec': np.array(dt_sec, dtype=np.float64),
         # Roemer+Shapiro delay for computing barycentric times (legacy, for backward compat)
         'roemer_shapiro_sec': np.array(roemer_shapiro, dtype=np.float64),
-        'bbat_mjd': None,
-        'torb_sec': None,
+        'bbat_mjd': np.array(bbat_mjd, dtype=np.float64) if bbat_mjd is not None else None,
+        'torb_sec': np.array(torb_sec, dtype=np.float64) if torb_sec is not None else None,
         'roemer_sec': np.asarray(roemer_sec, dtype=np.float64),
         'sun_shapiro_sec': np.asarray(sun_shapiro_sec, dtype=np.float64),
         'planet_shapiro_sec': np.asarray(planet_shapiro_sec, dtype=np.float64),
@@ -1856,7 +2040,11 @@ def compute_residuals_simple(
         'ssb_obs_pos_km': np.array(ssb_obs_pos_km, dtype=np.float64),
         'ssb_obs_vel_km_s': np.array(ssb_obs_vel_km_s, dtype=np.float64),
         'ssb_obs_vel_delay_km_s': np.array(ssb_obs_vel_delay_km_s, dtype=np.float64),
-        'earth_ssb_vel_km_s': np.array(ssb_obs_vel_km_s, dtype=np.float64),
+        'earth_ssb_vel_km_s': (
+            np.array(earth_ssb_vel_km_s, dtype=np.float64)
+            if earth_ssb_vel_km_s is not None
+            else np.array(ssb_obs_vel_km_s, dtype=np.float64)
+        ),
         # Sun position relative to observer in light-seconds (for Shapiro recomputation)
         'obs_sun_pos_ls': np.array(obs_sun_pos_ls, dtype=np.float64),
         # Planet positions relative to observer in light-seconds (for planet Shapiro recomputation)

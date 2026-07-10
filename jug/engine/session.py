@@ -77,6 +77,8 @@ class TimingSession:
         verbose: bool = False,
         compatibility: str = "pint",
         engine_conventions: EngineConventionProfile | None = None,
+        tempo2_native: str | None = None,
+        tempo2_jug_options: dict | None = None,
     ):
         """
         Initialize a timing session.
@@ -98,6 +100,11 @@ class TimingSession:
         self.verbose = verbose
         self.compatibility = compatibility
         self.engine_conventions = engine_conventions
+        from jug.timing import resolve_tempo2_session_args
+
+        self.tempo2_native, self.tempo2_jug_options = resolve_tempo2_session_args(
+            compatibility, tempo2_native, tempo2_jug_options
+        )
         if engine_conventions is not None:
             validate_engine_profile_matches_compatibility(
                 compatibility, engine_conventions
@@ -120,8 +127,9 @@ class TimingSession:
         # Tempo2's T2 model uses IAU convention for KIN/KOM.
         # JUG's DDK code (from PINT) uses DT92 convention.
         # Convert: KIN_DT92 = 180 - KIN_IAU, KOM_DT92 = 90 - KOM_IAU
-        from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
-        convert_t2_kin_kom_to_ddk_convention(self.params)
+        if str(self.compatibility).lower() != "tempo2":
+            from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+            convert_t2_kin_kom_to_ddk_convention(self.params)
         
         self.toas_data = parse_tim_file_mjds(self.tim_file)
         self._initial_params = dict(self.params)  # Copy for comparison
@@ -208,7 +216,8 @@ class TimingSession:
         # (compute_residuals_simple will apply IAU->DT92 again when reading)
         binary = params.get('BINARY', '').upper()
         if (
-            binary == 'T2'
+            str(self.compatibility).lower() != "tempo2"
+            and binary == 'T2'
             and params.get('_t2_kin_kom_converted')
             and ('KIN' in params or 'KOM' in params)
         ):
@@ -329,7 +338,8 @@ class TimingSession:
                 geometry_cache=self._geometry_cache,
                 compatibility=self.compatibility,
                 engine_conventions=self.engine_conventions,
-
+                tempo2_native=self.tempo2_native,
+                tempo2_jug_options=self.tempo2_jug_options,
             )
         finally:
             tmp_par_path.unlink()
@@ -420,7 +430,8 @@ class TimingSession:
                 geometry_cache=self._geometry_cache,
                 compatibility=self.compatibility,
                 engine_conventions=self.engine_conventions,
-
+                tempo2_native=self.tempo2_native,
+                tempo2_jug_options=self.tempo2_jug_options,
             )
         
         # Cache the result (only for original params), keyed by subtract_tzr
@@ -532,6 +543,8 @@ class TimingSession:
             self.params,
             list(params.keys()),
             compatibility=self.compatibility,
+            tempo2_native=self.tempo2_native,
+            tempo2_jug_options=self.tempo2_jug_options,
         )
 
         eval_params = dict(self.params)
@@ -714,7 +727,8 @@ class TimingSession:
                 noise_config=noise_config,
                 subtract_noise_sec=subtract_noise_sec,
                 compatibility=self.compatibility,
-
+                tempo2_native=self.tempo2_native,
+                tempo2_jug_options=self.tempo2_jug_options,
             )
             
             # Run cached fit
@@ -741,7 +755,8 @@ class TimingSession:
                 verbose=verbose,
                 compatibility=self.compatibility,
                 engine_conventions=self.engine_conventions,
-
+                tempo2_native=self.tempo2_native,
+                tempo2_jug_options=self.tempo2_jug_options,
             )
         
         # Update session params with fitted values (CRITICAL for iterative fitting!)

@@ -160,9 +160,15 @@ def _pint_gls_fit(par_path):
 
 
 def _tempo2_fit(par_path):
-    """Tempo2 oracle fits are not available in the pint-only portable build."""
-    del par_path
-    pytest.skip("tempo2 reference harness not available in pint-only build")
+    """Run Tempo2 fit through the libstempo sandbox; return post-fit WRMS in µs."""
+    from jug.testing.tempo2_reference import tempo2_reference
+
+    return tempo2_reference(
+        par_path,
+        TIM,
+        dofit=True,
+        fit_params=FIT_PARAMS,
+    ).wrms_us
 
 
 

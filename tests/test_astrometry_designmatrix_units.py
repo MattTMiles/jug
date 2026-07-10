@@ -25,7 +25,9 @@ from jug.utils.units import (
     native_to_fit_value,
     validate_column_units,
 )
-GOLDEN_DIR = Path(__file__).parent / "data_golden"
+from tempo2_fixtures import get_tempo2_fixture
+
+FIXTURE_ID = "epta_j1909_t2"
 ASTROMETRY_FIT_DELTAS = {
     "RAJ": 1.0e-8,
     "DECJ": 1.0e-8,
@@ -39,11 +41,8 @@ ASTROMETRY_FORWARD_PERTURB_PARAMS = ("RAJ", "DECJ", "PMRA", "PMDEC")
 
 @pytest.fixture(scope="module")
 def fixture():
-    par = GOLDEN_DIR / "J1909_proper.par"
-    tim = GOLDEN_DIR / "J1909_proper.tim"
-    if not par.exists() or not tim.exists():
-        pytest.skip("golden J1909 dataset not found")
-    return par, tim
+    row = get_tempo2_fixture(FIXTURE_ID)
+    return row["par_path"], row["tim_path"]
 
 
 def _project_offset(column: np.ndarray) -> np.ndarray:
@@ -131,7 +130,7 @@ def test_astrometry_column_units_match_fit_unit(param):
     assert _ensure == u.s / u.Unit(fit_unit(param))
 
 
-@pytest.mark.parametrize("compatibility", ["pint"])
+@pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
 @pytest.mark.parametrize("param", ASTROMETRY_FD_RECOMPUTE_PARAMS)
 def test_astrometry_column_matches_analytic_fit_unit_derivative(
     fixture, compatibility, param
@@ -161,7 +160,7 @@ def test_astrometry_column_matches_analytic_fit_unit_derivative(
     np.testing.assert_allclose(dm.matrix[:, 0], expected, rtol=0.0, atol=1.0e-15)
 
 
-@pytest.mark.parametrize("compatibility", ["pint"])
+@pytest.mark.parametrize("compatibility", ["pint", "tempo2"])
 @pytest.mark.parametrize("param", ASTROMETRY_FORWARD_PERTURB_PARAMS)
 def test_astrometry_forward_perturbation_matches_column(fixture, compatibility, param):
     par_file, tim_file = fixture
@@ -196,19 +195,26 @@ def test_astrometry_forward_perturbation_matches_column(fixture, compatibility, 
     np.testing.assert_allclose(scale, 1.0, rtol=0.05, atol=0.05)
 
 
-def test_pint_backend_reports_unit_metadata(fixture):
+def test_pint_tempo2_backends_report_same_unit_metadata(fixture):
     par_file, tim_file = fixture
     fit_params = list(ASTROMETRY_EXPORT_PARAMS)
 
-    dm = compute_designmatrix(
+    pint_dm = compute_designmatrix(
         par_file,
         tim_file,
         fit_params,
         compatibility="pint",
     )
+    tempo2_dm = compute_designmatrix(
+        par_file,
+        tim_file,
+        fit_params,
+        compatibility="tempo2",
+    )
 
-    assert dm.unit_convention == "pint-vela"
-    assert dm.labels == fit_params
-    assert dm.column_units == validate_column_units(fit_params)
-    for label, unit_str in zip(dm.labels, dm.column_units):
+    assert pint_dm.unit_convention == tempo2_dm.unit_convention == "pint-vela"
+    assert pint_dm.labels == tempo2_dm.labels == fit_params
+    assert pint_dm.column_units == tempo2_dm.column_units
+    assert pint_dm.column_units == validate_column_units(fit_params)
+    for label, unit_str in zip(pint_dm.labels, pint_dm.column_units):
         assert unit_str == column_unit(label)

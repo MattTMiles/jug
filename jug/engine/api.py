@@ -18,7 +18,7 @@ result = fit_parameters('pulsar.par', 'pulsar.tim', ['F0', 'F1'])
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Union, Any
 
 from jug.engine.session import TimingSession
 from jug.residuals.engine_conventions import EngineConventionProfile
@@ -33,10 +33,16 @@ def open_session(
     verbose: bool = False,
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> TimingSession:
     """
     Open a timing session for repeated operations.
-
+    
+    This is the recommended way to use JUG for multiple operations
+    (e.g., compute residuals, fit parameters, compute again).
+    The session caches file parsing and expensive setup operations.
+    
     Parameters
     ----------
     par_file : Path or str
@@ -48,9 +54,33 @@ def open_session(
     verbose : bool, default False
         Print status messages
     compatibility : str, default "pint"
-        Timing compatibility mode (only ``"pint"`` is supported).
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
     engine_conventions : EngineConventionProfile, optional
         Explicit engine convention profile (must match *compatibility*).
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode: ``"staged_bclt"``, ``"fixed_state_bclt"``,
+        ``"fixed_state_stripped"``, or ``"full"``.  Default for ``compatibility="tempo2"`` is
+        ``"staged_bclt"``; ignored on the PINT path.
+    tempo2_jug_options : dict, optional
+        Tempo2 options (``iers_policy``, ``bclt_fixed_iter``,
+        ``force_cache_refresh``, ``require_native_cache``).  Passed through to
+        downstream session and fit functions; ``None`` uses built-in defaults.
+    
+    Returns
+    -------
+    session : TimingSession
+        A timing session object
+    
+    Examples
+    --------
+    >>> from jug.engine import open_session
+    >>> session = open_session('J1909.par', 'J1909.tim')
+    >>> result = session.compute_residuals()
+    >>> print(f"RMS: {result['rms_us']:.3f} mus")
+    >>> 
+    >>> # Fit parameters (reuses cached file parsing)
+    >>> fit_result = session.fit_parameters(['F0', 'F1'])
+    >>> print(f"Fitted F0: {fit_result['final_params']['F0']:.15f} Hz")
     """
     return TimingSession(
         par_file=par_file,
@@ -59,6 +89,8 @@ def open_session(
         verbose=verbose,
         compatibility=compatibility,
         engine_conventions=engine_conventions,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
 
 
@@ -70,8 +102,54 @@ def compute_residuals(
     verbose: bool = False,
     compatibility: str = "pint",
     engine_conventions: EngineConventionProfile | None = None,
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Compute timing residuals (legacy one-shot API)."""
+    """
+    Compute timing residuals (legacy one-shot API).
+    
+    This function provides backward compatibility with existing code.
+    For multiple operations on the same files, use open_session() instead.
+    
+    Parameters
+    ----------
+    par_file : Path or str
+        Path to .par file
+    tim_file : Path or str
+        Path to .tim file
+    clock_dir : str, optional
+        Directory containing clock files
+    subtract_tzr : bool, default True
+        Whether to subtract TZR offset
+    compatibility : str, default "pint"
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
+    engine_conventions : EngineConventionProfile, optional
+        Explicit engine convention profile (must match *compatibility*).
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode (see :func:`open_session`).
+    tempo2_jug_options : dict, optional
+        Tempo2 options dict (see :func:`open_session`).
+    
+    Returns
+    -------
+    result : dict
+        Residuals result with keys:
+        - 'residuals_us': Residuals in microseconds
+        - 'rms_us': RMS in microseconds
+        - 'tdb_mjd': TDB times
+        - etc.
+    
+    Examples
+    --------
+    >>> from jug.engine import compute_residuals
+    >>> result = compute_residuals('J1909.par', 'J1909.tim')
+    >>> print(f"RMS: {result['rms_us']:.3f} mus")
+    
+    Notes
+    -----
+    This calls compute_residuals_simple() directly without caching.
+    For repeated operations, use open_session() instead.
+    """
     return compute_residuals_simple(
         par_file=par_file,
         tim_file=tim_file,
@@ -80,6 +158,8 @@ def compute_residuals(
         verbose=verbose,
         compatibility=compatibility,
         engine_conventions=engine_conventions,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
 
 
@@ -93,8 +173,63 @@ def fit_parameters(
     device: Optional[str] = None,
     verbose: bool = False,
     compatibility: str = "pint",
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Fit timing model parameters (legacy one-shot API)."""
+    """
+    Fit timing model parameters (legacy one-shot API).
+    
+    This function provides backward compatibility with existing code.
+    For multiple operations on the same files, use open_session() instead.
+    
+    Parameters
+    ----------
+    par_file : Path or str
+        Path to .par file
+    tim_file : Path or str
+        Path to .tim file
+    fit_params : list of str
+        Parameters to fit (e.g., ['F0', 'F1', 'DM'])
+    max_iter : int, default 25
+        Maximum iterations
+    convergence_threshold : float, default 1e-14
+        Convergence threshold
+    clock_dir : str, optional
+        Directory containing clock files
+    device : str, optional
+        'cpu', 'gpu', or None (auto-detect)
+    verbose : bool, default False
+        Print fitting progress
+    compatibility : str, default "pint"
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode (see :func:`open_session`).
+    tempo2_jug_options : dict, optional
+        Tempo2 options dict (see :func:`open_session`).
+    
+    Returns
+    -------
+    result : dict
+        Fit results with keys:
+        - 'final_params': Fitted parameter values
+        - 'uncertainties': Parameter uncertainties
+        - 'final_rms': Final RMS in mus
+        - 'iterations': Number of iterations
+        - 'converged': Whether fit converged
+        - etc.
+    
+    Examples
+    --------
+    >>> from jug.engine import fit_parameters
+    >>> result = fit_parameters('J1909.par', 'J1909.tim', ['F0', 'F1'])
+    >>> print(f"F0 = {result['final_params']['F0']:.15f} Hz")
+    >>> print(f"RMS = {result['final_rms']:.3f} mus")
+    
+    Notes
+    -----
+    This calls fit_parameters_optimized() directly without caching.
+    For repeated operations, use open_session() instead.
+    """
     return fit_parameters_optimized(
         par_file=par_file,
         tim_file=tim_file,
@@ -105,4 +240,6 @@ def fit_parameters(
         device=device,
         verbose=verbose,
         compatibility=compatibility,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )

@@ -186,8 +186,21 @@ def compute_spin_derivatives(
     if not spin_params:
         return {}
 
-    _normalize_spin_compatibility(compatibility)
+    mode = _normalize_spin_compatibility(compatibility)
     f0 = float(params.get("F0", 1.0))
+
+    if mode == "tempo2":
+        if dt_sec is not None:
+            dt = np.asarray(dt_sec, dtype=np.float64)
+        else:
+            pepoch_mjd = float(params.get("PEPOCH", toas_mjd[0]))
+            dt = (np.asarray(toas_mjd, dtype=np.float64) - pepoch_mjd) * float(SECS_PER_DAY)
+        derivatives: Dict[str, jnp.ndarray] = {}
+        for param in spin_params:
+            order = int(param[1:])
+            col = -(dt ** (order + 1)) / (math.factorial(order + 1) * f0)
+            derivatives[param] = jnp.asarray(col, dtype=jnp.float64)
+        return derivatives
 
     pepoch_mjd = params.get("PEPOCH", toas_mjd[0])
     dt_jax = (toas_mjd - pepoch_mjd) * SECS_PER_DAY

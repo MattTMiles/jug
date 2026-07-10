@@ -139,7 +139,20 @@ def test_autodiff_matches_mean_projected_analytic_spin_dm():
 
 @pytest.mark.tempo2
 def test_tempo2_analytic_matches_simplified_autodiff_spin_dm():
-    pytest.skip("tempo2 design-matrix parity not available in pint-only build")
+    from jug.fitting.jax_residual_delta import (
+        compute_simplified_autodiff_designmatrix_from_setup,
+    )
+
+    fit_params = ["F0", "DM"]
+    setup = _setup(fit_params, method="analytic")
+    setup = dataclasses.replace(setup, compatibility="tempo2")
+    setup.residual_delta_jax_cache = None
+
+    analytic = _compute_designmatrix_from_setup(setup, fit_params)
+    reference = compute_simplified_autodiff_designmatrix_from_setup(setup, fit_params)
+    analytic = analytic - np.mean(analytic, axis=0, keepdims=True)
+
+    np.testing.assert_allclose(reference, analytic, rtol=1.0e-6, atol=1.0e-12)
 
 
 BINARY_CASES = {

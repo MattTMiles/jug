@@ -1,0 +1,278 @@
+[
+  {
+    "id": "epta_j0030_isolated",
+    "par": "epta_j0030_isolated/epta_j0030_isolated.par",
+    "tim": "epta_j0030_isolated/epta_j0030_isolated.tim",
+    "source_par": "EPTA_DR2/J0030+0451/J0030+0451.par",
+    "source_tim": "EPTA_DR2/J0030+0451/tims/EFF.EBPP.1410.tim",
+    "provenance": "EPTA_DR2",
+    "binary": "isolated",
+    "toa_count": 10,
+    "metadata": {
+      "PSRJ": "J0030+0451",
+      "CLK": "TT(BIPM2021)",
+      "UNITS": "TCB",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE440",
+      "NTOA": "4071"
+    },
+    "notes": "Original small per-backend TIM copy"
+  },
+  {
+    "id": "epta_j1909_t2",
+    "par": "epta_j1909_t2/epta_j1909_t2.par",
+    "tim": "epta_j1909_t2/epta_j1909_t2.tim",
+    "source_par": "EPTA_DR2/J1909-3744/J1909-3744.par",
+    "source_tim": "EPTA_DR2/J1909-3744/tims/NRT.BON.1600.tim",
+    "provenance": "EPTA_DR2",
+    "binary": "T2",
+    "toa_count": 49,
+    "metadata": {
+      "PSRJ": "J1909-3744",
+      "BINARY": "T2",
+      "CLK": "TT(BIPM2021)",
+      "UNITS": "TCB",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE440",
+      "NTOA": "2524"
+    },
+    "notes": "Original small per-backend TIM copy"
+  },
+  {
+    "id": "epta_j1918_ddh",
+    "par": "epta_j1918_ddh/epta_j1918_ddh.par",
+    "tim": "epta_j1918_ddh/epta_j1918_ddh.tim",
+    "source_par": "EPTA_DR2/J1918-0642/J1918-0642.par",
+    "source_tim": "EPTA_DR2/J1918-0642/tims/JBO.DFB.1400.tim",
+    "provenance": "EPTA_DR2",
+    "binary": "DDH",
+    "toa_count": 12,
+    "metadata": {
+      "PSRJ": "J1918-0642",
+      "BINARY": "DDH",
+      "CLK": "TT(BIPM2021)",
+      "UNITS": "TCB",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE440",
+      "NTOA": "1361"
+    },
+    "notes": "Original small per-backend TIM copy"
+  },
+  {
+    "id": "ppta_j1741_ell1",
+    "par": "ppta_j1741_ell1/ppta_j1741_ell1.par",
+    "tim": "ppta_j1741_ell1/ppta_j1741_ell1.tim",
+    "source_par": "PPTA_DR3/uwl/J1741+1351.par",
+    "source_tim": "PPTA_DR3/uwl/J1741+1351.tim",
+    "provenance": "PPTA_DR3_UWL",
+    "binary": "ELL1",
+    "toa_count": 111,
+    "metadata": {
+      "PSRJ": "J1741+1351",
+      "BINARY": "ELL1",
+      "CLK": "TT(BIPM2020)",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE436",
+      "NTOA": "111"
+    },
+    "notes": "Original small per-backend TIM copy"
+  },
+  {
+    "id": "ppta_j1902_ell1h",
+    "par": "ppta_j1902_ell1h/ppta_j1902_ell1h.par",
+    "tim": "ppta_j1902_ell1h/ppta_j1902_ell1h.tim",
+    "source_par": "PPTA_DR3/J1902-5105.par",
+    "source_tim": "PPTA_DR3/J1902-5105.tim",
+    "provenance": "PPTA_DR3",
+    "binary": "ELL1H",
+    "toa_count": 120,
+    "metadata": {
+      "PSRJ": "J1902-5105",
+      "BINARY": "ELL1H",
+      "CLK": "TT(BIPM2020)",
+      "TIMEEPH": "IF99",
+      "DILATEFREQ": "Y",
+      "T2CMETHOD": "IAU2000B",
+      "EPHEM": "DE436",
+      "NTOA": "501"
+    },
+    "notes": "Deterministic reduced TIM copy"
+  },
+  {
+    "id": "ng5_j1600_tdb_equatorial",
+    "par": "ng5_j1600_tdb_equatorial/ng5_j1600_tdb_equatorial.par",
+    "tim": "ng5_j1600_tdb_equatorial/ng5_j1600_tdb_equatorial.tim",
+    "source_par": "examples/notebooks-dev/data/demo-jug-like-libstempo/_tmp_equatorial_harm.par",
+    "source_tim": "examples/notebooks-dev/data/demo-jug-like-libstempo/J1600-3053_NANOGrav_dfg+12.tim",
+    "provenance": "NANOGrav_dfg+12",
+    "binary": "DD",
+    "toa_count": 625,
+    "fixture_case": "B",
+    "parity_status": "green",
+    "metadata": {
+      "PSRJ": "J1600-3053",
+      "CLK": "TT(BIPM2011)",
+      "UNITS": "TDB",
+      "EPHEM": "DE405",
+      "BINARY": "DD",
+      "NTOA": "625",
+      "COORDS": "equatorial"
+    },
+    "notes": "Case B: equatorial NG5 TDB anchor after T2CMETHOD removal only"
+  },
+  {
+    "id": "ng5_j1600_tdb_ecliptic_cross_engine",
+    "par": "ng5_j1600_tdb_ecliptic_cross_engine/ng5_j1600_tdb_ecliptic_cross_engine.par",
+    "tim": "ng5_j1600_tdb_ecliptic_cross_engine/ng5_j1600_tdb_ecliptic_cross_engine.tim",
+    "source_par": "examples/notebooks-dev/data/demo-jug-like-libstempo/J1600-3053_NANOGrav_dfg+12_cross_engine.par",
+    "source_tim": "examples/notebooks-dev/data/demo-jug-like-libstempo/J1600-3053_NANOGrav_dfg+12.tim",
+    "provenance": "NANOGrav_dfg+12",
+    "binary": "DD",
+    "toa_count": 625,
+    "fixture_case": "C",
+    "parity_status": "green",
+    "metadata": {
+      "PSRJ": "J1600-3053",
+      "CLK": "TT(BIPM2011)",
+      "UNITS": "TDB",
+      "EPHEM": "DE405",
+      "BINARY": "DD",
+      "ECL": "IERS2003",
+      "NTOA": "625",
+      "COORDS": "ecliptic"
+    },
+    "notes": "Case C: ecliptic cross-engine harmonized par for notebook integrator"
+  },
+  {
+    "id": "epta_j0613_t2_nrt1400",
+    "par": "epta_j0613_t2_nrt1400/epta_j0613_t2_nrt1400.par",
+    "tim": "epta_j0613_t2_nrt1400/epta_j0613_t2_nrt1400.tim",
+    "source_par": "data/ipta-dr2/EPTA_v2.2/J0613-0200/J0613-0200.par",
+    "source_tim": "data/ipta-dr2/EPTA_v2.2/J0613-0200/tims/NRT.BON.1400.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2",
+    "toa_count": 120,
+    "parity_status": "documented_gap",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "BINARY": "T2",
+      "CLK": "TT(BIPM2011)",
+      "EPHEM": "DE421",
+      "COORDS": "equatorial",
+      "NTOA": "1167",
+      "TRACK": "-2",
+      "PULSE_NUMBERS": "tempo2 add_pulseNumber plugin (2026-07-03)",
+      "NOTES": "Single-backend NRT.BON.1400 excerpt; ~0.95 ns RMS vs libstempo (2026-07-08)"
+    },
+    "notes": "Trimmed single-backend IPTA DR2 excerpt for narrow tempo2 parity probes"
+  },
+  {
+    "id": "epta_j0613_nrt1400_mini",
+    "par": "epta_j0613_nrt1400_mini/epta_j0613_nrt1400_mini.par",
+    "tim": "epta_j0613_nrt1400_mini/epta_j0613_nrt1400_mini.tim",
+    "source_par": "tests/data_tempo2/epta_j0613_t2_nrt1400/epta_j0613_t2_nrt1400.par",
+    "source_tim": "tests/data_tempo2/epta_j0613_t2_nrt1400/epta_j0613_t2_nrt1400.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2",
+    "toa_count": 20,
+    "parity_status": "documented_gap",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "BINARY": "T2",
+      "CLK": "TT(BIPM2011)",
+      "EPHEM": "DE421",
+      "COORDS": "equatorial",
+      "TRACK": "-2",
+      "FILTER": "First 20 TOAs from epta_j0613_t2_nrt1400"
+    },
+    "notes": "Mini single-backend NRT.BON.1400 excerpt for fast no-TRACK parity gates"
+  },
+  {
+    "id": "epta_j0613_t2_ipta_all",
+    "par": "epta_j0613_t2_ipta_all/epta_j0613_t2_ipta_all.par",
+    "tim": "epta_j0613_t2_ipta_all/epta_j0613_t2_ipta_all.tim",
+    "source_par": "data/ipta-dr2/EPTA_v2.2/J0613-0200/J0613-0200.par",
+    "source_tim": "data/ipta-dr2/EPTA_v2.2/J0613-0200/J0613-0200_all.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2",
+    "toa_count": 1369,
+    "parity_status": "documented_gap",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "BINARY": "T2",
+      "CLK": "TT(BIPM2011)",
+      "EPHEM": "DE421",
+      "COORDS": "equatorial",
+      "NTOA": "1167",
+      "TRACK": "-2",
+      "PULSE_NUMBERS": "tempo2 add_pulseNumber plugin (2026-07-03)",
+      "NOTES": "Full EPTA TIM flat with -pn; ~1.2 ns RMS vs libstempo (2026-07-08 re-baseline)"
+    },
+    "notes": "Notebook single_epta layout: par + flat pn-expanded tim (1369 TOAs). Legacy INCLUDE tree kept under tims/ for provenance."
+  },
+  {
+    "id": "epta_j0613_addsat_min",
+    "par": "epta_j0613_addsat_min/epta_j0613_addsat_min.par",
+    "tim": "epta_j0613_addsat_min/epta_j0613_addsat_min.tim",
+    "source_par": "tests/data_tempo2/epta_j0613_t2_ipta_all/epta_j0613_t2_ipta_all.par",
+    "source_tim": "tests/data_tempo2/epta_j0613_t2_ipta_all/epta_j0613_t2_ipta_all.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2",
+    "toa_count": 11,
+    "parity_status": "documented_gap",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "BINARY": "T2",
+      "TRACK": "-2",
+      "FILTER": "TOA 0 + three -addsat TOAs (orig idx 247/256/561) + neighbors",
+      "NOTES": "Fast TRACK -2 -addsat gate; ~1.4 ns RMS vs libstempo (2026-07-08 re-baseline)"
+    },
+    "notes": "Mini fixture extracted once from epta_j0613_t2_ipta_all for fast -addsat regression gates"
+  },
+  {
+    "id": "wsrt167",
+    "par": "wsrt167/wsrt167.par",
+    "tim": "wsrt167/wsrt167.tim",
+    "source_par": "tests/data_tempo2/epta_j0613_t2_ipta_all/epta_j0613_t2_ipta_all.par",
+    "source_tim": "tests/data_tempo2/epta_j0613_t2_ipta_all/epta_j0613_t2_ipta_all.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2",
+    "toa_count": 167,
+    "parity_status": "documented_gap",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "BINARY": "T2",
+      "TRACK": "-2",
+      "FILTER": "WSRT sys, freq < 1000 MHz from epta_j0613_t2_ipta_all",
+      "NOTES": "Isolated TRACK -2 phase unit test; ~1.2 ns RMS vs libstempo (2026-07-08 re-baseline)"
+    },
+    "notes": "WSRT low-band subset for TRACK -2 phase debugging (328/382 MHz bands)"
+  },
+  {
+    "id": "wsrt167_mini",
+    "par": "wsrt167_mini/wsrt167_mini.par",
+    "tim": "wsrt167_mini/wsrt167_mini.tim",
+    "source_par": "tests/data_tempo2/wsrt167/wsrt167.par",
+    "source_tim": "tests/data_tempo2/wsrt167/wsrt167.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2",
+    "toa_count": 20,
+    "parity_status": "documented_gap",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "BINARY": "T2",
+      "TRACK": "-2",
+      "FILTER": "First 20 TOAs from wsrt167",
+      "NOTES": "Fast WSRT TRACK -2 spin gate; full 167-TOA fixture remains a slow debt pin"
+    },
+    "notes": "Mini WSRT low-band subset for fast TRACK -2 spin parity gates"
+  }
+]

@@ -71,4 +71,29 @@ def test_ifte_jax_matches_host():
 @pytest.mark.dev_oracle
 @pytest.mark.tempo2
 def test_ifte_delta_matches_pytempo_implied_wsrt167():
-    pytest.skip("tempo2/pytempo oracle not available in pint-only build")
+    pytest.importorskip("pytempo")
+    from tempo2_fixtures import get_tempo2_fixture
+    from pytempo.sandbox import tempopulsar
+
+    fixture = get_tempo2_fixture("wsrt167")
+    psr = tempopulsar(
+        parfile=str(fixture["par_path"]), timfile=str(fixture["tim_path"]), dofit=False
+    )
+    diag = psr.toa_diagnostics(removemean=False)
+    ifte_init()
+    trace = [0, 42, 85, 166]
+    for i in trace:
+        tt_pt = float(diag["correction_tt_sec"][i])
+        sat = float(diag["sat"][i]) if "sat" in diag else None
+        if sat is None:
+            from jug.io.tim_reader import parse_tim_file_mjds
+
+            toas = parse_tim_file_mjds(fixture["tim_path"])
+            sat = toas[i].mjd_int + toas[i].mjd_frac
+        mjd_tt = sat + tt_pt / 86400.0
+        obs_scaled = float(diag["obs_term_raw_sec"][i]) / IFTE_K
+        delta_implied_pt = (
+            float(diag["correction_tt_teph_sec"][i]) - IFTE_TEPH0_SEC - obs_scaled
+        ) * (1.0 - IFTE_LC)
+        delta_jug = ifte_delta_t_sec(mjd_tt)
+        assert abs(delta_jug - delta_implied_pt) < 1e-12

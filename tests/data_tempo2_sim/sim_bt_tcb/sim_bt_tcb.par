@@ -1,0 +1,25 @@
+MODE 1
+PSRJ            J0000+0000
+F0              200.0              1
+F1              -1e-15             1
+PEPOCH          56000
+POSEPOCH        56000
+DM              10.0               1
+DMEPOCH         56000
+EPHEM           DE440
+CLK             TT(BIPM2021)
+TIMEEPH         IF99
+T2CMETHOD       IAU2000B
+TZRMJD          56000
+TZRFRQ          1400
+TZRSITE         ao
+RAJ             00:00:00
+DECJ            +00:00:00
+UNITS           TCB
+DILATEFREQ      Y
+BINARY         BT
+PB             115.65378859656417472     1
+T0             52890.249088598756469     1
+A1             40.769520607128638134     1
+OM             346.62669284100535816     1
+ECC            2.3688449683527307792e-05 1

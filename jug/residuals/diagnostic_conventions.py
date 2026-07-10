@@ -54,6 +54,8 @@ class DiagnosticConventions:
             return self.phase_mean_mode
         from jug.residuals.engine_conventions import normalize_compatibility_mode
 
+        if normalize_compatibility_mode(compatibility) == "tempo2":
+            return "unweighted"
         return "weighted"
 
     def tempo2_implicit_defaults_snapshot(self) -> dict[str, Any]:
@@ -85,14 +87,16 @@ class DiagnosticConventions:
         """
         from jug.residuals.engine_conventions import normalize_compatibility_mode
 
-        return False
+        try:
+            is_tempo2 = normalize_compatibility_mode(compatibility) == "tempo2"
+        except ValueError:
+            is_tempo2 = False
+        if not is_tempo2:
+            return False
+        return self.tempo2_tdb_defaults == "implicit_tempo2"
 
 
-from jug.residuals.engine_conventions import (
-    EngineConventionProfile,
-    default_engine_profile,
-    normalize_compatibility_mode,
-)
+from jug.residuals.engine_conventions import EngineConventionProfile, default_engine_profile
 
 
 def resolve_planet_shapiro_enabled(
@@ -102,6 +106,8 @@ def resolve_planet_shapiro_enabled(
     """Resolve PLANET_SHAPIRO for the active engine profile."""
     if "PLANET_SHAPIRO" in params:
         return str(params["PLANET_SHAPIRO"]).upper() in ("1", "Y", "YES", "TRUE", "T")
+    if profile.is_tempo2:
+        return True
     return profile.planet_shapiro
 
 
@@ -123,16 +129,20 @@ def resolve_ne_sw_cm3(
         return 9.961
     if "NE_SW" in params:
         return float(params["NE_SW"])
+    if profile.is_tempo2 and profile.implicit_tempo2_defaults:
+        return 4.0
     return 0.0
 
 
-def default_conventions(compatibility: str = "pint") -> DiagnosticConventions:
+def default_conventions(compatibility: str = "tempo2") -> DiagnosticConventions:
     """Return default diagnostic conventions for a compatibility mode."""
-    normalize_compatibility_mode(compatibility)
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    tempo2_mode = normalize_compatibility_mode(compatibility) == "tempo2"
     return DiagnosticConventions(
         phase_mean_mode=None,
         residual_metric="raw",
-        tempo2_tdb_defaults="explicit_par",
+        tempo2_tdb_defaults="implicit_tempo2" if tempo2_mode else "explicit_par",
     )
 
 

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from functools import lru_cache
-from typing import NamedTuple
+from jug.delays.tempo2_site_jax import IersEopPacked
 from jug.utils.constants import C_M_S, SECS_PER_DAY
 
 # Tempo2 ``NMF_hydrostatic`` / ``NMF_wet`` coefficient tables (tropo.C)
@@ -47,28 +48,6 @@ _WET_C = jnp.array(
     [4.3472961e-2, 4.6729510e-2, 4.3908931e-2, 4.4626982e-2, 5.4736038e-2],
     dtype=jnp.float64,
 )
-
-class IersEopPacked(NamedTuple):
-    """Static IERS Earth-orientation table for host-side interpolation."""
-
-    mjd: np.ndarray
-    xp: np.ndarray
-    yp: np.ndarray
-    dut1: np.ndarray
-
-
-@lru_cache(maxsize=1)
-def pack_iers_eop_jax() -> IersEopPacked:
-    """Load Astropy IERS-B table once for tropo zenith host callbacks."""
-    from astropy.utils.iers import IERS_B
-
-    table = IERS_B.open()
-    mjd = np.asarray(table["MJD"].value, dtype=np.float64)
-    xp = np.asarray(table["PM_x"].value, dtype=np.float64)
-    yp = np.asarray(table["PM_y"].value, dtype=np.float64)
-    dut1 = np.asarray(table["UT1_UTC"].value, dtype=np.float64)
-    return IersEopPacked(mjd=mjd, xp=xp, yp=yp, dut1=dut1)
-
 
 _T2C_PHASE_MJD = 53398.0
 _A_H = 2.53e-5
@@ -206,6 +185,8 @@ def _host_zenith_gcrs_m(
 ) -> np.ndarray:
     """Transform geodetic zenith vector to GCRS (Tempo2 ``get_obsCoord_IAU2000B``)."""
     import erfa
+
+    from jug.delays.tempo2_site_jax import pack_iers_eop_jax
 
     eop = pack_iers_eop_jax()
     arcsec_to_rad = np.pi / 180.0 / 3600.0

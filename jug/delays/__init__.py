@@ -12,6 +12,7 @@ from jug.delays.binary_dd import (
     ddk_binary_delay_vectorized,
 )
 from jug.delays.binary_t2 import t2_binary_delay_vectorized
+from jug.delays.binary_t2_tempo2 import t2_tempo2_binary_delay
 
 __all__ = [
     "bt_binary_delay",
@@ -25,4 +26,5 @@ __all__ = [
     "ddk_binary_delay",
     "ddk_binary_delay_vectorized",
     "t2_binary_delay_vectorized",
+    "t2_tempo2_binary_delay",
 ]

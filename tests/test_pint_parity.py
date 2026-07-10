@@ -167,9 +167,11 @@ def _tempo2_available():
 
 
 def _raw_wrms_tempo2(par_path, tim_path):
-    """Tempo2 oracle WRMS is not available in the pint-only portable build."""
-    del par_path, tim_path
-    pytest.skip("tempo2 reference harness not available in pint-only build")
+    """Compute Tempo2 raw-error WRMS via the libstempo sandbox."""
+    from jug.testing.tempo2_reference import tempo2_reference
+
+    ref = tempo2_reference(par_path, tim_path)
+    return ref.wrms_us, ref.ntoa, list(ref.residuals_us)
 
 
 _tempo2_skip = pytest.mark.skipif(

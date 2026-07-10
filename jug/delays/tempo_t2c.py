@@ -162,7 +162,7 @@ def ut1red_sec(mjd: np.ndarray, clock_dir: str | None = None) -> np.ndarray:
     if clock_dir is None:
         from jug.io.clock import resolve_clock_dir
 
-        clock_dir = str(resolve_clock_dir(compatibility="pint"))
+        clock_dir = str(resolve_clock_dir(compatibility="tempo2"))
     mjd0, mjd_last, entries = _load_ut1_table(str(clock_dir))
     mjd = np.asarray(mjd, dtype=np.float64)
     iint = 5.0

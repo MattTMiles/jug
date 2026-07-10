@@ -222,9 +222,14 @@ def _pint_fit(par_path, gls=True, tim_path=None, fit_params=None):
 
 
 def _tempo2_fit(par_path, tim_path=None):
-    """Tempo2 oracle fits are not available in the pint-only portable build."""
-    del par_path, tim_path
-    pytest.skip("tempo2 reference harness not available in pint-only build")
+    """Run Tempo2 fit through the libstempo sandbox."""
+    from jug.testing.tempo2_reference import tempo2_reference
+
+    tim = tim_path or TIM
+    ref = tempo2_reference(par_path, tim, dofit=True, fit_params=FIT_PARAMS)
+    params = {p: ref.params[p]["value"] for p in FIT_PARAMS if p in ref.params}
+    uncerts = {p: ref.params[p].get("error", 0.0) for p in FIT_PARAMS if p in ref.params}
+    return ref.wrms_us, params, uncerts
 
 
 # ---------------------------------------------------------------------------

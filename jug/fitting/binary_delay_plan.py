@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import jax.numpy as jnp
+import numpy as np
 
 from jug.utils.constants import SECS_PER_DAY
 
@@ -22,6 +23,13 @@ from jug.fitting.derivatives_dd import (
 def _pval(params, key, default):
     v = params.get(key, None)
     return default if v is None else v
+
+
+def _as_f64(x):
+    """Cast a concrete or traced scalar to float64 for JAX kernels."""
+    if isinstance(x, (np.longdouble, np.float128)):
+        return jnp.float64(float(x))
+    return jnp.asarray(x, dtype=jnp.float64)
 
 
 def _first_live_value(params, live_keys, keys, default):
@@ -160,22 +168,22 @@ class BinaryDelayPlan:
             # compute_ell1_binary_delay path; autodiff uses float64 here.
             return _compute_ell1_binary_delay_jit(
                 ttasc_sec,
-                a1,
-                pb,
-                eps1,
-                eps2,
-                pbdot,
-                a1dot,
-                sini,
-                m2,
-                gamma,
-                h3,
-                h4,
-                stig,
+                _as_f64(a1),
+                _as_f64(pb),
+                _as_f64(eps1),
+                _as_f64(eps2),
+                _as_f64(pbdot),
+                _as_f64(a1dot),
+                _as_f64(sini),
+                _as_f64(m2),
+                _as_f64(gamma),
+                _as_f64(h3),
+                _as_f64(h4),
+                _as_f64(stig),
                 fb,
-                eps1dot,
-                eps2dot,
-                nharm=self.nharm,
+                _as_f64(eps1dot),
+                _as_f64(eps2dot),
+                nharm=_as_f64(self.nharm),
             )
 
         args = [self._arg(a, params, _DD_ARG_KEYS) for a in _DD_ARG_ORDER]
@@ -203,17 +211,17 @@ class BinaryDelayPlan:
         tt0_sec = (t - t0_j) * SECS_PER_DAY
         return _compute_dd_binary_delay_jit(
             tt0_sec,
-            a1,
-            pb,
-            ecc,
-            om_deg,
-            omdot,
-            pbdot,
-            gamma,
-            sini,
-            m2,
-            xdot,
-            edot,
+            _as_f64(a1),
+            _as_f64(pb),
+            _as_f64(ecc),
+            _as_f64(om_deg),
+            _as_f64(omdot),
+            _as_f64(pbdot),
+            _as_f64(gamma),
+            _as_f64(sini),
+            _as_f64(m2),
+            _as_f64(xdot),
+            _as_f64(edot),
         )
 
 

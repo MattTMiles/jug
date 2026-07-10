@@ -11,15 +11,17 @@ This script:
 import sys
 import os
 import copy
-
-# Add JUG to path
-sys.path.insert(0, '/home/mattm/soft/JUG')
+import tempfile
 
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
-from pathlib import Path
+
+try:
+    from tests.test_paths import get_j0613_paths, skip_if_missing
+except ImportError:
+    from test_paths import get_j0613_paths, skip_if_missing
 
 # JUG imports
 from jug.io.par_reader import parse_par_file
@@ -30,10 +32,12 @@ from jug.fitting.optimized_fitter import fit_parameters_optimized
 def test_fd_h3_stig_fitting():
     """Test fitting FD and H3/STIG parameters on J0613-0200."""
     
-    # Data paths - J0613-0200 has ELL1H with H3+STIG
-    data_dir = Path('/home/mattm/projects/MPTA/github/mpta-6yr/data/fifth_pass/32ch_tdb')
-    par_file = data_dir / 'J0613-0200_tdb.par'
-    tim_file = data_dir / 'J0613-0200.tim'
+    par_path, tim_path = get_j0613_paths()
+    if not skip_if_missing(par_path, tim_path, "fd_h3_stig"):
+        return {'success': False, 'skipped': True}
+
+    par_file = par_path
+    tim_file = tim_path
     
     print("=" * 70)
     print("Testing FD and H3/STIG Parameter Fitting")
@@ -182,8 +186,9 @@ def test_fd_h3_stig_fitting():
         
         plt.suptitle('J0613-0200 H3/STIG Fitting Test', fontsize=14)
         plt.tight_layout()
-        
-        plot_path = '/home/mattm/.gemini/antigravity/brain/eb6739f1-97f6-40c9-af33-d28e508b013a/h3_stig_fit_test.png'
+
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            plot_path = tmp.name
         plt.savefig(plot_path, dpi=150, bbox_inches='tight')
         print(f"Plot saved to: {plot_path}")
         plt.close()
@@ -206,7 +211,10 @@ def test_fd_h3_stig_fitting():
 if __name__ == '__main__':
     result = test_fd_h3_stig_fitting()
     
-    if result['success']:
+    if result.get('skipped'):
+        print("\nSKIPPED: J0613-0200 test data not available")
+        sys.exit(0)
+    elif result['success']:
         print("\n" + "=" * 70)
         print("✓ TEST COMPLETED SUCCESSFULLY")
         print("=" * 70)

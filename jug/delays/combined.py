@@ -375,7 +375,7 @@ def combined_delays(
                 sini_eff, m2, h3, h4, stig
             )
 
-        # Switch logic (6 branches: 0=None, 1=ELL1, 2=DD, 3=T2, 4=BT, 5=DDK)
+        # Switch logic (0=None, 1=ELL1, 2=DD, 3=T2, 4=BT, 5=DDK)
         return jax.lax.switch(
             binary_model_id,
             [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt, branch_ddk],

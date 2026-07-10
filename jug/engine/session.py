@@ -19,8 +19,14 @@ Performance Impact:
 
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
 import numpy as np
 from astropy.time import Time
+
+from jug.residuals.engine_conventions import (
+    EngineConventionProfile,
+    validate_engine_profile_matches_compatibility,
+)
 
 # Import existing JUG modules
 from jug.io.par_reader import parse_par_file
@@ -29,6 +35,8 @@ from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.fitting.optimized_fitter import (
     fit_parameters_optimized,
     _build_general_fit_setup_from_cache,
+    _compute_full_model_residuals,
+    _update_param,
     fit_parameters_optimized_cached
 )
 
@@ -66,7 +74,9 @@ class TimingSession:
         par_file: Path | str,
         tim_file: Path | str,
         clock_dir: Optional[str] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        compatibility: str = "pint",
+        engine_conventions: EngineConventionProfile | None = None,
     ):
         """
         Initialize a timing session.
@@ -86,26 +96,32 @@ class TimingSession:
         self.tim_file = Path(tim_file)
         self.clock_dir = clock_dir
         self.verbose = verbose
-        
+        self.compatibility = compatibility
+        self.engine_conventions = engine_conventions
+        if engine_conventions is not None:
+            validate_engine_profile_matches_compatibility(
+                compatibility, engine_conventions
+            )
+
         # Parse files once and cache
         if self.verbose:
             print(f"Opening session: {self.par_file.name} + {self.tim_file.name}")
         
         self.params = parse_par_file(self.par_file)
-        
-        # Convert TCB->TDB at ingest time so all downstream code sees TDB params
-        from jug.io.par_reader import validate_par_timescale
-        validate_par_timescale(self.params, context="TimingSession", verbose=verbose)
+
+        from jug.io.par_reader import normalize_model_params
+        normalize_model_params(
+            self.params,
+            compatibility=self.compatibility,
+            context="TimingSession",
+            verbose=verbose,
+        )
         
         # Tempo2's T2 model uses IAU convention for KIN/KOM.
         # JUG's DDK code (from PINT) uses DT92 convention.
         # Convert: KIN_DT92 = 180 - KIN_IAU, KOM_DT92 = 90 - KOM_IAU
-        binary = self.params.get('BINARY', '').upper()
-        if binary == 'T2' and ('KIN' in self.params or 'KOM' in self.params):
-            if 'KIN' in self.params:
-                self.params['KIN'] = 180.0 - float(self.params['KIN'])
-            if 'KOM' in self.params:
-                self.params['KOM'] = 90.0 - float(self.params['KOM'])
+        from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+        convert_t2_kin_kom_to_ddk_convention(self.params)
         
         self.toas_data = parse_tim_file_mjds(self.tim_file)
         self._initial_params = dict(self.params)  # Copy for comparison
@@ -176,38 +192,31 @@ class TimingSession:
             else:
                 return f"{param_name:<12} {value}"
 
-        # For ecliptic par files, convert fitted RAJ/DECJ back to LAMBDA/BETA
-        # so the temp par file has consistent ecliptic coordinates
-        if params.get('_ecliptic_coords'):
-            from jug.io.par_reader import parse_ra, parse_dec, convert_equatorial_to_ecliptic
-            ra_val = params.get('RAJ')
-            dec_val = params.get('DECJ')
-            if ra_val is not None and dec_val is not None:
-                ra_rad = parse_ra(ra_val) if isinstance(ra_val, str) else float(ra_val)
-                dec_rad = parse_dec(dec_val) if isinstance(dec_val, str) else float(dec_val)
-                ecl_frame = params.get('_ecliptic_frame', 'IERS2010')
-                ecl = convert_equatorial_to_ecliptic(
-                    ra_rad, dec_rad,
-                    pmra=params.get('PMRA', 0.0),
-                    pmdec=params.get('PMDEC', 0.0),
-                    ecl_frame=ecl_frame,
-                )
-                params['LAMBDA'] = ecl['LAMBDA']
-                params['BETA'] = ecl['BETA']
-                if 'PMLAMBDA' in params:
-                    params['PMLAMBDA'] = ecl['PMLAMBDA']
-                if 'PMBETA' in params:
-                    params['PMBETA'] = ecl['PMBETA']
+        # Keep temporary par files in the original coordinate family.
+        from jug.io.astrometry_state import (
+            ecliptic_aliases_from_equatorial,
+            native_ecliptic_family,
+            temp_par_skip_keys,
+        )
+        ecliptic_temp = bool(params.get('_ecliptic_coords'))
+        temp_uses_lambda = native_ecliptic_family(self._initial_params) == 'lambda'
+        if ecliptic_temp and temp_uses_lambda:
+            params.update(ecliptic_aliases_from_equatorial(params, params))
 
         # Build temp par file with updated params
         # Convert KIN/KOM from DT92 back to IAU convention for par file
         # (compute_residuals_simple will apply IAU->DT92 again when reading)
         binary = params.get('BINARY', '').upper()
-        if binary == 'T2' and ('KIN' in params or 'KOM' in params):
+        if (
+            binary == 'T2'
+            and params.get('_t2_kin_kom_converted')
+            and ('KIN' in params or 'KOM' in params)
+        ):
             if 'KIN' in params:
                 params['KIN'] = 180.0 - float(params['KIN'])
             if 'KOM' in params:
                 params['KOM'] = 90.0 - float(params['KOM'])
+            params.pop('_t2_kin_kom_converted', None)
 
         with open(self.par_file, 'r') as f:
             original_lines = f.readlines()
@@ -294,8 +303,12 @@ class TimingSession:
             else:
                 updated_lines.append(line)
 
-        # Add any new parameters not in original file (skip internal keys)
+        # Add any new parameters not in original file (skip internal keys).
+        skip_ecliptic_derived = temp_par_skip_keys(params, self._initial_params)
+
         for param_name, value in params.items():
+            if ecliptic_temp and param_name.upper() in skip_ecliptic_derived:
+                continue
             if param_name not in updated_params and not param_name.startswith('_'):
                 if isinstance(value, (int, float, str)):
                     new_line = format_param_value(param_name, value) + '\n'
@@ -314,6 +327,9 @@ class TimingSession:
                 subtract_tzr=subtract_tzr,
                 verbose=False,
                 geometry_cache=self._geometry_cache,
+                compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
+
             )
         finally:
             tmp_par_path.unlink()
@@ -402,6 +418,9 @@ class TimingSession:
                 subtract_tzr=subtract_tzr,
                 verbose=False,
                 geometry_cache=self._geometry_cache,
+                compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
+
             )
         
         # Cache the result (only for original params), keyed by subtract_tzr
@@ -429,7 +448,118 @@ class TimingSession:
                 print("  Cached TOA data for fast postfit evaluation")
         
         return result
+
+    def residuals_at_params(
+        self,
+        params: Dict[str, float],
+        subtract_tzr: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Compute residual statistics for parameter overrides via cached in-memory data.
+
+        This is the public fast-path API for evaluating residuals at candidate
+        parameter values without rebuilding a temporary par file.
+
+        Parameters
+        ----------
+        params : dict
+            Parameter overrides to evaluate. Keys follow normal timing-model
+            names (e.g. ``F0``, ``F1``, ``DM``, ``PB``).
+        subtract_tzr : bool, default True
+            Whether to evaluate residuals in TZR-subtracted mode.
+
+        Returns
+        -------
+        result : dict
+            Residual summary with keys:
+            - 'residuals_us': residuals in microseconds
+            - 'residuals_sec': residuals in seconds
+            - 'chi2': chi-squared
+            - 'rms_us': weighted RMS in microseconds
+            - 'weighted_rms_us': weighted RMS in microseconds (alias)
+            - 'wrms_us': weighted RMS in microseconds (alias)
+            - 'n_toas': number of TOAs
+            - 'used_fast_path': True
+        """
+        if not isinstance(params, dict):
+            raise TypeError("params must be a dictionary of parameter overrides")
+
+        # Ensure delay/geometry arrays are available for the cached evaluator.
+        cached_result = self._cached_result_by_mode.get(subtract_tzr)
+        if cached_result is None:
+            self.compute_residuals(subtract_tzr=subtract_tzr, force_recompute=False)
+            cached_result = self._cached_result_by_mode.get(subtract_tzr)
+
+        has_required_cache = (
+            cached_result is not None
+            and 'dt_sec' in cached_result
+            and 'tdb_mjd' in cached_result
+            and 'freq_bary_mhz' in cached_result
+        )
+        if not has_required_cache:
+            raise RuntimeError(
+                "Cached residual arrays are unavailable for fast evaluation. "
+                "Call compute_residuals() first to populate cache."
+            )
+
+        toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in self.toas_data])
+        errors_us = np.array([toa.error_us for toa in self.toas_data])
+        toa_flags = [toa.flags for toa in self.toas_data]
+        session_cached_data = {
+            'dt_sec': cached_result['dt_sec'],
+            'dt_sec_ld': cached_result.get('dt_sec_ld'),
+            'tdb_mjd': cached_result['tdb_mjd'],
+            'freq_bary_mhz': cached_result['freq_bary_mhz'],
+            'toas_mjd': toas_mjd,
+            'errors_us': errors_us,
+            'toa_flags': toa_flags,
+            'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
+            'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
+            'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
+            'obs_sun_pos_ls': cached_result.get('obs_sun_pos_ls'),
+            'obs_planet_pos_ls': cached_result.get('obs_planet_pos_ls'),
+            'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
+            'jump_phase': cached_result.get('jump_phase'),
+            'tzr_phase': cached_result.get('tzr_phase'),
+            'term_diagnostics': cached_result.get('term_diagnostics'),
+            'model_mjd': cached_result.get('model_mjd'),
+            'toas': self.toas_data,
+        }
+
+        # Build setup only for parameters being overridden.
+        setup = _build_general_fit_setup_from_cache(
+            session_cached_data,
+            self.params,
+            list(params.keys()),
+            compatibility=self.compatibility,
+        )
+
+        eval_params = dict(self.params)
+        for name, value in params.items():
+            if isinstance(value, (int, float, np.floating)):
+                _update_param(eval_params, name, float(value))
+            else:
+                eval_params[str(name).upper()] = value
+
+        residuals_sec, chi2, rms_us, wrms_us = _compute_full_model_residuals(
+            eval_params,
+            setup,
+        )
+        residuals_us = np.asarray(residuals_sec, dtype=np.float64) * 1e6
+        return {
+            'residuals_us': residuals_us,
+            'residuals_sec': np.asarray(residuals_sec, dtype=np.float64),
+            'chi2': float(chi2),
+            'rms_us': float(rms_us),
+            'weighted_rms_us': float(wrms_us),
+            'wrms_us': float(wrms_us),
+            'n_toas': int(len(residuals_us)),
+            'used_fast_path': True,
+        }
     
+    # TODO: expose ``fd_column_mode`` here (and forward through cached/file fit
+    # paths) so session users can select FD column convention without calling
+    # ``fit_parameters_optimized`` directly.
     def fit_parameters(
         self,
         fit_params: Optional[List[str]] = None,
@@ -565,9 +695,14 @@ class TimingSession:
                 'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
                 'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
                 'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
+                'obs_sun_pos_ls': cached_result.get('obs_sun_pos_ls'),
+                'obs_planet_pos_ls': cached_result.get('obs_planet_pos_ls'),
                 'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
                 'jump_phase': cached_result.get('jump_phase'),
                 'tzr_phase': cached_result.get('tzr_phase'),
+                'term_diagnostics': cached_result.get('term_diagnostics'),
+                'model_mjd': cached_result.get('model_mjd'),
+                'toas': self.toas_data,
             }
             
             # Build setup from cache (with optional TOA mask)
@@ -577,7 +712,9 @@ class TimingSession:
                 fit_params,
                 toa_mask=toa_mask,
                 noise_config=noise_config,
-                subtract_noise_sec=subtract_noise_sec
+                subtract_noise_sec=subtract_noise_sec,
+                compatibility=self.compatibility,
+
             )
             
             # Run cached fit
@@ -601,7 +738,10 @@ class TimingSession:
                 convergence_threshold=convergence_threshold,
                 clock_dir=self.clock_dir,
                 device=device,
-                verbose=verbose
+                verbose=verbose,
+                compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
+
             )
         
         # Update session params with fitted values (CRITICAL for iterative fitting!)
@@ -609,31 +749,31 @@ class TimingSession:
         if result.get('success', True) and 'final_params' in result:
             from jug.io.par_reader import format_ra, format_dec
             updated_params = result['final_params'].copy()
+            updated_params.update(result.get('final_dmx_params', {}))
             # Convert RAJ/DECJ from radians back to string format for consistency
             if 'RAJ' in updated_params:
                 updated_params['RAJ'] = format_ra(updated_params['RAJ'])
             if 'DECJ' in updated_params:
                 updated_params['DECJ'] = format_dec(updated_params['DECJ'])
-            # For ecliptic pulsars, also update LAMBDA/BETA from fitted RAJ/DECJ
-            if self.params.get('_ecliptic_coords') and 'RAJ' in updated_params:
-                from jug.io.par_reader import (
-                    parse_ra, parse_dec, convert_equatorial_to_ecliptic
+
+            if self.params.get('_ecliptic_coords'):
+                from jug.io.astrometry_state import (
+                    ecliptic_aliases_from_equatorial,
+                    sync_ecliptic_public_to_internal,
                 )
-                ra_rad = parse_ra(updated_params['RAJ'])
-                dec_rad = parse_dec(updated_params['DECJ'])
-                ecl_frame = self.params.get('_ecliptic_frame', 'IERS2010')
-                ecl = convert_equatorial_to_ecliptic(
-                    ra_rad, dec_rad,
-                    pmra=updated_params.get('PMRA', self.params.get('PMRA', 0.0)),
-                    pmdec=updated_params.get('PMDEC', self.params.get('PMDEC', 0.0)),
-                    ecl_frame=ecl_frame,
-                )
-                updated_params['LAMBDA'] = ecl['LAMBDA']
-                updated_params['BETA'] = ecl['BETA']
-                if 'PMLAMBDA' in self.params:
-                    updated_params['PMLAMBDA'] = ecl['PMLAMBDA']
-                if 'PMBETA' in self.params:
-                    updated_params['PMBETA'] = ecl['PMBETA']
+                ecl_params = dict(self.params)
+                ecl_params.update(updated_params)
+                sync_ecliptic_public_to_internal(ecl_params, updated_params)
+                for key in (
+                    '_ecliptic_lon_deg', '_ecliptic_lat_deg',
+                    '_ecliptic_pm_lon', '_ecliptic_pm_lat',
+                    'RAJ', 'DECJ', '_raj_rad', '_decj_rad',
+                    'PMRA', 'PMDEC',
+                ):
+                    if key in ecl_params:
+                        updated_params[key] = ecl_params[key]
+                updated_params.update(ecliptic_aliases_from_equatorial(self.params, updated_params))
+
             self.params.update(updated_params)
 
             # Update _high_precision strings for fitted parameters whose
@@ -652,6 +792,18 @@ class TimingSession:
                     init_val = self._initial_params.get(p)
                     orig_hp_str = self._original_high_precision.get(p)
                     if init_val is not None and orig_hp_str is not None and float(init_val) != float(new_val):
+                        # If a high-precision parameter moved by only one float64 ULP,
+                        # the float64 result cannot represent the fitted sub-ULP value.
+                        # Keep the original high-precision value rather than snapping to
+                        # an arbitrary neighboring float, which can produce ns-level phase
+                        # errors for spin parameters over long data spans.
+                        if abs(float(new_val) - float(init_val)) <= abs(np.spacing(float(init_val))):
+                            self.params[p] = init_val
+                            updated_params[p] = init_val
+                            if p in result.get('final_params', {}):
+                                result['final_params'][p] = init_val
+                            hp[p] = orig_hp_str
+                            continue
                         orig_ld = np.longdouble(orig_hp_str)
                         delta = np.longdouble(float(new_val) - float(init_val))
                         new_ld = orig_ld + delta
@@ -1161,6 +1313,7 @@ class TimingSession:
             "  session.parameter_table(fit_result)  - Compare pre/post-fit with uncertainties",
             "  session.weighted_rms()               - Compute current weighted RMS (us)",
             "  session.compute_residuals()           - Compute timing residuals",
+            "  session.residuals_at_params(params)   - Fast in-memory residual evaluation",
             "  session.fit_parameters(fit_params)    - Fit specified parameters",
             "  session.get_initial_params()          - Original par file parameters",
             "  session.save_par(path, fit_result)    - Write par file",

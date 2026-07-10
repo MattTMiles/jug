@@ -10,6 +10,7 @@ import numpy as np
 
 from jug.utils.constants import SECS_PER_DAY
 
+from jug.delays.binary_bt import bt_binary_delay_from_tt0
 from jug.fitting.binary_t2_dispatch import _is_ell1_parameterization
 from jug.fitting.derivatives_binary import _compute_ell1_binary_delay_jit, _extract_ell1_params
 from jug.fitting.derivatives_dd import (
@@ -18,6 +19,8 @@ from jug.fitting.derivatives_dd import (
     _extract_dd_params,
     resolve_kopeikin_flags,
 )
+from jug.io.par_reader import get_longdouble
+from jug.utils.orbit_reduction import reduce_binary_time_sec
 
 
 def _pval(params, key, default):
@@ -105,8 +108,31 @@ _ELL1_ARG_ORDER = (
 )
 
 _ELL1_MODELS = frozenset({"ELL1", "ELL1H", "ELL1K"})
-_DD_MODELS = frozenset({"DD", "DDS", "DDH", "DDGR", "BT", "BTX"})
+_BT_MODELS = frozenset({"BT", "BTX"})
+_DD_MODELS = frozenset({"DD", "DDS", "DDH", "DDGR"})
 _ORTHOMETRIC_KEYS = frozenset({"H3", "H4", "STIG", "STIGMA"})
+
+_BT_ARG_KEYS = {k: _DD_ARG_KEYS[k] for k in (
+    "a1", "pb", "t0", "ecc", "om_deg", "omdot", "pbdot", "gamma", "xdot", "edot",
+)}
+_BT_ARG_ORDER = tuple(_BT_ARG_KEYS.keys())
+
+
+def _bt_tt0_arrays(toas_prebinary, params, live_keys, t0, pb):
+    """(tt0_sec, tt0_red_sec) for BT; longdouble reduction when T0 is not live."""
+    t0_j = jnp.asarray(t0, dtype=jnp.float64)
+    t = jnp.asarray(toas_prebinary, dtype=jnp.float64)
+    tt0_sec = (t - t0_j) * SECS_PER_DAY
+    tt0_red = None
+    if "T0" not in live_keys:
+        t0_ld = get_longdouble(params, "T0", default=t0)
+        toas_ld = np.asarray(toas_prebinary, dtype=np.longdouble)
+        tt0_ld = (toas_ld - np.longdouble(t0_ld)) * np.longdouble(SECS_PER_DAY)
+        tt0_sec = jnp.asarray(tt0_ld, dtype=np.float64)
+        tt0_red = jnp.asarray(
+            reduce_binary_time_sec(tt0_ld, pb_days=float(pb)), dtype=jnp.float64
+        )
+    return tt0_sec, tt0_red
 
 
 @dataclass(frozen=True)
@@ -186,6 +212,26 @@ class BinaryDelayPlan:
                 nharm=_as_f64(self.nharm),
             )
 
+        if self.family == "BT":
+            args = [self._arg(a, params, _BT_ARG_KEYS) for a in _BT_ARG_ORDER]
+            (a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, xdot, edot) = args
+            tt0_sec, tt0_red = _bt_tt0_arrays(
+                toas_prebinary, params, self.live_keys, t0, pb
+            )
+            return bt_binary_delay_from_tt0(
+                tt0_sec,
+                _as_f64(pb),
+                _as_f64(a1),
+                _as_f64(ecc),
+                _as_f64(om_deg),
+                _as_f64(gamma),
+                _as_f64(pbdot),
+                _as_f64(omdot),
+                _as_f64(xdot),
+                _as_f64(edot),
+                tt0_red_sec=tt0_red,
+            )
+
         args = [self._arg(a, params, _DD_ARG_KEYS) for a in _DD_ARG_ORDER]
         (a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, sini, m2, xdot, edot) = args
         if self.family == "DDK":
@@ -243,10 +289,12 @@ def resolve_binary_structure(ref_params, fit_params, *, obs_pos_ls=None):
             family = "DDK"
         else:
             family = "DD"
+    elif model in _BT_MODELS:
+        family = "BT"
     elif model in _DD_MODELS:
         family = "DD"
     else:
-        known = sorted(set(_ELL1_MODELS) | set(_DD_MODELS) | {"DDK", "T2"})
+        known = sorted(set(_ELL1_MODELS) | set(_BT_MODELS) | set(_DD_MODELS) | {"DDK", "T2"})
         raise NotImplementedError(
             f"Binary model {model!r} is not supported by traceable dispatch. "
             f"Known models: {known}."
@@ -267,6 +315,16 @@ def resolve_binary_structure(ref_params, fit_params, *, obs_pos_ls=None):
             fb0_ld=p.get("fb0_ld"),
             nharm=float(p.get("nharm", 4.0)),
         )
+
+    if family == "BT":
+        p = _extract_dd_params(ref_params)
+        ref_scalars = {k: float(p[k]) for k in _BT_ARG_ORDER}
+        structural = (
+            frozenset({"pb"})
+            if ("PB" not in ref_params and "FB0" in ref_params)
+            else frozenset()
+        )
+        return BinaryDelayPlan(family, ref_scalars, live, structural, (), None)
 
     if live & _ORTHOMETRIC_KEYS:
         raise NotImplementedError(

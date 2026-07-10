@@ -110,8 +110,13 @@ def compute_ssb_obs_pos_vel(
     tdb_mjd_cache = np.asarray(tdb_mjd_ld, dtype=np.float64)
     obs_itrf_km = np.asarray(obs_itrf_km, dtype=np.float64)
     
+<<<<<<< HEAD
     # v5: reverted to TDB-for-GCRS (matches PINT; UTC was using pre-correction time).
     cache_ephem = ephemeris + "_v5"
+=======
+    # Try disk cache first
+    cache_ephem = ephemeris + "_v3"
+>>>>>>> f8d375b (feat: add pint-only JAX residual delta and forward delay model)
     if use_cache:
         from jug.utils.geom_cache import get_geometry_cache
         cache = get_geometry_cache()
@@ -155,12 +160,27 @@ def compute_ssb_obs_pos_vel(
         obs_itrf_km[2] * u.km
     )
 
+<<<<<<< HEAD
     # GCRS rotation uses clock-corrected TDB, matching PINT's gcrs_posvel_from_itrf.
     # Raw (pre-correction) UTC is physically wrong by the clock correction (~μs–ms),
     # causing ~0.1–1 μm/s radial velocity error → ~ppb f_bary offset vs PINT.
     # utc_mjd_ld is accepted for backward compatibility but ignored.
     gcrs_times = times
     gcrs_pv = obs_itrf.get_gcrs_posvel(obstime=gcrs_times)
+=======
+    # Get observatory position and velocity in GCRS using astropy's analytical method.
+    # This matches PINT's gcrs_posvel_from_itrf / get_gcrs_posvel approach and avoids
+    # the ~10 mm/s systematic error that the 1-second finite-difference introduced.
+    try:
+        gcrs_pv = obs_itrf.get_gcrs_posvel(obstime=times)
+    except Exception as exc:
+        raise RuntimeError(
+            "JUG geometry requires Astropy IERS/EOP data for ITRF→GCRS site motion. "
+            'Populate ~/.astropy/cache (e.g. '
+            'python -c "from astropy.utils.iers import IERS_A; IERS_A.open()"). '
+            f"Original error: {exc}"
+        ) from exc
+>>>>>>> f8d375b (feat: add pint-only JAX residual delta and forward delay model)
     geo_obs_pos = np.column_stack([
         gcrs_pv[0].x.to(u.km).value,
         gcrs_pv[0].y.to(u.km).value,
@@ -342,11 +362,15 @@ def compute_pulsar_direction(
     >>> L_hat = compute_pulsar_direction(ra, dec, pmra, pmdec, posepoch, times)
     >>> print(f"Direction vectors: {L_hat.shape}")  # (2, 3)
     """
+<<<<<<< HEAD
     dt = np.asarray(
         np.asarray(t_mjd, dtype=np.longdouble) - np.longdouble(posepoch),
         dtype=np.float64,
     )
     dt = np.atleast_1d(dt)
+=======
+    dt = np.atleast_1d(np.asarray(t_mjd, dtype=np.float64)) - posepoch
+>>>>>>> f8d375b (feat: add pint-only JAX residual delta and forward delay model)
     cos_dec0 = np.cos(dec_rad)
     sin_dec0 = np.sin(dec_rad)
     cos_ra0 = np.cos(ra_rad)
@@ -368,6 +392,71 @@ def compute_pulsar_direction(
     mhat = mu_vec / mu_mag
     theta = mu_mag * dt  # (n_times,)
     return (np.outer(np.cos(theta), p0) + np.outer(np.sin(theta), mhat))
+<<<<<<< HEAD
+=======
+
+
+def ecliptic_obliquity_rad(params: dict, use_native_ecliptic: bool = True) -> float:
+    """Return ecliptic obliquity (radians) for native ecliptic coordinates."""
+    if not use_native_ecliptic:
+        return 0.0
+    from jug.io.par_reader import OBLIQUITY_ARCSEC
+
+    ecl_frame = str(params.get("_ecliptic_frame", params.get("ECL", "IERS2010"))).upper()
+    obl_arcsec = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC["IERS2010"])
+    return float(obl_arcsec * np.pi / (180.0 * 3600.0))
+
+
+def rotate_equatorial_to_ecliptic(vectors: np.ndarray, obliquity_rad: float) -> np.ndarray:
+    """Rotate Cartesian vectors from equatorial to ecliptic coordinates."""
+    vectors = np.asarray(vectors)
+    cos_obl = np.cos(obliquity_rad)
+    sin_obl = np.sin(obliquity_rad)
+    return np.column_stack([
+        vectors[:, 0],
+        vectors[:, 1] * cos_obl + vectors[:, 2] * sin_obl,
+        -vectors[:, 1] * sin_obl + vectors[:, 2] * cos_obl,
+    ])
+
+
+def rotate_ecliptic_to_equatorial(vectors: np.ndarray, obliquity_rad: float) -> np.ndarray:
+    """Rotate Cartesian vectors from ecliptic to equatorial coordinates (tempo2 ``ecl2equ``)."""
+    vectors = np.asarray(vectors)
+    cos_obl = np.cos(obliquity_rad)
+    sin_obl = np.sin(obliquity_rad)
+    return np.column_stack([
+        vectors[:, 0],
+        vectors[:, 1] * cos_obl - vectors[:, 2] * sin_obl,
+        vectors[:, 1] * sin_obl + vectors[:, 2] * cos_obl,
+    ])
+
+
+def compute_ecliptic_pulsar_direction(
+    lon_deg: float,
+    lat_deg: float,
+    pm_lon_mas_yr: float,
+    pm_lat_mas_yr: float,
+    posepoch: float,
+    t_mjd: np.ndarray,
+) -> np.ndarray:
+    """Compute native ecliptic pulsar direction with Tempo2-style PM fields."""
+    dt_years = (np.asarray(t_mjd) - posepoch) / 365.25
+    lon0 = np.deg2rad(lon_deg)
+    lat0 = np.deg2rad(lat_deg)
+    mas_to_rad = np.pi / (180.0 * 3600.0 * 1000.0)
+
+    # PMELONG/PMLAMBDA include cos(latitude), matching PMRA convention.
+    cos_lat0 = np.cos(lat0)
+    lon = lon0 + pm_lon_mas_yr * mas_to_rad * dt_years / cos_lat0
+    lat = lat0 + pm_lat_mas_yr * mas_to_rad * dt_years
+
+    cos_lat = np.cos(lat)
+    return np.column_stack([
+        cos_lat * np.cos(lon),
+        cos_lat * np.sin(lon),
+        np.sin(lat),
+    ])
+>>>>>>> f8d375b (feat: add pint-only JAX residual delta and forward delay model)
 
 
 def compute_roemer_delay(

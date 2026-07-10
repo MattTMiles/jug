@@ -174,22 +174,30 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
             # Parse MJD with high precision
             mjd_int, mjd_frac = parse_mjd_string(mjd_str)
 
-            # Apply cumulative TIME offset (seconds -> fractional day)
+            # Apply cumulative TIME offset (seconds -> fractional day).
+            # Done in longdouble: a plain float64 frac addition rounds at
+            # ~5 ns, and the synced mjd_str must stay exact for TDB parity.
+            mjd_frac_ld = np.longdouble(mjd_frac)
             if _state['time_offset'] != 0.0:
-                mjd_frac += _state['time_offset'] / 86400.0
+                mjd_frac_ld = mjd_frac_ld + (
+                    np.longdouble(_state['time_offset']) / np.longdouble(86400.0)
+                )
                 # Normalize: handle overflow/underflow of fractional day
-                if mjd_frac >= 1.0:
-                    mjd_int += int(mjd_frac)
-                    mjd_frac -= int(mjd_frac)
-                elif mjd_frac < 0.0:
-                    shift = int(-mjd_frac) + 1
+                if mjd_frac_ld >= 1.0:
+                    shift = int(mjd_frac_ld)
+                    mjd_int += shift
+                    mjd_frac_ld -= np.longdouble(shift)
+                elif mjd_frac_ld < 0.0:
+                    shift = int(-mjd_frac_ld) + 1
                     mjd_int -= shift
-                    mjd_frac += shift
+                    mjd_frac_ld += np.longdouble(shift)
+                mjd_frac = float(mjd_frac_ld)
 
             # Parse optional flags (format: -flag value)
             # Duplicate flag names (e.g. -j MEDUSA_58925 -j MEDUSA_59200) are
             # stored as lists so JUMP matching can check all values.
             flags = {}
+            mjd_modified = _state['time_offset'] != 0.0
             i = flag_start
             while i < len(parts):
                 if parts[i].startswith('-') and i + 1 < len(parts):
@@ -211,16 +219,24 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
             if 'addsat' in flags:
                 try:
                     addsat_sec = float(flags['addsat'])
-                    mjd_frac += addsat_sec / 86400.0
-                    if mjd_frac >= 1.0:
-                        mjd_int += int(mjd_frac)
-                        mjd_frac -= int(mjd_frac)
-                    elif mjd_frac < 0.0:
-                        shift = int(-mjd_frac) + 1
+                    mjd_frac_ld = mjd_frac_ld + (
+                        np.longdouble(addsat_sec) / np.longdouble(86400.0)
+                    )
+                    if mjd_frac_ld >= 1.0:
+                        shift = int(mjd_frac_ld)
+                        mjd_int += shift
+                        mjd_frac_ld -= np.longdouble(shift)
+                    elif mjd_frac_ld < 0.0:
+                        shift = int(-mjd_frac_ld) + 1
                         mjd_int -= shift
-                        mjd_frac += shift
+                        mjd_frac_ld += np.longdouble(shift)
+                    mjd_frac = float(mjd_frac_ld)
+                    mjd_modified = True
                 except (ValueError, TypeError):
                     pass
+
+            if mjd_modified:
+                mjd_str = _sync_toa_mjd_str(mjd_int, mjd_frac_ld)
 
             toas.append(SimpleTOA(
                 mjd_str=mjd_str,
@@ -351,6 +367,26 @@ def _time_to_mjd_long(time_obj):
     """Extract Time MJD using compensated JD split, without PINT helpers."""
     mjd1, mjd2 = _day_frac(time_obj.jd1 - erfa.DJM0, time_obj.jd2)
     return np.asarray(mjd1, dtype=np.longdouble) + np.asarray(mjd2, dtype=np.longdouble)
+
+
+def _sync_toa_mjd_str(mjd_int: int, mjd_frac) -> str:
+    """Format flag-adjusted ``(mjd_int, mjd_frac)`` for TDB/TT construction.
+
+    TIM ``mjd_str`` is the on-disk value before ``TIME`` / ``-addsat`` etc.
+    Once those flags modify ``mjd_int``/``mjd_frac`` (readTimfile.C parity),
+    the stored string must match or ``compute_tdb_standalone_vectorized`` will
+    build UTC Time from the unshifted MJD while clocks use the shifted SAT.
+
+    The integer and fractional parts are formatted separately: collapsing
+    them into one float64 (as done previously) rounds at the MJD-scale ULP
+    (~0.6 µs at MJD 52000), far too coarse for tempo2 parity.
+    """
+    frac = np.longdouble(mjd_frac)
+    frac_repr = np.format_float_positional(
+        frac, precision=20, unique=False, trim="k"
+    )
+    digits = frac_repr.split(".", 1)[1] if "." in frac_repr else "0"
+    return f"{int(mjd_int)}.{digits}"
 
 
 def parse_mjd_string(mjd_str: str) -> tuple[int, float]:

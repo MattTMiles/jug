@@ -9,8 +9,12 @@ Tempo2GraphMode = Literal[
 ]
 IersPolicy = Literal["warn", "strict"]
 
+from jug.residuals.tempo2.graph_config import TEMPO2_GRAPH_MODE_DEFAULT
+
+DEFAULT_TEMPO2_GRAPH_MODE = TEMPO2_GRAPH_MODE_DEFAULT
+
 _IERS_POLICIES = frozenset({"warn", "strict"})
-_DEFAULT_GRAPH_MODE: Tempo2GraphMode = "staged_bclt"
+_DEFAULT_GRAPH_MODE: Tempo2GraphMode = TEMPO2_GRAPH_MODE_DEFAULT
 
 DEFAULT_TEMPO2_JUG_OPTIONS: dict[str, Any] = {
     "iers_policy": "warn",
@@ -89,7 +93,7 @@ def resolve_tempo2_session_args(
     """Resolve ``(graph_mode, options)`` from session timing kwargs.
 
     When ``compatibility`` is tempo2 and ``tempo2_native`` is omitted, the
-    default graph mode is ``staged_bclt``.  For non-tempo2 sessions,
+    default graph mode is ``fixed_state_stripped``.  For non-tempo2 sessions,
     ``graph_mode`` is ``None`` unless ``tempo2_native`` is set explicitly.
     """
     from jug.residuals.engine_conventions import normalize_compatibility_mode
@@ -106,6 +110,7 @@ def resolve_tempo2_session_args(
 
 
 __all__ = [
+    "DEFAULT_TEMPO2_GRAPH_MODE",
     "DEFAULT_TEMPO2_JUG_OPTIONS",
     "Tempo2GraphMode",
     "IersPolicy",

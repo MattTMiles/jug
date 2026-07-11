@@ -36,7 +36,15 @@ class SessionWorker(QRunnable):
     Prevents UI freeze during file loading and parsing.
     """
     
-    def __init__(self, par_file: Path, tim_file: Path, clock_dir=None):
+    def __init__(
+        self,
+        par_file: Path,
+        tim_file: Path,
+        clock_dir=None,
+        *,
+        compatibility: str = "pint",
+        tempo2_native: str | None = None,
+    ):
         """
         Initialize session worker.
         
@@ -48,12 +56,18 @@ class SessionWorker(QRunnable):
             Path to .tim file
         clock_dir : str, optional
             Clock directory path
+        compatibility : str, default "pint"
+            Timing compatibility mode (``pint`` or ``tempo2``).
+        tempo2_native : str, optional
+            Tempo2 JAX graph mode when ``compatibility="tempo2"``.
         """
         super().__init__()
         self.signals = SessionWorkerSignals()
         self.par_file = par_file
         self.tim_file = tim_file
         self.clock_dir = clock_dir
+        self.compatibility = compatibility
+        self.tempo2_native = tempo2_native
     
     @Slot()
     def run(self):
@@ -72,7 +86,9 @@ class SessionWorker(QRunnable):
                 par_file=self.par_file,
                 tim_file=self.tim_file,
                 clock_dir=self.clock_dir,
-                verbose=False
+                verbose=False,
+                compatibility=self.compatibility,
+                tempo2_native=self.tempo2_native,
             )
             
             self.signals.progress.emit(f"Loaded {session.get_toa_count()} TOAs")

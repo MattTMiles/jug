@@ -356,7 +356,10 @@ def benchmark_fit(
     par_file: Path,
     tim_file: Path,
     fit_params: List[str],
-    run_label: str = ""
+    run_label: str = "",
+    *,
+    compatibility: str = "pint",
+    tempo2_native: str | None = None,
 ) -> dict:
     """Benchmark fitting with detailed stage breakdown."""
     import numpy as np
@@ -374,7 +377,13 @@ def benchmark_fit(
     
     # Create session
     with timer.stage(prefix + "TimingSession creation"):
-        session = TimingSession(par_file, tim_file, verbose=False)
+        session = TimingSession(
+            par_file,
+            tim_file,
+            verbose=False,
+            compatibility=compatibility,
+            tempo2_native=tempo2_native,
+        )
     
     # Compute residuals (needed for cache)
     with timer.stage(prefix + "initial residuals (cache)"):
@@ -497,7 +506,14 @@ def benchmark_fit(
     }
 
 
-def run_benchmark(par_file: Path, tim_file: Path, output_file: Optional[Path] = None):
+def run_benchmark(
+    par_file: Path,
+    tim_file: Path,
+    output_file: Optional[Path] = None,
+    *,
+    compatibility: str = "pint",
+    tempo2_native: str | None = None,
+):
     """Run complete benchmark suite."""
     
     results = {
@@ -534,7 +550,11 @@ def run_benchmark(par_file: Path, tim_file: Path, output_file: Optional[Path] = 
     
     # Fit
     print("4. Benchmarking fit (cold)...")
-    fit_result = benchmark_fit(cold_timer, par_file, tim_file, ['F0', 'F1'], " (cold)")
+    fit_result = benchmark_fit(
+        cold_timer, par_file, tim_file, ['F0', 'F1'], " (cold)",
+        compatibility=compatibility,
+        tempo2_native=tempo2_native,
+    )
     print(f"   Final RMS: {fit_result['final_rms']:.6f} mus, Iterations: {fit_result['iterations']}")
     
     print("\n" + cold_timer.report("COLD RUN TIMING"))
@@ -566,7 +586,11 @@ def run_benchmark(par_file: Path, tim_file: Path, output_file: Optional[Path] = 
     
     # Fit (warm)
     print("3. Benchmarking fit (warm)...")
-    fit_result2 = benchmark_fit(warm_timer, par_file, tim_file, ['F0', 'F1'], " (warm)")
+    fit_result2 = benchmark_fit(
+        warm_timer, par_file, tim_file, ['F0', 'F1'], " (warm)",
+        compatibility=compatibility,
+        tempo2_native=tempo2_native,
+    )
     print(f"   Final RMS: {fit_result2['final_rms']:.6f} mus, Iterations: {fit_result2['iterations']}")
     
     print("\n" + warm_timer.report("WARM RUN TIMING"))
@@ -653,8 +677,12 @@ def main():
         default=Path("bench_results.json"),
         help='Output JSON file for results'
     )
+    from jug.timing.cli import add_timing_cli_arguments, timing_kwargs_from_namespace
+
+    add_timing_cli_arguments(parser)
     
     args = parser.parse_args()
+    timing_kwargs = timing_kwargs_from_namespace(args)
     
     # Validate files exist
     if not args.par.exists():
@@ -670,8 +698,17 @@ def main():
     print(f"Par file: {args.par}")
     print(f"Tim file: {args.tim}")
     print(f"Output:   {args.output}")
+    print(f"Compatibility: {timing_kwargs['compatibility']}")
+    if timing_kwargs["compatibility"] == "tempo2":
+        print(f"Tempo2 graph mode: {timing_kwargs['tempo2_native']}")
     
-    run_benchmark(args.par, args.tim, args.output)
+    run_benchmark(
+        args.par,
+        args.tim,
+        args.output,
+        compatibility=timing_kwargs["compatibility"],
+        tempo2_native=timing_kwargs["tempo2_native"],
+    )
 
 
 if __name__ == '__main__':

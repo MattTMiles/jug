@@ -27,6 +27,7 @@ configure_astropy()
 from jug.fitting.optimized_fitter import fit_parameters_optimized
 from jug.utils.device import set_device_preference, print_device_info
 from jug.io.par_reader import parse_par_file
+from jug.timing.cli import add_timing_cli_arguments, timing_kwargs_from_namespace
 
 
 def main():
@@ -105,8 +106,10 @@ Environment Variable:
     # Device info
     parser.add_argument('--show-devices', action='store_true',
                        help='Show available devices and exit')
+    add_timing_cli_arguments(parser)
     
     args = parser.parse_args()
+    timing_kwargs = timing_kwargs_from_namespace(args)
     
     # Show devices if requested
     if args.show_devices:
@@ -186,6 +189,9 @@ Environment Variable:
         
         if args.device:
             print(f"Device preference: {args.device}")
+        print(f"Compatibility: {timing_kwargs['compatibility']}")
+        if timing_kwargs["compatibility"] == "tempo2":
+            print(f"Tempo2 graph mode: {timing_kwargs['tempo2_native']}")
     
     try:
         if no_fit_mode:
@@ -195,7 +201,8 @@ Environment Variable:
                 par_file=par_file,
                 tim_file=tim_file,
                 clock_dir=args.clock_dir,
-                verbose=not args.quiet  # Use verbose unless --quiet specified
+                verbose=not args.quiet,  # Use verbose unless --quiet specified
+                **timing_kwargs,
             )
             # Reformat to match fitter output
             orig_result = result  # Keep reference to original
@@ -226,6 +233,7 @@ Environment Variable:
                 clock_dir=args.clock_dir,
                 verbose=not args.quiet,
                 device=args.device,
+                **timing_kwargs,
             )
             result['no_fit_mode'] = False
     except Exception as e:

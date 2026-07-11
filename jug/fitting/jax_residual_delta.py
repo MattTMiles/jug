@@ -8,7 +8,7 @@ columns in this path.
 
 For ``compatibility="tempo2"``, native autodiff recomputes
 ``residual_sec(θ+Δθ) − residual_sec(θ)`` through the tempo2-native JAX graph
-selected by ``setup.tempo2_native`` (default ``staged_bclt``). Set
+selected by ``setup.tempo2_native`` (default ``fixed_state_stripped``). Set
 ``tempo2_native="full"`` only to differentiate through the unified in-graph
 model; expect multi-minute JIT compile on first call.
 
@@ -304,6 +304,30 @@ def _spin_terms_from_params(params: dict) -> list:
     return terms
 
 
+def _binary_delay_change_jax(params: dict, setup: "GeneralFitSetup", *, binary_plan):
+    """Traceable binary-delay change, matching the shared Taylor delay path."""
+    if not setup.binary_params or setup.initial_binary_delay is None:
+        return None
+    if setup.prebinary_delay_sec is None:
+        raise ValueError("Binary delay-change requires prebinary_delay_sec in setup.")
+    plan = binary_plan
+    if plan is None:
+        from jug.fitting.binary_delay_plan import resolve_binary_structure
+
+        plan = resolve_binary_structure(
+            setup.params, setup.fit_param_list, obs_pos_ls=setup.ssb_obs_pos_ls
+        )
+    tdb_mjd = jnp.asarray(setup.tdb_mjd, dtype=jnp.float64)
+    toas_prebinary = tdb_mjd - (
+        jnp.asarray(setup.prebinary_delay_sec, dtype=jnp.float64) / SECS_PER_DAY
+    )
+    new_binary = jnp.asarray(
+        plan.evaluate(toas_prebinary, params, setup.ssb_obs_pos_ls, jnp),
+        dtype=jnp.float64,
+    )
+    return new_binary - jnp.asarray(setup.initial_binary_delay, dtype=jnp.float64)
+
+
 def _compute_residual_delta_jax(
     params_ref: dict,
     params_pert: dict,
@@ -329,8 +353,8 @@ def _compute_residual_delta_jax(
                     "GeneralFitSetup. Rebuild from a residual cache that includes "
                     "term_diagnostics (e.g. call compute_residuals before "
                     "export_jax_timing_state). "
-                    "Set tempo2_native to staged_bclt (default), "
-                    "fixed_state_bclt, fixed_state_stripped, or full."
+                    "Set tempo2_native to fixed_state_stripped (default), "
+                    "fixed_state_bclt, staged_bclt, or full."
                 )
             raise ValueError(
                 "tempo2 native residual_delta could not build a native delta pack "
@@ -579,6 +603,47 @@ def make_residual_delta_jax_fn(
         phase_mean_mode=phase_mean_mode,
     )
     return residual_fn
+
+
+def compute_full_model_residuals_tempo2_native(
+    eval_params: Mapping[str, object],
+    setup: "GeneralFitSetup",
+    *,
+    ref_params: Mapping[str, object],
+    ref_residuals_sec: np.ndarray,
+) -> np.ndarray:
+    """Absolute residuals at eval_params via cached host ref + native tempo2 delta."""
+    if normalize_compatibility_mode(str(getattr(setup, "compatibility", ""))) != "tempo2":
+        raise ValueError("tempo2 native full-model residuals require compatibility='tempo2'")
+    if getattr(setup, "native_chain_static", None) is None:
+        raise ValueError(
+            "tempo2 native full-model residuals require native_chain_static on setup "
+            "(populate term_diagnostics via compute_residuals first)."
+        )
+
+    fit_params = [str(p).upper() for p in (setup.fit_param_list or ())]
+    if not fit_params:
+        return np.asarray(ref_residuals_sec, dtype=np.float64)
+
+    ref_params_norm = _normalize_ref_params(ref_params)
+    ref_theta = np.array(
+        [_reference_param_value(ref_params_norm, name) for name in fit_params],
+        dtype=np.float64,
+    )
+    eval_theta = np.array(
+        [_reference_param_value(eval_params, name) for name in fit_params],
+        dtype=np.float64,
+    )
+    delta_theta = eval_theta - ref_theta
+
+    residual_fn = make_residual_delta_jax_fn(
+        setup=setup,
+        fit_params=fit_params,
+        ref_params=ref_params_norm,
+        ref_theta=ref_theta,
+    )
+    delta_sec = np.asarray(residual_fn(delta_theta), dtype=np.float64)
+    return np.asarray(ref_residuals_sec, dtype=np.float64) + delta_sec
 
 
 def compute_autodiff_designmatrix_from_setup(

@@ -1861,6 +1861,9 @@ def _build_general_fit_setup_from_files(
 def _compute_full_model_residuals(
     params: Dict,
     setup: GeneralFitSetup,
+    *,
+    ref_residuals_sec: np.ndarray | None = None,
+    ref_params: Dict | None = None,
 ) -> tuple:
     """
     Compute TRUE residuals using the full nonlinear model.
@@ -1875,6 +1878,13 @@ def _compute_full_model_residuals(
         Current parameter dictionary with updated values
     setup : GeneralFitSetup
         The fitting setup with cached geometry data
+    ref_residuals_sec : np.ndarray, optional
+        Host-computed reference residuals (seconds) at ``ref_params``. When
+        provided for tempo2 setups with ``native_chain_static``, evaluates
+        residuals via cached reference + native JAX delta instead of the
+        PINT-style Taylor delay path.
+    ref_params : dict, optional
+        Reference parameter dictionary matching ``ref_residuals_sec``.
         
     Returns
     -------
@@ -1887,6 +1897,35 @@ def _compute_full_model_residuals(
     wrms_us : float
         Weighted RMS in microseconds
     """
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    if (
+        ref_residuals_sec is not None
+        and normalize_compatibility_mode(str(getattr(setup, "compatibility", ""))) == "tempo2"
+        and getattr(setup, "native_chain_static", None) is not None
+    ):
+        from jug.fitting.jax_residual_delta import compute_full_model_residuals_tempo2_native
+
+        ref = ref_params if ref_params is not None else setup.params
+        residuals_sec = compute_full_model_residuals_tempo2_native(
+            params,
+            setup,
+            ref_params=ref,
+            ref_residuals_sec=np.asarray(ref_residuals_sec, dtype=np.float64),
+        )
+        weights = setup.weights
+        errors_sec = setup.errors_sec
+        sum_weights = np.sum(weights)
+        ecorr_w = getattr(setup, "ecorr_whitener", None)
+        if ecorr_w is not None:
+            ecorr_w.prepare(errors_sec)
+            chi2 = ecorr_w.chi2(residuals_sec)
+        else:
+            chi2 = np.sum((residuals_sec / errors_sec) ** 2)
+        rms_us = np.sqrt(np.sum(residuals_sec**2 * weights) / sum_weights) * 1e6
+        wrms_us = np.sqrt(np.sum((residuals_sec * 1e6) ** 2 * weights) / sum_weights)
+        return residuals_sec, chi2, rms_us, wrms_us
+
     # Get cached arrays -- use longdouble dt_sec for phase precision
     from jug.residuals.phase import compute_phase_residuals
     dt_sec_base = setup.dt_sec_ld if setup.dt_sec_ld is not None else np.array(setup.dt_sec_cached, dtype=np.longdouble)

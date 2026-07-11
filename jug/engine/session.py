@@ -589,6 +589,8 @@ class TimingSession:
         residuals_sec, chi2, rms_us, wrms_us = _compute_full_model_residuals(
             eval_params,
             setup,
+            ref_residuals_sec=np.asarray(cached_result['residuals_us'], dtype=np.float64) * 1e-6,
+            ref_params=dict(self.params),
         )
         residuals_us = np.asarray(residuals_sec, dtype=np.float64) * 1e6
         return {

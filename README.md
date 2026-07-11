@@ -85,7 +85,7 @@ Load par and tim files via **File > Open .par** and **File > Open .tim**, select
 To launch with a specific pulsar:
 
 ```bash
-jug-gui --par J1909-3744.par --tim J1909-3744.tim
+jug-gui --compatibility tempo2 --tempo2-native fixed_state_stripped pulsar.par pulsar.tim
 ```
 
 ## Examples
@@ -204,7 +204,7 @@ JAX graph. Select the graph with session kwargs:
 session = TimingSession(
     par, tim,
     compatibility="tempo2",
-    tempo2_native="staged_bclt",  # fixed_state_bclt | fixed_state_stripped | full
+    tempo2_native="fixed_state_stripped",  # fixed_state_bclt | staged_bclt | full
     tempo2_jug_options={
         "iers_policy": "warn",       # or "strict"
         "bclt_fixed_iter": 12,
@@ -216,9 +216,9 @@ session = TimingSession(
 
 | Mode | `tempo2_native` | Role |
 |------|-----------------|------|
-| `staged_bclt` | default (omit or explicit) | Freeze host ephemeris/clocks; recompute BCLT scan, formBats, Shklovskii in JAX |
+| `fixed_state_stripped` | default (omit or explicit) | Same host freeze + BBAT lite kernel (fast NUTS / interactive default) |
 | `fixed_state_bclt` | `"fixed_state_bclt"` | Freeze host state + reference BCLT `dt_ssb`; one-pass BCLT + full tail (envelope reference) |
-| `fixed_state_stripped` | `"fixed_state_stripped"` | Same host freeze + BBAT lite kernel (fast NUTS target after validation) |
+| `staged_bclt` | `"staged_bclt"` | Freeze host ephemeris/clocks; recompute BCLT scan, formBats, Shklovskii in JAX |
 | `full` | `"full"` | Unified in-graph clocks/SPK/EOP/IFTE/tropo/BCLT (oracle/dev only) |
 
 Requirements for notebook integrators / `export_jax_timing_state`:

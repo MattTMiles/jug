@@ -7,7 +7,9 @@ autodiff / ``residual_delta_jax``:
   ``dt_ssb``; one-pass BCLT + full tempo2 tail (no BCLT fixed-point scan).
 - ``fixed_state_stripped``: same host freeze as ``fixed_state_bclt``; BBAT lite
   subgraph (single pert eval vs host-cached ref BBAT; no phase5/TRACK−2).
-- ``staged_bclt`` (default): freeze ephemeris/clocks/observer state; recompute
+- ``fixed_state_stripped`` (default): same host freeze as ``fixed_state_bclt``;
+  BBAT lite subgraph for fast compile/eval.
+- ``staged_bclt``: freeze ephemeris/clocks/observer state; recompute
   BCLT scan, formBats, Shklovskii, and spin in JAX.
 - ``full``: clocks/SPK/EOP/IFTE/tropo/BCLT all inside XLA (oracle/dev only).
 
@@ -30,7 +32,8 @@ TEMPO2_GRAPH_FIXED_STATE_BCLT = "fixed_state_bclt"
 TEMPO2_GRAPH_FIXED_STATE_STRIPPED = "fixed_state_stripped"
 TEMPO2_GRAPH_FULL = "full"
 
-_TEMPO2_GRAPH_MODE_DEFAULT = TEMPO2_GRAPH_STAGED_BCLT
+TEMPO2_GRAPH_MODE_DEFAULT = TEMPO2_GRAPH_FIXED_STATE_STRIPPED
+_TEMPO2_GRAPH_MODE_DEFAULT = TEMPO2_GRAPH_MODE_DEFAULT
 _TEMPO2_GRAPH_MODES = frozenset(
     {
         TEMPO2_GRAPH_STAGED_BCLT,
@@ -49,7 +52,7 @@ def tempo2_graph_mode_allowed_strings() -> tuple[str, ...]:
 def tempo2_graph_mode(mode: str | None = None) -> str:
     """Normalize and return the canonical tempo2-native JAX graph mode.
 
-    When *mode* is ``None``, returns the default ``staged_bclt``.
+    When *mode* is ``None``, returns the default ``fixed_state_stripped``.
     """
     if mode is None:
         return _TEMPO2_GRAPH_MODE_DEFAULT

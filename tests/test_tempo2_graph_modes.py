@@ -15,9 +15,9 @@ from jug.residuals.tempo2.graph_config import (
 from jug.timing import validate_tempo2_graph_mode
 
 
-def test_graph_mode_default_is_staged_bclt():
-    assert tempo2_graph_mode() == TEMPO2_GRAPH_STAGED_BCLT
-    assert tempo2_graph_mode(None) == TEMPO2_GRAPH_STAGED_BCLT
+def test_graph_mode_default_is_fixed_state_stripped():
+    assert tempo2_graph_mode() == TEMPO2_GRAPH_FIXED_STATE_STRIPPED
+    assert tempo2_graph_mode(None) == TEMPO2_GRAPH_FIXED_STATE_STRIPPED
 
 
 @pytest.mark.parametrize(
@@ -79,3 +79,10 @@ def test_session_resolve_stores_canonical_mode():
 
     mode, _opts = resolve_tempo2_session_args("tempo2", "fixed_state_bclt", None)
     assert mode == TEMPO2_GRAPH_FIXED_STATE_BCLT
+
+
+def test_session_resolve_default_tempo2_mode():
+    from jug.timing import resolve_tempo2_session_args
+
+    mode, _opts = resolve_tempo2_session_args("tempo2", None, None)
+    assert mode == TEMPO2_GRAPH_FIXED_STATE_STRIPPED

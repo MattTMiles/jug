@@ -58,9 +58,9 @@ def open_session(
     engine_conventions : EngineConventionProfile, optional
         Explicit engine convention profile (must match *compatibility*).
     tempo2_native : str, optional
-        Tempo2 JAX graph mode: ``"staged_bclt"``, ``"fixed_state_bclt"``,
-        ``"fixed_state_stripped"``, or ``"full"``.  Default for ``compatibility="tempo2"`` is
-        ``"staged_bclt"``; ignored on the PINT path.
+        Tempo2 JAX graph mode: ``"fixed_state_stripped"`` (default for tempo2),
+        ``"fixed_state_bclt"``, ``"staged_bclt"``, or ``"full"``.
+        Ignored on the PINT path unless ``compatibility="tempo2"``.
     tempo2_jug_options : dict, optional
         Tempo2 options (``iers_policy``, ``bclt_fixed_iter``,
         ``force_cache_refresh``, ``require_native_cache``).  Passed through to

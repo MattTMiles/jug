@@ -472,12 +472,15 @@ def combined_delays(
 
         # Branch 6: tempo2-native T2 DD branch with additive Kopeikin terms
         # (T2model.C port; KIN/KOM stay in tempo2's IAU convention)
-        def branch_t2_tempo2(t):
+        def branch_t2_tempo2(tt_pair):
+            # Pint branches 0-5 share (tt_binary_prebinary, tt_binary_red_prebinary)
+            # in seconds; tempo2-native T2 evaluates at MJD prebinary time.
+            _ = tt_pair
             use_kop = (kin != 0.0) & (
                 (pmra_rad_per_sec != 0.0) | (pmdec_rad_per_sec != 0.0)
             )
             return t2_tempo2_binary_delay(
-                t, pb, a1, ecc, om, t0, gamma, pbdot, omdot, xdot, edot,
+                t_prebinary, pb, a1, ecc, om, t0, gamma, pbdot, omdot, xdot, edot,
                 sini, m2, kin, kom, px,
                 pmra_rad_per_sec, pmdec_rad_per_sec,
                 obs_pos_ls_val,
@@ -490,7 +493,7 @@ def combined_delays(
             binary_model_id,
             [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt,
              branch_ddk, branch_t2_tempo2],
-            t_prebinary
+            (tt_binary_prebinary, tt_binary_red_prebinary),
         )
 
     # Prepare observer position - use zeros if not provided (for non-DDK models)

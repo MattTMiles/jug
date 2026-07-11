@@ -83,6 +83,7 @@ def test_cached_session_designmatrix_accepts_hms_parfile(
         "sw_geometry_pc": cached_result.get("sw_geometry_pc"),
         "jump_phase": cached_result.get("jump_phase"),
         "tzr_phase": cached_result.get("tzr_phase"),
+        "term_diagnostics": cached_result.get("term_diagnostics"),
     }
 
     setup = _build_general_fit_setup_from_cache(

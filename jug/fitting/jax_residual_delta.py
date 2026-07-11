@@ -587,9 +587,15 @@ def compute_autodiff_designmatrix_from_setup(
     *,
     include_offset_column: bool = False,
 ) -> np.ndarray:
-    """Build JUG's public design matrix as ``-jacfwd(residual_delta)(0)``."""
+    """Build JUG's public design matrix as ``-jacfwd(residual_delta)(0)``.
+
+    Uses the simplified (PINT-style Taylor) residual delta path (delay_model="simplified")
+    so design matrix construction does not require tempo2 native_chain_static or
+    term_diagnostics['tempo2_obs_state']. Native full-graph differentiation is
+    still available for other uses.
+    """
     fit_params = tuple(str(name).upper() for name in fit_params)
-    _, _, jac_fn = _prepare_residual_delta_jax(setup=setup, fit_params=fit_params)
+    _, _, jac_fn = _prepare_residual_delta_jax(setup=setup, fit_params=fit_params, delay_model="simplified")
     zero = jnp.zeros((len(fit_params),), dtype=jnp.float64)
     jac_native = np.asarray(jac_fn(zero), dtype=np.float64)
 

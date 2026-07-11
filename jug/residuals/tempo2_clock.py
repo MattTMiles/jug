@@ -108,8 +108,6 @@ def compute_get_correction_tt_sec(
     n = len(toas)
     out = np.zeros(n, dtype=np.float64)
 
-    from jug.utils.constants import OBSERVATORIES
-
     for obs_code in all_obs_codes:
         idxs = [i for i, t in enumerate(toas) if t.observatory.lower() == obs_code]
         if not idxs:

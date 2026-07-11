@@ -145,6 +145,18 @@ Full wsrt167 (167 TOAs), full J0613/IPTA, and NG5 625-TOA oracle tests are marke
 currently marked `slow` because its JUG path is several minutes despite only using
 11 TOAs.
 
+### Pint-mode fast CI
+
+Full tempo2-dev supports both modes. For quick pint-family regression (no tempo2 modules required):
+
+```bash
+python -m pytest tests/ -m "not tempo2 and not dev_oracle" -q --no-cov
+```
+
+MPTA regression fixtures live under `tests/data_mpta/` (see `manifest.json`).
+Golden PINT parity sets live under `tests/data_golden/`. Tests marked `slow` or
+`dev_oracle` are excluded from the command above.
+
 ### Compatibility modes and residual conventions
 
 JUG exposes two compatibility families:

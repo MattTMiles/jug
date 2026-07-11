@@ -29,6 +29,12 @@ from jug.delays.binary_t2_tempo2 import t2_tempo2_binary_delay
 # for the requested nharm and never diverges (the H3/H4 series grows as (H4/H3)^k).
 _ELL1H_MAX_NHARM = 12
 
+# Highest ELL1H H3/H4 Shapiro harmonic JUG evaluates when a par sets NHARMS.
+# Tempo2's calcDH sums harmonics 3..NHARMS; realistic NHARMS is <=7, so 12 is a
+# safe ceiling. Harmonics k>nharm are masked (base->0) so the partial sum is exact
+# for the requested nharm and never diverges (the H3/H4 series grows as (H4/H3)^k).
+_ELL1H_MAX_NHARM = 12
+
 
 @jax.jit
 def combined_delays(
@@ -489,6 +495,10 @@ def combined_delays(
             )
 
         # Switch logic (0=None, 1=ELL1, 2=DD, 3=T2, 4=BT, 5=DDK, 6=T2-tempo2)
+        # All branches receive (tt_binary_prebinary, tt_binary_red_prebinary):
+        # the full and orbit-count-reduced (t_prebinary - binary_epoch) * 86400,
+        # both precomputed in longdouble, avoiding float64 cancellation at
+        # MJD ~58000 and the ~ps float64 phase floor respectively.
         return jax.lax.switch(
             binary_model_id,
             [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt,

@@ -191,6 +191,7 @@ def compute_spin_derivatives(
     f0 = float(params.get("F0", 1.0))
 
     if mode == "tempo2":
+        # HEAD tempo2 Taylor branch (unchanged)
         if dt_sec is not None:
             dt = np.asarray(dt_sec, dtype=np.float64)
         else:
@@ -203,6 +204,7 @@ def compute_spin_derivatives(
             derivatives[param] = jnp.asarray(col, dtype=jnp.float64)
         return derivatives
 
+    # dev-main pint path with longdouble PEPOCH:
     pepoch_mjd = get_longdouble(params, 'PEPOCH', default=float(toas_mjd[0]))
 
     # Compute dt in seconds using longdouble to avoid float64 cancellation at MJD ~58000

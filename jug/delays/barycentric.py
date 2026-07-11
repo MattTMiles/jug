@@ -377,6 +377,17 @@ def compute_pulsar_direction(
     return (np.outer(np.cos(theta), p0) + np.outer(np.sin(theta), mhat))
 
 
+def ecliptic_obliquity_rad(params: dict, use_native_ecliptic: bool = True) -> float:
+    """Return ecliptic obliquity (radians) for native ecliptic coordinates."""
+    if not use_native_ecliptic:
+        return 0.0
+    from jug.io.par_reader import OBLIQUITY_ARCSEC
+
+    ecl_frame = str(params.get("_ecliptic_frame", params.get("ECL", "IERS2010"))).upper()
+    obl_arcsec = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC["IERS2010"])
+    return float(obl_arcsec * np.pi / (180.0 * 3600.0))
+
+
 def rotate_equatorial_to_ecliptic(vectors: np.ndarray, obliquity_rad: float) -> np.ndarray:
     """Rotate Cartesian vectors from equatorial to ecliptic coordinates."""
     vectors = np.asarray(vectors)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import struct
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -302,7 +303,19 @@ class IFTECoeffTables:
 
 
 def load_ifte_coeff_tables(path: str | Path | None = None) -> IFTECoeffTables:
-    """Load all IFTE Chebyshev records (``ifteph.C`` record 2..N)."""
+    """Load all IFTE Chebyshev records (``ifteph.C`` record 2..N); memoized.
+
+    The table build re-reads every Chebyshev record from disk and was run on
+    each native-chain model_static build (multiple times per residual
+    computation). ``ifte_init`` is idempotent process-global state, so a
+    cache keyed on the (normalized) path matches existing semantics. The
+    cached ``records`` array is shared read-only.
+    """
+    return _load_ifte_coeff_tables_cached(None if path is None else str(path))
+
+
+@lru_cache(maxsize=4)
+def _load_ifte_coeff_tables_cached(path: str | None) -> IFTECoeffTables:
     ifte_init(path)
     st = _STATE
     ncoeff = st.reclen // 8
@@ -318,6 +331,7 @@ def load_ifte_coeff_tables(path: str | Path | None = None) -> IFTECoeffTables:
         if st.swap_endian:
             buf = buf.byteswap()
         records[idx] = buf
+    records.setflags(write=False)
     return IFTECoeffTables(
         records=records,
         start_jd=st.start_jd,

@@ -218,31 +218,38 @@ def compute_tempo2_host_setup(
     ) / 36525.0
     topo_freq_mhz = np.array([t.freq_mhz for t in toas], dtype=np.float64)
     dilate_freq = tempo2_dilate_freq_enabled(params)
-    if dilate_freq:
-        units = parse_timescale(params)
-        ein_scale = "TCB" if is_tempo2_si_units(units) else "TDB"
-        einstein_rate = np.asarray(
-            compute_einstein_rate(mjd_tt, units=ein_scale), dtype=np.float64
-        )
-    else:
-        einstein_rate = np.ones_like(sat_arr, dtype=np.float64)
-    ne_sw_val = resolve_ne_sw_cm3(params, engine_profile)
     dm_host = np.zeros(len(toas), dtype=np.float64)
     sw_host = np.zeros(len(toas), dtype=np.float64)
-    for i in range(len(toas)):
-        psr_pos_i = psr_pos_at_delt(pos_pulsar, vel_pulsar, float(delt_formbats[i]))
-        dm_host[i], sw_host[i] = compute_tempo2_dm_delays_sec(
-            sat_mjd=float(sat_arr[i]),
-            freq_mhz=float(topo_freq_mhz[i]),
-            psr_pos=psr_pos_i,
-            obs_to_sun_ls=obs_sun_ls_dm[i],
-            earth_ssb_vel_km_s=earth_ssb_vel_km_s[i],
-            dm_val=float(dm_eff[i]),
-            ne_sw=float(ne_sw_val),
-            einstein_rate=float(einstein_rate[i]),
-            dilate_freq=dilate_freq,
-            site_vel_km_s=tempo2_obs_state.site_vel_km_s[i],
-        )
+    if skip_native_bclt_overlay:
+        # Host-side per-TOA DM/SW is only consumed when the native overlay is
+        # off: with the overlay on, the fixed_state_stripped chain recomputes
+        # tdis1/tdis2 in-graph (it never reads the _overlay_td dm/sw keys —
+        # only the unreachable TEMPO2_GRAPH_FULL mode would) and overrides
+        # these values below. If the host overlay ever gains FULL mode,
+        # restore this loop unconditionally.
+        if dilate_freq:
+            units = parse_timescale(params)
+            ein_scale = "TCB" if is_tempo2_si_units(units) else "TDB"
+            einstein_rate = np.asarray(
+                compute_einstein_rate(mjd_tt, units=ein_scale), dtype=np.float64
+            )
+        else:
+            einstein_rate = np.ones_like(sat_arr, dtype=np.float64)
+        ne_sw_val = resolve_ne_sw_cm3(params, engine_profile)
+        for i in range(len(toas)):
+            psr_pos_i = psr_pos_at_delt(pos_pulsar, vel_pulsar, float(delt_formbats[i]))
+            dm_host[i], sw_host[i] = compute_tempo2_dm_delays_sec(
+                sat_mjd=float(sat_arr[i]),
+                freq_mhz=float(topo_freq_mhz[i]),
+                psr_pos=psr_pos_i,
+                obs_to_sun_ls=obs_sun_ls_dm[i],
+                earth_ssb_vel_km_s=earth_ssb_vel_km_s[i],
+                dm_val=float(dm_eff[i]),
+                ne_sw=float(ne_sw_val),
+                einstein_rate=float(einstein_rate[i]),
+                dilate_freq=dilate_freq,
+                site_vel_km_s=tempo2_obs_state.site_vel_km_s[i],
+            )
     dm_delay_sec = dm_host
     sw_delay_sec = sw_host
 

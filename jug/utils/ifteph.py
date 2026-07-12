@@ -453,3 +453,10 @@ def ifte_delta_t_sec_jax(
 
 def ifte_delta_t_dot(jd0: float, jd1: float) -> float:
     return float(_ifte_get_vals(jd0, jd1, 1)[1])
+
+
+def ifte_vE_vEDot(jd0: float, jd1: float) -> tuple[np.ndarray, np.ndarray]:
+    """``IFTE_get_vE_vEDot``: Earth velocity and its derivative from the
+    time-ephemeris table (raw table units, exactly as tempo2 consumes them)."""
+    res = _ifte_get_vals(jd0, jd1, 2)
+    return np.asarray(res[:3], dtype=np.float64), np.asarray(res[3:6], dtype=np.float64)

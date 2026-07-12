@@ -111,6 +111,35 @@ def tempo2_read_ephemeris_mjd(
     return ephemeris_mjd
 
 
+def tempo2_read_ephemeris_jd(
+    sat_mjd_ld: np.ndarray,
+    correction_tt_sec: np.ndarray,
+    correction_tt_teph_sec: np.ndarray | None = None,
+) -> np.ndarray:
+    """float64 JD for SPK sampling, assembled like ``readEphemeris.C``.
+
+    tempo2 forms ``jd = sat + getCorrectionTT/SECDAY + correctionTT_Teph/SECDAY
+    + 2400000.5`` in ``long double`` and rounds ONCE to double at the
+    ``jpl_pleph`` call. A JD near 2.45e6 has a float64 ulp of ~4.8e-10 day
+    (≈41 µs); assembling the same epoch through several float64 roundings
+    (sat→f64, mjd sums, +2400000.5) occasionally lands on the other side of
+    that rounding boundary, shifting the sampled Earth position by ~1 m and
+    the Roemer delay by a few ns on isolated TOAs. Reproduce tempo2's
+    single-rounding recipe: longdouble accumulation, one cast to float64.
+    """
+    secday = np.longdouble(SECS_PER_DAY)
+    jd_ld = (
+        np.asarray(sat_mjd_ld, dtype=np.longdouble)
+        + np.asarray(correction_tt_sec, dtype=np.longdouble) / secday
+        + np.longdouble(2400000.5)
+    )
+    if correction_tt_teph_sec is not None:
+        jd_ld = jd_ld + np.asarray(
+            correction_tt_teph_sec, dtype=np.longdouble
+        ) / secday
+    return np.asarray(jd_ld, dtype=np.float64)
+
+
 def resolve_tempo2_ephemeris_path(ephem_name: str) -> str:
     """Resolve a par ``EPHEM`` keyword to an on-disk SPK/BSP path for jplephem."""
     name = str(ephem_name).lower().strip()
@@ -288,6 +317,7 @@ def bootstrap_tempo2_observatory_state(
     si_units: bool = True,
     t2c_method: str = "IAU2000B",
     ecl_obl_rad: float = 0.0,
+    sat_mjd_ld: np.ndarray | None = None,
 ) -> Tempo2GeometryBootstrap:
     """Fixed-point bootstrap: ``tt2tb`` Teph ↔ ``readEphemeris`` epoch ↔ SPK state.
 
@@ -304,6 +334,11 @@ def bootstrap_tempo2_observatory_state(
     sat = np.asarray(sat_mjd, dtype=np.float64)
     tt = np.asarray(correction_tt_sec, dtype=np.float64)
     obs_itrf = np.asarray(obs_itrf_km, dtype=np.float64)
+    _sat_ld = (
+        np.asarray(sat_mjd_ld, dtype=np.longdouble)
+        if sat_mjd_ld is not None
+        else np.asarray(sat, dtype=np.longdouble)
+    )
     site_mjd, ephemeris_mjd = tempo2_geometry_epochs(sat, tt)
     tt_teph = np.zeros_like(sat, dtype=np.float64)
     state = compute_tempo2_observatory_state(
@@ -315,6 +350,7 @@ def bootstrap_tempo2_observatory_state(
         t2c_method=t2c_method,
         sat_mjd=sat,
         correction_tt_sec=tt,
+        ephem_jd=tempo2_read_ephemeris_jd(_sat_ld, tt),
         ecl_obl_rad=ecl_obl_rad,
     )
     tt_tb = np.zeros_like(sat, dtype=np.float64)
@@ -344,6 +380,7 @@ def bootstrap_tempo2_observatory_state(
             t2c_method=t2c_method,
             sat_mjd=sat,
             correction_tt_sec=tt,
+            ephem_jd=tempo2_read_ephemeris_jd(_sat_ld, tt, tt_teph),
             ecl_obl_rad=ecl_obl_rad,
         )
     else:
@@ -381,6 +418,7 @@ def compute_tempo2_observatory_state(
     t2c_method: str = "IAU2000B",
     sat_mjd: np.ndarray | None = None,
     correction_tt_sec: np.ndarray | None = None,
+    ephem_jd: np.ndarray | None = None,
     ecl_obl_rad: float = 0.0,
     planet_names: tuple[str, ...] = (
         "mercury",
@@ -427,7 +465,10 @@ def compute_tempo2_observatory_state(
 
     n = len(ephem_mjd)
     kernel = _open_spk(ephem_path)
-    jd_arr = mjd_to_jd(ephem_mjd)
+    # ephem_jd (assembled in longdouble, rounded once — see
+    # tempo2_read_ephemeris_jd) reproduces tempo2's jpl_pleph epoch bit-for-
+    # bit; the mjd_to_jd fallback re-rounds and can flip a JD ulp (~41 µs).
+    jd_arr = ephem_jd if ephem_jd is not None else mjd_to_jd(ephem_mjd)
 
     earth_ssb = np.zeros((n, 6), dtype=np.float64)
     sun_ssb = np.zeros((n, 6), dtype=np.float64)

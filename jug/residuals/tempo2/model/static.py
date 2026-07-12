@@ -281,7 +281,13 @@ def build_tempo2_model_static(
 
 
 def tempo2_einstein_rate_host(mjd_tt: np.ndarray, params: dict) -> np.ndarray:
-    """Host ``einsteinRate`` for ``dm_delays.C`` when ``dilateFreq`` is enabled."""
+    """Host ``einsteinRate`` for ``dm_delays.C`` when ``dilateFreq`` is enabled.
+
+    Astropy-differentiation fallback; prefer
+    :func:`compute_tempo2_einstein_rate_exact` (tt2tdb.C recipe) when the
+    tempo2 observatory state is available — the two realizations differ at
+    the ~6e-11 level, which maps 1:1 into ``freqSSB`` and the DM delay.
+    """
     from jug.delays.barycentric import compute_einstein_rate
 
     mjd = np.asarray(mjd_tt, dtype=np.float64)
@@ -290,6 +296,64 @@ def tempo2_einstein_rate_host(mjd_tt: np.ndarray, params: dict) -> np.ndarray:
     units = parse_timescale(params)
     scale = "TCB" if is_tempo2_si_units(units) else "TDB"
     return np.asarray(compute_einstein_rate(mjd, units=scale), dtype=np.float64)
+
+
+def compute_tempo2_einstein_rate_exact(
+    mjd_tt: np.ndarray,
+    correction_tt_teph_sec: np.ndarray,
+    observatory_earth_km: np.ndarray,
+    earth_ssb_vel_km_s: np.ndarray,
+    site_vel_km_s: np.ndarray,
+    params: dict,
+) -> np.ndarray:
+    """``tt2tdb.C`` ``einsteinRate`` from the IFTE time-ephemeris derivatives.
+
+    Replicates tempo2 exactly::
+
+        mjd_teph    = mjd_tt + correctionTT_Teph/86400
+        deltaTDot   = IFTE_DeltaTDot(2400000.0+(int)mjd_teph, 0.5+frac)
+        earthVelDot = IFTE_get_vEDot(...) / 86400
+        obsTermDot  = (earthVelDot . observatory_earth
+                       + earthVel . siteVel) / (1-IFTE_LC)
+        rate = 1 + obsTermDot + deltaTDot/(1-IFTE_LC)   # *IFTE_K for SI
+
+    ``observatory_earth``/``siteVel``/``earthVel`` are tempo2 light-second
+    quantities; km inputs are converted here. Note tempo2 does NOT apply the
+    IFTE_K unit rescale to ``obsTermDot`` (tt2tdb.C rescales the
+    already-consumed ``obsTerm`` instead — a quirk kept for bit parity).
+    """
+    from jug.utils.constants import C_KM_S
+    from jug.utils.ifteph import IFTE_LC, ifte_delta_t_dot, ifte_vE_vEDot
+    from jug.utils.timescales import IFTE_K
+
+    mjd = np.asarray(mjd_tt, dtype=np.float64)
+    if not tempo2_dilate_freq_enabled(params):
+        return np.ones_like(mjd, dtype=np.float64)
+
+    teph = np.asarray(correction_tt_teph_sec, dtype=np.float64)
+    obs_earth_ls = np.asarray(observatory_earth_km, dtype=np.float64)[:, :3] / C_KM_S
+    earth_vel_ls = np.asarray(earth_ssb_vel_km_s, dtype=np.float64) / C_KM_S
+    site_vel_ls = np.asarray(site_vel_km_s, dtype=np.float64) / C_KM_S
+
+    one_minus_lc = 1.0 - float(IFTE_LC)
+    si_units = is_tempo2_si_units(parse_timescale(params))
+
+    rate = np.ones_like(mjd, dtype=np.float64)
+    mjd_teph = mjd + teph / 86400.0
+    for i in range(len(mjd)):
+        whole = float(int(mjd_teph[i]))
+        jd0 = 2400000.0 + whole
+        jd1 = 0.5 + (mjd_teph[i] - whole)
+        dtdot = ifte_delta_t_dot(jd0, jd1)
+        _vE, vEdot = ifte_vE_vEDot(jd0, jd1)
+        vEdot = vEdot / 86400.0
+        obs_term_dot = (
+            float(np.dot(vEdot, obs_earth_ls[i]))
+            + float(np.dot(earth_vel_ls[i], site_vel_ls[i]))
+        ) / one_minus_lc
+        r = 1.0 + obs_term_dot + dtdot / one_minus_lc
+        rate[i] = float(IFTE_K) * r if si_units else r
+    return rate
 
 
 def _spk_segment_to_jax(seg: SpkSegmentPacked) -> SpkSegmentPacked:

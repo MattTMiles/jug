@@ -14,6 +14,7 @@ from .static import (
     _spk_to_jax,
     build_tempo2_model_static,
     compute_dm_vals_jax,
+    compute_tempo2_einstein_rate_exact,
     host_frozen_vectors_from_tempo2_obs_state,
     planet_rsa_tuple_from_dict,
     planet_rsa_tuple_jax_from_dict,
@@ -49,5 +50,6 @@ __all__ = [
     "prepare_ephemeris_inputs_jax",
     "run_tempo2_toa_model",
     "run_tempo2_toa_model_with_fixed_ifte_geometry",
+    "compute_tempo2_einstein_rate_exact",
     "tempo2_einstein_rate_host",
 ]

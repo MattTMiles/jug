@@ -216,7 +216,11 @@ def build_staged_delta_pack(
         dtype=np.float64,
     )
     site_mjd = sat + tt_pre / SECS_PER_DAY
-    einstein = tempo2_einstein_rate_host(site_mjd, params)
+    if td.get("einstein_rate") is not None:
+        # Exact tt2tdb.C rate threaded from the host stage / session cache.
+        einstein = np.asarray(td["einstein_rate"], dtype=np.float64)
+    else:
+        einstein = tempo2_einstein_rate_host(site_mjd, params)
     tropo = np.asarray(td.get("tropo_delay_sec", 0.0), dtype=np.float64)
     if tropo.ndim == 0:
         tropo = np.full(len(sat), float(tropo), dtype=np.float64)
@@ -443,7 +447,11 @@ def _build_fixed_state_pack_from_host(
         dtype=np.float64,
     )
     site_mjd = sat + tt_pre / SECS_PER_DAY
-    einstein = tempo2_einstein_rate_host(site_mjd, params)
+    if td.get("einstein_rate") is not None:
+        # Exact tt2tdb.C rate threaded from the host stage / session cache.
+        einstein = np.asarray(td["einstein_rate"], dtype=np.float64)
+    else:
+        einstein = tempo2_einstein_rate_host(site_mjd, params)
     units = parse_timescale(params)
     jump = model_static.jump_phase
     tzr = model_static.tzr_phase

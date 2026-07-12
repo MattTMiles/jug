@@ -2099,6 +2099,10 @@ def compute_residuals_simple(
             _stage.torb_sec, _stage.model_mjd, _stage.total_delay_sec, _stage.delay_sec,
             _stage.dt_sec, _stage.bclt_dt_ssb_sec,
         )
+        if _stage.freq_bary_native_mhz is not None:
+            # tempo2-native freqSSB (dm_delays.C) replaces the astropy-provider
+            # barycentric frequency for the finalize chain and the result dict.
+            freq_bary_mhz = np.asarray(_stage.freq_bary_native_mhz, dtype=np.float64)
 
     phase_bbat_mjd = bbat_mjd if USE_NATIVE_BBAT_PHASE5 else None
     phase_torb_sec = torb_sec if USE_NATIVE_BBAT_PHASE5 else None
@@ -2395,6 +2399,9 @@ def compute_residuals_simple(
                 "bbat_mjd": np.asarray(tempo2_clock_terms.bbat_mjd, dtype=np.float64),
                 "shklovskii_sec": np.asarray(
                     tempo2_clock_terms.shklovskii_sec, dtype=np.float64
+                ),
+                "einstein_rate": np.asarray(
+                    tempo2_clock_terms.einstein_rate, dtype=np.float64
                 ),
                 "formbats_correction_tt_sec": np.asarray(
                     formbats_correction_tt, dtype=np.float64

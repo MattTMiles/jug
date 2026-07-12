@@ -28,7 +28,7 @@ import numpy as np
 from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
 from jug.residuals.tempo2.graph_config import USE_NATIVE_BBAT_PHASE5
 from jug.residuals.tempo2.types import Tempo2Terms
-from jug.utils.constants import SECS_PER_DAY
+from jug.utils.constants import C_KM_S, SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
 
@@ -58,6 +58,9 @@ class Tempo2HostSetupResult:
     # finalize stage can reuse it instead of rebuilding the whole chain.
     # None when skip_native_bclt_overlay=True.
     native_terms: Any | None = None
+    # Tempo2-native barycentric frequency (dm_delays.C freqSSB), replacing
+    # the astropy-provider value in tempo2 mode.
+    freq_bary_native_mhz: np.ndarray | None = None
 
 
 @dataclass
@@ -183,6 +186,10 @@ def compute_tempo2_host_setup(
         si_units=is_tempo2_si_units(parse_timescale(params)),
         t2c_method=str(getattr(engine_profile, "t2cmethod", "IAU2000B")),
         ecl_obl_rad=ecl_obl_rad,
+        sat_mjd_ld=np.array(
+            [np.longdouble(t.mjd_int) + np.longdouble(t.mjd_frac) for t in toas],
+            dtype=np.longdouble,
+        ),
     )
     tempo2_obs_state = geo_boot.state
     mjd_tt = geo_boot.site_mjd
@@ -218,6 +225,40 @@ def compute_tempo2_host_setup(
     ) / 36525.0
     topo_freq_mhz = np.array([t.freq_mhz for t in toas], dtype=np.float64)
     dilate_freq = tempo2_dilate_freq_enabled(params)
+    # Exact tt2tdb.C einsteinRate from the IFTE time-ephemeris derivatives;
+    # the astropy-differentiation variant differs at ~6e-11, which maps 1:1
+    # into freqSSB and tdis1.
+    from jug.residuals.tempo2.model import compute_tempo2_einstein_rate_exact
+
+    einstein_rate = compute_tempo2_einstein_rate_exact(
+        mjd_tt,
+        tt_teph,
+        tempo2_obs_state.observatory_earth_km,
+        earth_ssb_vel_km_s,
+        tempo2_obs_state.site_vel_km_s,
+        params,
+    )
+
+    # Tempo2-native barycentric frequency (dm_delays.C):
+    #   pos    = normalize(posPulsar + delt*velPulsar)
+    #   vobs   = (earth_ssb_vel + siteVel) / c
+    #   freqf  = freq*1e6*(1 - pos.vobs) [/ einsteinRate when DILATEFREQ]
+    # The astropy-provider freq_bary differs from this at the ~6e-11 relative
+    # level (~cm/s velocity projection), which maps 1:1 into tdis1 —
+    # measured as the entire ~0.17 ns DM-parity floor on wsrt167.
+    _pos_evolved = pos_pulsar[None, :] + delt_formbats[:, None] * vel_pulsar[None, :]
+    _pos_evolved = _pos_evolved / np.linalg.norm(_pos_evolved, axis=1)[:, None]
+    _vobs = (
+        np.asarray(earth_ssb_vel_km_s, dtype=np.float64)
+        + np.asarray(tempo2_obs_state.site_vel_km_s, dtype=np.float64)
+    ) / C_KM_S
+    _voverc = np.einsum("ij,ij->i", _pos_evolved, _vobs)
+    freq_ssb_hz = topo_freq_mhz * 1.0e6 * (1.0 - _voverc)
+    if dilate_freq:
+        _ok = (freq_ssb_hz > 0) & (einstein_rate != 0.0)
+        freq_ssb_hz = np.where(_ok, freq_ssb_hz / einstein_rate, freq_ssb_hz)
+    freq_bary_native_mhz = freq_ssb_hz / 1.0e6
+
     dm_host = np.zeros(len(toas), dtype=np.float64)
     sw_host = np.zeros(len(toas), dtype=np.float64)
     if skip_native_bclt_overlay:
@@ -227,14 +268,6 @@ def compute_tempo2_host_setup(
         # only the unreachable TEMPO2_GRAPH_FULL mode would) and overrides
         # these values below. If the host overlay ever gains FULL mode,
         # restore this loop unconditionally.
-        if dilate_freq:
-            units = parse_timescale(params)
-            ein_scale = "TCB" if is_tempo2_si_units(units) else "TDB"
-            einstein_rate = np.asarray(
-                compute_einstein_rate(mjd_tt, units=ein_scale), dtype=np.float64
-            )
-        else:
-            einstein_rate = np.ones_like(sat_arr, dtype=np.float64)
         ne_sw_val = resolve_ne_sw_cm3(params, engine_profile)
         for i in range(len(toas)):
             psr_pos_i = psr_pos_at_delt(pos_pulsar, vel_pulsar, float(delt_formbats[i]))
@@ -282,13 +315,14 @@ def compute_tempo2_host_setup(
             "tropo_delay_sec": tropo_delay_sec,
             "dm_delay_sec": dm_delay_sec,
             "sw_delay_sec": sw_delay_sec,
-            "freq_bary_mhz": freq_bary_mhz,
+            "freq_bary_mhz": freq_bary_native_mhz,
+            "einstein_rate": einstein_rate,
             "tempo2_obs_state": tempo2_obs_state_export,
         }
         _overlay_jug = {
             "term_diagnostics": _overlay_td,
             "dt_sec": np.asarray(dt_sec, dtype=np.float64),
-            "freq_bary_mhz": freq_bary_mhz,
+            "freq_bary_mhz": freq_bary_native_mhz,
             "compatibility": compatibility_mode,
         }
         _native_overlay = prepare_tempo2_chain_from_simple_result(
@@ -321,6 +355,7 @@ def compute_tempo2_host_setup(
         prebinary_delay_sec,
         params,
         correction_tt_teph_sec=tt_teph,
+        einstein_rate=einstein_rate,
     )
 
     bbat_mjd = None
@@ -353,6 +388,7 @@ def compute_tempo2_host_setup(
         clock_feedback_delta_sec=clock_feedback_delta_sec,
         bclt_dt_ssb_sec=bclt_dt_ssb_sec,
         native_terms=native_terms,
+        freq_bary_native_mhz=freq_bary_native_mhz,
     )
 
 
@@ -504,6 +540,7 @@ class Tempo2HostStageResult:
     dt_sec: np.ndarray
     bclt_dt_ssb_sec: np.ndarray | None = None
     native_terms: Any | None = None
+    freq_bary_native_mhz: np.ndarray | None = None
 
 
 def run_tempo2_host_stage(
@@ -709,4 +746,5 @@ def run_tempo2_host_stage(
         dt_sec=dt_sec,
         bclt_dt_ssb_sec=bclt_dt_ssb_sec,
         native_terms=_t2_setup.native_terms,
+        freq_bary_native_mhz=_t2_setup.freq_bary_native_mhz,
     )

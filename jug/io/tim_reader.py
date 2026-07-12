@@ -554,8 +554,14 @@ def compute_tt_correction_sec_vectorized(
     Uses the same UTC(obs)→TT clock chain as :func:`compute_tdb_standalone_vectorized`
     but stops at TT scale (no TDB/IFTE leap).  Matches tempo2 ``formBats.C`` slot.
 
-    When ``clock_eval_offset_sec`` is supplied, clock tables are evaluated at
-    ``sat + offset/SECDAY`` per ``clkcorr.C`` feedback.
+    When ``clock_eval_offset_sec`` is supplied, the BIPM table is evaluated at
+    ``sat + offset/SECDAY`` per ``clkcorr.C`` feedback. The observatory chain
+    is always evaluated at raw SAT: tempo2 shifts each hop only by the
+    corrections accumulated BEFORE it, which for the UTC(obs)->UTC hops is
+    the ~µs-scale site correction itself (a femtosecond-level epoch effect).
+    Shifting the obs chain by the full TT-UTC (~66 s) instead samples noisy
+    maser segments ~66 s off-epoch — measured up to ~7 ns error on EFF/JBO
+    TOAs where the site clock wanders at µs/day.
     """
     from jug.io.clock import interpolate_clock_vectorized
 
@@ -563,7 +569,7 @@ def compute_tt_correction_sec_vectorized(
     eval_mjd = mjd_vals
     if clock_eval_offset_sec is not None:
         eval_mjd = mjd_vals + np.asarray(clock_eval_offset_sec, dtype=np.float64) / SECS_PER_DAY
-    obs_corrs = interpolate_clock_vectorized(obs_chain, eval_mjd)
+    obs_corrs = interpolate_clock_vectorized(obs_chain, mjd_vals)
     bipm_corrs = np.interp(eval_mjd, bipm_clock["mjd"], bipm_clock["offset"]) - 32.184
     total_corrs = obs_corrs + bipm_corrs
     if time_offsets is not None:

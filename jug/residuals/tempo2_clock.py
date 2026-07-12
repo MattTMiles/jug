@@ -101,13 +101,21 @@ def compute_get_correction_tt_sec(
 
     Uses Astropy UTC→TT (leap-second aware) with ``sat+corr/SECDAY`` feedback
     matching ``clkcorr.C`` evaluation time.
+
+    The astropy UTC→TT hop supplies the leap-second (UTC→TAI) and TT(TAI)
+    steps; the clock-file tables only cover UTC(obs)→UTC and TT(BIPM)−TT(TAI).
+    Summing the clock tables alone silently drops the ~64-66 s TT−UTC offset,
+    which shifts every BAT by that amount and corrupts the native Roemer
+    delay at the ~5 ms level (Earth moves ~2000 km in 66 s).
     """
-    from jug.io.clock import interpolate_clock_vectorized
+    from astropy import units as u
+    from astropy.coordinates import EarthLocation
+
+    from jug.io.tim_reader import compute_tt_correction_sec_vectorized
     from jug.utils.constants import OBSERVATORIES
 
     n = len(toas)
     out = np.zeros(n, dtype=np.float64)
-
     for obs_code in all_obs_codes:
         idxs = [i for i, t in enumerate(toas) if t.observatory.lower() == obs_code]
         if not idxs:
@@ -115,31 +123,26 @@ def compute_get_correction_tt_sec(
         chain = obs_clocks.get(obs_code, obs_clock_default)
         loc_km = OBSERVATORIES.get(obs_code)
         if loc_km is None:
-            # fall back to direct site correction using float MJD
-            mjd = np.array([toas[i].mjd_int + toas[i].mjd_frac for i in idxs], dtype=np.float64)
-            obs_corr = interpolate_clock_vectorized(chain, mjd)
-            bipm_corr = np.interp(mjd, bipm_clock["mjd"], bipm_clock["offset"]) - 32.184
-            out[idxs] = obs_corr + bipm_corr
             continue
-
-        # Use the existing vectorized feedback implementation on the per-obs slice
-        mjd_obs = np.array([toas[i].mjd_int + toas[i].mjd_frac for i in idxs], dtype=np.float64)
-        # For this obs chain
-        local_mjds = (np.asarray(chain.get("mjd", []), dtype=np.float64),)
-        local_offs = (np.asarray(chain.get("offset", []), dtype=np.float64),)
-        if "links" in chain:
-            for link in chain["links"]:
-                local_mjds = local_mjds + (np.asarray(link.get("mjd", []), dtype=np.float64),)
-                local_offs = local_offs + (np.asarray(link.get("offset", []), dtype=np.float64),)
-
-        corr = compute_tempo2_get_correction_tt_sec_vectorized(
-            mjd_obs,
-            chain_mjd_tables=local_mjds,
-            chain_offset_tables=local_offs,
-            bipm_mjd=np.asarray(bipm_clock["mjd"], dtype=np.float64),
-            bipm_offset=np.asarray(bipm_clock["offset"], dtype=np.float64),
-            feedback_iters=feedback_iters,
+        loc = EarthLocation.from_geocentric(
+            loc_km[0] * u.km, loc_km[1] * u.km, loc_km[2] * u.km
         )
+        offsets = None if time_offsets is None else time_offsets[idxs]
+        mjd_ints = [toas[i].mjd_int for i in idxs]
+        mjd_fracs = [toas[i].mjd_frac for i in idxs]
+        mjd_strings = [toas[i].mjd_str for i in idxs]
+        corr = np.zeros(len(idxs), dtype=np.float64)
+        for _ in range(max(1, int(feedback_iters))):
+            corr = compute_tt_correction_sec_vectorized(
+                mjd_ints,
+                mjd_fracs,
+                chain,
+                bipm_clock,
+                loc,
+                time_offsets=offsets,
+                mjd_strings=mjd_strings,
+                clock_eval_offset_sec=corr,
+            )
         out[idxs] = corr
     return out
 

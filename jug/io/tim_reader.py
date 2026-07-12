@@ -539,6 +539,64 @@ def compute_tdb_standalone_vectorized(
     return _time_to_mjd_long(tdb_time)
 
 
+def compute_tt_correction_sec_vectorized(
+    mjd_ints,
+    mjd_fracs,
+    obs_chain,
+    bipm_clock,
+    location: EarthLocation,
+    time_offsets: np.ndarray | None = None,
+    mjd_strings: list[str] | np.ndarray | None = None,
+    clock_eval_offset_sec: np.ndarray | None = None,
+) -> np.ndarray:
+    """Tempo2 ``getCorrectionTT``: (TT − sat) in seconds per TOA.
+
+    Uses the same UTC(obs)→TT clock chain as :func:`compute_tdb_standalone_vectorized`
+    but stops at TT scale (no TDB/IFTE leap).  Matches tempo2 ``formBats.C`` slot.
+
+    When ``clock_eval_offset_sec`` is supplied, clock tables are evaluated at
+    ``sat + offset/SECDAY`` per ``clkcorr.C`` feedback.
+    """
+    from jug.io.clock import interpolate_clock_vectorized
+
+    mjd_vals = np.array(mjd_ints, dtype=np.float64) + np.array(mjd_fracs, dtype=np.float64)
+    eval_mjd = mjd_vals
+    if clock_eval_offset_sec is not None:
+        eval_mjd = mjd_vals + np.asarray(clock_eval_offset_sec, dtype=np.float64) / SECS_PER_DAY
+    obs_corrs = interpolate_clock_vectorized(obs_chain, eval_mjd)
+    bipm_corrs = np.interp(eval_mjd, bipm_clock["mjd"], bipm_clock["offset"]) - 32.184
+    total_corrs = obs_corrs + bipm_corrs
+    if time_offsets is not None:
+        total_corrs = total_corrs + np.asarray(time_offsets, dtype=np.float64)
+
+    if mjd_strings is not None:
+        int_arr, frac_arr = _mjd_strings_to_split(mjd_strings)
+    else:
+        int_arr = np.array(mjd_ints, dtype=np.float64)
+        frac_arr = np.array(mjd_fracs, dtype=np.float64)
+
+    time_utc = Time(
+        val=int_arr,
+        val2=frac_arr,
+        format="jug_pulsar_mjd",
+        scale="utc",
+        location=location,
+        precision=9,
+    )
+    time_utc = time_utc + TimeDelta(total_corrs, format="sec")
+    tt_mjd = _time_to_mjd_long(time_utc.tt)
+    # Subtract in longdouble against the same SAT the Time object was built
+    # from.  Downcasting tt_mjd to float64 first quantises the correction at
+    # the MJD ULP (~0.6 µs near MJD 52000); the clkcorr.C feedback delta is a
+    # difference of two of these corrections, so a rounding-boundary crossing
+    # would inject a full ULP (~629 ns) into the emission time.
+    sat_ref = (
+        np.asarray(int_arr, dtype=np.longdouble)
+        + np.asarray(frac_arr, dtype=np.longdouble)
+    )
+    return np.asarray((tt_mjd - sat_ref) * SECS_PER_DAY, dtype=np.float64)
+
+
 def write_tim_file(toas: List[SimpleTOA], path: Path | str) -> None:
     """Write a list of SimpleTOA objects to a Tempo2-format .tim file.
 

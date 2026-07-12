@@ -1283,7 +1283,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     _tzr_has_binary = bp['has_binary_jax']
     if _tzr_binary_epoch_key is not None and bool(_tzr_has_binary):
         _tzr_epoch_ld = get_longdouble(params, _tzr_binary_epoch_key)
-        _tzr_tt_binary_ld = (np.longdouble(TZRMJD_TDB) - _tzr_epoch_ld) * np.longdouble(86400.0)
+        _tzr_tt_binary_ld = (np.longdouble(TZRMJD_model) - _tzr_epoch_ld) * np.longdouble(86400.0)
         tzr_tt_binary_jax = jnp.array([float(_tzr_tt_binary_ld)], dtype=jnp.float64)
         # Orbit-count reduction (same period logic as the main kernel call)
         if bp.get('use_fb') and bp['model_id'] == 1:
@@ -1330,7 +1330,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
         _dm_epoch_key = 'DMEPOCH' if 'DMEPOCH' in params else 'PEPOCH'
         dm_epoch = get_longdouble(params, _dm_epoch_key)
         dt_years = float(
-            (np.longdouble(TZRMJD_TDB) - dm_epoch) / np.longdouble(365.25)
+            (np.longdouble(TZRMJD_model) - dm_epoch) / np.longdouble(365.25)
         )
         dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
         tzr_dm_delay = K_DM_SEC * dm_eff / (tzr_freq_bary ** 2)
@@ -1374,7 +1374,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
     # Compute phase at TZR using generic Taylor series (same as FB pattern).
     # Subtract MJDs first for longdouble precision (see dt_sec note in
     # compute_residuals_simple).
-    tzr_dt_sec = ((TZRMJD_TDB - PEPOCH) - tzr_delay / np.longdouble(SECS_PER_DAY)) * np.longdouble(SECS_PER_DAY)
+    tzr_dt_sec = ((TZRMJD_model - PEPOCH) - tzr_delay / np.longdouble(SECS_PER_DAY)) * np.longdouble(SECS_PER_DAY)
     n_f = len(f_coeffs)
     tzr_phase = np.longdouble(0.0)
     for i in range(n_f - 1, -1, -1):
@@ -1737,11 +1737,15 @@ def compute_residuals_simple(
     has_binary = bp['has_binary']
 
 
-    # High-precision (tdb - binary_epoch)*86400 for binary delay computation.
+    # High-precision (model_epoch - binary_epoch)*86400 for binary delay computation.
+    # model_mjd is the model timescale axis (TDB, or the tempo2 TCB epoch map for
+    # UNITS=TCB pars); binary params (TASC/T0/PB) are on that same axis, so using
+    # raw tdb_mjd here would shift the orbital phase by 2*pi*(TCB-TDB)/PB (~1 ms
+    # residual error on IPTA TCB pars).
     binary_epoch_key = 'T0' if 'T0' in params else ('TASC' if 'TASC' in params else None)
     if binary_epoch_key is not None and has_binary:
         binary_epoch_ld = get_longdouble(params, binary_epoch_key)
-        tt_binary_sec_ld = (np.asarray(tdb_mjd, dtype=np.longdouble) - binary_epoch_ld) * np.longdouble(86400.0)
+        tt_binary_sec_ld = (np.asarray(model_mjd, dtype=np.longdouble) - binary_epoch_ld) * np.longdouble(86400.0)
         tt_binary_jax = jnp.array(np.asarray(tt_binary_sec_ld, dtype=np.float64), dtype=jnp.float64)
         if bp.get('use_fb') and bp['model_id'] == 1:
             tt_binary_red_jax = jnp.array(reduce_binary_time_sec(

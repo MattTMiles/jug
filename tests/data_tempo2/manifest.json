@@ -274,5 +274,24 @@
       "NOTES": "Fast WSRT TRACK -2 spin gate; full 167-TOA fixture remains a slow debt pin"
     },
     "notes": "Mini WSRT low-band subset for fast TRACK -2 spin parity gates"
+  },
+  {
+    "id": "epta_j0613_raw_mix",
+    "par": "epta_j0613_raw_mix/epta_j0613_raw_mix.par",
+    "tim": "epta_j0613_raw_mix/epta_j0613_raw_mix.tim",
+    "source_par": "ipta-dr2/EPTA_v2.2/J0613-0200/J0613-0200.par",
+    "source_tim": "ipta-dr2/EPTA_v2.2/J0613-0200/tims/{JBO.DFB.1400,NRT.BON.1400}.tim",
+    "provenance": "IPTA_DR2_EPTA",
+    "binary": "T2 (ELL1 via TASC/EPS1/EPS2)",
+    "toa_count": 29,
+    "parity_status": "green_required",
+    "metadata": {
+      "PSRJ": "J0613-0200",
+      "CLK": "TT(BIPM2011)",
+      "UNITS": "TCB (implicit; par has no UNITS line)",
+      "EPHEM": "DE421",
+      "NTOA": "29"
+    },
+    "notes": "RAW-input parity gate: no TRACK in par, no -pn/-pnadd in tim. Mixes JBO.DFB.1400 (-padd 0.401094) and NRT.BON.1400 (no -padd) backends. Guards the TRACK-absent Taylor-sequential host path, the TCB binary time axis (tt_binary from model_mjd), and the astropy UTC->TT leap-second chain in compute_get_correction_tt_sec (2026-07 tempo2-dev regressions)."
   }
 ]

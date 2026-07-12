@@ -26,7 +26,10 @@ from test_tempo2_residual_parity import (
 pytestmark = pytest.mark.tempo2
 
 WSRT167_DEBT_RMS_NS = 2.5
-NO_TRACK_DEBT_RMS_NS = 100.0
+# Was 100 ns "debt"; the no-track path reached strict parity (measured
+# 0.57 ns RMS, 2026-07-12) after the TCB binary-axis and UTC->TT clock fixes,
+# so gate it at the strict tier like every other green fixture.
+NO_TRACK_DEBT_RMS_NS = FINAL_RMS_DELTA_NS
 ADDSAT_DEBT_MAX_NS = 1000.0  # 1 µs — catches integer-turn regressions
 
 

@@ -470,12 +470,20 @@ class ClockGraph:
         }
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=None)
 def _parse_clock_file_cached(path_str: str) -> tuple:
     """Internal cached clock file parser.
-    
-    Returns tuple of (mjd_tuple, offset_tuple) for hashability.
-    
+
+    Returns ``(mjd_array, offset_array)`` as read-only float64 arrays shared
+    by every ``parse_clock_file`` call for the same path. The cache is
+    unbounded on purpose: it holds one entry per distinct clock file
+    (~dozens), and a bounded LRU smaller than the clock directory thrashes at
+    ~100% miss during the ClockGraph Dijkstra sweeps, which visit every file
+    per shortest-path call (measured: 18k+ full re-parses per residual
+    computation, ~57% of total runtime). File contents are assumed stable for
+    the process lifetime — the same semantics ClockGraph already has for the
+    edge list.
+
     Sentinel entries at the end of clock files (e.g. MJD 60000 or 99999
     with offset=0) are kept as-is, matching Tempo2 behaviour: linear
     interpolation between the last real entry and the sentinel is used
@@ -500,7 +508,17 @@ def _parse_clock_file_cached(path_str: str) -> tuple:
                 except ValueError:
                     continue
 
-    return (tuple(mjds), tuple(offsets))
+    mjd_arr = np.array(mjds, dtype=np.float64)
+    offset_arr = np.array(offsets, dtype=np.float64)
+    # Shared across callers: fail loudly if anyone tries in-place writes.
+    mjd_arr.setflags(write=False)
+    offset_arr.setflags(write=False)
+    return (mjd_arr, offset_arr)
+
+
+# str(path) -> resolved absolute path string; avoids a filesystem
+# Path.resolve() round-trip on every parse_clock_file call.
+_RESOLVED_PATH_CACHE: dict = {}
 
 
 def parse_clock_file(path: Path | str) -> dict:
@@ -531,14 +549,19 @@ def parse_clock_file(path: Path | str) -> dict:
     >>> print(f"Clock file has {len(clock_data['mjd'])} entries")
     """
     # Resolve to absolute path string for consistent caching
-    path_str = str(Path(path).resolve())
-    
-    # Get cached tuples and convert to arrays
-    mjd_tuple, offset_tuple = _parse_clock_file_cached(path_str)
-    
+    key = str(path)
+    path_str = _RESOLVED_PATH_CACHE.get(key)
+    if path_str is None:
+        path_str = str(Path(path).resolve())
+        _RESOLVED_PATH_CACHE[key] = path_str
+
+    # Fresh dict per call (callers may add keys, e.g. _merge_chain sets
+    # 'chain'); the arrays themselves are shared read-only cache entries.
+    mjd_arr, offset_arr = _parse_clock_file_cached(path_str)
+
     return {
-        'mjd': np.array(mjd_tuple),
-        'offset': np.array(offset_tuple),
+        'mjd': mjd_arr,
+        'offset': offset_arr,
         'path': str(path),
     }
 

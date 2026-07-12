@@ -106,7 +106,6 @@ def test_simulated_fixture_fingerprints_are_accepted():
 
 
 @pytest.mark.tempo2
-@pytest.mark.slow
 @pytest.mark.parametrize("fixture", list_tempo2_sim_fixtures(), ids=lambda fx: fx["id"])
 def test_simulated_tempo2_residual_parity(fixture):
     pytest.importorskip("libstempo")
@@ -137,7 +136,6 @@ def test_simulated_tempo2_residual_parity(fixture):
 
 
 @pytest.mark.tempo2
-@pytest.mark.slow
 @pytest.mark.parametrize(
     "fixture",
     [fx for fx in list_tempo2_sim_fixtures() if fx.get("designmatrix_params")],

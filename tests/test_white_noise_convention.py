@@ -1,8 +1,11 @@
 """Regression tests for EFAC/EQUAD white-noise convention."""
 
 import numpy as np
+import pytest
 
 from jug.noise.white import apply_white_noise, parse_noise_lines
+
+pytestmark = pytest.mark.smoke
 
 
 def test_apply_white_noise_uses_enterprise_measurementnoise_form():

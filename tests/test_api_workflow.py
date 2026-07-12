@@ -11,6 +11,8 @@ Run with: python tests/test_api_workflow.py
 import sys
 from pathlib import Path
 
+import pytest
+
 # Ensure jug module is importable
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
@@ -27,6 +29,7 @@ def get_mini_paths():
     return None, None
 
 
+@pytest.mark.smoke
 def test_simple_calculator():
     """Test compute_residuals_simple API."""
     from jug.residuals.simple_calculator import compute_residuals_simple

@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip("libstempo")
 
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 
 from jug.testing.tempo2_clock_chain import compare_formbats_clock_chain
 from tempo2_fixtures import get_tempo2_fixture

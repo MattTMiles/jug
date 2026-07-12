@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("pytempo")
 
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.testing.tempo2_pytempo_oracle import load_pytempo_native_oracle

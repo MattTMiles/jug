@@ -86,6 +86,7 @@ def _strip_track_and_pulse_flags(tmp_path: Path, fixture: dict) -> tuple[Path, P
     return par_out, tim_out
 
 
+@pytest.mark.smoke
 def test_epta_j0613_nrt1400_mini_no_track_residual_debt(tmp_path):
     """Non-TRACK path must stay near libstempo on the mini NRT excerpt."""
     fixture = get_tempo2_fixture("epta_j0613_nrt1400_mini")
@@ -102,7 +103,6 @@ def test_epta_j0613_nrt1400_mini_no_track_residual_debt(tmp_path):
     )
 
 
-@pytest.mark.slow
 def test_epta_j0613_addsat_min_no_integer_wrap_and_bulk_context():
     """TRACK -2 ``-addsat`` mini fixture: no integer wrap and bulk stays bounded."""
     fixture = get_tempo2_fixture("epta_j0613_addsat_min")
@@ -121,6 +121,7 @@ def test_epta_j0613_addsat_min_no_integer_wrap_and_bulk_context():
     assert stats["rms"] < 1000.0
 
 
+@pytest.mark.smoke
 def test_wsrt167_mini_track2_strict_residual_target():
     """Mini WSRT TRACK -2 spin gate for the default fast path."""
     fixture = get_tempo2_fixture("wsrt167_mini")
@@ -137,7 +138,6 @@ def test_wsrt167_mini_track2_strict_residual_target():
     assert stats["max_abs"] < FINAL_MAX_DELTA_NS
 
 
-@pytest.mark.slow
 def test_wsrt167_track2_full_fixture_debt_pin_and_strict_target(
     wsrt167_jug, wsrt167_libstempo
 ):

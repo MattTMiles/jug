@@ -12,6 +12,8 @@ from jug.residuals.engine_conventions import (
 )
 from jug.residuals.simple_calculator import _extract_binary_params
 
+pytestmark = pytest.mark.smoke
+
 
 def test_tempo2_implicit_defaults_on_tdb():
     params = {"UNITS": "TDB", "EPHEM": "DE405"}

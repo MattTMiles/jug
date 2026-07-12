@@ -16,7 +16,7 @@ from jug.fitting.jax_residual_delta import (
 from jug.fitting.optimized_fitter import _build_general_fit_setup_from_files
 from tempo2_fixtures import get_tempo2_fixture
 
-pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.tempo2]
 
 
 def _tempo2_setup(fixture_id: str, fit_params: list[str], *, tempo2_native: str = "staged_bclt"):

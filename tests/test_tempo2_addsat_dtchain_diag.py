@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("libstempo")
 pytest.importorskip("pytempo")
 
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 
 from jug.testing.tempo2_addsat_dtchain_diag import diagnose_addsat_dtchain
 

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("pytempo")
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 
 from jug.delays.tempo2_ephemeris import (
     bootstrap_tempo2_observatory_state,

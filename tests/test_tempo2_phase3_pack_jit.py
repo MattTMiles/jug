@@ -25,7 +25,6 @@ from jug.residuals.tempo2.delta_pack import (
 from tempo2_test_helpers import load_wsrt167_fixture
 
 
-@pytest.mark.slow
 def test_bclt_dt_ssb_cached_in_term_diagnostics(wsrt167_fixture_paths):
     """Host residuals export reference BCLT dt_ssb for pack-build fast path."""
     par_path, tim_path = wsrt167_fixture_paths
@@ -109,7 +108,6 @@ def test_prepare_residual_delta_jax_session_cache(wsrt167_setup):
     assert delay_models == {"native", "simplified"}
 
 
-@pytest.mark.slow
 def test_wsrt167_graph_timing_f0(
     wsrt167_fixture, wsrt167_jug, wsrt167_params, wsrt167_toas, capsys
 ):
@@ -134,7 +132,6 @@ def test_wsrt167_graph_timing_f0(
         assert m.pack_build_calls_wls_path == 1
 
 
-@pytest.mark.slow
 def test_wsrt167_graph_timing_multiparam(
     wsrt167_fixture, wsrt167_jug, wsrt167_params, wsrt167_toas, capsys
 ):

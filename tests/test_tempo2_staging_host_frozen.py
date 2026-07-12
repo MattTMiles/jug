@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 
 import jax
 

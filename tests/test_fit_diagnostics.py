@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
+import pytest
 
 from jug.fitting import optimized_fitter as opt
 from tempo2_fixtures import get_tempo2_fixture
@@ -21,6 +22,7 @@ def test_compute_condition_diagnostics_flags_ill_conditioned():
     assert diag["condition_number"] > 1e10
 
 
+@pytest.mark.smoke
 def test_fit_reports_diagnostics_without_dropping_params(monkeypatch):
     fixture = get_tempo2_fixture("epta_j0030_isolated")
     fit_params = ["F0", "F1"]

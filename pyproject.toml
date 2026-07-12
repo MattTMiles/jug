@@ -83,10 +83,12 @@ python_classes = "Test*"
 python_functions = "test_*"
 addopts = "-v --cov=jug --cov-report=term-missing"
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "smoke: curated <30 s cross-engine set (pint + tempo2); run: pytest -m smoke --no-cov -q -p no:cacheprovider",
+    "slow: marks tests as slow (currently unused — no single test exceeds ~6 s after the 2026-07-12 perf work; reserved for future genuinely slow additions)",
     "integration: marks tests as integration tests",
     "tempo2: marks tests requiring libstempo/Tempo2 sandbox support",
     "dev_oracle: external libstempo/tempo2/pytempo oracle tests — delete when JUG is standalone",
+    "probe: exploratory diagnostic probes",
 ]
 
 [tool.ruff]

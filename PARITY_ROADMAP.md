@@ -109,10 +109,9 @@ Treat tempo2 mode as **experimental** outside curated par+tim tests. Analytic de
 matrices are **supported** for WLS (simplified tangent, approximate vs native `bbat`).
 Native autodiff remains the fidelity path for NUTS and libstempo column gates.
 
-**Default dev loop (~1 min):** mini J0613 gates + simulated structural tests,
-`-m 'not slow'`. **Reduced regression gate (~5 min):** adds host residual-parity
-tests → **16 passed, 1 xfailed** (pint-default diagnostic). Sim residual parity,
-NG5, EPTA full, wsrt167, and dev-oracle autodiff tests are `slow` or `dev_oracle`.
+**Default dev loop (~20 s):** `pytest -m smoke --no-cov -q` — curated
+cross-engine smoke set. **Thorough (~12 min):** the full suite; the old `slow`
+tier was removed 2026-07-12 (no test exceeds ~6 s). See § Test commands.
 
 ---
 
@@ -387,40 +386,30 @@ These are implemented in the native JUG host path and underpin current parity:
 Mini fixtures run in ~1 min. Full fixtures and the 11-TOA addsat **host-residual**
 gate are `slow` (release / explicit-request jobs).
 
-### Test commands
+### Test commands (re-tiered 2026-07-12)
+
+After the clock-cache/native-chain perf work the whole suite runs in ~12 min
+and no single test exceeds ~6 s, so the stale `slow` marks were removed (the
+marker stays registered for future genuinely slow additions). Two tiers:
 
 ```bash
 # From the jug repository root (directory containing tests/ and jug/)
 
-# Default dev loop (~1 min)
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
-  pytest tests/test_tempo2_j0613_fast_gates.py \
-         tests/test_tempo2_simulated_fixtures.py \
-  -q -o addopts='' --no-cov -m 'not slow'
+# SMOKE — curated cross-engine set, ~20 s wall: pint residual workflow +
+# fit diagnostics, tempo2 wsrt167-mini TRACK -2 strict gate, no-track mini,
+# raw J0613 live-libstempo parity, engine-convention / white-noise /
+# high-precision-epoch units.
+pytest -m smoke --no-cov -q -p no:cacheprovider
 
-# Reduced regression gate (~5 min)
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
-  pytest tests/test_tempo2_j0613_fast_gates.py \
-         tests/test_tempo2_simulated_fixtures.py \
-         tests/test_tempo2_residual_parity.py \
-  -q -o addopts='' --no-cov -m 'not slow'
+# FULL — everything (~12 min, 624 tests; includes all tempo2 + dev_oracle gates)
+pytest --no-cov -q -p no:cacheprovider
 
-# Slow acceptance (NG5, EPTA full, wsrt167 — explicit request)
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
-  pytest tests/test_tempo2_residual_parity.py -k ng5 -q -o addopts='' --no-cov
-PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
-  pytest tests/test_tempo2_ipta_dr2_j0613_parity.py -q -o addopts='' --no-cov
-
-# Dev-oracle native chain (requires libstempo + pytempo; use T2 *runtime*, not source tree)
-PYTHONPATH=.:tests TEMPO2=/opt/software/tempo2/T2runtime \
-  pytest tests/test_tempo2_*.py -m 'dev_oracle and not slow' --no-cov -q
-
-# JUG-only CI (no libstempo)
-pytest -m 'not dev_oracle' -q
+# Subsets
+pytest -m 'tempo2 or dev_oracle' --no-cov -q   # tempo2 stack only (~8.5 min, 261 tests)
+pytest -m 'not dev_oracle' -q                  # JUG-only CI (no libstempo)
 ```
 
-Full `pytest -k tempo2` and 65-pulsar IPTA campaigns are multi-hour — launch only on
-explicit request.
+65-pulsar IPTA campaigns remain explicit-request (each pulsar runs in seconds now).
 
 ---
 

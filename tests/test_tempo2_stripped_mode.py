@@ -17,7 +17,7 @@ from jug.residuals.tempo2.graph_config import TEMPO2_GRAPH_FIXED_STATE_STRIPPED
 from jug.residuals.tempo2.model.bbat_lite import bbat_lite_daysec_from_pack
 from tempo2_test_helpers import delta_ns
 
-pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.tempo2]
 
 
 def _wsrt167_setup_from_cache(wsrt167_fixture, wsrt167_session_cache, *, tempo2_native: str):

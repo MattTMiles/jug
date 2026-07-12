@@ -17,7 +17,7 @@ from jug.io.tim_reader import parse_tim_file_mjds
 from jug.residuals.simple_calculator import compute_residuals_simple
 from tempo2_test_helpers import load_wsrt167_fixture
 
-pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.tempo2]
 
 def test_tempo2_obs_state_in_overlay_payload():
     fixture = load_wsrt167_fixture()

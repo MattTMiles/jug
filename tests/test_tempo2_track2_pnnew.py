@@ -28,7 +28,7 @@ from tempo2_fixtures import get_tempo2_fixture
 
 pytest.importorskip("libstempo")
 
-pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
+pytestmark = [pytest.mark.tempo2]
 
 _WSRT167 = get_tempo2_fixture("wsrt167")
 

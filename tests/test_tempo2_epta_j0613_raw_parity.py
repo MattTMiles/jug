@@ -57,6 +57,7 @@ def raw_mix_run():
     return fixture, jug, ref
 
 
+@pytest.mark.smoke
 def test_epta_j0613_raw_input_strict_parity(raw_mix_run):
     """Raw (no TRACK, no -pn) J0613 subset must hit strict tempo2 parity."""
     fixture, jug, ref = raw_mix_run

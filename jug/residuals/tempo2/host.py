@@ -544,6 +544,10 @@ def run_tempo2_host_stage(
     _pre_overlay_roemer_shapiro = np.asarray(roemer_shapiro, dtype=np.float64)
     _pre_overlay_dm = np.asarray(dm_delay_sec, dtype=np.float64)
     _pre_overlay_sw = np.asarray(sw_delay_sec, dtype=np.float64)
+    # Longdouble model axis exactly as used for the caller's dt_sec build
+    # (the stage-result model_mjd is float64-quantized: ~1e-11 day ulp
+    # ≈ 1 µs-scale MJD grid — unusable for the sub-ns spin-axis fold below).
+    _model_arg_ld = np.asarray(model_mjd, dtype=np.longdouble)
 
     _t2_setup = compute_tempo2_host_setup(
         mjd_utc=mjd_utc,
@@ -630,14 +634,57 @@ def run_tempo2_host_stage(
     # full-JAX pipeline untouched.
     _track_val_fb = params.get("TRACK", None)
     _use_taylor_host = _track_val_fb is None or int(_track_val_fb) == -2
+    _model_precise_ld = _model_arg_ld
     if _use_taylor_host:
         _clock_fb_delta_sec = np.asarray(
             _t2_setup.clock_feedback_delta_sec, dtype=np.longdouble
         )
         dt_sec = dt_sec + _clock_fb_delta_sec
+        _model_precise_ld = _model_arg_ld + _clock_fb_delta_sec / np.longdouble(
+            SECS_PER_DAY
+        )
         model_mjd = (
             np.asarray(model_mjd, dtype=np.longdouble)
             + _clock_fb_delta_sec / np.longdouble(SECS_PER_DAY)
+        )
+
+    # Spin-axis parity fold: tempo2's spin argument is
+    #   deltaT = (bbat - PEPOCH)*86400 + torb,   bbat built from
+    #   sat + correctionTT/SECDAY + correctionTT_TB/SECDAY (- shklovskii ...)
+    # while the production model_mjd axis is astropy UTC->TDB (or the TCB
+    # epoch map). The two timescale realizations differ by a quasi-periodic
+    # ~1 ns (astropy erfa dtdb vs tempo2 ifteph TT->TB) plus a constant
+    # offset — measured as the entire ~1.2 ns residual-parity floor
+    # (corr=+1.000 with the residual delta on wsrt167). Replace the
+    # timescale part of the emission axis with the native chain's own
+    # sat + correction_tt + correction_tt_tb (- shklovskii), evaluated in
+    # longdouble; the delay-side terms already use the native overlay
+    # values, so this makes dt_sec equal tempo2's deltaT up to the
+    # per-component parity of the native chain.
+    if _use_taylor_host and _t2_setup.native_terms is not None:
+        _nat = _t2_setup.native_terms
+        _sat_ld = np.array(
+            [np.longdouble(t.mjd_int) + np.longdouble(t.mjd_frac) for t in toas],
+            dtype=np.longdouble,
+        )
+        _ctt_ld = np.asarray(
+            jax.device_get(_nat.correction_tt_sec), dtype=np.longdouble
+        )
+        _ctt_tb_ld = np.asarray(
+            jax.device_get(_nat.correction_tt_tb_sec), dtype=np.longdouble
+        )
+        _shk_ld = np.asarray(
+            jax.device_get(_nat.shklovskii_sec), dtype=np.longdouble
+        )
+        _secday_ld = np.longdouble(SECS_PER_DAY)
+        _axis_corr_sec = (
+            (_sat_ld - _model_precise_ld) * _secday_ld
+            + _ctt_ld + _ctt_tb_ld - _shk_ld
+        )
+        dt_sec = dt_sec + _axis_corr_sec
+        model_mjd = (
+            np.asarray(model_mjd, dtype=np.longdouble)
+            + _axis_corr_sec / _secday_ld
         )
 
     return Tempo2HostStageResult(

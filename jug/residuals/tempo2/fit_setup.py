@@ -55,10 +55,23 @@ def prepare_tempo2_chain_from_simple_result(
     Dispatches by ``jug_result['tempo2_native']`` graph mode:
     ``full``, ``fixed_state_bclt``, ``fixed_state_stripped``, or ``staged_bclt`` (default).
     """
+    from jug.io.par_reader import normalize_model_params
     from jug.residuals.diagnostic_conventions import resolve_ne_sw_cm3
     from jug.residuals.engine_conventions import resolve_engine_profile
 
     from jug.residuals.tempo2.common import tempo2_torb_binary_sec_from_td
+
+    # Callers (dev-oracle helpers, diagnostics) may pass raw parse_par_file
+    # output; the JAX pulsar-vector builders require radian sky coordinates.
+    # Normalize a COPY only when needed: session paths pass already-normalized
+    # params, and mutating the caller's dict in place would change
+    # identity-sensitive consumers (e.g. residual_delta_jax cache keys built
+    # from setup.params between calls).
+    if isinstance(params.get("RAJ"), str) or isinstance(params.get("DECJ"), str):
+        params = dict(params)
+        normalize_model_params(
+            params, compatibility=str(jug_result.get("compatibility", "tempo2"))
+        )
 
     td = jug_result["term_diagnostics"]
     torb_binary = tempo2_torb_binary_sec_from_td(td)

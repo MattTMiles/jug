@@ -40,6 +40,14 @@ def _warm_native_jit(wsrt167_native_inputs):
 
 
 def test_native_chain_no_device_get_mid_bclt(monkeypatch, wsrt167_native_inputs):
+    """No host<->device roundtrips inside the BCLT chain evaluation.
+
+    Run on the staged_bclt graph explicitly: the default
+    ``fixed_state_stripped`` mode performs an intentional ONE-TIME host
+    freeze of the lite-built reference BBAT at pack build
+    (``_lite_bbat_ref_daysec_host``), which is pack construction, not a
+    mid-chain roundtrip — and would trip this counter.
+    """
     calls = []
 
     orig = jax.device_get
@@ -48,9 +56,13 @@ def test_native_chain_no_device_get_mid_bclt(monkeypatch, wsrt167_native_inputs)
         calls.append(1)
         return orig(x, *args, **kwargs)
 
-    monkeypatch.setattr(jax, "device_get", tracked)
     _fixture, params, toas, jug = wsrt167_native_inputs
-    prepare_tempo2_chain_from_simple_result(jug, params, toas)
+    jug_staged = dict(jug)
+    jug_staged["tempo2_native"] = "staged_bclt"
+    # Warm outside the counter so JIT-compile paths don't pollute it.
+    prepare_tempo2_chain_from_simple_result(jug_staged, params, toas)
+    monkeypatch.setattr(jax, "device_get", tracked)
+    prepare_tempo2_chain_from_simple_result(jug_staged, params, toas)
     assert len(calls) == 0
 
 

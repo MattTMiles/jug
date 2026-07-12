@@ -7,7 +7,54 @@ debt, open gaps, production behavior, and the path to production-ready fitting.
 **Fixture provenance:** [`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md)  
 **Dev oracle harness:** [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md)
 
-*Last updated: 2026-07-09 (fact-checked vs in-repo pytest after `tempo2-compat` commits through `54c4148`; host parity on external IPTA DR2 data measured manually, not CI-gated)*
+*Last updated: 2026-07-12 (picosecond-parity closure on `tempo2-dev`; see § Parity closure 2026-07-12 below)*
+
+---
+
+## Parity closure 2026-07-12 (picosecond tier)
+
+Host residual parity vs libstempo/pytempo was driven from the ~1.2 ns floor to
+the **~20–30 ps** level by closing six convention/precision gaps, each verified
+per-TOA against pytempo `toa_diagnostics()` and the tempo2 C source:
+
+1. **Spin-phase axis** — the host Taylor spin argument now uses tempo2's
+   `sat + correctionTT + correctionTT_TB (− shklovskii)` clock axis (longdouble
+   fold in `run_tempo2_host_stage`) instead of the astropy UTC→TDB axis; the
+   two timescale realizations (erfa dtdb vs ifteph) differed by the entire
+   ~1.2 ns floor (corr +1.000 with the residual delta).
+2. **`jpl_pleph` JD rounding** — the SPK epoch is assembled in longdouble and
+   rounded to double once (`tempo2_read_ephemeris_jd`), matching
+   `readEphemeris.C`; multi-stage float64 rounding flipped a 41 µs JD ulp on
+   isolated TOAs (~1 m Earth position, up to 3.5 ns Roemer).
+3. **Native `freqSSB`** — barycentric frequency computed per `dm_delays.C`
+   from the bootstrap obs state (was: astropy-provider value; rel 6e-11 off).
+4. **Exact `einsteinRate`** — `tt2tdb.C` recipe from IFTE Chebyshev
+   derivatives (`compute_tempo2_einstein_rate_exact`), replacing astropy
+   numerical differentiation; was the entire tdis1 gap (0.17 ns).
+5. **Per-hop clock feedback** — the observatory clock chain is interpolated at
+   raw SAT (tempo2 shifts each hop only by corrections accumulated before it);
+   shifting by the full TT−UTC sampled noisy maser segments ~66 s off-epoch
+   (up to 7 ns on EFF/JBO).
+6. **Tempo2 binary conventions** — ELL1 uses tempo2's `ELL1model.C`
+   truncation (`drep = x·cosΦ`, no ε harmonics; the `an·x²·ε` cross terms were
+   0.1–2 ns at 1Φ/3Φ), and the binary is evaluated at bbat *including the FD
+   delay* (PINT applies FD after the binary) — together closing the
+   `ppta_j1741_ell1` documented gap (5.5 → 0.033 ns) and `J0900-3144`
+   (5.8 → 0.023 ns). PINT-mode kernels are unchanged (mode-gated flag).
+
+Measured after closure (JUG − libstempo, host residuals):
+
+| Workload | n | was | now |
+|---|---|---|---|
+| EPTA J0613 full raw IPTA DR2 | 1369 | 1.22 ns | **0.022 ns RMS / 0.078 ns max** |
+| `epta_j0613_t2_ipta_all` (doctored) | 1369 | 1.22 ns | **0.022 ns** |
+| `wsrt167` (TRACK −2) | 167 | 1.19 ns | **0.023 ns** |
+| `ppta_j1741_ell1` (FD, SINI/M2) | 111 | 5.50 ns | **0.033 ns** (strict gate now) |
+| `J0900-3144` TDB | 875 | ~5.8 ns | **0.023 ns** |
+| `J1713+0747` (T2 Keplerian) | 1188 | ~1.34 ns | **0.021 ns** |
+
+The 5 ns CI gates remain; the full-J0613 slow test additionally pins
+< 0.1 ns RMS / < 0.3 ns max. Numbers below this section predate the closure.
 
 ---
 
@@ -168,10 +215,10 @@ What is gated today (derive status from tests, not from this doc alone):
 |----|-----|----------|-------|
 | **O1** | Autodiff oracle breadth (residual) | **Low** | wsrt167 F0/RAJ/DECJ/DM + binary (`epta_j1909`) + addsat F0 (`epta_j0613_addsat_min`) gated. Remaining: `full` autodiff columns; full EPTA J0613 addsat multi-param |
 | **O2** | JAX autodiff compile cost | **Medium** | Multi-minute first compile; not a parity blocker — see § JAX autodiff graph |
-| **O3** | `ppta_j1741_ell1` ~5.5 ns | **Medium** | ELL1 convention — `test_tempo2_mode_ell1_j1741_documented_gap` |
+| **O3** | `ppta_j1741_ell1` ~5.5 ns | **Closed 2026-07-12** | Tempo2 ELL1 truncation + FD-in-binary-time; now 0.033 ns strict gate (`test_tempo2_mode_ell1_j1741_strict_parity`) |
 | **O4** | Model-epoch batCorr scalar debt | Low | Host IFTE `model_mjd` chain ~272 ns vs lib (pinned < 500 ns); does not block residuals or JAX bbat |
 | **O5** | BIPM2011 clock extrapolation (J0613 to ~56796) | Low | **Data** — shared JUG/libstempo constant extrapolation |
-| **O6** | IPTA `J0900-3144` TDB ~5.8 ns | Medium | From partial sweep; needs focused probe |
+| **O6** | IPTA `J0900-3144` TDB ~5.8 ns | **Closed 2026-07-12** | Same closure fixes; measured 0.023 ns |
 
 ### Gap scorecard (internal parity)
 

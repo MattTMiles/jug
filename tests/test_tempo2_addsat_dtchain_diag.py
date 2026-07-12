@@ -15,32 +15,31 @@ from jug.testing.tempo2_addsat_dtchain_diag import diagnose_addsat_dtchain
 
 from tempo2_fixtures import get_tempo2_fixture
 
-# Measured 2026-07-08 vs live libstempo on epta_j0613_t2_ipta_all.
-MEASURED_RMS_NS = 1.2171675226204746
-MEASURED_NON_ADDSAT_RMS_NS = 1.22  # bulk ≈ overall at sub-ns
-MEASURED_ADDSAT_MAX_NS = 2.3264357314349837
+# Picosecond-tier bounds after the 2026-07-12 parity closure (was pinned at
+# 1.2171675 ns RMS / 2.33 ns addsat max). The clkcorr feedback delta is no
+# longer exactly zero: per tempo2 clkcorr.C the observatory chain is sampled
+# at raw SAT and only the post-leap (BIPM) hop sees the accumulated-correction
+# feedback, whose 3-vs-1-iteration delta is a genuine sub-ps quantity.
+BOUND_RMS_NS = 0.1
+BOUND_ADDSAT_MAX_NS = 0.3
+BOUND_FEEDBACK_DELTA_NS = 0.01
 
 
 def test_epta_j0613_feedback_delta_zero_and_debt_pins():
-    """Merged IPTA chains: clkcorr 3−1 iter delta is zero; debt pinned at ~1.2 ns RMS."""
+    """Merged IPTA chains: clkcorr feedback delta sub-ps; parity at ps tier."""
     fx = get_tempo2_fixture("epta_j0613_t2_ipta_all")
     report = diagnose_addsat_dtchain(
         fx["par_path"], fx["tim_path"], fixture_id=fx["id"]
     )
     assert report.n_toa == 1369
-    assert report.feedback_delta_rms_ns == pytest.approx(0.0, abs=1e-6)
-    assert math.isnan(report.corr_delta_vs_feedback) or abs(
-        report.corr_delta_vs_feedback
-    ) < 0.1
-    # Track B gate not met on merged chains — feedback delta is not the driver.
+    assert report.feedback_delta_rms_ns < BOUND_FEEDBACK_DELTA_NS
+    # Feedback delta is not the parity driver.
     assert report.predicted_rms_after_feedback_ns == pytest.approx(
-        report.residual_rms_ns, rel=0.01
+        report.residual_rms_ns, rel=0.05
     )
-    assert report.residual_rms_ns == pytest.approx(MEASURED_RMS_NS, rel=0.05)
-    assert report.non_addsat_rms_ns == pytest.approx(
-        MEASURED_NON_ADDSAT_RMS_NS, rel=0.05
-    )
-    assert report.addsat_toa_max_ns == pytest.approx(MEASURED_ADDSAT_MAX_NS, rel=0.05)
+    assert report.residual_rms_ns < BOUND_RMS_NS
+    assert report.non_addsat_rms_ns < BOUND_RMS_NS
+    assert report.addsat_toa_max_ns < BOUND_ADDSAT_MAX_NS
 
 
 def test_epta_j0613_addsat_sat_matches_pytempo():

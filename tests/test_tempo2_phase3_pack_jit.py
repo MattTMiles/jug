@@ -102,7 +102,11 @@ def test_prepare_residual_delta_jax_session_cache(wsrt167_setup):
 
     assert len(pack_calls) == 1
     assert setup.residual_delta_jax_cache is not None
-    assert len(setup.residual_delta_jax_cache) == 1
+    # Since 47d27ac the public design matrix runs delay_model="simplified"
+    # while the residual fn stays "native": two cache entries, one pack build.
+    assert len(setup.residual_delta_jax_cache) == 2
+    delay_models = {key[4] for key in setup.residual_delta_jax_cache}
+    assert delay_models == {"native", "simplified"}
 
 
 @pytest.mark.slow

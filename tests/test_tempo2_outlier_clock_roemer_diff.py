@@ -36,8 +36,13 @@ def test_outlier_clock_roemer_diff(fixture_id, outlier_threshold_ns, max_roemer_
     )
 
 
-def test_j0030_outliers_not_roemer_dominated():
-    """The two 1999 TOAs on J0030 fail parity but Roemer matches libstempo."""
+def test_j0030_outliers_closed():
+    """J0030's historical 1999 outlier pair is closed (2026-07-12 parity work).
+
+    The two >10 ns TOAs were driven by the astropy-vs-tempo2 spin-axis and
+    jpl_pleph JD-rounding gaps; with those fixed the fixture sits at the
+    picosecond parity floor with no outliers above threshold.
+    """
     fx = get_tempo2_fixture("epta_j0030_isolated")
     report = compare_clock_roemer_per_toa(
         fx["par_path"],
@@ -45,8 +50,5 @@ def test_j0030_outliers_not_roemer_dominated():
         fixture_id="epta_j0030_isolated",
         outlier_threshold_ns=10.0,
     )
-    assert len(report.outlier_indices) == 2
-    for idx in report.outlier_indices:
-        row = report.rows[idx]
-        assert abs(row.roemer_diff_ns) < 15.0
-        assert abs(row.sat_diff_ns) < 1.0
+    assert len(report.outlier_indices) == 0
+    assert report.residual_rms_ns < 0.1

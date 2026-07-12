@@ -54,6 +54,10 @@ class Tempo2HostSetupResult:
     model_mjd: np.ndarray
     clock_feedback_delta_sec: np.ndarray
     bclt_dt_ssb_sec: np.ndarray | None = None
+    # The overlay's Tempo2Terms (native BCLT chain), threaded through so the
+    # finalize stage can reuse it instead of rebuilding the whole chain.
+    # None when skip_native_bclt_overlay=True.
+    native_terms: Any | None = None
 
 
 @dataclass
@@ -259,6 +263,7 @@ def compute_tempo2_host_setup(
             )
 
     bclt_dt_ssb_sec = None
+    native_terms = None
     if not skip_native_bclt_overlay:
         _overlay_td = {
             "sat_mjd": sat_arr,
@@ -282,6 +287,7 @@ def compute_tempo2_host_setup(
         _native_overlay = prepare_tempo2_chain_from_simple_result(
             _overlay_jug, params, toas
         )
+        native_terms = _native_overlay
         _native_np = tempo2_terms_to_numpy(_native_overlay)
         bclt_dt_ssb_sec = np.asarray(_native_np["dt_ssb_sec"], dtype=np.float64)
         formbats_tt_arr = np.asarray(_native_np["correction_tt_sec"], dtype=np.float64)
@@ -339,6 +345,7 @@ def compute_tempo2_host_setup(
         model_mjd=model_mjd_out,
         clock_feedback_delta_sec=clock_feedback_delta_sec,
         bclt_dt_ssb_sec=bclt_dt_ssb_sec,
+        native_terms=native_terms,
     )
 
 
@@ -368,8 +375,16 @@ def finalize_tempo2_host_residuals(
     phase_torb_sec,
     prebinary_delay_sec: np.ndarray,
     total_delay_sec: np.ndarray,
+    native_terms: Tempo2Terms | None = None,
 ) -> Tempo2HostFinalizeResult:
-    """Tempo2 host residuals: Taylor for TRACK−2/no-TRACK; native for other TRACK."""
+    """Tempo2 host residuals: Taylor for TRACK−2/no-TRACK; native for other TRACK.
+
+    ``native_terms`` is the overlay's already-built native chain (from
+    ``run_tempo2_host_stage``). In the Taylor branch the chain is needed only
+    for the ``tdis1/tdis2`` diagnostics, so reusing it skips a second full
+    ``prepare_tempo2_chain_from_simple_result`` build; the other-TRACK branch
+    builds its own chain inside ``compute_eval_residuals_jax`` either way.
+    """
     from jug.residuals.phase import compute_phase_residuals
     from jug.residuals.tempo2.common import sat_daysec_numpy_from_td_and_toas
     from jug.residuals.tempo2.fit_setup import prepare_tempo2_chain_from_simple_result
@@ -406,9 +421,14 @@ def finalize_tempo2_host_residuals(
         "freq_bary_mhz": freq_bary_mhz,
         "compatibility": compatibility_mode,
     }
-    native = prepare_tempo2_chain_from_simple_result(_jug, params, toas)
     use_taylor_host_spin = track_val is None or int(track_val) == -2
     if use_taylor_host_spin:
+        # Reuse the overlay chain when available; only skip_native_bclt_overlay
+        # sessions need a fresh build here (and only for tdis diagnostics).
+        if native_terms is not None:
+            native = native_terms
+        else:
+            native = prepare_tempo2_chain_from_simple_result(_jug, params, toas)
         residuals_us, residuals_sec, pulse_number = compute_phase_residuals(
             dt_sec,
             params,
@@ -476,6 +496,7 @@ class Tempo2HostStageResult:
     delay_sec: np.ndarray
     dt_sec: np.ndarray
     bclt_dt_ssb_sec: np.ndarray | None = None
+    native_terms: Any | None = None
 
 
 def run_tempo2_host_stage(
@@ -633,4 +654,5 @@ def run_tempo2_host_stage(
         delay_sec=delay_sec,
         dt_sec=dt_sec,
         bclt_dt_ssb_sec=bclt_dt_ssb_sec,
+        native_terms=_t2_setup.native_terms,
     )

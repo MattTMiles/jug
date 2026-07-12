@@ -2221,6 +2221,7 @@ def compute_residuals_simple(
             phase_torb_sec=phase_torb_sec,
             prebinary_delay_sec=prebinary_delay_sec,
             total_delay_sec=total_delay_sec,
+            native_terms=_stage.native_terms,
         )
         residuals_us = _t2_final.residuals_us
         residuals_sec = _t2_final.residuals_sec

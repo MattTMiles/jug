@@ -233,6 +233,13 @@ class ClockGraph:
         # edges: list of (from_scale, to_scale, path)
         self._edges: list[tuple[str, str, Path]] = []
         self._build()
+        # Lazily-filled per-edge (start, end) MJD coverage; the edge/file set
+        # is fixed once _build() has run, so no invalidation is needed.
+        self._coverage: list[tuple[float, float] | None] = [None] * len(self._edges)
+        # correction_chain results per (src, mjd_min, mjd_max); values are
+        # template dicts — correction_chain returns shallow copies so caller
+        # key-additions cannot poison the cache.
+        self._chain_cache: dict[tuple, dict | None] = {}
 
     def _build(self):
         """Scan the clock directory and build the edge list."""
@@ -246,12 +253,17 @@ class ClockGraph:
             self._edges.append((from_scale, to_scale, clk_file, weight))
 
     def _edge_coverage(self, edge_idx: int) -> tuple[float, float]:
-        """(start, end) MJD covered by the clock file of *edge_idx*."""
-        clk = parse_clock_file(self._edges[edge_idx][2])
-        mjds = clk['mjd']
-        if len(mjds) == 0:
-            return (np.inf, -np.inf)
-        return (float(mjds[0]), float(mjds[-1]))
+        """(start, end) MJD covered by the clock file of *edge_idx* (memoized)."""
+        cov = self._coverage[edge_idx]
+        if cov is None:
+            clk = parse_clock_file(self._edges[edge_idx][2])
+            mjds = clk['mjd']
+            if len(mjds) == 0:
+                cov = (np.inf, -np.inf)
+            else:
+                cov = (float(mjds[0]), float(mjds[-1]))
+            self._coverage[edge_idx] = cov
+        return cov
 
     def _shortest_path(self, src: str, mjd: float | None = None) -> list[int] | None:
         """Dijkstra from *src* to the target; returns edge indices or None.
@@ -349,6 +361,24 @@ class ClockGraph:
         """
         src = obs_scale.upper()
 
+        key = (
+            src,
+            None if mjd_min is None else float(mjd_min),
+            None if mjd_max is None else float(mjd_max),
+        )
+        if key in self._chain_cache:
+            cached = self._chain_cache[key]
+            # Shallow copy: arrays are shared, but callers adding/overwriting
+            # keys (e.g. 'chain') cannot mutate the cached template.
+            return None if cached is None else dict(cached)
+
+        result = self._correction_chain_uncached(src, mjd_min, mjd_max)
+        self._chain_cache[key] = result
+        return None if result is None else dict(result)
+
+    def _correction_chain_uncached(self, src: str,
+                                   mjd_min: float | None,
+                                   mjd_max: float | None) -> dict | None:
         if src in self._target_set:
             # Already at target — zero correction
             return {'mjd': np.array([0.0, 1e6]), 'offset': np.array([0.0, 0.0]),

@@ -24,9 +24,16 @@ pytestmark = [pytest.mark.tempo2, pytest.mark.slow]
 # IPTA DR2 EPTA single-PTA dataset (J0613-0200.par + J0613-0200_all.tim).
 FIXTURE_ID = "epta_j0613_t2_ipta_all"
 
-# Measured 2026-07-08 vs live libstempo (post `8a1a34d` + `7ec96fb`).
-MEASURED_RMS_NS = 1.2171675226204746
-MEASURED_MAX_NS = 6.937776967660625
+# Measured 2026-07-12 vs live libstempo after the parity closure work
+# (spin-axis on tempo2 clock terms, single-rounding jpl_pleph JD, native
+# freqSSB + exact einsteinRate, per-hop clock feedback, tempo2 ELL1
+# truncation, FD in binary time). Was 1.2171675 / 6.9378 before. Gated as
+# upper bounds with headroom for libstempo build jitter — a return to the
+# old ~1 ns floor fails loudly.
+MEASURED_RMS_NS = 0.022019  # ns, informational
+MEASURED_MAX_NS = 0.07772   # ns, informational
+PINNED_RMS_BOUND_NS = 0.1
+PINNED_MAX_BOUND_NS = 0.3
 ADDSAT_MAX_DELTA_US = 1.0
 
 
@@ -60,10 +67,11 @@ def test_epta_j0613_ipta_dr2_track_minus2_debt_reduced():
     stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
 
     assert stats["rms"] < 1.0e4  # < 10 µs (was ~47 ms)
-    assert stats["rms"] < FINAL_RMS_DELTA_NS  # strict gate green (2026-07-08)
+    assert stats["rms"] < FINAL_RMS_DELTA_NS  # strict gate green
 
-    np.testing.assert_allclose(stats["rms"], MEASURED_RMS_NS, rtol=0.05)
-    np.testing.assert_allclose(stats["max_abs"], MEASURED_MAX_NS, rtol=0.05)
+    # Picosecond-tier pin (see MEASURED_* provenance above).
+    assert stats["rms"] < PINNED_RMS_BOUND_NS
+    assert stats["max_abs"] < PINNED_MAX_BOUND_NS
 
 
 @pytest.mark.tempo2

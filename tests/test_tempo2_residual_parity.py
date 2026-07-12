@@ -130,13 +130,15 @@ def test_ng5_tdb_pint_mode_remains_separate_from_tempo2_acceptance(fixture_id):
 
 
 @pytest.mark.tempo2
-def test_tempo2_mode_ell1_j1741_documented_gap():
-    """Document the remaining PPTA J1741 ELL1 binary-model convention gap.
+def test_tempo2_mode_ell1_j1741_strict_parity():
+    """PPTA J1741 ELL1 (SINI/M2, FD1-3, TRACK -2): strict parity.
 
-    This fixture sits just above the strict 5 ns RMS gate.  The delta is not
-    removed by a constant+slope fit, but is partly absorbed by orbital
-    harmonics, which is consistent with a narrow ELL1/ELL1H binary convention
-    mismatch rather than the Tempo2 timebase/TZR path.
+    Historically a documented ~5.5 ns gap. Closed by two tempo2 binary
+    conventions: (1) ELL1model.C truncates drep/drepp to x*cos/-x*sin with
+    no eps harmonics (the an*x^2*eps cross terms are ~0.1-2 ns), and (2)
+    tempo2 evaluates the binary at bbat, whose tdis1 includes the FD delay
+    (PINT applies FD after the binary; ~FD * x*2pi/PB, several ns here).
+    Measured 0.033 ns RMS / 0.093 ns max after the fixes (2026-07-12).
     """
     fixture = get_tempo2_fixture("ppta_j1741_ell1")
     jug = compute_residuals_simple(
@@ -146,31 +148,7 @@ def test_tempo2_mode_ell1_j1741_documented_gap():
         compatibility="tempo2",
     )
     ref = tempo2_reference(fixture["par_path"], fixture["tim_path"])
-
-    stats = _delta_stats_ns(jug["residuals_us"], ref.residuals_us)
-    assert stats["rms"] < 8.0
-    assert stats["p99_abs"] < 15.0
-    assert stats["max_abs"] < 15.0
-
-    delta_ns = (np.asarray(jug["residuals_us"]) - ref.residuals_us) * 1000.0
-    t = np.asarray(jug.get("model_mjd", jug["tdb_mjd"]), dtype=np.float64)
-    linear = np.column_stack([np.ones_like(t), t - np.mean(t)])
-    linear_resid = delta_ns - linear @ np.linalg.lstsq(linear, delta_ns, rcond=None)[0]
-    linear_rms = float(np.sqrt(np.mean(np.square(linear_resid))))
-    assert linear_rms > 0.95 * stats["rms"]
-
-    params = parse_par_file(fixture["par_path"])
-    phase = ((t - float(params["TASC"])) / float(params["PB"])) % 1.0
-    harmonics = [np.ones_like(phase)]
-    for order in range(1, 5):
-        harmonics.extend([
-            np.sin(2.0 * np.pi * order * phase),
-            np.cos(2.0 * np.pi * order * phase),
-        ])
-    orbital = np.column_stack(harmonics)
-    orbital_resid = delta_ns - orbital @ np.linalg.lstsq(orbital, delta_ns, rcond=None)[0]
-    orbital_rms = float(np.sqrt(np.mean(np.square(orbital_resid))))
-    assert orbital_rms < 0.75 * stats["rms"]
+    _assert_residual_parity(jug, ref, fixture["id"])
 
 
 @pytest.mark.tempo2

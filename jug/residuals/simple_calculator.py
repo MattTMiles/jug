@@ -1004,6 +1004,9 @@ def _extract_binary_params(params, verbose, compatibility: str = "pint"):
         # FB arrays
         'fb_coeffs_jax': fb_coeffs_jax, 'fb_factorials_jax': fb_factorials_jax,
         'fb_epoch_jax': fb_epoch_jax, 'use_fb_jax': use_fb_jax,
+        # Tempo2 ELL1 truncation (ELL1model.C drops the eps harmonics from
+        # drep/drepp and the O(e^2)+ dre terms; ~0.1-0.2 ns at 1Phi/3Phi).
+        'ell1_t2_jax': jnp.array(bool(is_tempo2_mode)),
     }
     return bp
 
@@ -1127,6 +1130,7 @@ def _call_delay_kernel(tdb_jax, freq_bary_jax, obs_sun_jax, L_hat_jax,
         ddk['k96_jax'], ddk['pmra_rad_per_sec_jax'], ddk['pmdec_rad_per_sec_jax'],
         tropo_jax, dmx_jax, tt_binary_jax, tt_binary_red_jax,
         bp['dr_jax'], bp['dth_jax'], bp['nharm_jax'],
+        bp.get('ell1_t2_jax', False),
     ).block_until_ready()
 
 

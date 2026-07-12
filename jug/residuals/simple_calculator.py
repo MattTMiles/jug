@@ -1493,15 +1493,18 @@ def compute_residuals_simple(
     # Parse files
     if verbose: print(f"\n1. Loading files...")
     params = parse_par_file(par_file)
-    
-    # Validate par file timescale using the selected compatibility backend.
-    from jug.io.par_reader import validate_par_timescale_for_compat
-    par_timescale = validate_par_timescale_for_compat(
+
+    # Normalize sky coordinates (and validate timescale) before any compute path,
+    # including tempo2 native JAX overlays that expect radians in params["RAJ"].
+    from jug.io.par_reader import normalize_model_params
+
+    normalize_model_params(
         params,
         compatibility=compatibility,
         context="compute_residuals_simple",
         verbose=verbose,
     )
+    par_timescale = parse_timescale(params)
     if verbose: print(f"   Par file timescale: {par_timescale}")
     
     if toas is None:

@@ -44,6 +44,29 @@ def test_normalize_model_params_converts_hms_raj_decj_to_radians(tempo2_fixture)
     )
 
 
+def test_equatorial_hms_params_safe_for_tempo2_raj_decj_jax():
+    """Regression: tempo2 stripped JAX astrometry requires numeric RAJ/DECJ."""
+    params = {
+        "RAJ": "00:30:27.4283723",
+        "DECJ": "+04:51:39.70713",
+        "F0": 205.53,
+        "PEPOCH": 55000.0,
+        "UNITS": "TDB",
+    }
+    normalize_model_params(params, compatibility="tempo2", context="test")
+    from jug.residuals.tempo2.common import _raj_decj_rad_jax
+
+    alpha, delta = _raj_decj_rad_jax(params)
+    assert isinstance(params["RAJ"], float)
+    assert isinstance(params["DECJ"], float)
+    np.testing.assert_allclose(
+        float(alpha), params["RAJ"], rtol=0.0, atol=0.0
+    )
+    np.testing.assert_allclose(
+        float(delta), params["DECJ"], rtol=0.0, atol=0.0
+    )
+
+
 def test_timing_session_stores_numeric_raj_decj(tempo2_fixture):
     session = TimingSession(
         tempo2_fixture["par_path"],

@@ -96,7 +96,10 @@ def combined_delays(
     powers = jnp.arange(len(dm_coeffs))
     dt_powers = dt_years[:, jnp.newaxis] ** powers[jnp.newaxis, :]
     dm_eff = jnp.sum(dm_coeffs * dt_powers / dm_factorials, axis=1)
-    dm_sec = K_DM_SEC * dm_eff / (freq_bary ** 2)
+    # tempo2 dm_delays.C convention: freqf <= 1 Hz marks an infinite-frequency
+    # TOA (e.g. barycentric BAT data) — no dispersive delay of any kind.
+    freq_disp = jnp.where(freq_bary > 1.0e-6, freq_bary, jnp.inf)
+    dm_sec = K_DM_SEC * dm_eff / (freq_disp ** 2)
 
     # === Solar Wind Delay ===
     r_km = jnp.sqrt(jnp.sum(obs_sun_pos**2, axis=1))
@@ -108,15 +111,18 @@ def combined_delays(
     sin_rho = jnp.maximum(jnp.sin(rho), 1e-10)
     geometry_pc = AU_PC * rho / (r_au * sin_rho)
     dm_sw = ne_sw * geometry_pc
-    sw_sec = jnp.where(ne_sw != 0, K_DM_SEC * dm_sw / (freq_bary ** 2), 0.0)
+    sw_sec = jnp.where(ne_sw != 0, K_DM_SEC * dm_sw / (freq_disp ** 2), 0.0)
 
     # === FD Delay ===
-    log_freq = jnp.log(freq_bary / 1000.0)
+    log_freq = jnp.log(freq_disp / 1000.0)
     fd_sec = jnp.where(
         has_fd,
         jnp.polyval(jnp.concatenate([fd_coeffs[::-1], jnp.array([0.0])]), log_freq),
         0.0
     )
+    # Infinite-frequency TOAs carry no FD delay either (readParfile.C applies
+    # FD only for freqf > 1).
+    fd_sec = jnp.where(jnp.isfinite(log_freq), fd_sec, 0.0)
 
     # Handle troposphere array - use zeros if not provided
     tropo_arr = jnp.where(

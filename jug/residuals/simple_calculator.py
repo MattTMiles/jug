@@ -1710,6 +1710,24 @@ def compute_residuals_simple(
     obl_rad = geometry.obl_rad
     term_metadata = geometry.metadata
 
+    # tempo2 sets delayCorr=0 for barycentric-site TOAs ('@'/'bat'): no
+    # dispersive delays at all, whatever the tim frequency column says. Mark
+    # them infinite-frequency (dm_delays.C freqf<=1 convention; the kernel and
+    # the NumPy replicas below both honor it), so the binary is evaluated at
+    # SAT like tempo2's bbat. PINT applies DM/SW at the barycenter, so the
+    # pint path keeps the tim frequency.
+    from jug.residuals.engine_conventions import (
+        normalize_compatibility_mode as _norm_compat_mode,
+    )
+
+    if _norm_compat_mode(compatibility_mode) == "tempo2":
+        _bary_freq_mask = np.array(
+            [t.observatory.lower() in BARYCENTRIC_OBS_CODES for t in toas],
+            dtype=bool,
+        )
+        if _bary_freq_mask.any():
+            freq_bary_mhz = np.where(_bary_freq_mask, 0.0, freq_bary_mhz)
+
     # Planet Shapiro flag (for TZR); pint uses par-only semantics
     planet_shapiro_enabled = resolve_planet_shapiro_enabled(params, engine_profile)
 
@@ -1900,6 +1918,9 @@ def compute_residuals_simple(
     )
     dm_eff = sum(dm_coeffs[i] * (dt_years ** i) / math.factorial(i) for i in range(len(dm_coeffs)))
     freq_for_dm_mhz = np.asarray(freq_bary_mhz, dtype=np.float64)
+    # Infinite-frequency TOAs (freq <= 1 Hz, tempo2 BAT convention) carry no
+    # dispersive delay — mirror the kernel guard to avoid a 0-division here.
+    freq_for_dm_mhz = np.where(freq_for_dm_mhz > 1.0e-6, freq_for_dm_mhz, np.inf)
     dm_delay_sec = K_DM_SEC * dm_eff / (freq_for_dm_mhz ** 2)
 
     # Add DMX contribution to total delay.

@@ -343,6 +343,76 @@ def compute_tempo2_host_setup(
         sw_delay_sec = np.asarray(_native_np["tdis2_sec"], dtype=np.float64)
         roemer_shapiro = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
 
+    # tempo2 readTimfile.C sets clockCorr=0 / delayCorr=0 for barycentric-site
+    # TOAs ('@'/'bat') and formBats.C then uses bat = sat verbatim. Reproduce
+    # those per-TOA flag semantics here, after the native overlay: no clock
+    # chain, no TT->TB, and no geometry/dispersion terms for such TOAs.
+    from jug.utils.constants import BARYCENTRIC_OBS_CODES
+
+    bary_mask = np.array(
+        [t.observatory.lower() in BARYCENTRIC_OBS_CODES for t in toas], dtype=bool
+    )
+    if bary_mask.any():
+        formbats_tt_arr = np.where(bary_mask, 0.0, formbats_tt_arr)
+        formbats_correction_tt = formbats_tt_arr
+        clock_feedback_delta_sec = np.where(bary_mask, 0.0, clock_feedback_delta_sec)
+        tt_tb = np.where(bary_mask, 0.0, tt_tb)
+        if tt_teph is not None:
+            tt_teph = np.where(bary_mask, 0.0, tt_teph)
+        roemer_sec = np.where(bary_mask, 0.0, roemer_sec)
+        sun_shapiro_sec = np.where(bary_mask, 0.0, sun_shapiro_sec)
+        planet_shapiro_sec = np.where(bary_mask, 0.0, planet_shapiro_sec)
+        dm_delay_sec = np.where(bary_mask, 0.0, dm_delay_sec)
+        sw_delay_sec = np.where(bary_mask, 0.0, sw_delay_sec)
+        tropo_delay_sec = np.where(bary_mask, 0.0, tropo_delay_sec)
+        roemer_shapiro = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
+        if bclt_dt_ssb_sec is not None:
+            bclt_dt_ssb_sec = np.where(bary_mask, 0.0, bclt_dt_ssb_sec)
+        if native_terms is not None:
+            # The native chain's own terms feed the spin-axis parity fold in
+            # run_tempo2_host_stage (sat + correction_tt + correction_tt_tb)
+            # and the finalize diagnostics, so they need the same flag
+            # semantics: bat = bbat = sat with every correction zeroed.
+            # (torb_sec/dt_emission_sec stay as built: the Taylor host path
+            # used for TRACK -2 / no-TRACK does not consume them.)
+            _m = jnp.asarray(bary_mask)
+            _z = lambda a: jnp.where(_m, 0.0, a)
+            _sat_j = jnp.asarray(native_terms.sat_mjd)
+            native_terms = native_terms._replace(
+                correction_tt_sec=_z(native_terms.correction_tt_sec),
+                correction_tt_tb_sec=_z(native_terms.correction_tt_tb_sec),
+                roemer_sec=_z(native_terms.roemer_sec),
+                tdis1_sec=_z(native_terms.tdis1_sec),
+                tdis2_sec=_z(native_terms.tdis2_sec),
+                shapiro_sun_sec=_z(native_terms.shapiro_sun_sec),
+                shapiro_planets_sec=_z(native_terms.shapiro_planets_sec),
+                shapiro_delay_sec=_z(native_terms.shapiro_delay_sec),
+                tropospheric_sec=_z(native_terms.tropospheric_sec),
+                shklovskii_sec=_z(native_terms.shklovskii_sec),
+                prebinary_sec=_z(native_terms.prebinary_sec),
+                bat_corr_day=_z(native_terms.bat_corr_day),
+                bat_corr_day_residual=_z(native_terms.bat_corr_day_residual),
+                bat_mjd=jnp.where(_m, _sat_j, native_terms.bat_mjd),
+                bbat_mjd=jnp.where(_m, _sat_j, native_terms.bbat_mjd),
+                bat_int_day=jnp.where(
+                    _m, jnp.asarray(native_terms.sat_int_day), native_terms.bat_int_day
+                ),
+                bat_sec_in_day=jnp.where(
+                    _m,
+                    jnp.asarray(native_terms.sat_sec_in_day),
+                    native_terms.bat_sec_in_day,
+                ),
+                bbat_int_day=jnp.where(
+                    _m, jnp.asarray(native_terms.sat_int_day), native_terms.bbat_int_day
+                ),
+                bbat_sec_in_day=jnp.where(
+                    _m,
+                    jnp.asarray(native_terms.sat_sec_in_day),
+                    native_terms.bbat_sec_in_day,
+                ),
+                dt_ssb_sec=_z(native_terms.dt_ssb_sec),
+            )
+
     prebinary_delay_sec = (
         roemer_shapiro + dm_delay_sec + dmx_delay_sec + sw_delay_sec + tropo_delay_sec
     )

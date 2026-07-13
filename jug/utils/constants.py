@@ -106,7 +106,18 @@ T_SUN_SEC = T_SUN
 
 # === Observatory Coordinates ===
 
+# Observatory codes whose TOAs are barycentric arrival times at the SSB
+# (tempo2 '@'/'bat' convention). Their SATs are already TDB: no clock chain,
+# no TT->TDB conversion, and the observer sits at the SSB (zero Roemer;
+# solar geometry evaluated from the barycenter).
+BARYCENTRIC_OBS_CODES = frozenset({'bat', 'ssb', '@', 'barycenter'})
+
 OBSERVATORIES = {
+    # Barycentric / pre-barycentered TOAs (tempo2 BAT convention)
+    'bat': np.array([0.0, 0.0, 0.0]),
+    'ssb': np.array([0.0, 0.0, 0.0]),
+    '@': np.array([0.0, 0.0, 0.0]),
+    'barycenter': np.array([0.0, 0.0, 0.0]),
     'meerkat': np.array([5109360.133, 2006852.586, -3238948.127]) / 1000,
     'parkes': np.array([-4554231.500, 2816759.100, -3454036.300]) / 1000,
     'pks': np.array([-4554231.500, 2816759.100, -3454036.300]) / 1000,

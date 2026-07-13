@@ -431,6 +431,7 @@ def compute_tdb_standalone_vectorized(
     mjd_strings: list[str] | np.ndarray | None = None,
     # Legacy keyword arguments kept for backward compatibility; ignored.
     gps_clock=None, mk_clock=None, skip_gps_correction=None,
+    barycentric: bool = False,
 ) -> np.ndarray:
     """Compute TDB from UTC MJDs using a pre-merged observatory clock chain.
 
@@ -496,6 +497,22 @@ def compute_tdb_standalone_vectorized(
     ... )
     """
     from jug.io.clock import interpolate_clock_vectorized
+
+    if barycentric:
+        # Barycentric-site TOAs ('@'/'bat'/'ssb'): the SAT is already a TDB
+        # arrival time at the SSB. No clock chain and no UTC->TT->TDB
+        # conversion applies (tempo2 sets delayCorr=0; PINT uses scale='tdb').
+        if mjd_strings is not None:
+            int_arr, frac_arr = _mjd_strings_to_split(mjd_strings)
+        else:
+            int_arr = np.array(mjd_ints, dtype=np.float64)
+            frac_arr = np.array(mjd_fracs, dtype=np.float64)
+        tdb = np.asarray(int_arr, dtype=np.longdouble) + np.asarray(
+            frac_arr, dtype=np.longdouble
+        )
+        if time_offsets is not None:
+            tdb = tdb + np.asarray(time_offsets, dtype=np.longdouble) / 86400.0
+        return tdb
 
     mjd_vals = np.array(mjd_ints, dtype=np.float64) + np.array(mjd_fracs, dtype=np.float64)
 

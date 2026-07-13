@@ -52,7 +52,9 @@ from jug.residuals.engine_conventions import (
     normalize_compatibility_mode,
     validate_engine_profile_matches_compatibility,
 )
-from jug.utils.constants import C_KM_S, OBSERVATORIES, T_PLANET, T_SUN_SEC
+from jug.utils.constants import (
+    BARYCENTRIC_OBS_CODES, C_KM_S, OBSERVATORIES, T_PLANET, T_SUN_SEC,
+)
 
 
 @dataclass
@@ -245,14 +247,21 @@ def _compute_ssb_obs_for_toas(
 
     is_multi_obs = len(all_obs_codes) > 1
     if not is_multi_obs:
-        ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(
-            tdb_mjd, obs_itrf_km, ephemeris=ephem
-        )
+        if all_obs_codes and all_obs_codes[0] in BARYCENTRIC_OBS_CODES:
+            # Barycentric-site TOAs: the observer IS the SSB.
+            ssb_obs_pos_km = np.zeros((len(tdb_mjd), 3))
+            ssb_obs_vel_km_s = np.zeros((len(tdb_mjd), 3))
+        else:
+            ssb_obs_pos_km, ssb_obs_vel_km_s = compute_ssb_obs_pos_vel(
+                tdb_mjd, obs_itrf_km, ephemeris=ephem
+            )
     else:
         ssb_obs_pos_km = np.zeros((len(toas), 3))
         ssb_obs_vel_km_s = np.zeros((len(toas), 3))
         for obs_code in all_obs_codes:
             idxs = [i for i, toa in enumerate(toas) if toa.observatory.lower() == obs_code]
+            if obs_code in BARYCENTRIC_OBS_CODES:
+                continue  # observer at the SSB: keep zeros
             obs_loc_km = OBSERVATORIES.get(obs_code, obs_itrf_km)
             pos, vel = compute_ssb_obs_pos_vel(tdb_mjd[idxs], obs_loc_km, ephemeris=ephem)
             ssb_obs_pos_km[idxs] = pos
@@ -354,6 +363,17 @@ def _compute_pint_geometry_terms(
                 planet_shapiro_sec += compute_shapiro_delay(
                     obs_planet_delay_km, L_hat, T_PLANET[planet]
                 )
+
+    # Barycentric-site TOAs are already SSB arrival times: no solar-system
+    # Shapiro applies (tempo2 sets delayCorr=0; PINT's barycenter observatory
+    # likewise contributes none). Solar wind is still evaluated from the SSB,
+    # matching PINT.
+    _bary_mask = np.array(
+        [t.observatory.lower() in BARYCENTRIC_OBS_CODES for t in toas], dtype=bool
+    )
+    if _bary_mask.any():
+        sun_shapiro_sec = np.where(_bary_mask, 0.0, sun_shapiro_sec)
+        planet_shapiro_sec = np.where(_bary_mask, 0.0, planet_shapiro_sec)
 
     roemer_shapiro_sec = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
 
@@ -458,6 +478,17 @@ def _compute_tempo2_tcb_geometry_terms(
         else np.zeros(len(tdb_mjd), dtype=np.float64)
     )
     planet_shapiro_sec = terms.planet_shapiro_sec * ifte if provider.profile.planet_shapiro else terms.planet_shapiro_sec * 0.0
+    # Barycentric-site TOAs are already SSB arrival times: no solar-system
+    # Shapiro applies (tempo2 sets delayCorr=0; PINT's barycenter observatory
+    # likewise contributes none). Solar wind is still evaluated from the SSB,
+    # matching PINT.
+    _bary_mask = np.array(
+        [t.observatory.lower() in BARYCENTRIC_OBS_CODES for t in toas], dtype=bool
+    )
+    if _bary_mask.any():
+        sun_shapiro_sec = np.where(_bary_mask, 0.0, sun_shapiro_sec)
+        planet_shapiro_sec = np.where(_bary_mask, 0.0, planet_shapiro_sec)
+
     roemer_shapiro_sec = roemer_sec + sun_shapiro_sec + planet_shapiro_sec
 
     einstein_rate = None
@@ -601,6 +632,17 @@ def _compute_tempo2_tdb_geometry_terms(
         L_hat,
         enabled=provider.profile.planet_shapiro,
     )
+
+    # Barycentric-site TOAs are already SSB arrival times: no solar-system
+    # Shapiro applies (tempo2 sets delayCorr=0; PINT's barycenter observatory
+    # likewise contributes none). Solar wind is still evaluated from the SSB,
+    # matching PINT.
+    _bary_mask = np.array(
+        [t.observatory.lower() in BARYCENTRIC_OBS_CODES for t in toas], dtype=bool
+    )
+    if _bary_mask.any():
+        sun_shapiro_sec = np.where(_bary_mask, 0.0, sun_shapiro_sec)
+        planet_shapiro_sec = np.where(_bary_mask, 0.0, planet_shapiro_sec)
 
     roemer_shapiro_sec = roemer_sec + sun_shapiro_sec + planet_shapiro_sec_arr
     obs_sun_pos_km = obs_sun_pos_delay_km

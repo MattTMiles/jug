@@ -64,7 +64,8 @@ from jug.residuals.tzr_geometry import (
 )
 from jug.residuals.tempo2.graph_config import USE_NATIVE_BBAT_PHASE5
 from jug.utils.constants import (
-    SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES, K_DM_SEC,
+    SECS_PER_DAY, SECS_PER_YEAR, T_SUN_SEC, T_PLANET, OBSERVATORIES,
+    BARYCENTRIC_OBS_CODES, K_DM_SEC,
     C_KM_S, MAS_PER_RAD, AU_KM, AU_PC
 )
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
@@ -1612,6 +1613,7 @@ def compute_residuals_simple(
                 mjd_ints, mjd_fracs,
                 obs_clock, bipm_clock,
                 location, time_offsets=time_offsets, mjd_strings=mjd_strings,
+                barycentric=(observatory.lower() in BARYCENTRIC_OBS_CODES),
             )
         else:
             # Multi-observatory: compute TDB per observatory, then reassemble
@@ -1631,6 +1633,7 @@ def compute_residuals_simple(
                     clk, bipm_clock, obs_loc,
                     time_offsets=time_offsets[idxs],
                     mjd_strings=[mjd_strings[i] for i in idxs],
+                    barycentric=(obs_code in BARYCENTRIC_OBS_CODES),
                 )
             if verbose: print(f"   Computed TDB per observatory: {all_obs_codes}")
     if verbose: print(f"   Computed TDB for {len(tdb_mjd)} TOAs")

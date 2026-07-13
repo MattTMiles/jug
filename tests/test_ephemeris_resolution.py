@@ -33,3 +33,19 @@ def test_resolve_tempo2_ephemeris_path_de440_is_ondisk():
 def test_bundled_lookup_returns_none_for_unbundled_names():
     assert _bundled_ephemeris_path("de405") is None
     assert _bundled_ephemeris_path("not-an-ephemeris") is None
+
+
+def test_non_de_names_pass_through():
+    assert _resolve_ephemeris("builtin") == "builtin"
+    assert _resolve_ephemeris("jpl") == "jpl"
+
+
+def test_de438_resolves_to_kernel_file():
+    """DE438 must resolve to an on-disk BSP (cache or download): the
+    tempo2-native jplephem provider needs a real file, not a bare name."""
+    import pytest
+
+    resolved = _resolve_ephemeris("de438")
+    if resolved.endswith("de440s.bsp"):
+        pytest.skip("no network and DE438 not cached; fell back to bundled default")
+    assert os.path.isfile(resolved), f"de438 -> {resolved} is not a file"

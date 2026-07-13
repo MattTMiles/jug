@@ -372,6 +372,7 @@ def _compute_pint_geometry_terms(
         [t.observatory.lower() in BARYCENTRIC_OBS_CODES for t in toas], dtype=bool
     )
     if _bary_mask.any():
+        roemer_sec = np.where(_bary_mask, 0.0, roemer_sec)
         sun_shapiro_sec = np.where(_bary_mask, 0.0, sun_shapiro_sec)
         planet_shapiro_sec = np.where(_bary_mask, 0.0, planet_shapiro_sec)
 
@@ -486,6 +487,7 @@ def _compute_tempo2_tcb_geometry_terms(
         [t.observatory.lower() in BARYCENTRIC_OBS_CODES for t in toas], dtype=bool
     )
     if _bary_mask.any():
+        roemer_sec = np.where(_bary_mask, 0.0, roemer_sec)
         sun_shapiro_sec = np.where(_bary_mask, 0.0, sun_shapiro_sec)
         planet_shapiro_sec = np.where(_bary_mask, 0.0, planet_shapiro_sec)
 
@@ -641,8 +643,9 @@ def _compute_tempo2_tdb_geometry_terms(
         [t.observatory.lower() in BARYCENTRIC_OBS_CODES for t in toas], dtype=bool
     )
     if _bary_mask.any():
+        roemer_sec = np.where(_bary_mask, 0.0, roemer_sec)
         sun_shapiro_sec = np.where(_bary_mask, 0.0, sun_shapiro_sec)
-        planet_shapiro_sec = np.where(_bary_mask, 0.0, planet_shapiro_sec)
+        planet_shapiro_sec_arr = np.where(_bary_mask, 0.0, planet_shapiro_sec_arr)
 
     roemer_shapiro_sec = roemer_sec + sun_shapiro_sec + planet_shapiro_sec_arr
     obs_sun_pos_km = obs_sun_pos_delay_km

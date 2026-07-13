@@ -2192,7 +2192,7 @@ def compute_residuals_simple(
     if track_val is not None and int(track_val) == -2:
         pn_flags = [toa.flags.get('pn') for toa in toas]
         if all(pn is not None for pn in pn_flags):
-            external_pn = np.array([int(pn) for pn in pn_flags], dtype=np.longdouble)
+            external_pn = np.array([int(float(pn)) for pn in pn_flags], dtype=np.longdouble)
             pn_add_running = np.int64(-1)
             pn_add_cumulative = np.empty(len(toas), dtype=np.int64)
             addsat_sec = np.zeros(len(toas), dtype=np.float64)

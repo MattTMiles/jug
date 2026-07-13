@@ -109,11 +109,23 @@ def resolve_tempo2_session_args(
     return validate_tempo2_graph_mode(tempo2_native), options
 
 
+def __getattr__(name: str):
+    # Lazy re-exports: the frozen JAX timing-state API pulls in jax and the
+    # fitting stack, which options-only consumers should not pay for.
+    if name in ("JaxTimingState", "export_jax_timing_state"):
+        from jug.fitting import jax_timing_state
+
+        return getattr(jax_timing_state, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "DEFAULT_TEMPO2_GRAPH_MODE",
     "DEFAULT_TEMPO2_JUG_OPTIONS",
     "Tempo2GraphMode",
     "IersPolicy",
+    "JaxTimingState",
+    "export_jax_timing_state",
     "validate_tempo2_graph_mode",
     "validate_tempo2_iers_policy",
     "validate_tempo2_bclt_fixed_iter",

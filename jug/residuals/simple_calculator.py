@@ -66,14 +66,22 @@ from jug.utils.constants import (
 )
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
 
-# Old JPL ephemerides moved to a_old_versions/ on NAIF server
+# JPL kernel locations tried in order for any DE ephemeris name: the current
+# NAIF generic-kernels directory, the NAIF archive (older DE releases are
+# moved there over time, e.g. de405/de421/de430), and the JPL SSD server
+# (which mirrors essentially every DE release). astropy's own name resolution
+# uses the first URL, so the download cache is shared with it.
+_NAIF_EPHEM_URL = (
+    "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
+    "/spk/planets/{name}.bsp"
+)
 _OLD_EPHEM_URL = (
     "https://naif.jpl.nasa.gov/pub/naif/generic_kernels"
     "/spk/planets/a_old_versions/{name}.bsp"
 )
-_OLD_EPHEMERIDES = {'de200', 'de405', 'de410', 'de414', 'de421', 'de423', 'de430'}
+_SSD_EPHEM_URL = "https://ssd.jpl.nasa.gov/ftp/eph/planets/bsp/{name}.bsp"
 
-# Ephemerides available from JPL SSD server (not NAIF)
+# Explicit overrides for names whose canonical source is not the NAIF cascade.
 _SSD_EPHEMERIDES = {
     'de436': 'https://ssd.jpl.nasa.gov/ftp/eph/planets/bsp/de436.bsp',
     'de441': 'https://ssd.jpl.nasa.gov/ftp/eph/planets/bsp/de441.bsp',
@@ -96,10 +104,14 @@ _BUNDLED_EPHEMERIS = {
 
 
 def _bundled_ephemeris_path(name: str) -> str | None:
-    """Return the on-disk path to a bundled BSP for ``name`` if present."""
-    fname = _BUNDLED_EPHEMERIS.get(name.lower())
-    if fname is None:
-        return None
+    """Return the on-disk path to a bundled BSP for ``name`` if present.
+
+    Besides the explicit ``_BUNDLED_EPHEMERIS`` aliases, any ``<name>.bsp``
+    dropped into ``data/ephemeris`` is picked up, so a kernel can be supplied
+    manually for fully offline use (e.g. ``de438.bsp``).
+    """
+    lname = name.lower()
+    fname = _BUNDLED_EPHEMERIS.get(lname, f"{lname}.bsp")
     candidate = _BUNDLED_EPHEMERIS_DIR / fname
     return str(candidate) if candidate.is_file() else None
 
@@ -419,69 +431,70 @@ def _warn_unrecognized_params(params, verbose=True):
 
 
 def _resolve_ephemeris(name: str) -> str:
-    """Resolve ephemeris name to a value astropy can use.
+    """Resolve an ``EPHEM`` name to an on-disk BSP path astropy can use.
 
-    For old JPL ephemerides that have been moved on the NAIF server,
-    downloads from the archive URL and returns the cached file path.
-    
-    For ephemerides available on JPL SSD server (e.g., DE436, DE441),
-    downloads from SSD and returns the cached file path.
-    
-    Falls back to DE440 if download fails.
+    Any JPL ``deXXX``/``deXXXs`` name resolves to a real kernel file: a BSP
+    bundled under ``data/ephemeris`` if present, otherwise a cached download
+    tried against the NAIF generic-kernels directory, the NAIF archive
+    (``a_old_versions``, where older DE releases get moved, e.g. de405/de421/
+    de430) and the JPL SSD server, in that order. Returning a file path
+    rather than a bare astropy name matters beyond astropy itself: the
+    tempo2-native (jplephem/SPK) provider needs an actual file and cannot use
+    astropy's internal name resolution.
+
+    Non-DE names (e.g. astropy built-ins) are returned unchanged. Falls back
+    to the bundled default (DE440s) with a warning if every source fails.
     """
     import re
     import sys
 
+    from astropy.utils.data import download_file, is_url_in_cache
+
+    lname = name.lower().strip()
+
     # Offline fast path: a BSP shipped in the JUG data directory (e.g. DE440s)
     # is always preferred over network downloads and bare astropy names, so the
     # tempo2 jplephem path can resolve an on-disk kernel without connectivity.
-    bundled = _bundled_ephemeris_path(name)
+    bundled = _bundled_ephemeris_path(lname)
     if bundled is not None:
         return bundled
 
-    # Check if ephemeris is available from SSD server
-    if name.lower() in _SSD_EPHEMERIDES:
-        from astropy.utils.data import download_file, is_url_in_cache
-        url = _SSD_EPHEMERIDES[name.lower()]
+    if not re.match(r'de\d{3}s?$', lname):
+        return name
+
+    urls = [_SSD_EPHEMERIDES[lname]] if lname in _SSD_EPHEMERIDES else [
+        _NAIF_EPHEM_URL.format(name=lname),
+        _OLD_EPHEM_URL.format(name=lname),
+        _SSD_EPHEM_URL.format(name=lname),
+    ]
+
+    # Prefer whichever source is already in the astropy download cache — no
+    # network needed, and the cache is shared with astropy's own resolution
+    # of the same NAIF URL.
+    for url in urls:
         try:
-            if not is_url_in_cache(url):
-                print(f"Downloading {name.upper()} from JPL SSD server...", file=sys.stderr)
-                path = download_file(url, cache=True)
-                print(f"[x] {name.upper()} downloaded successfully.", file=sys.stderr)
-            else:
-                path = download_file(url, cache=True)
+            if is_url_in_cache(url):
+                return download_file(url, cache=True)
+        except Exception:
+            continue
+
+    errors = []
+    for url in urls:
+        try:
+            print(f"Downloading {name.upper()} from {url} ...", file=sys.stderr)
+            path = download_file(url, cache=True)
+            print(f"[x] {name.upper()} downloaded successfully.", file=sys.stderr)
             return path
         except Exception as e:
-            print(f"\n{'='*70}", file=sys.stderr)
-            print(f"WARNING: Could not download {name.upper()} from JPL SSD server.", file=sys.stderr)
-            print(f"         Error: {e}", file=sys.stderr)
-            print(f"         Falling back to {_DEFAULT_EPHEMERIS.upper()}.", file=sys.stderr)
-            print(f"{'='*70}\n", file=sys.stderr)
-            return _bundled_ephemeris_path(_DEFAULT_EPHEMERIS) or _DEFAULT_EPHEMERIS
-    
-    if not re.match(r'de\d{3}s?$', name.lower()):
-        return name
-    if name.lower() not in _OLD_EPHEMERIDES:
-        return name
-    # Try standard astropy path first
-    try:
-        solar_system_ephemeris.validate(name)
-        return name
-    except Exception:
-        pass
-    # Download from old versions URL
-    from astropy.utils.data import download_file
-    url = _OLD_EPHEM_URL.format(name=name.lower())
-    try:
-        path = download_file(url, cache=True)
-        return path
-    except Exception:
-        # If old ephemeris download fails, fall back to default with warning
-        print(f"\n{'='*70}", file=sys.stderr)
-        print(f"WARNING: Could not download ephemeris {name.upper()}.", file=sys.stderr)
-        print(f"         Falling back to {_DEFAULT_EPHEMERIS.upper()}.", file=sys.stderr)
-        print(f"{'='*70}\n", file=sys.stderr)
-        return _bundled_ephemeris_path(_DEFAULT_EPHEMERIS) or _DEFAULT_EPHEMERIS
+            errors.append(f"{url}: {e}")
+
+    print(f"\n{'='*70}", file=sys.stderr)
+    print(f"WARNING: Could not download ephemeris {name.upper()}.", file=sys.stderr)
+    for err in errors:
+        print(f"         {err}", file=sys.stderr)
+    print(f"         Falling back to {_DEFAULT_EPHEMERIS.upper()}.", file=sys.stderr)
+    print(f"{'='*70}\n", file=sys.stderr)
+    return _bundled_ephemeris_path(_DEFAULT_EPHEMERIS) or _DEFAULT_EPHEMERIS
 
 
 def _track_pulse_numbers_loop(phase, sort_idx):

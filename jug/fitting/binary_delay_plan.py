@@ -340,3 +340,93 @@ def resolve_binary_structure(ref_params, fit_params, *, obs_pos_ls=None):
     )
     kop = resolve_kopeikin_flags(ref_params) if family == "DDK" else None
     return BinaryDelayPlan(family, ref_scalars, live, structural, (), kop)
+
+
+@dataclass(frozen=True)
+class BinaryChartFacts:
+    """Facts about a resolved binary relevant to eccentricity-vector
+    (Laplace-Lagrange) coordinate reparameterizations.
+
+    A common low-eccentricity reparameterization replaces the Kepler triple
+    ``(ECC, OM, T0)`` with the Cartesian triple
+    ``(EPS1 = e·sinω, EPS2 = e·cosω, TASC = T0 - PB·ω/2π)``. Deciding whether
+    that change of variables is applicable and well-behaved for a given binary
+    needs three model facts, which JUG (having resolved the binary model) is the
+    natural owner of:
+
+    convention_family: the RESOLVED Kepler-parameter family —
+        ``'dd'`` (``ECC/OM/T0``: DD/DDS/DDH/DDGR/BT/BTX/DDK, and T2 reduced to
+        any of these), ``'ell1'`` (already ``EPS1/EPS2/TASC``), or ``'other'``.
+    epoch_shift_exact: whether ``(OM + 360°, T0 + PB)`` is an exact orbit
+        identity — ``False`` when any secular rate is active for this binary
+        (an explicit nonzero or fitted OMDOT/PBDOT/EDOT/A1DOT/XDOT, or a
+        GR-derived family such as DDGR whose post-Keplerian rates are computed
+        internally rather than exposed as parameters).
+    secular_terms: canonical names of the active secular rates (informational).
+    """
+
+    convention_family: str
+    epoch_shift_exact: bool
+    secular_terms: tuple
+
+
+# Binary families whose secular rates are GR-derived from the model name alone
+# (invisible to a name search over explicit params). resolve_binary_structure
+# collapses T2/DDGR into a resolved family, so the ORIGINAL BINARY value is read
+# to recover this.
+_GR_DERIVED_MODELS = frozenset({"DDGR"})
+# ref_scalars arg key -> canonical secular-rate name (DD/BT/DDK plans).
+_SECULAR_ARG_TO_NAME = {
+    "omdot": "OMDOT",
+    "pbdot": "PBDOT",
+    "edot": "EDOT",
+    "xdot": "A1DOT",
+}
+# live (fit) fitpar name -> canonical secular-rate name.
+_SECULAR_LIVE_TO_NAME = {
+    "OMDOT": "OMDOT",
+    "PBDOT": "PBDOT",
+    "EDOT": "EDOT",
+    "A1DOT": "A1DOT",
+    "XDOT": "A1DOT",
+}
+
+
+def binary_chart_facts(ref_params, fit_params=None):
+    """Return the resolved-binary facts needed to reason about an
+    eccentricity-vector (Laplace-Lagrange) coordinate reparameterization.
+
+    Returns a :class:`BinaryChartFacts`, or ``None`` when the parameters carry
+    no binary. JUG resolves ``T2 -> DD/ELL1/DDK`` and knows which families are
+    GR-derived, so callers can consume these facts instead of re-deriving the
+    binary structure themselves.
+    """
+    plan = resolve_binary_structure(ref_params, fit_params or [])
+    if plan is None:
+        return None
+    original = str(ref_params.get("BINARY", "")).upper().strip()
+    family = plan.family
+    if family in ("DD", "BT", "DDK"):
+        convention = "dd"
+    elif family == "ELL1":
+        convention = "ell1"
+    else:
+        convention = "other"
+
+    secular: set[str] = set()
+    for arg, name in _SECULAR_ARG_TO_NAME.items():
+        value = plan.ref_scalars.get(arg)
+        if value is not None and float(value) != 0.0:
+            secular.add(name)
+    for live in plan.live_keys:
+        canonical = _SECULAR_LIVE_TO_NAME.get(str(live).upper())
+        if canonical is not None:
+            secular.add(canonical)
+    if original in _GR_DERIVED_MODELS:
+        secular.update({"OMDOT", "PBDOT"})
+
+    return BinaryChartFacts(
+        convention_family=convention,
+        epoch_shift_exact=not secular,
+        secular_terms=tuple(sorted(secular)),
+    )

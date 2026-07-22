@@ -29,6 +29,25 @@ _INDEXED_HIGH_PRECISION_EPOCH = re.compile(
 )
 _FIXED_HIGH_PRECISION_EPOCHS = {'START', 'FINISH', 'PBEPOCH'}
 
+# Tempo2 "1e-12" dual-convention rate parameters (readParfile.C): a written
+# value with |val|>1e-7 is in units of 1e-12 s^-1 and is multiplied by 1e-12;
+# a smaller value is already physical s^-1 and left as-is. JUG stores everything
+# in physical units, so replicate the same conditional scaling for the same
+# parameter set tempo2 scales. XDOT/A1DOT, PBDOT, XPBDOT, and EDOT/ECCDOT were
+# previously missing this (only EPS1DOT/EPS2DOT were handled), which left e.g. a
+# NANOGrav XDOT of 0.011382 a factor 1e12 too large.
+#
+# PINT parity: for XDOT/A1DOT, PBDOT, XPBDOT and EDOT, PINT applies the identical
+# rule (floatParameter unit_scale=True, scale_factor=1e-12, scale_threshold=1e-7),
+# so this conditional scaling matches PINT as well as tempo2. EPS1DOT/EPS2DOT are
+# the one exception: PINT bakes 1e-12 into the parameter unit ("1e-12/s") and thus
+# always scales, whereas tempo2 (and JUG here) scale EPS?DOT only above 1e-7 -- so
+# for a small physical EPS?DOT (e.g. PPTA DR4 ~1e-16) JUG matches tempo2/the data
+# and intentionally differs from PINT.
+_TEMPO2_RATE_1E12_PARAMS = frozenset({
+    'PBDOT', 'XPBDOT', 'XDOT', 'A1DOT', 'EDOT', 'ECCDOT', 'EPS1DOT', 'EPS2DOT',
+})
+
 
 def _is_high_precision_param(key: str) -> bool:
     return (
@@ -170,14 +189,14 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                     except ValueError:
                         params[key] = value_str
 
-                # EPS1DOT/EPS2DOT dual-convention (Tempo2 readParfile.C ~2136):
+                # Tempo2 "1e-12" dual-convention rate params (readParfile.C):
                 # a "large" written value (|val|>1e-7) is in units of 1e-12 s^-1
                 # and is multiplied by 1e-12; a "small" value is already physical
-                # s^-1 and left as-is. JUG stores everything in physical s^-1, so
-                # replicate the conditional scaling here. (PPTA DR4 values are
-                # ~1e-16, so they take the no-scale branch -- matching the data
-                # and disagreeing with PINT, which always applies the 1e-12.)
-                if key in ("EPS1DOT", "EPS2DOT") and isinstance(params.get(key), float):
+                # s^-1 and left as-is. Applies to the full set tempo2 scales
+                # (XDOT/A1DOT, PBDOT, XPBDOT, EDOT/ECCDOT, EPS1DOT, EPS2DOT); see
+                # _TEMPO2_RATE_1E12_PARAMS for the PINT-parity notes (PINT matches
+                # this threshold rule for all of them except EPS?DOT).
+                if key in _TEMPO2_RATE_1E12_PARAMS and isinstance(params.get(key), float):
                     if abs(params[key]) > 1e-7:
                         params[key] *= 1.0e-12
 

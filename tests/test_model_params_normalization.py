@@ -120,3 +120,20 @@ def test_cached_session_designmatrix_accepts_hms_parfile(
 
     assert matrix.shape == (len(toas_mjd), 1)
     assert np.all(np.isfinite(matrix))
+
+
+@pytest.mark.parametrize(
+    "param", ["XDOT", "A1DOT", "PBDOT", "XPBDOT", "EDOT", "EPS1DOT", "EPS2DOT"]
+)
+def test_tempo2_rate_params_use_1e12_dual_convention(tmp_path, param):
+    """Tempo2 readParfile.C parity: a written rate with |val|>1e-7 is in units
+    of 1e-12 s^-1 and is scaled by 1e-12; an already-physical small value is
+    left unchanged. Regression for XDOT/PBDOT/EDOT (formerly only EPS?DOT)."""
+    header = "PSR TEST\nF0 100.0\nPEPOCH 55000\n"
+    par = tmp_path / "rate.par"
+
+    par.write_text(f"{header}{param} 0.011382\n")  # "large" -> * 1e-12
+    assert parse_par_file(str(par))[param] == pytest.approx(0.011382e-12, rel=1e-12)
+
+    par.write_text(f"{header}{param} 1.1382e-14\n")  # already physical -> as-is
+    assert parse_par_file(str(par))[param] == pytest.approx(1.1382e-14, rel=1e-12)

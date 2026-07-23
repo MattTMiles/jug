@@ -247,8 +247,14 @@ def test_jacfwd_matches_numpy_fd_ecliptic(family):
         np.testing.assert_allclose(col_jax, col_np, atol=atol, err_msg=f"{name} Jacobian")
 
 
-def test_autodiff_matrix_matches_jacfwd_ecliptic():
-    setup, fit_params, ref_theta, ref_params = _ecliptic_astrometry_setup(family="elong")
+@pytest.mark.parametrize("family", ["elong", "lambda"])
+def test_autodiff_matrix_matches_jacfwd_ecliptic(family):
+    """Public autodiff design columns must match -jacfwd in fit units.
+
+    Guards BUG 002: LAMBDA/BETA must not inherit RAJ/DECJ hourangle/radian
+    scales when exporting design-matrix columns.
+    """
+    setup, fit_params, ref_theta, ref_params = _ecliptic_astrometry_setup(family=family)
     matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
     residual_fn = make_residual_delta_jax_fn(
         setup=setup,
@@ -257,7 +263,28 @@ def test_autodiff_matrix_matches_jacfwd_ecliptic():
         ref_theta=ref_theta,
     )
     jac = np.asarray(jax.jacfwd(residual_fn)(jnp.zeros(len(fit_params))))
-    np.testing.assert_allclose(-jac, matrix, rtol=1.0e-10, atol=1.0e-15)
+    for idx, name in enumerate(fit_params):
+        exported = np.asarray(matrix[:, idx], dtype=float)
+        raw = -np.asarray(jac[:, idx], dtype=float)
+        exported_ms = exported - np.mean(exported)
+        raw_ms = raw - np.mean(raw)
+        denom = np.linalg.norm(exported_ms)
+        assert denom > 0.0, f"{name}: exported column vanished"
+        ratio = np.linalg.norm(raw_ms) / denom
+        np.testing.assert_allclose(
+            ratio,
+            1.0,
+            rtol=1.0e-8,
+            atol=1.0e-8,
+            err_msg=f"{name}: design/jac scale mismatch (got {ratio})",
+        )
+        np.testing.assert_allclose(
+            exported,
+            raw,
+            rtol=1.0e-10,
+            atol=1.0e-15,
+            err_msg=f"{name}: autodiff design != -jacfwd",
+        )
 
 
 def test_analytic_derivatives_accept_lambda_aliases():

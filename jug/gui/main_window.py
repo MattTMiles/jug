@@ -4096,7 +4096,7 @@ class MainWindow(QMainWindow):
                                 dmx_has_fit_flag = True
                             continue
 
-                        # Canonicalize aliases (LAMBDA->RAJ, BETA->DECJ, etc.)
+                        # Canonicalize aliases (LAMBDA->ELONG, BETA->ELAT, etc.)
                         from jug.model.parameter_spec import canonicalize_param_name
                         canon_name = canonicalize_param_name(param_name)
                         lookup_name = canon_name if canon_name in fittable_params else param_name

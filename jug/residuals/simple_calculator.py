@@ -447,9 +447,10 @@ def _resolve_ephemeris_info(name: str) -> tuple[str, str]:
     Any JPL ``deXXX``/``deXXXs`` name resolves to a real kernel file: a BSP
     bundled under ``data/ephemeris`` if present, otherwise a cached download
     tried against the NAIF generic-kernels directory, the NAIF archive
-    (``a_old_versions``) and the JPL SSD server, in that order. Returning a
-    file path matters beyond astropy: the tempo2-native jplephem/SPK provider
-    needs an actual file and cannot use astropy's internal name resolution.
+    (``a_old_versions``, where older DE releases get moved, e.g. de405/de421/
+    de430) and the JPL SSD server, in that order. Returning a file path
+    matters beyond astropy: the tempo2-native jplephem/SPK provider needs an
+    actual file and cannot use astropy's internal name resolution.
 
     Non-DE names (astropy built-ins) pass through unchanged. Falls back to
     the bundled default (DE440s) with a warning if every source fails.
@@ -457,19 +458,19 @@ def _resolve_ephemeris_info(name: str) -> tuple[str, str]:
     import re
     import sys
 
-    name_lower = name.lower()
+    from astropy.utils.data import download_file, is_url_in_cache
+
+    name_lower = name.lower().strip()
 
     # Offline fast path: a BSP shipped in the JUG data directory (e.g. DE440s)
     # is always preferred over network downloads and bare astropy names, so the
     # tempo2 jplephem path can resolve an on-disk kernel without connectivity.
-    bundled = _bundled_ephemeris_path(name)
+    bundled = _bundled_ephemeris_path(name_lower)
     if bundled is not None:
         return bundled, name_lower
 
     if not re.match(r'de\d{3}s?$', name_lower):
         return name, name_lower
-
-    from astropy.utils.data import download_file, is_url_in_cache
 
     urls = [_SSD_EPHEMERIDES[name_lower]] if name_lower in _SSD_EPHEMERIDES else [
         _NAIF_EPHEM_URL.format(name=name_lower),

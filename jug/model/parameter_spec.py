@@ -275,7 +275,6 @@ _ASTROMETRY_PARAMS = [
         par_unit_str="HH:MM:SS.sss",
         requires=("POSEPOCH",),
         par_codec_name="raj",
-        aliases=("LAMBDA",),  # ELONG is a separate param (ecliptic fitting)
     ),
     ParameterSpec(
         name="DECJ",
@@ -286,7 +285,6 @@ _ASTROMETRY_PARAMS = [
         par_unit_str="DD:MM:SS.sss",
         requires=("POSEPOCH",),
         par_codec_name="decj",
-        aliases=("BETA",),  # ELAT is a separate param (ecliptic fitting)
     ),
     ParameterSpec(
         name="PMRA",
@@ -328,6 +326,8 @@ _ASTROMETRY_PARAMS = [
         internal_unit="deg",
         par_unit_str="degrees",
         requires=("POSEPOCH",),
+        # Tempo2 LAMBDA is ecliptic longitude in degrees (same as ELONG), not RAJ.
+        aliases=("LAMBDA",),
     ),
     ParameterSpec(
         name="ELAT",
@@ -337,6 +337,8 @@ _ASTROMETRY_PARAMS = [
         internal_unit="deg",
         par_unit_str="degrees",
         requires=("POSEPOCH",),
+        # Tempo2 BETA is ecliptic latitude in degrees (same as ELAT), not DECJ.
+        aliases=("BETA",),
     ),
     ParameterSpec(
         name="PMELONG",

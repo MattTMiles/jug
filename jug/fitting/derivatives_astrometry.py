@@ -694,10 +694,7 @@ def compute_astrometric_delay(
     # Using jnp.where avoids Python conditional which breaks JAX tracing.
     px_rad = px_mas * (jnp.pi / 180.0 / 3600.0 / 1000.0)
 
-    # Distance in light-seconds: d_ls = AU_ls / px_rad
     AU_LS = AU_METERS / SPEED_OF_LIGHT  # ~499.005 light-seconds
-    # Guard against division by zero -- use a large distance when px_rad == 0
-    d_ls = jnp.where(px_rad != 0, AU_LS / px_rad, jnp.inf)
 
     # r^2 magnitude
     r_sq = x**2 + y**2 + z**2
@@ -705,8 +702,9 @@ def compute_astrometric_delay(
     # Transverse distance squared: px_r^2 = r^2 - (r*n)^2
     px_r_sq = r_sq - r_dot_n**2
 
-    # Parallax delay: 0.5 * px_r^2 / d
-    parallax_delay = 0.5 * px_r_sq / d_ls  # seconds
+    # Parallax delay is linear in PX: 0.5 * r_perp^2 * px_rad / AU_LS.
+    # Branch-free so d(delay)/d(PX) stays exact and nonzero at PX == 0.
+    parallax_delay = 0.5 * px_r_sq * px_rad / AU_LS  # seconds
 
     roemer_delay = roemer_delay + parallax_delay
 

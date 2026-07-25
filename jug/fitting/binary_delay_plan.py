@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import jax.numpy as jnp
 import numpy as np
 
-from jug.utils.constants import SECS_PER_DAY
+from jug.utils.constants import SECS_PER_DAY, T_SUN
 
 from jug.delays.binary_bt import bt_binary_delay_from_tt0
 from jug.fitting.binary_t2_dispatch import _is_ell1_parameterization
 from jug.fitting.derivatives_binary import _compute_ell1_binary_delay_jit, _extract_ell1_params
 from jug.fitting.derivatives_dd import (
+    _as_f64,
     _compute_dd_binary_delay_jit,
     _compute_kopeikin_corrections_traceable,
     _extract_dd_params,
@@ -28,13 +30,6 @@ def _pval(params, key, default):
     return default if v is None else v
 
 
-def _as_f64(x):
-    """Cast a concrete or traced scalar to float64 for JAX kernels."""
-    if isinstance(x, (np.longdouble, np.float128)):
-        return jnp.float64(float(x))
-    return jnp.asarray(x, dtype=jnp.float64)
-
-
 def _first_live_value(params, live_keys, keys, default):
     """Return first live traced value among aliases, else reference default."""
     for key in keys:
@@ -47,7 +42,7 @@ _DD_ARG_KEYS = {
     "a1": ("A1",),
     "pb": ("PB",),
     "t0": ("T0",),
-    "ecc": ("ECC",),
+    "ecc": ("ECC", "E"),
     "om_deg": ("OM",),
     "omdot": ("OMDOT",),
     "pbdot": ("PBDOT",),
@@ -56,6 +51,8 @@ _DD_ARG_KEYS = {
     "m2": ("M2",),
     "xdot": ("XDOT", "A1DOT"),
     "edot": ("EDOT",),
+    "h3": ("H3",),
+    "stig": ("STIG", "STIGMA"),
 }
 _DD_ARG_ORDER = (
     "a1",
@@ -146,6 +143,8 @@ class BinaryDelayPlan:
     pb_ld: Any = None
     fb0_ld: Any = None
     nharm: float = 4.0
+    shapiro_param: str = "m2_sini"  # "m2_sini" | "h3_stig"
+    has_shapiro: bool = False
 
     def _arg(self, arg, params, arg_keys):
         if arg not in self.structural_args:
@@ -234,6 +233,11 @@ class BinaryDelayPlan:
 
         args = [self._arg(a, params, _DD_ARG_KEYS) for a in _DD_ARG_ORDER]
         (a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, sini, m2, xdot, edot) = args
+        if self.shapiro_param == "h3_stig":
+            h3 = _as_f64(self._arg("h3", params, _DD_ARG_KEYS))
+            stig = _as_f64(self._arg("stig", params, _DD_ARG_KEYS))
+            sini = 2.0 * stig / (1.0 + stig * stig)
+            m2 = h3 / (stig * stig * stig * T_SUN)
         if self.family == "DDK":
             kop = self.kopeikin
             kin = _pval(params, "KIN", kop.kin_deg_ref)
@@ -248,7 +252,16 @@ class BinaryDelayPlan:
                 * kop.pm_factor
             )
             d_a1, d_om, sini_eff = _compute_kopeikin_corrections_traceable(
-                t, a1, t0, kin, kom, px, pmra, pmdec, obs_pos_ls, kop
+                t,
+                _as_f64(a1),
+                _as_f64(t0),
+                _as_f64(kin),
+                _as_f64(kom),
+                _as_f64(px),
+                _as_f64(pmra),
+                _as_f64(pmdec),
+                obs_pos_ls,
+                kop,
             )
             a1 = a1 + d_a1
             om_deg = om_deg + d_om
@@ -268,6 +281,7 @@ class BinaryDelayPlan:
             _as_f64(m2),
             _as_f64(xdot),
             _as_f64(edot),
+            has_shapiro=self.has_shapiro,
         )
 
 
@@ -326,20 +340,121 @@ def resolve_binary_structure(ref_params, fit_params, *, obs_pos_ls=None):
         )
         return BinaryDelayPlan(family, ref_scalars, live, structural, (), None)
 
-    if live & _ORTHOMETRIC_KEYS:
-        raise NotImplementedError(
-            "Fitting orthometric Shapiro parameters (H3/H4/STIG) is not supported "
-            "for DD-family binaries via autodiff. Use ELL1H or fit M2/SINI."
-        )
+    # DD-family fall-through (DD / DDS / DDH / DDGR / DDK / T2→DD/DDK)
     p = _extract_dd_params(ref_params)
     ref_scalars = {k: float(p[k]) for k in _DD_ARG_ORDER}
+    ref_scalars["h3"] = float(get_longdouble(ref_params, "H3", default=0.0))
+    ref_scalars["h4"] = float(get_longdouble(ref_params, "H4", default=0.0))
+    ref_scalars["stig"] = float(
+        get_longdouble(
+            ref_params,
+            "STIG",
+            default=get_longdouble(ref_params, "STIGMA", default=0.0),
+        )
+    )
+
+    if "SHAPMAX" in live:
+        raise NotImplementedError(
+            "Fitting SHAPMAX (DDS) is not supported via autodiff; fit SINI, "
+            "or extend the DDS parameterization in the binary plan."
+        )
+
+    shapiro_param = "m2_sini"
+    ortho_live = live & _ORTHOMETRIC_KEYS
+    h3_ref = ref_scalars["h3"]
+    h4_ref = ref_scalars["h4"]
+    stig_ref = ref_scalars["stig"]
+    ortho_active = bool(ortho_live) or any(
+        v != 0.0 for v in (h3_ref, h4_ref, stig_ref)
+    )
+    if ortho_active:
+        # Every active orthometric reference must be finite, regardless of
+        # which parameterization is (or is not) selected below — a NaN/inf
+        # standalone H3 must not fall through the dispatch silently.
+        for _name, _val in (("H3", h3_ref), ("H4", h4_ref), ("STIG", stig_ref)):
+            if not np.isfinite(_val):
+                raise ValueError(f"Reference {_name}={_val!r} must be finite.")
+    if family == "DDK" and ortho_active:
+        raise NotImplementedError(
+            "Orthometric Shapiro parameters (H3/H4/STIG) are not supported for "
+            "DDK/Kopeikin binaries: DDK derives the inclination from KIN. "
+            "Fit KIN and M2 instead."
+        )
+    if ortho_active and family != "DDK":
+        if (live & {"M2", "SINI"}) and ortho_live:
+            raise ValueError(
+                "DD Shapiro fit mixes M2/SINI and orthometric parameters; "
+                "choose exactly one parameterization."
+            )
+        if "H4" in live:
+            raise NotImplementedError(
+                "Fitting H4 on a DD-family binary via autodiff is not supported: "
+                "live H3/H4 requires a coupled same-sign chart (sigma = H4/H3 is "
+                "singular at H3 = 0). Use H3/STIG, or fit M2/SINI."
+            )
+        stig_configured = (stig_ref != 0.0) or bool({"STIG", "STIGMA"} & live)
+        h4_configured = h4_ref != 0.0
+        if stig_configured:
+            shapiro_param = "h3_stig"
+            if h4_configured:
+                warnings.warn(
+                    "Both STIG and H4 present; using H3/STIG and ignoring H4.",
+                    UserWarning,
+                )
+            if stig_ref <= 0.0:
+                raise ValueError(
+                    f"Reference STIG={stig_ref!r} must be > 0."
+                )
+            # h3_ref: finiteness already guaranteed above; any signed value,
+            # including 0, is allowed.
+        elif h4_configured:
+            # Reference-only H3/H4: converted ONCE to M2/SINI reference values
+            # by _extract_dd_params; the plan stays "m2_sini". H3 cannot
+            # be live in this configuration (no STIG to anchor sigma).
+            if "H3" in live:
+                raise NotImplementedError(
+                    "Fitting H3 with an H3/H4 reference (no STIG) is not "
+                    "supported via autodiff; provide STIG/STIGMA, or fit "
+                    "M2/SINI."
+                )
+            if h3_ref == 0.0:
+                raise ValueError(
+                    f"H3/H4 reference requires nonzero H3; got H3={h3_ref!r}."
+                )
+            sigma = h4_ref / h3_ref
+            if sigma <= 0.0:
+                raise ValueError(
+                    f"H4/H3={sigma!r} must be > 0 "
+                    "(H3 and H4 must carry the same sign)."
+                )
+        elif ortho_live:
+            raise ValueError(
+                "Orthometric Shapiro fit requires STIG/STIGMA alongside H3; "
+                f"got H3={h3_ref!r}, H4={h4_ref!r}, STIG={stig_ref!r}."
+            )
+
+    has_shapiro = (
+        shapiro_param != "m2_sini"
+        or (ref_scalars["sini"] > 0.0 and ref_scalars["m2"] != 0.0)
+        or bool(live & {"M2", "SINI"})
+    )
+
     structural = (
         frozenset({"pb"})
         if ("PB" not in ref_params and "FB0" in ref_params)
         else frozenset()
     )
     kop = resolve_kopeikin_flags(ref_params) if family == "DDK" else None
-    return BinaryDelayPlan(family, ref_scalars, live, structural, (), kop)
+    return BinaryDelayPlan(
+        family,
+        ref_scalars,
+        live,
+        structural,
+        (),
+        kop,
+        shapiro_param=shapiro_param,
+        has_shapiro=has_shapiro,
+    )
 
 
 @dataclass(frozen=True)
@@ -398,35 +513,33 @@ def binary_chart_facts(ref_params, fit_params=None):
 
     Returns a :class:`BinaryChartFacts`, or ``None`` when the parameters carry
     no binary. JUG resolves ``T2 -> DD/ELL1/DDK`` and knows which families are
-    GR-derived, so callers can consume these facts instead of re-deriving the
-    binary structure themselves.
+    Kepler-parameterized.
     """
-    plan = resolve_binary_structure(ref_params, fit_params or [])
+    plan = resolve_binary_structure(ref_params, fit_params)
     if plan is None:
         return None
-    original = str(ref_params.get("BINARY", "")).upper().strip()
-    family = plan.family
-    if family in ("DD", "BT", "DDK"):
-        convention = "dd"
-    elif family == "ELL1":
-        convention = "ell1"
-    else:
-        convention = "other"
 
-    secular: set[str] = set()
+    if plan.family == "ELL1":
+        convention_family = "ell1"
+    elif plan.family in ("DD", "DDK", "BT"):
+        convention_family = "dd"
+    else:
+        convention_family = "other"
+
+    original_model = str(ref_params.get("BINARY", "")).upper().strip()
+    secular = set()
+    if original_model in _GR_DERIVED_MODELS:
+        # GR-derived secular rates are always "active" for epoch-shift purposes.
+        secular.update(("OMDOT", "PBDOT"))
     for arg, name in _SECULAR_ARG_TO_NAME.items():
-        value = plan.ref_scalars.get(arg)
-        if value is not None and float(value) != 0.0:
+        if arg in plan.ref_scalars and float(plan.ref_scalars[arg]) != 0.0:
             secular.add(name)
-    for live in plan.live_keys:
-        canonical = _SECULAR_LIVE_TO_NAME.get(str(live).upper())
-        if canonical is not None:
-            secular.add(canonical)
-    if original in _GR_DERIVED_MODELS:
-        secular.update({"OMDOT", "PBDOT"})
+    for live_name, canon in _SECULAR_LIVE_TO_NAME.items():
+        if live_name in plan.live_keys:
+            secular.add(canon)
 
     return BinaryChartFacts(
-        convention_family=convention,
-        epoch_shift_exact=not secular,
+        convention_family=convention_family,
+        epoch_shift_exact=not bool(secular),
         secular_terms=tuple(sorted(secular)),
     )

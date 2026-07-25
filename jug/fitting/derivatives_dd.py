@@ -21,11 +21,12 @@ Reference: Damour & Deruelle (1986), PINT src/pint/models/binary_dd.py
 
 import warnings
 from dataclasses import dataclass
+from functools import partial
+from typing import Dict, List
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from typing import Dict, List
 
 from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY, SECS_PER_YEAR, T_SUN, DEG_TO_RAD, PC_TO_LIGHT_SEC
@@ -33,6 +34,28 @@ from jug.utils.orbit_reduction import reduce_binary_time_sec
 
 # Enable float64 for precision
 jax.config.update("jax_enable_x64", True)
+
+
+def _as_f64(x):
+    """Cast a concrete or traced scalar to float64 for JAX kernels."""
+    if isinstance(x, (np.longdouble, np.float128)):
+        return jnp.float64(float(x))
+    return jnp.asarray(x, dtype=jnp.float64)
+
+
+def _orthometric_values_active(params) -> bool:
+    """True iff any orthometric parameter carries a nonzero value."""
+    return any(
+        float(params.get(key, 0.0) or 0.0) != 0.0
+        for key in ("H3", "H4", "STIG", "STIGMA")
+    )
+
+
+_DDK_ORTHOMETRIC_REJECTION = (
+    "Orthometric Shapiro parameters (H3/H4/STIG) are not supported for "
+    "DDK/Kopeikin binaries: DDK derives the inclination from KIN. "
+    "Fit KIN and M2 instead."
+)
 
 
 def _compute_tt0_sec(toas_bary_mjd: np.ndarray, t0: float) -> np.ndarray:
@@ -294,7 +317,7 @@ def _extract_dd_params(params: Dict):
     a1 = float(params.get('A1', 0.0))
     pb = _resolve_pb_days(params)
     t0 = get_longdouble(params, 'T0', default=0.0)
-    ecc = float(params.get('ECC', 0.0))
+    ecc = float(params.get('ECC', params.get('E', 0.0)))
     om_deg = float(params.get('OM', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
@@ -321,7 +344,7 @@ def _extract_dd_params(params: Dict):
         stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
         h4 = float(params.get('H4', 0.0))
 
-        if h3 != 0.0 and stig > 0.0 and stig <= 1.0:
+        if h3 != 0.0 and stig > 0.0:
             if h4 != 0.0:
                 warnings.warn(
                     "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
@@ -329,11 +352,10 @@ def _extract_dd_params(params: Dict):
                 )
             sini = 2 * stig / (1 + stig**2)
             m2 = h3 / (stig**3 * T_SUN)
-        elif h3 > 0.0 and h4 > 0.0:
+        elif h3 != 0.0 and h4 != 0.0 and (h4 / h3) > 0.0:
             stig_derived = h4 / h3
-            if 0.0 < stig_derived <= 1.0:
-                sini = 2.0 * stig_derived / (1.0 + stig_derived**2)
-                m2 = h3 / (stig_derived**3 * T_SUN)
+            sini = 2.0 * stig_derived / (1.0 + stig_derived**2)
+            m2 = h3 / (stig_derived**3 * T_SUN)
         elif h3 != 0.0 and h4 == 0.0 and stig == 0.0:
             warnings.warn(
                 "H3/H4 parameterization with H4=0: M2 is ill-conditioned; derivative will be zero",
@@ -428,7 +450,10 @@ def resolve_kopeikin_flags(params: Dict) -> KopeikinStructure:
         else:
             k96_flag = bool(k96_param)
     use_k96 = k96_flag and (pmra_ref != 0.0 or pmdec_ref != 0.0)
-    has_parallax = px_mas_ref > 0.0 and abs(kin_deg_ref) > 0.0
+    # Structural gate: Kopeikin parallax terms exist whenever KIN is defined.
+    # The correction is linear in PX, so a zero or negative reference must not
+    # disable the sector (same class of bug as the old PX>0 delay branch).
+    has_parallax = abs(kin_deg_ref) > 0.0
 
     obl_rad = 0.0
     if is_ecliptic:
@@ -498,6 +523,14 @@ def _compute_kopeikin_corrections_traceable(
     struct: KopeikinStructure,
 ):
     """Compute DDK Kopeikin corrections with traceable numeric inputs."""
+    toas_bary_mjd = jnp.asarray(toas_bary_mjd, dtype=jnp.float64)
+    a1 = _as_f64(a1)
+    t0 = _as_f64(t0)
+    kin_deg = _as_f64(kin_deg)
+    kom_deg = _as_f64(kom_deg)
+    px_mas = _as_f64(px_mas)
+    pmra_rad_per_sec = _as_f64(pmra_rad_per_sec)
+    pmdec_rad_per_sec = _as_f64(pmdec_rad_per_sec)
     kin_rad = jnp.deg2rad(kin_deg)
     kom_rad = jnp.deg2rad(kom_deg)
     tt0_sec = (toas_bary_mjd - t0) * SECS_PER_DAY
@@ -541,12 +574,16 @@ def _compute_kopeikin_corrections_traceable(
         - y * struct.sin_dec * struct.sin_ra
         + z * struct.cos_dec
     )
-    d_ls = 1000.0 * PC_TO_LIGHT_SEC / jnp.maximum(jnp.abs(px_mas), 1e-10)
+    inv_d_ls = px_mas / (1000.0 * PC_TO_LIGHT_SEC)
     delta_a1_px = jnp.where(
-        struct.has_parallax, (a1 / tan_safe / d_ls) * (dI0 * sin_kom - dJ0 * cos_kom), 0.0
+        struct.has_parallax,
+        (a1 / tan_safe) * inv_d_ls * (dI0 * sin_kom - dJ0 * cos_kom),
+        0.0,
     )
     delta_om_px = jnp.where(
-        struct.has_parallax, -(1.0 / sin_safe / d_ls) * (dI0 * cos_kom + dJ0 * sin_kom), 0.0
+        struct.has_parallax,
+        -(1.0 / sin_safe) * inv_d_ls * (dI0 * cos_kom + dJ0 * sin_kom),
+        0.0,
     )
 
     delta_a1 = delta_a1_pm + delta_a1_px
@@ -570,8 +607,8 @@ def _compute_kopeikin_corrections(
     struct = resolve_kopeikin_flags(params)
     return _compute_kopeikin_corrections_traceable(
         jnp.asarray(toas_bary_mjd),
-        a1,
-        t0,
+        _as_f64(a1),
+        _as_f64(t0),
         struct.kin_deg_ref,
         struct.kom_deg_ref,
         struct.px_mas_ref,
@@ -605,12 +642,14 @@ def compute_dd_binary_delay(
     tt0_ld = ((np.asarray(toas_bary_mjd, dtype=np.longdouble) - np.longdouble(p['t0']))
               * np.longdouble(SECS_PER_DAY))
     tt0_sec = np.asarray(tt0_ld, dtype=np.float64)
+    has_shapiro = (p['sini'] > 0.0 and p['m2'] != 0.0)
 
     return _compute_dd_binary_delay_jit(
         jnp.asarray(tt0_sec),
         p['a1'], p['pb'], p['ecc'], p['om_deg'], p['omdot'],
         p['pbdot'], p['gamma'], p['sini'], p['m2'], p['xdot'], p['edot'],
         tt0_red_sec=jnp.asarray(reduce_binary_time_sec(tt0_ld, pb_days=p['pb'])),
+        has_shapiro=has_shapiro,
     )
 
 
@@ -641,6 +680,12 @@ def compute_ddk_binary_delay(
     delay : jnp.ndarray
         Total binary delay in seconds
     """
+    if _orthometric_values_active(params):
+        raise NotImplementedError(
+            "Orthometric Shapiro parameters (H3/H4/STIG) are not supported for "
+            "DDK/Kopeikin binaries: DDK derives the inclination from KIN. "
+            "Fit KIN and M2 instead."
+        )
     p = _extract_dd_params(params)
     toas_bary_mjd_np = np.asarray(toas_bary_mjd)
     tt0_ld = ((np.asarray(toas_bary_mjd, dtype=np.longdouble) - np.longdouble(p['t0']))
@@ -654,22 +699,25 @@ def compute_ddk_binary_delay(
     # Per-TOA effective A1 and OM
     a1_eff = p['a1'] + delta_a1
     om_eff_deg = p['om_deg'] + delta_om_deg
+    has_shapiro = (p['sini'] > 0.0 and p['m2'] != 0.0)
 
     return _compute_dd_binary_delay_jit(
         jnp.asarray(tt0_sec),
         a1_eff, p['pb'], p['ecc'], om_eff_deg, p['omdot'],
         p['pbdot'], p['gamma'], sini_eff, p['m2'], p['xdot'], p['edot'],
         tt0_red_sec=jnp.asarray(reduce_binary_time_sec(tt0_ld, pb_days=p['pb'])),
+        has_shapiro=has_shapiro,
     )
 
 
-@jax.jit
+@partial(jax.jit, static_argnames=("has_shapiro",))
 def _compute_dd_binary_delay_jit(
     tt0_sec: jnp.ndarray,
     a1: float, pb: float, ecc: float, om_deg: float, omdot_deg_yr: float,
     pbdot: float, gamma: float, sini: float, m2: float,
     xdot: float, edot: float,
     tt0_red_sec: jnp.ndarray = None,
+    has_shapiro: bool = True,
 ) -> jnp.ndarray:
     """JIT-compiled DD binary delay computation.
 
@@ -744,12 +792,11 @@ def _compute_dd_binary_delay_jit(
     )
     delay_inverse = Dre * correction_factor
 
-    # Shapiro delay
-    shapiro = jnp.where(
-        (sini > 0) & (m2 > 0),
-        compute_dd_shapiro_delay(E, theta, om_rad, ecc_current, sini, m2),
-        0.0
-    )
+    # Shapiro delay — structural presence is a static plan/wrapper flag.
+    if has_shapiro:
+        shapiro = compute_dd_shapiro_delay(E, theta, om_rad, ecc_current, sini, m2)
+    else:
+        shapiro = 0.0
 
     return delay_inverse + shapiro
 
@@ -796,7 +843,7 @@ def compute_binary_derivatives_dd(
         _compute_tt0_sec(toas_bary_mjd_np, t0_ld) / SECS_PER_DAY
     )
     t0 = 0.0
-    ecc = float(params.get('ECC', 0.0))
+    ecc = float(params.get('ECC', params.get('E', 0.0)))
     om_deg = float(params.get('OM', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
@@ -879,7 +926,7 @@ def compute_binary_derivatives_dd(
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
             h4_val = float(params.get('H4', 0.0))
-            if stig_val > 0.0 and stig_val <= 1.0:
+            if stig_val > 0.0:
                 if h4_val != 0.0:
                     warnings.warn(
                         "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
@@ -887,8 +934,8 @@ def compute_binary_derivatives_dd(
                     )
                 # DDH model: H3/STIG parameterization — valid STIG
                 deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, stig_val)
-            elif h4_val > 0.0 and h3_val > 0.0 and (h4_val / h3_val) <= 1.0:
-                # H3/H4 parameterization — valid STIG = H4/H3 ∈ (0, 1]
+            elif h3_val != 0.0 and h4_val != 0.0 and (h4_val / h3_val) > 0.0:
+                # H3/H4 parameterization — same-sign pair
                 deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, h3_val, h4_val)
             else:
                 # Invalid STIG — Shapiro delay is unconstrained, return zero derivative
@@ -904,7 +951,7 @@ def compute_binary_derivatives_dd(
             # DDH model: H3/STIG parameterization
             h3_val = float(params.get('H3', 0.0))
             stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            if stig_val > 0.0 and stig_val <= 1.0 and h3_val != 0.0:
+            if stig_val > 0.0 and h3_val != 0.0:
                 deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, h3_val, stig_val)
             else:
                 deriv = jnp.zeros_like(toas_bary_mjd)
@@ -929,7 +976,7 @@ def compute_binary_derivatives_dd(
             # Orthometric Shapiro parameter H4 (DD/DDH model, H3/H4 parameterization)
             h3 = float(params.get('H3', 0.0))
             h4 = float(params.get('H4', 0.0))
-            if h3 > 0.0 and h4 > 0.0 and (h4 / h3) <= 1.0:
+            if h3 != 0.0 and h4 != 0.0 and (h4 / h3) > 0.0:
                 deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc_eff, om_rad, pbdot, h3, h4)
             else:
                 # Invalid STIG — return zero derivative
@@ -1540,6 +1587,15 @@ def compute_binary_derivatives_ddk(
     derivatives : Dict[str, jnp.ndarray]
         Dictionary mapping parameter names to derivative arrays
     """
+    fit_params_upper = [p.upper() for p in fit_params]
+    if _orthometric_values_active(params) or any(
+        name in fit_params_upper for name in ("H3", "H4", "STIG", "STIGMA")
+    ):
+        raise NotImplementedError(
+            "Orthometric Shapiro parameters (H3/H4/STIG) are not supported for "
+            "DDK/Kopeikin binaries: DDK derives the inclination from KIN. "
+            "Fit KIN and M2 instead."
+        )
     toas_bary_mjd_np = np.asarray(toas_bary_mjd)
     n_toas = len(toas_bary_mjd_np)
     
@@ -1553,7 +1609,7 @@ def compute_binary_derivatives_ddk(
         _compute_tt0_sec(toas_bary_mjd_np, t0_ld) / SECS_PER_DAY
     )
     t0 = 0.0
-    ecc = float(params.get('ECC', 0.0))
+    ecc = float(params.get('ECC', params.get('E', 0.0)))
     om_deg = float(params.get('OM', 0.0))
     pbdot = float(params.get('PBDOT', 0.0))
     gamma = float(params.get('GAMMA', 0.0))
@@ -1599,13 +1655,14 @@ def compute_binary_derivatives_ddk(
         else:
             k96_flag = bool(k96_param)
     use_k96 = k96_flag and (pmra_mas_yr != 0 or pmdec_mas_yr != 0)
-    
-    # Check for valid parallax
-    has_parallax = px_mas > 0.0 and jnp.abs(kin_deg) > 0.0
-    
-    # Distance in light-seconds from parallax
-    px_safe = max(abs(px_mas), 1e-10)
-    d_ls = 1000.0 * PC_TO_LIGHT_SEC / px_safe
+
+    # Structural gate (match resolve_kopeikin_flags): KIN defines the sector;
+    # PX value only scales the linear correction.
+    has_parallax = abs(kin_deg) > 0.0
+
+    # Linear signed factor (same form as the autodiff Kopeikin path).
+    inv_d_ls = px_mas / (1000.0 * PC_TO_LIGHT_SEC)
+    d_ls = 1.0 / inv_d_ls if inv_d_ls != 0.0 else float("inf")
     
     # Time since T0
     tt0_sec = _compute_tt0_sec(np.asarray(toas_bary_mjd), t0)
@@ -1726,7 +1783,6 @@ def compute_binary_derivatives_ddk(
     derivatives = {}
     
     # Check which parameters need KIN/KOM-specific handling
-    fit_params_upper = [p.upper() for p in fit_params]
     needs_kin = 'KIN' in fit_params_upper
     needs_kom = 'KOM' in fit_params_upper
     
@@ -1793,46 +1849,6 @@ def compute_binary_derivatives_ddk(
         elif param_upper == 'EDOT':
             d_ecc = _d_delay_d_ECC(toas_bary_mjd, a1_eff, pb, t0, ecc_eff, om_rad_eff, pbdot, gamma, sini_eff, m2)
             derivatives[param] = d_ecc * dt_sec_from_t0
-
-        elif param_upper == 'H3':
-            h3_val = float(params.get('H3', 0.0))
-            stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            h4_val = float(params.get('H4', 0.0))
-            if stig_val > 0.0 and stig_val <= 1.0:
-                if h4_val != 0.0:
-                    warnings.warn(
-                        "Both STIG and H4 are nonzero; using H3/STIG parameterization (H4 ignored)",
-                        UserWarning, stacklevel=2
-                    )
-                deriv = _d_delay_d_H3(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, stig_val)
-            elif h4_val > 0.0 and h3_val > 0.0 and (h4_val / h3_val) <= 1.0:
-                deriv = _d_delay_d_H3_h3h4(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, h3_val, h4_val)
-            else:
-                if h3_val != 0.0:
-                    warnings.warn(
-                        "H3/H4 parameterization with H4=0: M2 is ill-conditioned; derivative will be zero",
-                        UserWarning, stacklevel=2
-                    )
-                deriv = jnp.zeros_like(toas_bary_mjd)
-            derivatives[param] = deriv
-
-        elif param_upper in ('STIG', 'STIGMA'):
-            h3_val = float(params.get('H3', 0.0))
-            stig_val = float(params.get('STIG', params.get('STIGMA', 0.0)))
-            if stig_val > 0.0 and stig_val <= 1.0 and h3_val != 0.0:
-                deriv = _d_delay_d_STIG(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, h3_val, stig_val)
-            else:
-                deriv = jnp.zeros_like(toas_bary_mjd)
-            derivatives[param] = deriv
-
-        elif param_upper == 'H4':
-            h3_val = float(params.get('H3', 0.0))
-            h4_val = float(params.get('H4', 0.0))
-            if h3_val > 0.0 and h4_val > 0.0 and (h4_val / h3_val) <= 1.0:
-                deriv = _d_delay_d_H4(toas_bary_mjd, pb, t0, ecc_eff, om_rad_eff, pbdot, h3_val, h4_val)
-            else:
-                deriv = jnp.zeros_like(toas_bary_mjd)
-            derivatives[param] = deriv
 
     # Now handle KIN and KOM using chain rule
     if needs_kin:
@@ -2058,7 +2074,7 @@ def compute_binary_derivatives_ddgr(
     m2 = float(params.get('M2', 0.0))
     pb = _resolve_pb_days(params)
     a1 = float(params.get('A1', 0.0))
-    ecc = float(params.get('ECC', 0.0))
+    ecc = float(params.get('ECC', params.get('E', 0.0)))
 
     # Not a well-posed DDGR system -> fall back to plain DD derivatives.
     if not (mtot > 0.0 and m2 > 0.0 and pb > 0.0 and a1 > 0.0):
@@ -2134,7 +2150,7 @@ def compute_ddgr_binary_delay(
     if binary_model == 'DDGR' and mtot > 0.0 and m2 > 0.0 and pb > 0.0 and a1 > 0.0:
         from jug.delays.ddgr import compute_ddgr_pk_params
         _pk = compute_ddgr_pk_params(
-            mtot, m2, pb, a1, float(params.get('ECC', 0.0)),
+            mtot, m2, pb, a1, float(params.get('ECC', params.get('E', 0.0))),
             xomdot_deg_yr=float(params.get('XOMDOT', 0.0)),
             xpbdot=float(params.get('XPBDOT', 0.0)))
         params = dict(params)

@@ -31,6 +31,7 @@ from jug.fitting.optimized_fitter import (
     _update_param,
 )
 from jug.io.par_reader import get_longdouble
+from jug.model.parameter_spec import canonicalize_param_name
 from jug.utils.constants import HIGH_PRECISION_PARAMS, HOURANGLE_PER_RAD, RAD_TO_DEG
 from jug.utils.units import validate_column_units
 
@@ -47,6 +48,7 @@ class JaxTimingState:
 
     fit_params: tuple[str, ...]
     param_mapping: tuple[tuple[str, str], ...]
+    runtime_fit_params: tuple[str, ...]
     ref_params: dict[str, float]
     ref_theta: np.ndarray
     reference_residuals_sec: np.ndarray
@@ -67,15 +69,16 @@ class JaxTimingState:
         )
         delta_theta = np.asarray(delta_theta, dtype=np.float64).reshape(-1)
         params = dict(self.ref_params)
-        for idx, name in enumerate(self.fit_params):
-            backend = self._backend_name(name)
-            if backend.upper() in HIGH_PRECISION_PARAMS and backend.upper() in params:
-                current = get_longdouble(params, backend)
+        for idx, (name, runtime) in enumerate(
+            zip(self.fit_params, self.runtime_fit_params)
+        ):
+            if runtime.upper() in HIGH_PRECISION_PARAMS and runtime.upper() in params:
+                current = get_longdouble(params, runtime)
                 updated = current + np.longdouble(delta_theta[idx])
             else:
-                current = float(params.get(backend, self.ref_theta[idx]))
+                current = float(params.get(runtime, self.ref_theta[idx]))
                 updated = current + float(delta_theta[idx])
-            _update_param(params, backend, updated)
+            _update_param(params, runtime, updated)
         residuals_sec, _, _, _ = _compute_full_model_residuals(params, self.setup)
         residuals_sec = np.asarray(residuals_sec, dtype=np.float64)
         if self.isort is not None:
@@ -184,7 +187,10 @@ def export_jax_timing_state(
         "tempo2_jug_options": getattr(session, "tempo2_jug_options", None),
     }
 
-    jug_fit_params = [mapping.get(name, name) for name in fit_params]
+    runtime_fit_params = tuple(
+        canonicalize_param_name(mapping.get(name, name)) for name in fit_params
+    )
+    jug_fit_params = list(runtime_fit_params)
 
     setup = _build_general_fit_setup_from_cache(
         session_cached_data,
@@ -259,6 +265,7 @@ def export_jax_timing_state(
     return JaxTimingState(
         fit_params=fit_params,
         param_mapping=tuple(sorted(mapping.items())),
+        runtime_fit_params=runtime_fit_params,
         ref_params=ref_params,
         ref_theta=ref_theta,
         reference_residuals_sec=ref_for_delta,

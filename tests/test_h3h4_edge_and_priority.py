@@ -42,15 +42,14 @@ class TestH3H4EdgeCases:
         np.testing.assert_array_equal(np.array(derivs['H3']), 0.0)
 
     def test_h3_nonzero_h4_zero_warns_ddk(self, toas, base_params):
+        """DDK+orthometric is rejected on the derivatives path (package policy)."""
         from jug.fitting.derivatives_dd import compute_binary_derivatives_ddk
         base_params['KIN'] = 60.0
         base_params['KOM'] = 0.0
         base_params['RAJ'] = 1.0
         base_params['DECJ'] = -0.5
-        with pytest.warns(UserWarning, match="H4=0.*ill-conditioned"):
-            derivs = compute_binary_derivatives_ddk(base_params, toas, ['H3'])
-        assert 'H3' in derivs
-        assert np.all(np.isfinite(derivs['H3']))
+        with pytest.raises(NotImplementedError, match="DDK/Kopeikin"):
+            compute_binary_derivatives_ddk(base_params, toas, ['H3'])
 
     def test_h3_zero_h4_zero_no_warning(self, toas, base_params):
         from jug.fitting.derivatives_dd import compute_binary_derivatives_dd

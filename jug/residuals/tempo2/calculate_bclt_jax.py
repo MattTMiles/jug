@@ -364,11 +364,7 @@ def _roemer_ls_jax(rca, pos, vel, acc, delt, parallax_mas, pmrv):
     dt_pm = delt * pmtrans_rcos2
     dt_pmtt = -0.5 * pmtrans * pmtrans * delt * delt * rcos1
     dt_acctrans = 0.5 * delt * delt * jnp.dot(acc, rca)
-    dt_px = jnp.where(
-        parallax_mas != 0.0,
-        -0.5 * parallax_mas * PX_CONV_JAX * (rr - rcos1 * rcos1) / AULTSC_JAX,
-        0.0,
-    )
+    dt_px = -0.5 * parallax_mas * PX_CONV_JAX * (rr - rcos1 * rcos1) / AULTSC_JAX
     dt_pmtr = -delt * delt * pmrv * pmtrans_rcos2
     return rcos1 + dt_pm + dt_pmtt + dt_px + dt_pmtr + dt_acctrans
 

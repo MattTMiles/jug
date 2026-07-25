@@ -295,7 +295,7 @@ def test_ddk_ecliptic_proper_motion_aliases_are_traceable():
         assert np.linalg.norm(col) > 0.0, f"{name} column is all-zero -> ecliptic PM alias not traced"
 
 
-def test_dd_orthometric_fit_is_rejected():
+def test_dd_orthometric_fit_resolves_h3_stig():
     from jug.fitting.binary_delay_plan import resolve_binary_structure
 
     ref = dict(
@@ -308,8 +308,9 @@ def test_dd_orthometric_fit_is_rejected():
         H3=5e-8,
         STIG=0.7,
     )
-    with pytest.raises(NotImplementedError):
-        resolve_binary_structure(ref, ["A1", "H3"])
+    plan = resolve_binary_structure(ref, ["A1", "H3", "STIG"])
+    assert plan.shapiro_param == "h3_stig"
+    assert plan.has_shapiro is True
 
 
 def test_epoch_in_fit_params_raises():

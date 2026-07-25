@@ -83,13 +83,10 @@ def roemer_delay_jax(ssb_obs_pos_km, L_hat, parallax_mas=0.0):
     roemer_sec = -re_dot_L / C_KM_S
 
     re_sqr = jnp.sum(ssb_obs_pos_km ** 2, axis=1)
-    # distance_kpc = 1/parallax_mas; L_km = distance_kpc * KPC_TO_KM
-    px_safe = jnp.where(parallax_mas != 0.0, parallax_mas, 1.0)
-    L_km    = (1.0 / px_safe) * KPC_TO_KM
     re_safe = jnp.where(re_sqr > 0, re_sqr, 1.0)
     parallax_sec = jnp.where(
-        (parallax_mas != 0.0) & (re_sqr > 0),
-        0.5 * (re_sqr / L_km) * (1.0 - re_dot_L ** 2 / re_safe) / C_KM_S,
+        re_sqr > 0,
+        0.5 * re_sqr * (parallax_mas / KPC_TO_KM) * (1.0 - re_dot_L ** 2 / re_safe) / C_KM_S,
         0.0,
     )
     return roemer_sec + parallax_sec

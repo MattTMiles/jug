@@ -1,7 +1,7 @@
 """Fit H3/STIG on a perturbed J1022+1001 par file (orthometric Shapiro).
 
-JUG's optimized fitter does not yet implement orthometric Shapiro (H3/STIG)
-derivatives, so this test is an expected failure documenting that gap.
+Orthometric Shapiro on DD-family autodiff is supported (Fix J3); this
+regression asserts the optimized fitter can take steps on H3/STIG.
 """
 
 import pytest
@@ -15,11 +15,6 @@ from jug.fitting.optimized_fitter import fit_parameters_optimized
 from jug.io.par_reader import parse_par_file
 
 
-@pytest.mark.xfail(
-    raises=NotImplementedError,
-    reason="Orthometric Shapiro (H3/STIG) fitting not implemented",
-    strict=False,
-)
 def test_j1022_fit_h3_stig(tmp_path):
     par_path, tim_path = get_j1022_paths()
     if not skip_if_missing(par_path, tim_path, "j1022"):

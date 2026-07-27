@@ -186,7 +186,6 @@ def test_simulated_tempo2_autodiff_designmatrix_astrometry_nonzero():
         fixture["tim_path"],
         fit_params,
         compatibility="tempo2",
-        design_matrix_method="autodiff",
     )
 
     assert jug.labels == fit_params

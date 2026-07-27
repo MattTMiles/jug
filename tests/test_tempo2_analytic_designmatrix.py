@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from jug.fitting.designmatrix_assembly import assemble_analytic_designmatrix
-from jug.fitting.jax_residual_delta import compute_simplified_autodiff_designmatrix_from_setup
+from jug.fitting.jax_residual_delta import _simplified_residual_jacobian_oracle
 from jug.fitting.optimized_fitter import _compute_designmatrix_from_setup
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.units import native_derivative_to_fit_column
@@ -44,17 +44,16 @@ def _assert_columns_match(
 
 def test_analytic_matches_simplified_autodiff_wsrt167(wsrt167_fit_setup_factory):
     fit_params = ["RAJ", "DECJ", "F0", "DM"]
-    setup = wsrt167_fit_setup_factory(fit_params, design_matrix_method="analytic")
+    setup = wsrt167_fit_setup_factory(fit_params)
     setup.residual_delta_jax_cache = None
 
     analytic = assemble_analytic_designmatrix(setup, fit_params, output_units="fit")
-    reference = compute_simplified_autodiff_designmatrix_from_setup(setup, fit_params)
+    j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
 
     weights = np.asarray(setup.weights, dtype=np.float64)
     analytic_p = _mean_project(analytic, weights, compatibility=setup.compatibility)
-    reference_p = _mean_project(reference, weights, compatibility=setup.compatibility)
 
-    _assert_columns_match(analytic_p, reference_p, fit_params)
+    _assert_columns_match(-analytic_p, j_fit, fit_params)
 
 
 @pytest.mark.parametrize("param", ["PB", "EPS1", "EPS2"])
@@ -64,21 +63,16 @@ def test_analytic_matches_simplified_autodiff_binary(param):
 
     fixture = get_tempo2_fixture("epta_j1909_t2")
     fit_params = [param]
-    setup = build_fit_setup_for_fixture(
-        fixture,
-        fit_params,
-        design_matrix_method="analytic",
-    )
+    setup = build_fit_setup_for_fixture(fixture, fit_params)
     setup.residual_delta_jax_cache = None
 
     analytic = assemble_analytic_designmatrix(setup, fit_params, output_units="fit")
-    reference = compute_simplified_autodiff_designmatrix_from_setup(setup, fit_params)
+    j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
 
     weights = np.asarray(setup.weights, dtype=np.float64)
     analytic_p = _mean_project(analytic, weights, compatibility=setup.compatibility)
-    reference_p = _mean_project(reference, weights, compatibility=setup.compatibility)
 
-    _assert_columns_match(analytic_p, reference_p, fit_params)
+    _assert_columns_match(-analytic_p, j_fit, fit_params)
 
 
 @pytest.mark.parametrize(
@@ -89,20 +83,12 @@ def test_analytic_invariant_across_tempo2_native(wsrt167_fit_setup_factory, temp
     """Analytic columns do not depend on tempo2_native graph mode."""
     fit_params = ["F0", "DM"]
     reference = assemble_analytic_designmatrix(
-        wsrt167_fit_setup_factory(
-            fit_params,
-            tempo2_native="staged_bclt",
-            design_matrix_method="analytic",
-        ),
+        wsrt167_fit_setup_factory(fit_params, tempo2_native="staged_bclt"),
         fit_params,
         output_units="fit",
     )
     candidate = assemble_analytic_designmatrix(
-        wsrt167_fit_setup_factory(
-            fit_params,
-            tempo2_native=tempo2_native,
-            design_matrix_method="analytic",
-        ),
+        wsrt167_fit_setup_factory(fit_params, tempo2_native=tempo2_native),
         fit_params,
         output_units="fit",
     )
@@ -131,7 +117,6 @@ def test_wls_native_columns_match_export_fit_columns():
         fit_param_list=["F0", "RAJ", "DM"],
         compatibility="tempo2",
         fd_column_mode="delay_only",
-        design_matrix_method="analytic",
         param_values_start=[200.0, 0.5, 10.0],
         toas_mjd=tdb_mjd,
         freq_mhz=freq_mhz,

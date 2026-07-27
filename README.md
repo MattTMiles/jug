@@ -184,21 +184,22 @@ For notebook diagnostics, weighted-mean-centered deltas are useful only for
 PINT-family-vs-PINT-family comparisons; tempo2-labeled comparisons should stay
 raw.
 
-**Nonlinear / autodiff / notebook integrators:** green residual tests on curated fixtures
-do **not** mean tempo2 mode is ready for JAX-traced likelihoods or IPTA-scale
-workloads. See [`PARITY_THEORY.md`](PARITY_THEORY.md) for theory, policy, and JAX-traced
-graph guarantees, and [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) for gap analysis,
-pytempo workflow, and usage guidance.
+**Nonlinear / residual-Jacobian / notebook integrators:** green residual tests on
+curated fixtures do **not** mean tempo2 mode is ready for JAX-traced likelihoods
+or IPTA-scale workloads. The analytic fitter basis `M` (`compute_designmatrix`)
+and the residual Jacobian `J` (`FrozenResidualModel.residual_jacobian_native`)
+are different objects: `r(theta+delta) ~= r(theta) - M @ delta`, while
+`J = jacfwd(residual_delta)(0)`. See [`PARITY_THEORY.md`](PARITY_THEORY.md) for
+theory/policy and [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) for gap analysis.
 
 ### Tempo2-native JAX fitting (graph modes, 2026-07-07)
 
-**Design matrices:** default WLS uses `design_matrix_method="analytic"` (PINT-style
-simplified tangents, fast, independent of graph mode). Set
-`design_matrix_method="autodiff"` for native `jacfwd(residual_delta)` through the
-tempo2 JAX graph (NUTS / libstempo column parity).
+Analytic WLS uses the PINT-style fitter basis `M` (fast, independent of graph
+mode). Residual Jacobians come from `jacfwd(residual_delta)` on the selected
+tempo2 JAX graph via `export_frozen_residual_model` / `FrozenResidualModel`.
 
-Production tempo2 `residual_delta_jax` and native autodiff always use the tempo2-native
-JAX graph. Select the graph with session kwargs:
+Production tempo2 `residual_delta_jax` always uses the tempo2-native JAX graph.
+Select the graph with session kwargs:
 
 ```python
 session = TimingSession(
@@ -212,6 +213,7 @@ session = TimingSession(
         "require_native_cache": True,
     },
 )
+state = export_frozen_residual_model(session, fit_params=["F0", "RAJ", "DM"])
 ```
 
 | Mode | `tempo2_native` | Role |
@@ -221,7 +223,7 @@ session = TimingSession(
 | `staged_bclt` | `"staged_bclt"` | Freeze host ephemeris/clocks; recompute BCLT scan, formBats, Shklovskii in JAX |
 | `full` | `"full"` | Unified in-graph clocks/SPK/EOP/IFTE/tropo/BCLT (oracle/dev only) |
 
-Requirements for notebook integrators / `export_jax_timing_state`:
+Requirements for notebook integrators / `export_frozen_residual_model`:
 
 1. Call `session.compute_residuals(...)` (or `force_recompute=True` after upgrades) so
    the cache includes `term_diagnostics['tempo2_obs_state']`.
@@ -246,11 +248,11 @@ See [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) for the full parity
 **Tempo2 parity status (2026-07-09):** Host residuals remain sub-ns to low-ns on
 gated fixtures (NG5, EPTA J0613 full, wsrt167 TRACK −2). JAX native delay chain on
 wsrt167 closes pytempo for formBats delay physics, JAX `bbat_mjd`, stripped lite BBAT,
-and `torb_sec` (all < 1 ns RMS). Libstempo autodiff design-matrix gates cover
-F0/RAJ/DECJ/DM on wsrt167 (staged/fixed/stripped), binary columns on `epta_j1909_t2`,
-and F0 on `epta_j0613_addsat_min`. `full` graph mode has component parity CI (< 1 ns).
+and `torb_sec` (all < 1 ns RMS). Residual-Jacobian gates cover F0/RAJ/DECJ/DM on
+wsrt167 (staged/fixed/stripped), binary columns on `epta_j1909_t2`, and F0 on
+`epta_j0613_addsat_min`. `full` graph mode has component parity CI (< 1 ns).
 Remaining: `ppta_j1741_ell1` host debt (~5.5 ns), `J0900-3144` TDB probe, model-epoch
-IFTE batCorr scalar (~272 ns, pinned), and `full` autodiff columns.
+IFTE batCorr scalar (~272 ns, pinned), and fuller residual-Jacobian coverage.
 Details: [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
 
 Test-data policy, provenance, and fixture-size guidance live in
@@ -258,10 +260,11 @@ Test-data policy, provenance, and fixture-size guidance live in
 
 ### Design-matrix unit convention
 
-`compute_designmatrix()` exports columns as `d(residual)/d(param)` in seconds
-per parameter unit using a PINT/Vela-compatible unit vocabulary
-(`str(PINT param.units)` style). The returned `DesignMatrixResult.column_units`
-are parseable Astropy unit strings.
+`compute_designmatrix()` returns the raw analytic fitter basis `M` with sign
+contract `r(theta+delta) ~= r(theta) - M @ delta`, in seconds per parameter unit
+using a PINT/Vela-compatible unit vocabulary (`str(PINT param.units)` style).
+The returned `DesignMatrixResult.column_units` are parseable Astropy unit
+strings. Residual Jacobians are never returned under a design-matrix name.
 
 When comparing against raw Tempo2/libstempo design matrices, apply the explicit
 unit translation first (for example RAJ/DECJ are exported as hourangle/deg

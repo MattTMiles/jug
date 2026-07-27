@@ -13,7 +13,7 @@ import jax.numpy as jnp
 from jug.fitting.binary_delay_plan import resolve_binary_structure
 from jug.fitting.binary_registry import compute_binary_delay
 from jug.fitting.jax_residual_delta import (
-    compute_autodiff_designmatrix_from_setup,
+    _simplified_residual_jacobian_oracle,
     make_residual_delta_jax_fn,
 )
 from jug.utils.constants import SECS_PER_DAY
@@ -59,7 +59,7 @@ def test_ecc_vs_e_plan_delay_and_column(ecc):
 
     # Residual-delta path: same eccentricity perturbation under both spellings.
     fit_params = ["ECC"]
-    base = _setup(["F0"], method="autodiff")
+    base = _setup(["F0"])
     n = len(base.tdb_mjd)
     obs = 1e-3 * (1.0 + np.arange(3 * n, dtype=float)).reshape(n, 3)
     prebinary = np.zeros(n, dtype=float)
@@ -99,7 +99,7 @@ def test_ecc_vs_e_plan_delay_and_column(ecc):
     np.testing.assert_allclose(r_ecc, r_e, atol=1e-12)
     assert np.max(np.abs(r_ecc)) > 0
 
-    mtx_ecc = compute_autodiff_designmatrix_from_setup(setup_ecc, fit_params)
-    mtx_e = compute_autodiff_designmatrix_from_setup(setup_e, fit_params)
+    mtx_ecc = _simplified_residual_jacobian_oracle(setup_ecc, fit_params)
+    mtx_e = _simplified_residual_jacobian_oracle(setup_e, fit_params)
     assert np.linalg.norm(mtx_ecc[:, 0]) > 0
     np.testing.assert_allclose(mtx_ecc, mtx_e, rtol=1e-10, atol=1e-14)

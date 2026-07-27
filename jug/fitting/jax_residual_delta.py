@@ -1,21 +1,17 @@
-"""JAX residual deltas and autodiff timing design matrices.
+"""JAX residual deltas for nonlinear timing likelihoods.
 
-This module owns the differentiable residual path used by
-``design_matrix_method="autodiff"``.  The design matrix is the Jacobian of the
-same nonlinear residual-delta function used for JAX-native timing likelihoods;
-there are no finite-difference perturbations and no hand-written derivative
-columns in this path.
+``make_residual_delta_jax_fn`` returns the centered residual-delta function
+for the session-selected graph (simplified PINT-style Taylor, or the native
+tempo2 graph named by ``setup.tempo2_native``). Residual Jacobians are its
+``jacfwd``; see ``jug.fitting.residual_model``. The analytic fitter basis
+lives in ``designmatrix_assembly`` and is a different object (see
+feature_designmatrix_naming_conventions.md).
 
-For ``compatibility="tempo2"``, native autodiff recomputes
+For ``compatibility="tempo2"``, the native residual path recomputes
 ``residual_sec(θ+Δθ) − residual_sec(θ)`` through the tempo2-native JAX graph
 selected by ``setup.tempo2_native`` (default ``fixed_state_stripped``). Set
 ``tempo2_native="full"`` only to differentiate through the unified in-graph
 model; expect multi-minute JIT compile on first call.
-
-**Analytic design matrices** (default WLS) use PINT-style simplified tangents via
-``designmatrix_assembly.py`` and do not trace ``tempo2_native``. The test oracle
-``compute_simplified_autodiff_designmatrix_from_setup`` differentiates the Taylor
-``compute_total_delay_change`` + ``_phase_residual_delta_jax`` path instead.
 
 **Host vs fit model split:** production host residuals (``compute_residuals_simple``)
 use Taylor emission spin for TRACK −2 / absent TRACK; this module uses native
@@ -352,7 +348,7 @@ def _compute_residual_delta_jax(
                     "tempo2 native residual_delta requires native_chain_static on "
                     "GeneralFitSetup. Rebuild from a residual cache that includes "
                     "term_diagnostics (e.g. call compute_residuals before "
-                    "export_jax_timing_state). "
+                    "export_frozen_residual_model). "
                     "Set tempo2_native to fixed_state_stripped (default), "
                     "fixed_state_bclt, staged_bclt, or full."
                 )
@@ -646,72 +642,28 @@ def compute_full_model_residuals_tempo2_native(
     return np.asarray(ref_residuals_sec, dtype=np.float64) + delta_sec
 
 
-def compute_autodiff_designmatrix_from_setup(
+def _simplified_residual_jacobian_oracle(
     setup: "GeneralFitSetup",
     fit_params: Sequence[str],
-    *,
-    include_offset_column: bool = False,
 ) -> np.ndarray:
-    """Build JUG's public design matrix as ``-jacfwd(residual_delta)(0)``.
+    """J_fit of the simplified centered residual graph (test oracle only).
 
-    Uses the simplified (PINT-style Taylor) residual delta path (delay_model="simplified")
-    so design matrix construction does not require tempo2 native_chain_static or
-    term_diagnostics['tempo2_obs_state']. Native full-graph differentiation is
-    still available for other uses.
-    """
-    fit_params = tuple(str(name).upper() for name in fit_params)
-    _, _, jac_fn = _prepare_residual_delta_jax(setup=setup, fit_params=fit_params, delay_model="simplified")
-    zero = jnp.zeros((len(fit_params),), dtype=jnp.float64)
-    jac_native = np.asarray(jac_fn(zero), dtype=np.float64)
-
-    cols = []
-    for col, param in enumerate(fit_params):
-        public_native_col = -jac_native[:, col]
-        cols.append(
-            np.asarray(
-                native_derivative_to_fit_column(param, public_native_col),
-                dtype=np.float64,
-            )
-        )
-    n_toa = len(np.asarray(setup.tdb_mjd))
-    if include_offset_column:
-        offset = np.full((n_toa,), -1.0, dtype=np.float64)
-        return np.column_stack([offset] + cols) if cols else offset.reshape(-1, 1)
-    return np.column_stack(cols) if cols else np.empty((n_toa, 0), dtype=np.float64)
-
-
-def compute_simplified_autodiff_designmatrix_from_setup(
-    setup: "GeneralFitSetup",
-    fit_params: Sequence[str],
-    *,
-    include_offset_column: bool = False,
-) -> np.ndarray:
-    """Jacobian of the PINT-style Taylor residual delta (test oracle for analytic columns).
-
-    Uses ``compute_total_delay_change`` + ``_phase_residual_delta_jax`` regardless of
-    ``compatibility`` or ``tempo2_native``.  Does not require ``native_chain_static``.
+    Returns the residual Jacobian (positive sign, fit-unit columns) of the
+    PINT-style Taylor graph, ignoring ``compatibility``/``tempo2_native``.
+    Exists to validate analytic derivative blocks and graph traceability;
+    never imported by production code. Tests compare it as
+    J_fit ≈ -C(M_analytic) for certified parameters.
     """
     fit_params = tuple(str(name).upper() for name in fit_params)
     _, _, jac_fn = _prepare_residual_delta_jax(
-        setup=setup,
-        fit_params=fit_params,
-        delay_model="simplified",
+        setup=setup, fit_params=fit_params, delay_model="simplified"
     )
     zero = jnp.zeros((len(fit_params),), dtype=jnp.float64)
     jac_native = np.asarray(jac_fn(zero), dtype=np.float64)
-
-    cols = []
-    for col, param in enumerate(fit_params):
-        public_native_col = -jac_native[:, col]
-        cols.append(
-            np.asarray(
-                native_derivative_to_fit_column(param, public_native_col),
-                dtype=np.float64,
-            )
+    return np.column_stack([
+        np.asarray(
+            native_derivative_to_fit_column(param, jac_native[:, col]),
+            dtype=np.float64,
         )
-    n_toa = len(np.asarray(setup.tdb_mjd))
-    if include_offset_column:
-        offset = np.full((n_toa,), -1.0, dtype=np.float64)
-        return np.column_stack([offset] + cols) if cols else offset.reshape(-1, 1)
-    return np.column_stack(cols) if cols else np.empty((n_toa, 0), dtype=np.float64)
-
+        for col, param in enumerate(fit_params)
+    ]) if fit_params else np.empty((len(np.asarray(setup.tdb_mjd)), 0))

@@ -20,7 +20,6 @@ import numpy as np
 
 from jug.fitting.jax_residual_delta import (
     _prepare_residual_delta_jax,
-    compute_autodiff_designmatrix_from_setup,
     make_residual_delta_jax_fn,
 )
 from jug.fitting.optimized_fitter import GeneralFitSetup
@@ -229,7 +228,7 @@ def benchmark_graph_mode_on_setup(
     t_wls = time.perf_counter()
     with patch.object(jrd, "build_delta_pack_for_setup", side_effect=counting_pack):
         make_residual_delta_jax_fn(setup=setup, fit_params=fit_params)
-        compute_autodiff_designmatrix_from_setup(setup=setup, fit_params=fit_params)
+        _prepare_residual_delta_jax(setup=setup, fit_params=fit_params)
     wls_autodiff_path_sec = time.perf_counter() - t_wls
 
     t_cache = time.perf_counter()

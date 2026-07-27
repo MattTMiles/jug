@@ -9,12 +9,10 @@ pytest.importorskip("pytempo")
 
 import jax.numpy as jnp
 
-from jug.fitting.jax_residual_delta import (
-    compute_autodiff_designmatrix_from_setup,
-    make_residual_delta_jax_fn,
-)
+from jug.fitting.jax_residual_delta import make_residual_delta_jax_fn
 from jug.fitting.optimized_fitter import _build_general_fit_setup_from_files
 from tempo2_fixtures import get_tempo2_fixture
+from tempo2_test_helpers import residual_jacobian_fit_from_setup
 
 pytestmark = [pytest.mark.tempo2]
 
@@ -28,7 +26,6 @@ def _tempo2_setup(fixture_id: str, fit_params: list[str], *, tempo2_native: str 
         clock_dir=None,
         verbose=False,
         compatibility="tempo2",
-        design_matrix_method="autodiff",
         tempo2_native=tempo2_native,
     )
 
@@ -36,7 +33,9 @@ def _tempo2_setup(fixture_id: str, fit_params: list[str], *, tempo2_native: str 
 def _assert_column_nonzero(setup, fit_params: list[str], param: str):
     if setup.native_chain_static is None:
         pytest.skip("native_chain_static unavailable")
-    matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    matrix = residual_jacobian_fit_from_setup(
+        setup, fit_params, delay_model="native"
+    )
     col = matrix[:, fit_params.index(param)]
     assert np.all(np.isfinite(col)), f"{param} autodiff column is not finite"
     assert float(np.max(np.abs(col))) > 0.0, f"{param} autodiff column is all zero"

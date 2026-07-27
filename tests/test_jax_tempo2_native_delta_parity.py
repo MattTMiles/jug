@@ -13,7 +13,7 @@ def test_native_delta_module_importable():
     from jug.fitting import jax_residual_delta
 
     assert hasattr(jax_residual_delta, "make_residual_delta_jax_fn")
-    assert hasattr(jax_residual_delta, "compute_autodiff_designmatrix_from_setup")
+    assert hasattr(jax_residual_delta, "make_residual_delta_jax_fn")
 
 
 def test_native_delta_phase5_gates_documented():

@@ -57,7 +57,7 @@ Pass ``tempo2_native="full"`` on the session under test (or via test helpers in
 
 ### Notebook integration
 
-`export_jax_timing_state` needs a `TimingSession` cache that includes
+`export_frozen_residual_model` needs a `TimingSession` cache that includes
 `term_diagnostics['tempo2_obs_state']`. After JUG upgrades, call
 `compute_residuals(force_recompute=True)` on tempo2 sessions before binding NTM autodiff.
 

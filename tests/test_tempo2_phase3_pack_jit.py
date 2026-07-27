@@ -14,9 +14,9 @@ pytestmark = [pytest.mark.tempo2, pytest.mark.dev_oracle]
 
 from jug.fitting.jax_residual_delta import (
     _prepare_residual_delta_jax,
-    compute_autodiff_designmatrix_from_setup,
     make_residual_delta_jax_fn,
 )
+from tempo2_test_helpers import residual_jacobian_fit_from_setup
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.residuals.tempo2.delta_pack import (
     build_delta_pack_for_setup,
@@ -75,9 +75,12 @@ def test_shared_jit_residual_and_jacfwd_agree(wsrt167_setup):
     r1 = np.asarray(fn(zero), dtype=np.float64)
     assert np.allclose(r0, r1, rtol=0, atol=0)
 
-    dm = compute_autodiff_designmatrix_from_setup(setup=setup, fit_params=fit_params)
-    assert dm.shape == (len(setup.tdb_mjd), 1)
-    assert np.allclose(-jac[:, 0], dm[:, 0], rtol=0, atol=0)
+    j_fit = residual_jacobian_fit_from_setup(
+        setup, fit_params, delay_model="native"
+    )
+    assert j_fit.shape == (len(setup.tdb_mjd), 1)
+    # fit-unit scale for F0 is identity; J matches jacfwd
+    assert np.allclose(jac[:, 0], j_fit[:, 0], rtol=0, atol=0)
 
 
 def test_prepare_residual_delta_jax_session_cache(wsrt167_setup):
@@ -97,15 +100,16 @@ def test_prepare_residual_delta_jax_session_cache(wsrt167_setup):
         side_effect=counting,
     ):
         make_residual_delta_jax_fn(setup=setup, fit_params=fit_params)
-        compute_autodiff_designmatrix_from_setup(setup=setup, fit_params=fit_params)
+        residual_jacobian_fit_from_setup(
+            setup, fit_params, delay_model="native"
+        )
 
     assert len(pack_calls) == 1
     assert setup.residual_delta_jax_cache is not None
-    # Since 47d27ac the public design matrix runs delay_model="simplified"
-    # while the residual fn stays "native": two cache entries, one pack build.
-    assert len(setup.residual_delta_jax_cache) == 2
+    # Residual fn and native Jacobian share one cached bundle.
+    assert len(setup.residual_delta_jax_cache) == 1
     delay_models = {key[4] for key in setup.residual_delta_jax_cache}
-    assert delay_models == {"native", "simplified"}
+    assert delay_models == {"native"}
 
 
 def test_wsrt167_graph_timing_f0(

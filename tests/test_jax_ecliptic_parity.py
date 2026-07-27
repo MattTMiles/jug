@@ -11,9 +11,10 @@ import pytest
 
 from jug.fitting.derivatives_astrometry import compute_astrometric_delay
 from jug.fitting.jax_residual_delta import (
-    compute_autodiff_designmatrix_from_setup,
+    _simplified_residual_jacobian_oracle,
     make_residual_delta_jax_fn,
 )
+from jug.utils.units import native_derivative_to_fit_column
 from jug.fitting.optimized_fitter import (
     GeneralFitSetup,
     _compute_full_model_residuals,
@@ -25,7 +26,7 @@ from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 PICOSECOND = 1.0e-12
 
 
-def _base_setup(*, fit_params: list[str], method: str = "autodiff") -> GeneralFitSetup:
+def _base_setup(*, fit_params: list[str]) -> GeneralFitSetup:
     tdb_mjd = np.array([55000.0, 55000.25, 55000.5, 55000.75, 55001.0], dtype=float)
     freq_mhz = np.array([820.0, 900.0, 1100.0, 1400.0, 1600.0], dtype=float)
     errors_us = np.full(len(tdb_mjd), 1.0, dtype=float)
@@ -36,7 +37,6 @@ def _base_setup(*, fit_params: list[str], method: str = "autodiff") -> GeneralFi
         fit_param_list=list(fit_params),
         compatibility="pint",
         fd_column_mode="delay_only",
-        design_matrix_method=method,
         param_values_start=[float(params.get(p, 0.0)) for p in fit_params],
         toas_mjd=tdb_mjd,
         freq_mhz=freq_mhz,
@@ -173,12 +173,12 @@ def _numpy_residual_delta(setup, fit_params, ref_params, ref_theta, delta):
 
 
 @pytest.mark.parametrize("family", ["elong", "lambda"])
-def test_autodiff_ecliptic_columns_nonzero(family):
+def test_oracle_ecliptic_columns_nonzero(family):
     setup, fit_params, _, _ = _ecliptic_astrometry_setup(family=family)
-    matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    matrix = _simplified_residual_jacobian_oracle(setup, fit_params)
     for idx, name in enumerate(fit_params):
         norm = np.linalg.norm(matrix[:, idx])
-        assert norm > 0.0, f"{name} autodiff column is all-zero"
+        assert norm > 0.0, f"{name} residual-Jacobian column is all-zero"
 
 
 @pytest.mark.parametrize("family", ["elong", "lambda"])
@@ -248,14 +248,14 @@ def test_jacfwd_matches_numpy_fd_ecliptic(family):
 
 
 @pytest.mark.parametrize("family", ["elong", "lambda"])
-def test_autodiff_matrix_matches_jacfwd_ecliptic(family):
-    """Public autodiff design columns must match -jacfwd in fit units.
+def test_oracle_matches_jacfwd_ecliptic(family):
+    """Oracle J_fit columns must match jacfwd in fit units.
 
     Guards BUG 002: LAMBDA/BETA must not inherit RAJ/DECJ hourangle/radian
-    scales when exporting design-matrix columns.
+    scales when exporting residual-Jacobian columns.
     """
     setup, fit_params, ref_theta, ref_params = _ecliptic_astrometry_setup(family=family)
-    matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    matrix = _simplified_residual_jacobian_oracle(setup, fit_params)
     residual_fn = make_residual_delta_jax_fn(
         setup=setup,
         fit_params=fit_params,
@@ -265,7 +265,9 @@ def test_autodiff_matrix_matches_jacfwd_ecliptic(family):
     jac = np.asarray(jax.jacfwd(residual_fn)(jnp.zeros(len(fit_params))))
     for idx, name in enumerate(fit_params):
         exported = np.asarray(matrix[:, idx], dtype=float)
-        raw = -np.asarray(jac[:, idx], dtype=float)
+        raw = np.asarray(
+            native_derivative_to_fit_column(name, jac[:, idx]), dtype=float
+        )
         exported_ms = exported - np.mean(exported)
         raw_ms = raw - np.mean(raw)
         denom = np.linalg.norm(exported_ms)
@@ -276,14 +278,14 @@ def test_autodiff_matrix_matches_jacfwd_ecliptic(family):
             1.0,
             rtol=1.0e-8,
             atol=1.0e-8,
-            err_msg=f"{name}: design/jac scale mismatch (got {ratio})",
+            err_msg=f"{name}: J_fit/jac scale mismatch (got {ratio})",
         )
         np.testing.assert_allclose(
             exported,
             raw,
             rtol=1.0e-10,
             atol=1.0e-15,
-            err_msg=f"{name}: autodiff design != -jacfwd",
+            err_msg=f"{name}: oracle J_fit != jacfwd(fit units)",
         )
 
 

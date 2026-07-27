@@ -78,10 +78,7 @@ def test_timing_session_stores_numeric_raj_decj(tempo2_fixture):
     assert isinstance(session.params["DECJ"], float)
 
 
-@pytest.mark.parametrize("design_matrix_method", ["analytic", "autodiff"])
-def test_cached_session_designmatrix_accepts_hms_parfile(
-    tempo2_fixture, design_matrix_method
-):
+def test_cached_session_designmatrix_accepts_hms_parfile(tempo2_fixture):
     session = TimingSession(
         tempo2_fixture["par_path"],
         tempo2_fixture["tim_path"],
@@ -114,7 +111,6 @@ def test_cached_session_designmatrix_accepts_hms_parfile(
         dict(session.params),
         ["RAJ"],
         compatibility="tempo2",
-        design_matrix_method=design_matrix_method,
     )
     matrix = _compute_designmatrix_from_setup(setup, ["RAJ"])
 

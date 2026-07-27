@@ -19,7 +19,7 @@ from jug.fitting.derivatives_dd import (
     _compute_kopeikin_corrections_traceable,
     resolve_kopeikin_flags,
 )
-from jug.fitting.jax_residual_delta import compute_autodiff_designmatrix_from_setup
+from jug.fitting.jax_residual_delta import _simplified_residual_jacobian_oracle
 
 
 MAS_TO_RAD = np.pi / 180.0 / 3600.0 / 1000.0
@@ -66,7 +66,7 @@ def test_autodiff_design_matrix_px_zero_nonzero_column():
     from test_designmatrix_autodiff import _setup
 
     fit_params = ["PX"]
-    setup = _setup(["F0"], method="autodiff")
+    setup = _setup(["F0"])
     n = len(setup.tdb_mjd)
     params = dict(setup.params)
     params.update(
@@ -92,7 +92,7 @@ def test_autodiff_design_matrix_px_zero_nonzero_column():
         spin_params=[],
         initial_dm_delay=None,
     )
-    matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    matrix = _simplified_residual_jacobian_oracle(setup, fit_params)
     assert np.linalg.norm(matrix[:, fit_params.index("PX")]) > 0.0
 
 

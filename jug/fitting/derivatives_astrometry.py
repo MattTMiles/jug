@@ -745,19 +745,19 @@ def compute_astrometry_derivatives(
     ssb_obs_pos: jnp.ndarray,
     fit_params: List[str],
 ) -> Dict[str, jnp.ndarray]:
-    """Compute astrometry parameter derivatives for the design matrix.
-    
-    The design matrix contains d(residual)/d(param) where residual = observed - model.
-    
+    """Compute astrometry parameter derivatives for the fitter basis M.
+
+    Sign contract for the assembled design matrix:
+    ``r(theta + delta) ~= r(theta) - M @ delta``. Columns are
+    ``+d(delay)/d(param)`` in seconds per fitter-internal unit (matching PINT).
+
     In pulsar timing:
     - PINT subtracts delay from TDB: t_model = t_tdb - delay
     - JUG adds delay to dt: dt = ... + delay + ...
-    
+
     Since PINT's delay and JUG's delay have the same sign (both negative for Roemer),
-    the convention difference means:
-    - PINT: M = +d(delay)/d(param)  
-    - JUG: M = +d(delay)/d(param)  (match PINT for consistent fitting)
-    
+    both engines use ``M = +d(delay)/d(param)``.
+
     Parameters
     ----------
     params : Dict
@@ -771,13 +771,13 @@ def compute_astrometry_derivatives(
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
     fit_params : List[str]
         List of parameters to compute derivatives for
-        
+
     Returns
     -------
     derivatives : Dict[str, jnp.ndarray]
         Dictionary mapping parameter names to derivative arrays.
         Each array has shape (n_toas,).
-        Units: d(residual)/d(param) in seconds per fitter-internal unit
+        Units: seconds per fitter-internal unit (fitter basis columns)
         - RAJ: seconds/radian  (fitter stores RAJ in radians)
         - DECJ: seconds/radian  (fitter stores DECJ in radians)
         - PMRA/PMDEC: seconds/(mas/year)

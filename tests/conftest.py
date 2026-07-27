@@ -114,14 +114,12 @@ def wsrt167_fit_setup_factory(wsrt167_params, wsrt167_session_cache):
         fit_params,
         *,
         tempo2_native: str | None = "staged_bclt",
-        design_matrix_method: str = "autodiff",
     ):
         setup = build_fit_setup_from_jug_cache(
             params=wsrt167_params,
             session_cached_data=wsrt167_session_cache,
             fit_params=list(fit_params),
             tempo2_native=tempo2_native,
-            design_matrix_method=design_matrix_method,
         )
         setup.residual_delta_jax_cache = None
         return setup

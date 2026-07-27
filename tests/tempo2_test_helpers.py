@@ -56,7 +56,6 @@ def build_fit_setup_from_jug_cache(
     session_cached_data: dict,
     fit_params: list[str],
     compatibility: str = "tempo2",
-    design_matrix_method: str = "autodiff",
     tempo2_native: str | None = None,
     tempo2_jug_options: dict | None = None,
 ):
@@ -68,7 +67,6 @@ def build_fit_setup_from_jug_cache(
         params,
         list(fit_params),
         compatibility=compatibility,
-        design_matrix_method=design_matrix_method,
         tempo2_native=tempo2_native,
         tempo2_jug_options=tempo2_jug_options,
     )
@@ -109,7 +107,6 @@ def build_fit_setup_for_fixture(
     fit_params: list[str],
     *,
     tempo2_native: str | None = "staged_bclt",
-    design_matrix_method: str = "autodiff",
     tempo2_jug_options: dict | None = None,
 ):
     """Build ``GeneralFitSetup`` from one host residual pass on any fixture."""
@@ -133,7 +130,6 @@ def build_fit_setup_for_fixture(
         session_cached_data=cache,
         fit_params=list(fit_params),
         tempo2_native=tempo2_native,
-        design_matrix_method=design_matrix_method,
         tempo2_jug_options=tempo2_jug_options,
     )
 
@@ -168,3 +164,40 @@ def rms_cm(a_ls, b_ls) -> float:
 
     diff = np.asarray(a_ls, dtype=np.float64) - np.asarray(b_ls, dtype=np.float64)
     return float(np.sqrt(np.mean(np.sum(diff**2, axis=-1))) * C_KM_S * 100)
+
+
+def residual_jacobian_fit_from_setup(
+    setup,
+    fit_params,
+    *,
+    delay_model: str = "native",
+):
+    """J_fit of the selected residual graph (test helper).
+
+    Mirrors ``_simplified_residual_jacobian_oracle`` but honors ``delay_model``
+    so tempo2 native-graph tests can request ``delay_model="native"``.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+
+    from jug.fitting.jax_residual_delta import _prepare_residual_delta_jax
+    from jug.utils.units import native_derivative_to_fit_column
+
+    fit_params = tuple(str(name).upper() for name in fit_params)
+    _, _, jac_fn = _prepare_residual_delta_jax(
+        setup=setup, fit_params=fit_params, delay_model=delay_model
+    )
+    zero = jnp.zeros((len(fit_params),), dtype=jnp.float64)
+    jac_native = np.asarray(jac_fn(zero), dtype=np.float64)
+    if not fit_params:
+        return np.empty((len(np.asarray(setup.tdb_mjd)), 0), dtype=np.float64)
+    return np.column_stack(
+        [
+            np.asarray(
+                native_derivative_to_fit_column(param, jac_native[:, col]),
+                dtype=np.float64,
+            )
+            for col, param in enumerate(fit_params)
+        ]
+    )
+

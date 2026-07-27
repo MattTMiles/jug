@@ -11,8 +11,8 @@ pytestmark = [pytest.mark.dev_oracle, pytest.mark.tempo2]
 import jax
 import jax.numpy as jnp
 
+from tempo2_test_helpers import residual_jacobian_fit_from_setup
 from jug.fitting.jax_residual_delta import (
-    compute_autodiff_designmatrix_from_setup,
     make_residual_delta_jax_fn,
 )
 from tempo2_fixture_assertions import assert_column_matches, tempo2_to_pint_vela_scale
@@ -173,7 +173,7 @@ def test_native_autodiff_designmatrix_f0_matches_libstempo(wsrt167_setup):
     fixture = load_wsrt167_fixture()
     from jug.testing.tempo2_reference import tempo2_reference
 
-    matrix = compute_autodiff_designmatrix_from_setup(setup, ["F0"])
+    matrix = -residual_jacobian_fit_from_setup(setup, ["F0"], delay_model="native")
     ref = tempo2_reference(
         fixture["par_path"],
         fixture["tim_path"],
@@ -280,7 +280,7 @@ def test_native_autodiff_designmatrix_column_matches_libstempo(
     fixture = load_wsrt167_fixture()
     from jug.testing.tempo2_reference import tempo2_reference
 
-    matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    matrix = -residual_jacobian_fit_from_setup(setup, fit_params, delay_model="native")
     ref = tempo2_reference(
         fixture["par_path"],
         fixture["tim_path"],
@@ -310,7 +310,7 @@ def test_fixed_state_autodiff_designmatrix_column_matches_libstempo(
     fixture = load_wsrt167_fixture()
     from jug.testing.tempo2_reference import tempo2_reference
 
-    matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    matrix = -residual_jacobian_fit_from_setup(setup, fit_params, delay_model="native")
     ref = tempo2_reference(
         fixture["par_path"],
         fixture["tim_path"],
@@ -340,7 +340,7 @@ def test_stripped_autodiff_designmatrix_column_matches_libstempo(
     fixture = load_wsrt167_fixture()
     from jug.testing.tempo2_reference import tempo2_reference
 
-    matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    matrix = -residual_jacobian_fit_from_setup(setup, fit_params, delay_model="native")
     ref = tempo2_reference(
         fixture["par_path"],
         fixture["tim_path"],
@@ -413,7 +413,7 @@ def test_binary_autodiff_designmatrix_column_matches_libstempo(epta_j1909_setup,
     fixture = get_tempo2_fixture("epta_j1909_t2")
     from jug.testing.tempo2_reference import tempo2_reference
 
-    matrix = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    matrix = -residual_jacobian_fit_from_setup(setup, fit_params, delay_model="native")
     ref = tempo2_reference(
         fixture["par_path"],
         fixture["tim_path"],
@@ -441,7 +441,7 @@ def test_addsat_autodiff_f0_matches_libstempo(epta_j0613_addsat_setup):
     fixture = get_tempo2_fixture("epta_j0613_addsat_min")
     from jug.testing.tempo2_reference import tempo2_reference
 
-    matrix = compute_autodiff_designmatrix_from_setup(setup, ["F0"])
+    matrix = -residual_jacobian_fit_from_setup(setup, ["F0"], delay_model="native")
     ref = tempo2_reference(
         fixture["par_path"],
         fixture["tim_path"],

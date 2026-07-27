@@ -328,7 +328,7 @@ def test_orthometric_fd_parity_and_residual_deltas(stig_key):
             jad, jfd, rtol=2e-5, atol=1e-30 + 1e-6 * np.max(np.abs(jad))
         )
 
-    base = _setup(["F0"], method="autodiff")
+    base = _setup(["F0"])
     n = len(base.tdb_mjd)
     obs = 1e-3 * (1.0 + np.arange(3 * n, dtype=float)).reshape(n, 3)
     prebinary = np.zeros(n)

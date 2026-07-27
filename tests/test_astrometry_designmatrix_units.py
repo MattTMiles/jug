@@ -173,7 +173,7 @@ def test_astrometry_forward_perturbation_matches_column(fixture, compatibility, 
         [param],
         compatibility=compatibility,
     )
-    assert dm.column_units == [column_unit(param)]
+    assert dm.column_units == (column_unit(param),)
     assert dm.unit_convention == "pint-vela"
 
     column = np.asarray(dm.matrix[:, 0], dtype=np.float64)
@@ -208,7 +208,7 @@ def test_pint_backend_reports_unit_metadata(fixture):
     )
 
     assert dm.unit_convention == "pint-vela"
-    assert dm.labels == fit_params
-    assert dm.column_units == validate_column_units(fit_params)
+    assert dm.labels == tuple(fit_params)
+    assert dm.column_units == tuple(validate_column_units(fit_params))
     for label, unit_str in zip(dm.labels, dm.column_units):
         assert unit_str == column_unit(label)

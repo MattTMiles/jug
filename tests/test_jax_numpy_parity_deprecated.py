@@ -129,7 +129,7 @@ def _assert_jax_numpy_parity_deprecated(
 
 def _equatorial_astrometry_setup():
     fit_params = ["RAJ", "DECJ", "PMRA", "PMDEC", "PX"]
-    base = _setup(["F0"], method="autodiff")
+    base = _setup(["F0"])
     n = len(base.tdb_mjd)
     params = dict(base.params)
     params.update(
@@ -167,14 +167,14 @@ def _equatorial_astrometry_setup():
 # TEMPORARY: remove with residual_delta_np
 def test_deprecated_parity_spin():
     fit_params = ["F0", "F1"]
-    setup = _setup(fit_params, method="autodiff")
+    setup = _setup(fit_params)
     _assert_jax_numpy_parity_deprecated(setup, fit_params)
 
 
 # TEMPORARY: remove with residual_delta_np
 def test_deprecated_parity_dm():
     fit_params = ["DM"]
-    setup = _setup(fit_params, method="autodiff")
+    setup = _setup(fit_params)
     _assert_jax_numpy_parity_deprecated(setup, fit_params)
 
 
@@ -200,5 +200,5 @@ def test_deprecated_parity_astrometry_ecliptic(family):
 # TEMPORARY: remove with residual_delta_np
 @pytest.mark.parametrize("case", list(BINARY_CASES))
 def test_deprecated_parity_binary(case):
-    setup, fit_params = _binary_setup(case, method="autodiff")
+    setup, fit_params = _binary_setup(case)
     _assert_jax_numpy_parity_deprecated(setup, fit_params)

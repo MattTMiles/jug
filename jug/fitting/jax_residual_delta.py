@@ -1,15 +1,11 @@
-"""JAX residual deltas and autodiff timing design matrices.
+"""JAX residual deltas for nonlinear timing likelihoods.
 
-This module owns the differentiable residual path used by
-``design_matrix_method="autodiff"``.  The design matrix is the Jacobian of the
-same nonlinear residual-delta function used for JAX-native timing likelihoods;
-there are no finite-difference perturbations and no hand-written derivative
-columns in this path.
-
-**Analytic design matrices** (default WLS) use PINT-style simplified tangents via
-``designmatrix_assembly.py``. The test oracle
-``compute_simplified_autodiff_designmatrix_from_setup`` differentiates the same
-Taylor ``compute_total_delay_change`` + ``_phase_residual_delta_jax`` path.
+``make_residual_delta_jax_fn`` returns the centered residual-delta function
+for the session-selected graph (simplified PINT-style Taylor, or the native
+tempo2 graph named by ``setup.tempo2_native``). Residual Jacobians are its
+``jacfwd``; see ``jug.fitting.residual_model``. The analytic fitter basis
+lives in ``designmatrix_assembly`` and is a different object (see
+feature_designmatrix_naming_conventions.md).
 """
 
 from __future__ import annotations
@@ -477,43 +473,26 @@ def make_residual_delta_jax_fn(
     return residual_fn
 
 
-def compute_autodiff_designmatrix_from_setup(
+def _simplified_residual_jacobian_oracle(
     setup: "GeneralFitSetup",
     fit_params: Sequence[str],
-    *,
-    include_offset_column: bool = False,
 ) -> np.ndarray:
-    """Build JUG's public design matrix as ``-jacfwd(residual_delta)(0)``."""
+    """J_fit of the simplified centered residual graph (test oracle only).
+
+    Returns the residual Jacobian (positive sign, fit-unit columns) of the
+    PINT-style Taylor graph, ignoring ``compatibility``/``tempo2_native``.
+    Exists to validate analytic derivative blocks and graph traceability;
+    never imported by production code. Tests compare it as
+    J_fit ≈ -C(M_analytic) for certified parameters.
+    """
     fit_params = tuple(str(name).upper() for name in fit_params)
     _, _, jac_fn = _prepare_residual_delta_jax(setup=setup, fit_params=fit_params)
     zero = jnp.zeros((len(fit_params),), dtype=jnp.float64)
     jac_native = np.asarray(jac_fn(zero), dtype=np.float64)
-
-    cols = []
-    for col, param in enumerate(fit_params):
-        public_native_col = -jac_native[:, col]
-        cols.append(
-            np.asarray(
-                native_derivative_to_fit_column(param, public_native_col),
-                dtype=np.float64,
-            )
+    return np.column_stack([
+        np.asarray(
+            native_derivative_to_fit_column(param, jac_native[:, col]),
+            dtype=np.float64,
         )
-    n_toa = len(np.asarray(setup.tdb_mjd))
-    if include_offset_column:
-        offset = np.full((n_toa,), -1.0, dtype=np.float64)
-        return np.column_stack([offset] + cols) if cols else offset.reshape(-1, 1)
-    return np.column_stack(cols) if cols else np.empty((n_toa, 0), dtype=np.float64)
-
-
-def compute_simplified_autodiff_designmatrix_from_setup(
-    setup: "GeneralFitSetup",
-    fit_params: Sequence[str],
-    *,
-    include_offset_column: bool = False,
-) -> np.ndarray:
-    """Jacobian of the PINT-style Taylor residual delta (test oracle for analytic columns)."""
-    return compute_autodiff_designmatrix_from_setup(
-        setup,
-        fit_params,
-        include_offset_column=include_offset_column,
-    )
+        for col, param in enumerate(fit_params)
+    ]) if fit_params else np.empty((len(np.asarray(setup.tdb_mjd)), 0))

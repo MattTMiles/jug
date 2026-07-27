@@ -138,16 +138,16 @@ This portable build supports a single compatibility family:
 > compatibility' means (and does not)".
 
 **Nonlinear / autodiff / notebook integrators:** green residual tests on curated
-fixtures validate the PINT-family Taylor `forward_delay` path and JAX autodiff
-design matrices. For notebook workflows that export differentiable timing state,
-call `session.compute_residuals(...)` first, then build fit setups from the
-cached host state via `export_jax_timing_state` (or equivalent session helpers).
-
-**Design matrices:** default WLS uses `design_matrix_method="analytic"` (PINT-style
-simplified tangents). Set `design_matrix_method="autodiff"` for
-`jacfwd(residual_delta)` through the Taylor JAX residual graph.
+fixtures validate the PINT-family Taylor `forward_delay` path and its JAX
+residual-delta graph. The analytic fitter basis `M` (`compute_designmatrix`) and
+the residual Jacobian `J` (`FrozenResidualModel.residual_jacobian_native`) are
+different objects: `r(theta+delta) ~= r(theta) - M @ delta`, while
+`J = jacfwd(residual_delta)(0)`. For notebook workflows that export a frozen
+residual model, call `session.compute_residuals(...)` first, then
+`export_frozen_residual_model` (Phase B on `tempo2-dev`; residual deltas are
+already available via `make_residual_delta_jax_fn` on this branch).
 Remaining: `ppta_j1741_ell1` host debt (~5.5 ns), `J0900-3144` TDB probe, model-epoch
-IFTE batCorr scalar (~272 ns, pinned), and `full` autodiff columns.
+IFTE batCorr scalar (~272 ns, pinned), and fuller residual-Jacobian coverage.
 Details: [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
 
 Test-data policy, provenance, and fixture-size guidance live in
@@ -155,10 +155,11 @@ Test-data policy, provenance, and fixture-size guidance live in
 
 ### Design-matrix unit convention
 
-`compute_designmatrix()` exports columns as `d(residual)/d(param)` in seconds
-per parameter unit using a PINT/Vela-compatible unit vocabulary
-(`str(PINT param.units)` style). The returned `DesignMatrixResult.column_units`
-are parseable Astropy unit strings.
+`compute_designmatrix()` returns the raw analytic fitter basis `M` with sign
+contract `r(theta+delta) ~= r(theta) - M @ delta`, in seconds per parameter unit
+using a PINT/Vela-compatible unit vocabulary (`str(PINT param.units)` style).
+The returned `DesignMatrixResult.column_units` are parseable Astropy unit
+strings. Residual Jacobians are never returned under a design-matrix name.
 
 When comparing against raw Tempo2/libstempo design matrices, apply the explicit
 unit translation first (for example RAJ/DECJ are exported as hourangle/deg

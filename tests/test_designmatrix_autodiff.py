@@ -1,4 +1,4 @@
-"""Tests for true JAX autodiff design-matrix assembly."""
+"""Tests for residual-Jacobian oracle vs analytic fitter basis."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from jug.fitting.binary_registry import compute_binary_delay
 from jug.fitting.forward_delay import compute_total_delay_change
 from jug.fitting.jax_residual_delta import (
-    compute_autodiff_designmatrix_from_setup,
+    _simplified_residual_jacobian_oracle,
     make_residual_delta_jax_fn,
 )
 from jug.fitting.optimized_fitter import (
@@ -20,7 +20,7 @@ from jug.fitting.optimized_fitter import (
 from jug.utils.constants import K_DM_SEC, SECS_PER_DAY
 
 
-def _setup(fit_params, *, method="analytic"):
+def _setup(fit_params):
     tdb_mjd = np.array([55000.0, 55000.25, 55000.5, 55000.75, 55001.0], dtype=float)
     freq_mhz = np.array([820.0, 900.0, 1100.0, 1400.0, 1600.0], dtype=float)
     errors_us = np.full(len(tdb_mjd), 1.0, dtype=float)
@@ -38,7 +38,6 @@ def _setup(fit_params, *, method="analytic"):
         fit_param_list=list(fit_params),
         compatibility="pint",
         fd_column_mode="delay_only",
-        design_matrix_method=method,
         param_values_start=[float(params.get(p, 0.0)) for p in fit_params],
         toas_mjd=tdb_mjd,
         freq_mhz=freq_mhz,
@@ -98,7 +97,7 @@ def _setup(fit_params, *, method="analytic"):
 
 def test_residual_delta_jax_zero_is_zero():
     fit_params = ["F0", "DM"]
-    setup = _setup(fit_params, method="autodiff")
+    setup = _setup(fit_params)
     residual_fn = make_residual_delta_jax_fn(setup=setup, fit_params=fit_params)
 
     delta = np.asarray(residual_fn(jnp.zeros(len(fit_params), dtype=jnp.float64)))
@@ -106,35 +105,36 @@ def test_residual_delta_jax_zero_is_zero():
     np.testing.assert_allclose(delta, 0.0, atol=1.0e-14, rtol=0.0)
 
 
-def test_autodiff_matrix_builder_does_not_call_full_model_residuals(monkeypatch):
+def test_simplified_oracle_does_not_call_full_model_residuals(monkeypatch):
     fit_params = ["F0", "DM"]
-    setup = _setup(fit_params, method="autodiff")
+    setup = _setup(fit_params)
 
     def fail_full_model_residuals(*args, **kwargs):
-        raise AssertionError("autodiff design matrix must not call host residuals")
+        raise AssertionError("residual Jacobian oracle must not call host residuals")
 
     monkeypatch.setattr(
         "jug.fitting.optimized_fitter._compute_full_model_residuals",
         fail_full_model_residuals,
     )
 
-    matrix = _compute_designmatrix_from_setup(setup, fit_params)
+    matrix = _simplified_residual_jacobian_oracle(setup, fit_params)
 
     assert matrix.shape == (len(setup.tdb_mjd), len(fit_params))
     assert np.all(np.isfinite(matrix))
 
 
-def test_autodiff_matches_mean_projected_analytic_spin_dm():
+def test_simplified_oracle_matches_centered_analytic():
     fit_params = ["F0", "DM"]
-    analytic_setup = _setup(fit_params, method="analytic")
-    autodiff_setup = _setup(fit_params, method="autodiff")
+    setup = _setup(fit_params)
 
-    analytic = _compute_designmatrix_from_setup(analytic_setup, fit_params)
-    autodiff = compute_autodiff_designmatrix_from_setup(autodiff_setup, fit_params)
-    weights = np.asarray(analytic_setup.weights, dtype=np.float64)
-    analytic = analytic - (weights @ analytic) / weights.sum()
-
-    np.testing.assert_allclose(autodiff, analytic, rtol=2.0e-8, atol=1.0e-13)
+    analytic = _compute_designmatrix_from_setup(setup, fit_params)
+    j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
+    weights = np.asarray(setup.weights, dtype=np.float64)
+    for j in range(len(fit_params)):
+        centered = analytic[:, j] - (weights @ analytic[:, j]) / weights.sum()
+        np.testing.assert_allclose(
+            j_fit[:, j], -centered, rtol=2.0e-8, atol=1.0e-13
+        )
 
 
 @pytest.mark.tempo2
@@ -208,9 +208,9 @@ BINARY_FIT = {
 }
 
 
-def _binary_setup(case, method="autodiff"):
+def _binary_setup(case):
     fit_params = list(BINARY_FIT[case])
-    base = _setup(["F0"], method=method)
+    base = _setup(["F0"])
     n = len(base.tdb_mjd)
     params = dict(base.params)
     params.update(BINARY_CASES[case])
@@ -257,26 +257,27 @@ def test_np_vs_jax_delay_change_parity(case):
 
 
 @pytest.mark.parametrize("case", ["ELL1", "DD"])
-def test_autodiff_binary_column_matches_analytic(case):
-    setup, fit_params = _binary_setup(case, method="autodiff")
-    analytic = _compute_designmatrix_from_setup(_binary_setup(case, "analytic")[0], fit_params)
-    autodiff = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+def test_oracle_binary_column_matches_centered_analytic(case):
+    setup, fit_params = _binary_setup(case)
+    analytic = _compute_designmatrix_from_setup(setup, fit_params)
+    j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
     w = np.asarray(setup.weights)
-    analytic = analytic - (w @ analytic) / w.sum()
-    np.testing.assert_allclose(autodiff, analytic, rtol=2e-2, atol=1e-9)
+    for j in range(len(fit_params)):
+        centered = analytic[:, j] - (w @ analytic[:, j]) / w.sum()
+        np.testing.assert_allclose(j_fit[:, j], -centered, rtol=2e-2, atol=1e-9)
 
 
 def test_ddk_proper_motion_is_traceable():
-    setup, fit_params = _binary_setup("DDK_PM", method="autodiff")
-    mtx = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    setup, fit_params = _binary_setup("DDK_PM")
+    mtx = _simplified_residual_jacobian_oracle(setup, fit_params)
     for name in ("PMRA", "PMDEC"):
         col = mtx[:, fit_params.index(name)]
         assert np.linalg.norm(col) > 0.0, f"{name} column is all-zero -> PM not traced"
 
 
 def test_ddk_ecliptic_proper_motion_aliases_are_traceable():
-    setup, fit_params = _binary_setup("DDK_ECL_PM", method="autodiff")
-    mtx = compute_autodiff_designmatrix_from_setup(setup, fit_params)
+    setup, fit_params = _binary_setup("DDK_ECL_PM")
+    mtx = _simplified_residual_jacobian_oracle(setup, fit_params)
     for name in ("PMELONG", "PMELAT"):
         col = mtx[:, fit_params.index(name)]
         assert np.linalg.norm(col) > 0.0, f"{name} column is all-zero -> ecliptic PM alias not traced"
@@ -306,10 +307,10 @@ def test_epoch_in_fit_params_raises():
         _assert_no_epoch_fit_params(["F0", "DMEPOCH"])
 
 
-def test_side_channel_fd_autodiff_nonzero():
+def test_side_channel_fd_oracle_nonzero():
     from jug.fitting.derivatives_fd import compute_fd_delay
 
-    base = _setup(["F0"], method="autodiff")
+    base = _setup(["F0"])
     params = dict(base.params)
     params["FD1"] = -3.0e-5
     initial_fd = np.asarray(compute_fd_delay(base.freq_mhz, {"FD1": -3.0e-5}), dtype=np.float64)
@@ -324,13 +325,12 @@ def test_side_channel_fd_autodiff_nonzero():
         spin_params=[],
         initial_dm_delay=None,
     )
-    matrix = compute_autodiff_designmatrix_from_setup(setup, ["FD1"])
+    matrix = _simplified_residual_jacobian_oracle(setup, ["FD1"])
     assert float(np.max(np.abs(matrix[:, 0]))) > 0.0
 
 
-def test_side_channel_jump_autodiff_nonzero():
-    base = _setup(["F0"], method="autodiff")
-    n = len(base.tdb_mjd)
+def test_side_channel_jump_oracle_nonzero():
+    base = _setup(["F0"])
     mask = np.array([True, True, False, False, False])
     setup = dataclasses.replace(
         base,
@@ -342,14 +342,14 @@ def test_side_channel_jump_autodiff_nonzero():
         spin_params=[],
         initial_dm_delay=None,
     )
-    matrix = compute_autodiff_designmatrix_from_setup(setup, ["JUMP1"])
+    matrix = _simplified_residual_jacobian_oracle(setup, ["JUMP1"])
     col = matrix[:, 0]
     assert float(np.max(np.abs(col[mask]))) > 0.0
     assert float(np.max(np.abs(col))) > 0.0
 
 
-def test_side_channel_ne_sw_autodiff_nonzero():
-    base = _setup(["F0"], method="autodiff")
+def test_side_channel_ne_sw_oracle_nonzero():
+    base = _setup(["F0"])
     freq_mhz = np.asarray(base.freq_mhz, dtype=np.float64)
     sw_geom = np.linspace(0.1, 0.5, len(freq_mhz))
     initial_sw = K_DM_SEC * 7.9 * sw_geom / (freq_mhz ** 2)
@@ -365,13 +365,12 @@ def test_side_channel_ne_sw_autodiff_nonzero():
         spin_params=[],
         initial_dm_delay=None,
     )
-    matrix = compute_autodiff_designmatrix_from_setup(setup, ["NE_SW"])
+    matrix = _simplified_residual_jacobian_oracle(setup, ["NE_SW"])
     assert float(np.max(np.abs(matrix[:, 0]))) > 0.0
 
 
-def test_side_channel_dmx_autodiff_nonzero():
-    base = _setup(["F0"], method="autodiff")
-    n = len(base.tdb_mjd)
+def test_side_channel_dmx_oracle_nonzero():
+    base = _setup(["F0"])
     dmx_matrix = np.array(
         [
             [1.0, 0.0],
@@ -397,12 +396,12 @@ def test_side_channel_dmx_autodiff_nonzero():
         spin_params=[],
         initial_dm_delay=None,
     )
-    matrix = compute_autodiff_designmatrix_from_setup(setup, ["DMX_0001"])
+    matrix = _simplified_residual_jacobian_oracle(setup, ["DMX_0001"])
     assert float(np.max(np.abs(matrix[:, 0]))) > 0.0
 
 
-def test_side_channel_fdjump_autodiff_nonzero():
-    base = _setup(["F0"], method="autodiff")
+def test_side_channel_fdjump_oracle_nonzero():
+    base = _setup(["F0"])
     freq_mhz = np.asarray(base.freq_mhz, dtype=np.float64)
     mask = np.array([True, True, False, False, False])
     from jug.fitting.forward_delay import _fdjump_delay
@@ -427,6 +426,6 @@ def test_side_channel_fdjump_autodiff_nonzero():
         spin_params=[],
         initial_dm_delay=None,
     )
-    matrix = compute_autodiff_designmatrix_from_setup(setup, ["FDJUMP1"])
+    matrix = _simplified_residual_jacobian_oracle(setup, ["FDJUMP1"])
     col = matrix[:, 0]
     assert float(np.max(np.abs(col[mask]))) > 0.0

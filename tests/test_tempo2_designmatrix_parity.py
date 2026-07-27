@@ -68,7 +68,7 @@ def test_tempo2_designmatrix_column_parity_f0():
     assert jug.matrix.shape[0] == ref.ntoa
     assert "F0" in jug.labels
     assert jug.unit_convention == "pint-vela"
-    assert jug.column_units == validate_column_units(jug.labels)
+    assert jug.column_units == tuple(validate_column_units(list(jug.labels)))
     assert str(u.Unit(jug.column_units[0])) == str(u.Unit("s / Hz"))
     assert ref.designmatrix_labels == ["Offset", "F0"]
     np.testing.assert_allclose(jug.matrix[:, 0], ref.designmatrix[:, 1], rtol=0.0, atol=0.02)
@@ -110,9 +110,9 @@ def test_tempo2_designmatrix_columns_match_libstempo(fixture_id):
     assert ref.designmatrix is not None
     assert ref.designmatrix_labels is not None
     assert jug.matrix.shape[0] == ref.ntoa
-    assert jug.labels == fit_params
+    assert jug.labels == tuple(fit_params)
     assert jug.unit_convention == "pint-vela"
-    assert jug.column_units == validate_column_units(jug.labels)
+    assert jug.column_units == tuple(validate_column_units(list(jug.labels)))
     assert len(jug.column_units) == len(jug.labels)
 
     ref_label_to_idx = {label: idx for idx, label in enumerate(ref.designmatrix_labels)}

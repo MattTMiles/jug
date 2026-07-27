@@ -1,8 +1,9 @@
 """Analytical derivatives for JUMP parameters using JAX.
 
 JUMP parameters represent timing offsets between different backends/receivers.
-The derivative d(residual)/d(JUMP_i) = -1 for matching TOAs (JUMP is subtracted from dt_sec).
-The design matrix column M = -d(r)/d(JUMP) = +1 for affected TOAs, 0 otherwise.
+With the fitter-basis sign contract ``r(theta+delta) ~= r(theta) - M @ delta``,
+JUMP columns are ``M = -1`` on matching TOAs and ``0`` elsewhere (JUMPs add
+phase, so the residual Jacobian is ``+1`` on those TOAs).
 
 JUMP formats in par files:
 - JUMP -fe L-wide 0.0001234  -> applies to TOAs with flag -fe L-wide
@@ -30,13 +31,11 @@ def compute_jump_derivatives(
     **kwargs
 ) -> Dict[str, jnp.ndarray]:
     """Compute design matrix columns for JUMP parameters using JAX.
-    
-    The design matrix column M = -1 for TOAs that the JUMP applies to,
-    and 0 for all others. JUMPs add phase (phase += F0*JUMP), so the
-    Jacobian d(residual)/d(JUMP) = +1. Since the design matrix convention
-    for all parameters is M = -d(residual)/d(param), the jump column
-    must be -1 on masked TOAs. This matches Tempo2's t2FitFunc_jump
-    which returns -jumpScale.
+
+    Sign contract: ``r(theta+delta) ~= r(theta) - M @ delta``. JUMPs add
+    phase (``phase += F0*JUMP``), so the residual Jacobian is ``+1`` on
+    matching TOAs and the fitter column is ``M = -1`` there (``0``
+    elsewhere). This matches Tempo2's ``t2FitFunc_jump`` (``-jumpScale``).
     
     Parameters
     ----------

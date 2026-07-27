@@ -172,6 +172,23 @@ def _numpy_residual_delta(setup, fit_params, ref_params, ref_theta, delta):
     return np.asarray(new_residuals, dtype=float) - np.asarray(ref_residuals, dtype=float)
 
 
+def _assert_allclose_mod_gauge(actual, desired, *, atol, err_msg):
+    """Compare residual vectors ignoring an additive constant (phase gauge).
+
+    Host ``_compute_full_model_residuals`` still applies the Tier-1 reporting
+    mean; ``make_residual_delta_jax_fn`` defaults to gauge-free. Physics
+    parity is the demeaned comparison.
+    """
+    actual = np.asarray(actual, dtype=float)
+    desired = np.asarray(desired, dtype=float)
+    np.testing.assert_allclose(
+        actual - np.mean(actual),
+        desired - np.mean(desired),
+        atol=atol,
+        err_msg=err_msg,
+    )
+
+
 @pytest.mark.parametrize("family", ["elong", "lambda"])
 def test_oracle_ecliptic_columns_nonzero(family):
     setup, fit_params, _, _ = _ecliptic_astrometry_setup(family=family)
@@ -208,7 +225,7 @@ def test_jax_numpy_residual_delta_ecliptic_parity(family):
                 setup, fit_params, ref_params, ref_theta, delta
             )
             jax_delta = np.asarray(residual_fn(jnp.asarray(delta)))
-            np.testing.assert_allclose(
+            _assert_allclose_mod_gauge(
                 jax_delta,
                 np_delta,
                 atol=PICOSECOND,
@@ -244,7 +261,9 @@ def test_jacfwd_matches_numpy_fd_ecliptic(family):
         ) / (2.0 * h)
         col_jax = jac_jax[:, idx]
         atol = max(PICOSECOND / h, 1.0e-6 * np.max(np.abs(col_np)))
-        np.testing.assert_allclose(col_jax, col_np, atol=atol, err_msg=f"{name} Jacobian")
+        _assert_allclose_mod_gauge(
+            col_jax, col_np, atol=atol, err_msg=f"{name} Jacobian"
+        )
 
 
 @pytest.mark.parametrize("family", ["elong", "lambda"])

@@ -57,6 +57,8 @@ from jug.residuals.tempo2.spin_jax import (
 from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.constants import SECS_PER_DAY
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
+
+
 def _tempo2_residual_tail_jax(
     *,
     bclt,
@@ -212,6 +214,8 @@ def _tempo2_residual_tail_jax(
         )
         frac = phase5 - jnp.trunc(phase5)
     residual_sec = frac / params_f_terms[0]
-    if subtract_mean:
-        residual_sec = residual_sec - jnp.mean(residual_sec)
+    # Gauge-free: no inline mean. Callers that need a reporting gauge apply it
+    # via jug.residuals.gauge. ``subtract_mean`` remains in the signature for
+    # call-graph compatibility but is intentionally a no-op here.
+    del subtract_mean
     return terms, residual_sec

@@ -50,10 +50,7 @@ def test_analytic_matches_simplified_autodiff_wsrt167(wsrt167_fit_setup_factory)
     analytic = assemble_analytic_designmatrix(setup, fit_params, output_units="fit")
     j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
 
-    weights = np.asarray(setup.weights, dtype=np.float64)
-    analytic_p = _mean_project(analytic, weights, compatibility=setup.compatibility)
-
-    _assert_columns_match(-analytic_p, j_fit, fit_params)
+    _assert_columns_match(-analytic, j_fit, fit_params)
 
 
 @pytest.mark.parametrize("param", ["PB", "EPS1", "EPS2"])
@@ -69,10 +66,7 @@ def test_analytic_matches_simplified_autodiff_binary(param):
     analytic = assemble_analytic_designmatrix(setup, fit_params, output_units="fit")
     j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
 
-    weights = np.asarray(setup.weights, dtype=np.float64)
-    analytic_p = _mean_project(analytic, weights, compatibility=setup.compatibility)
-
-    _assert_columns_match(-analytic_p, j_fit, fit_params)
+    _assert_columns_match(-analytic, j_fit, fit_params)
 
 
 @pytest.mark.parametrize(

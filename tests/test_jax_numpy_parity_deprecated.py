@@ -16,7 +16,10 @@ import numpy as np
 import pytest
 
 from jug.fitting.derivatives_astrometry import compute_astrometric_delay
-from jug.fitting.jax_residual_delta import make_residual_delta_jax_fn
+from jug.fitting.jax_residual_delta import (
+    _phase_mean_mode,
+    make_residual_delta_jax_fn,
+)
 from jug.fitting.optimized_fitter import (
     GeneralFitSetup,
     _compute_full_model_residuals,
@@ -81,11 +84,14 @@ def _assert_jax_numpy_parity_deprecated(
         ref_theta = np.array(
             [float(ref_params.get(p, 0.0)) for p in fit_params], dtype=float
         )
+    # NumPy host residuals apply the reporting phase gauge; match that here so
+    # this temporary parity gate compares like-for-like (not gauge-free vs gauged).
     residual_fn = make_residual_delta_jax_fn(
         setup=setup,
         fit_params=fit_params,
         ref_params=ref_params,
         ref_theta=ref_theta,
+        phase_mean_mode=_phase_mean_mode(setup.compatibility),
     )
     default_steps = {
         "F0": 1.0e-8,

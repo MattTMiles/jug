@@ -120,6 +120,22 @@ def test_native_jacfwd_jacrev_agreement(wsrt167_setup_multiparam):
     assert float(np.max(np.abs(jac_fwd - jac_rev))) / scale < 1e-6
 
 
+def test_native_residual_delta_is_gauge_free(wsrt167_setup_multiparam):
+    """Tempo2-native residual_delta must not centre the delta (no double mean)."""
+    setup = wsrt167_setup_multiparam
+    if setup.native_chain_static is None:
+        pytest.skip("native_chain_static unavailable")
+    fit_params = ["RAJ", "DECJ", "F0", "DM"]
+    fn = make_residual_delta_jax_fn(setup=setup, fit_params=fit_params)
+    # Perturb F0 enough that the analytic column mean is clearly nonzero.
+    delta = jnp.asarray([0.0, 0.0, 1e-8, 0.0], dtype=jnp.float64)
+    residual_delta = np.asarray(fn(delta), dtype=np.float64)
+    assert abs(float(np.mean(residual_delta))) > 1e-16, (
+        "gauge-free native residual_delta must retain a nonzero mean; "
+        "a near-zero mean indicates a second centering on the delta"
+    )
+
+
 def test_native_residual_delta_uses_bbat_displacement_not_pint_delay(
     wsrt167_setup, monkeypatch
 ):

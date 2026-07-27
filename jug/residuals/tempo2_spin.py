@@ -16,6 +16,7 @@ from typing import Optional
 import numpy as np
 
 from jug.io.par_reader import get_longdouble
+from jug.residuals.gauge import ReferenceGauge, apply_phase_gauge
 
 
 def compute_emission_taylor_phase5_nphase(
@@ -57,9 +58,7 @@ def compute_emission_taylor_phase5_nphase(
         glep_dt = (glep - pepoch) * np.longdouble(SECS_PER_DAY)
         active = dt > glep_dt
         dt_since = np.where(active, dt - glep_dt, np.longdouble(0.0))
-        glitch_phase = (
-            glph + glf0 * dt_since + np.longdouble(0.5) * glf1 * dt_since**2
-        )
+        glitch_phase = glph + glf0 * dt_since + np.longdouble(0.5) * glf1 * dt_since**2
         if gltd != 0.0 and glf0d != 0.0:
             gltd_sec = gltd * np.longdouble(SECS_PER_DAY)
             glitch_phase = glitch_phase + glf0d * gltd_sec * (
@@ -205,7 +204,7 @@ def _glitch_phase_bbat(bbat_mjd: np.ndarray, params) -> np.ndarray:
         glep_dt = (glep - pepoch) * SECS_PER_DAY
         active = dt_glitch > glep_dt
         dt_since = np.where(active, dt_glitch - glep_dt, 0.0)
-        gphase = glph + glf0 * dt_since + 0.5 * glf1 * dt_since ** 2
+        gphase = glph + glf0 * dt_since + 0.5 * glf1 * dt_since**2
         if gltd != 0.0 and glf0d != 0.0:
             gltd_sec = gltd * SECS_PER_DAY
             gphase = gphase + glf0d * gltd_sec * (1.0 - np.exp(-dt_since / gltd_sec))
@@ -317,9 +316,7 @@ def track_minus2_frac_phase(
         add_phase = pn_new - pn_act
         frac[i] = (p5[i] - float(nphase[i])) + add_phase
         ntrk = add_phase
-        pulse_number[i] = float(
-            int(phaseint + _fortran_nlong(np.array([p5[i]]))[0]) - ntrk
-        )
+        pulse_number[i] = float(int(phaseint + _fortran_nlong(np.array([p5[i]]))[0]) - ntrk)
 
     return frac, pulse_number
 
@@ -383,8 +380,17 @@ def form_residuals_tempo2_numpy(
             pass  # -addsat applied to sat at timfile read; no phase-domain fudge
 
     residual_sec = residual_turns / f0
-    if subtract_mean:
-        if mean_mode != "unweighted":
-            raise ValueError("form_residuals_tempo2_numpy supports unweighted mean only")
-        residual_sec = residual_sec - np.mean(residual_sec)
+
+    if not subtract_mean or mean_mode == "none":
+        gauge = ReferenceGauge(mode="none")
+    elif mean_mode != "unweighted":
+        # This host path has no TOA weights; only unweighted mean is supported.
+        raise ValueError(
+            "tempo2_spin residual path supports only mean_mode='unweighted' "
+            f"(got {mean_mode!r}); weighted gauges belong on paths that carry "
+            "TOA weights"
+        )
+    else:
+        gauge = ReferenceGauge(mode="mean", weights=None)
+    residual_sec = np.asarray(apply_phase_gauge(residual_sec, gauge), dtype=np.float64)
     return residual_sec, np.asarray(pulse_number, dtype=np.float64), nphase

@@ -90,7 +90,6 @@ class NativeDeltaPack:
     units_tdb: bool
     planet_shapiro_enabled: bool
     track_val: int
-    subtract_mean: bool
     dshk: float
     jump_phase: Any | None
     tzr_phase: Any | None

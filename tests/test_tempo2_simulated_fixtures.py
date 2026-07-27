@@ -164,9 +164,9 @@ def test_simulated_tempo2_designmatrix_parity(fixture):
     assert ref.designmatrix is not None
     assert ref.designmatrix_labels is not None
     assert jug.matrix.shape[0] == ref.ntoa
-    assert jug.labels == fit_params
+    assert jug.labels == tuple(fit_params)
     assert jug.unit_convention == "pint-vela"
-    assert jug.column_units == validate_column_units(jug.labels)
+    assert jug.column_units == tuple(validate_column_units(list(jug.labels)))
 
     ref_label_to_idx = {label: idx for idx, label in enumerate(ref.designmatrix_labels)}
     for jug_idx, param in enumerate(jug.labels):
@@ -176,7 +176,7 @@ def test_simulated_tempo2_designmatrix_parity(fixture):
 
 
 @pytest.mark.tempo2
-def test_simulated_tempo2_autodiff_designmatrix_astrometry_nonzero():
+def test_simulated_tempo2_designmatrix_astrometry_nonzero():
     from jug.fitting.optimized_fitter import compute_designmatrix
 
     fixture = get_tempo2_fixture("sim_isolated_tcb")
@@ -188,7 +188,7 @@ def test_simulated_tempo2_autodiff_designmatrix_astrometry_nonzero():
         compatibility="tempo2",
     )
 
-    assert jug.labels == fit_params
+    assert jug.labels == tuple(fit_params)
     assert np.all(np.isfinite(jug.matrix))
     col_norms = {
         param: float(np.linalg.norm(jug.matrix[:, idx]))

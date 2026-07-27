@@ -591,6 +591,9 @@ class TimingSession:
             setup,
             ref_residuals_sec=np.asarray(cached_result['residuals_us'], dtype=np.float64) * 1e-6,
             ref_params=dict(self.params),
+            subtract_tzr=subtract_tzr,
+            tzr_apply_mode=cached_result.get('tzr_apply_mode'),
+            tzr_offset_sec=cached_result.get('tzr_residual_sec'),
         )
         residuals_us = np.asarray(residuals_sec, dtype=np.float64) * 1e6
         return {

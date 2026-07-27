@@ -3,10 +3,12 @@
 Canonical phase/residual computation used by both the PINT-family and
 tempo2-compatible host paths and by the fitter.
 """
+
 from __future__ import annotations
 import math
 import numpy as np
 from jug.io.par_reader import get_longdouble
+from jug.residuals.gauge import ReferenceGauge, apply_phase_gauge
 from jug.utils.constants import SECS_PER_DAY
 
 
@@ -50,16 +52,23 @@ def _spin_taylor_phase(dt_sec, f_coeffs) -> np.ndarray:
     return phase
 
 
-def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
-                            tzr_phase=None, tdb_sec_ld=None, jump_phase=None,
-                            external_pulse_numbers=None,
-                            track_val=None,
-                            external_pn_add=None,
-                            bbat_mjd=None,
-                            torb_sec=None,
-                            use_native_bbat_phase5: bool = False,
-                            addsat_sec=None,
-                            mean_mode: str = "weighted"):
+def compute_phase_residuals(
+    dt_sec_ld,
+    params,
+    weights,
+    subtract_mean=True,
+    tzr_phase=None,
+    tdb_sec_ld=None,
+    jump_phase=None,
+    external_pulse_numbers=None,
+    track_val=None,
+    external_pn_add=None,
+    bbat_mjd=None,
+    torb_sec=None,
+    use_native_bbat_phase5: bool = False,
+    addsat_sec=None,
+    mean_mode: str = "weighted",
+):
     """Compute phase residuals from emission-time offsets (canonical implementation).
 
     This is the single shared function used by both the evaluate-only and fitter
@@ -76,10 +85,11 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         1/sigma^2 weights for weighted mean subtraction.
     subtract_mean : bool
         Whether to subtract weighted mean from residuals.
-    mean_mode : {"weighted", "unweighted"}
+    mean_mode : {"weighted", "unweighted", "none"}
         Mean convention used when ``subtract_mean`` is true. Tempo2 removes
         the unweighted prefit mean; the existing PINT-compatible path keeps
-        JUG's historical weighted-mean convention.
+        JUG's historical weighted-mean convention. ``"none"`` leaves residuals
+        gauge-free even when ``subtract_mean`` is true.
     tzr_phase : float or longdouble, optional
         Phase at the TZR reference point. If provided, subtracted from each
         TOA's phase before wrapping to ensure correct pulse numbering.
@@ -118,14 +128,12 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     pulse_number : np.ndarray (longdouble)
         Integer pulse numbers used for phase wrapping.
     """
-    F0 = get_longdouble(params, 'F0')
-    PEPOCH = get_longdouble(params, 'PEPOCH')
+    F0 = get_longdouble(params, "F0")
+    PEPOCH = get_longdouble(params, "PEPOCH")
     dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
 
     has_track_minus2_pn = (
-        track_val is not None
-        and int(track_val) == -2
-        and external_pulse_numbers is not None
+        track_val is not None and int(track_val) == -2 and external_pulse_numbers is not None
     )
     use_tempo2_bbat_phase5 = (
         use_native_bbat_phase5
@@ -152,8 +160,8 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         # Collect all spin frequency derivatives F0, F1, F2, ... FN
         f_coeffs = [F0]
         k = 1
-        while f'F{k}' in params:
-            f_coeffs.append(get_longdouble(params, f'F{k}', default=0.0))
+        while f"F{k}" in params:
+            f_coeffs.append(get_longdouble(params, f"F{k}", default=0.0))
             k += 1
 
         dt = np.asarray(dt_sec_ld, dtype=np.longdouble)
@@ -166,27 +174,27 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
 
         # Glitch contributions at emission time (PINT convention).
         glitch_idx = 1
-        while f'GLEP_{glitch_idx}' in params:
-            glep = get_longdouble(params, f'GLEP_{glitch_idx}')
-            glph = get_longdouble(params, f'GLPH_{glitch_idx}', default=0.0)
-            glf0 = get_longdouble(params, f'GLF0_{glitch_idx}', default=0.0)
-            glf1 = get_longdouble(params, f'GLF1_{glitch_idx}', default=0.0)
-            glf0d = get_longdouble(params, f'GLF0D_{glitch_idx}', default=0.0)
-            gltd = get_longdouble(params, f'GLTD_{glitch_idx}', default=0.0)
+        while f"GLEP_{glitch_idx}" in params:
+            glep = get_longdouble(params, f"GLEP_{glitch_idx}")
+            glph = get_longdouble(params, f"GLPH_{glitch_idx}", default=0.0)
+            glf0 = get_longdouble(params, f"GLF0_{glitch_idx}", default=0.0)
+            glf1 = get_longdouble(params, f"GLF1_{glitch_idx}", default=0.0)
+            glf0d = get_longdouble(params, f"GLF0D_{glitch_idx}", default=0.0)
+            gltd = get_longdouble(params, f"GLTD_{glitch_idx}", default=0.0)
 
             dt_glitch = dt
             glep_dt = (glep - PEPOCH) * np.longdouble(SECS_PER_DAY)
             active = dt_glitch > glep_dt
             dt_since_glep = np.where(active, dt_glitch - glep_dt, np.longdouble(0.0))
 
-            glitch_phase = (glph
-                           + glf0 * dt_since_glep
-                           + np.longdouble(0.5) * glf1 * dt_since_glep**2)
+            glitch_phase = (
+                glph + glf0 * dt_since_glep + np.longdouble(0.5) * glf1 * dt_since_glep**2
+            )
 
             if gltd != 0.0 and glf0d != 0.0:
                 gltd_sec = gltd * np.longdouble(SECS_PER_DAY)
-                glitch_phase += glf0d * gltd_sec * (
-                    np.longdouble(1.0) - np.exp(-dt_since_glep / gltd_sec)
+                glitch_phase += (
+                    glf0d * gltd_sec * (np.longdouble(1.0) - np.exp(-dt_since_glep / gltd_sec))
                 )
 
             phase += np.where(active, glitch_phase, np.longdouble(0.0))
@@ -261,14 +269,17 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
     # Convert to float64 seconds
     residuals_sec = np.asarray(frac_phase / F0, dtype=np.float64)
 
-    if subtract_mean:
-        if mean_mode == "unweighted":
-            residuals_sec = residuals_sec - np.mean(residuals_sec)
-        elif mean_mode == "weighted":
-            wm = np.sum(residuals_sec * weights) / np.sum(weights)
-            residuals_sec = residuals_sec - wm
-        else:
-            raise ValueError(f"Unknown residual mean mode {mean_mode!r}")
+    if not subtract_mean or mean_mode == "none":
+        gauge = ReferenceGauge(mode="none")
+    elif mean_mode == "unweighted":
+        gauge = ReferenceGauge(mode="mean", weights=None)
+    elif mean_mode == "weighted":
+        # Pass raw 1/sigma^2 weights; the gauge kernel divides by sum(w).
+        # Avoid a pre-normalize allocation on this fitter hot path.
+        gauge = ReferenceGauge(mode="mean", weights=np.asarray(weights, dtype=np.float64))
+    else:
+        raise ValueError(f"Unknown residual mean mode {mean_mode!r}")
+    residuals_sec = np.asarray(apply_phase_gauge(residuals_sec, gauge), dtype=np.float64)
 
     residuals_us = residuals_sec * 1e6
     return residuals_us, residuals_sec, pulse_number

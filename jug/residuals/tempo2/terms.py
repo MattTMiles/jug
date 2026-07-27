@@ -38,6 +38,7 @@ from jug.residuals.tempo2.graph_config import (
     tempo2_graph_mode,
 )
 from jug.residuals.tempo2.model.bbat_lite import bbat_lite_daysec_from_pack
+from jug.residuals.gauge import _gauge_offset_values
 from jug.residuals.tempo2.spin_jax import spin_params_to_jax
 from jug.residuals.tempo2.types import Tempo2Terms
 from jug.utils.timescales import is_tempo2_si_units, parse_timescale
@@ -173,7 +174,12 @@ def compute_tempo2_residuals_jax(
     mean_mode: str = "unweighted",
     track_val: int = -2,
 ):
-    """Return residual seconds, pulse numbers, and native terms for tempo2 mode."""
+    """Return residual seconds, pulse numbers, and native terms for tempo2 mode.
+
+    ``mean_mode="none"`` (or ``subtract_mean=False``) exports a gauge-free
+    residual. Weighted/unweighted means use the shared gauge kernel so this
+    traced path never constructs a host ``ReferenceGauge``.
+    """
     from jug.residuals.tempo2.spin_jax import (
         compute_tempo2_phase5_daysec,
         spin_params_to_jax,
@@ -218,12 +224,26 @@ def compute_tempo2_residuals_jax(
         )
         frac = phase5 - jnp.trunc(phase5)
     residual_sec = frac / f_terms[0]
-    if subtract_mean:
-        if mean_mode == "weighted":
-            w = jnp.asarray(weights, dtype=jnp.float64)
-            residual_sec = residual_sec - jnp.sum(residual_sec * w) / jnp.sum(w)
-        else:
-            residual_sec = residual_sec - jnp.mean(residual_sec)
+    if (not subtract_mean) or mean_mode == "none":
+        gauge_mode = "none"
+        gauge_weights = None
+    elif mean_mode == "weighted":
+        gauge_mode = "mean"
+        gauge_weights = jnp.asarray(weights, dtype=jnp.float64)
+    elif mean_mode == "unweighted":
+        gauge_mode = "mean"
+        gauge_weights = None
+    else:
+        raise ValueError(
+            f"Unknown residual mean mode {mean_mode!r}; expected "
+            "'none', 'weighted', or 'unweighted'"
+        )
+    residual_sec = residual_sec - _gauge_offset_values(
+        residual_sec,
+        mode=gauge_mode,
+        weights=gauge_weights,
+        xp=jnp,
+    )
     return residual_sec, pulse, native_terms
 
 
@@ -412,13 +432,10 @@ def compute_residual_delta_jax(
     params_pert: dict,
     pack: NativeDeltaPack,
 ) -> jnp.ndarray:
-    """Native residual delta: ``res(θ+Δθ) − res(θ)`` with optional mean on delta."""
+    """Native residual delta: ``res(θ+Δθ) − res(θ)``, gauge-free (no mean on delta)."""
     res_ref = compute_residual_sec_jax(params_ref, pack)
     res_pert = compute_residual_sec_jax(params_pert, pack)
-    delta = res_pert - res_ref
-    if pack.subtract_mean:
-        delta = delta - jnp.mean(delta)
-    return delta
+    return res_pert - res_ref
 
 
 def compute_fixed_state_nonlinear_residual_sec_jax(
@@ -434,7 +451,7 @@ def compute_fixed_state_nonlinear_residual_delta_jax(
     params_pert: dict,
     pack: NativeDeltaPack,
 ) -> jnp.ndarray:
-    """Fixed-state nonlinear residual delta: ``res(θ+Δθ) − res(θ)`` with mean on delta."""
+    """Fixed-state nonlinear residual delta: ``res(θ+Δθ) − res(θ)``, gauge-free."""
     return compute_residual_delta_jax(params_ref, params_pert, pack)
 
 

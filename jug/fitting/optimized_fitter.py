@@ -884,15 +884,20 @@ def compute_designmatrix(
     from jug.utils.units import native_to_fit_value
 
     labels = [canonicalize_param_name(p) for p in fit_params]
+    # Do not auto-expand with free DMX bins: the public one-shot API owns
+    # exactly the requested labels (D23). Fitting/session paths that want DMX
+    # columns should use the fitter/session result that owns that basis.
     setup = _build_general_fit_setup_from_files(
         Path(par_file), Path(tim_file), labels,
         clock_dir=None, verbose=verbose,
         compatibility=compatibility, fd_column_mode=fd_column_mode,
+        fit_dmx=False,
     )
     final_labels = tuple(setup.fit_param_list)
     if final_labels != tuple(labels):
         raise ValueError(
-            "compute_designmatrix does not expose a reduced fitter basis: "
+            "compute_designmatrix does not expose a reduced or expanded "
+            "fitter basis: "
             f"requested {labels}, but setup retained {list(final_labels)}. "
             "Use the fitting/session result that owns the filtered basis."
         )
@@ -1878,6 +1883,9 @@ def _compute_full_model_residuals(
     *,
     ref_residuals_sec: np.ndarray | None = None,
     ref_params: Dict | None = None,
+    subtract_tzr: bool = True,
+    tzr_apply_mode: str | None = None,
+    tzr_offset_sec: float | None = None,
 ) -> tuple:
     """
     Compute TRUE residuals using the full nonlinear model.
@@ -1926,6 +1934,9 @@ def _compute_full_model_residuals(
             setup,
             ref_params=ref,
             ref_residuals_sec=np.asarray(ref_residuals_sec, dtype=np.float64),
+            subtract_tzr=subtract_tzr,
+            tzr_apply_mode=tzr_apply_mode,
+            tzr_offset_sec=tzr_offset_sec,
         )
         weights = setup.weights
         errors_sec = setup.errors_sec
@@ -1971,10 +1982,13 @@ def _compute_full_model_residuals(
                     current_jump_phase[mask] += F0_ld * np.longdouble(current_val - initial_val)
 
     # Phase computation via shared canonical function (longdouble precision)
+    from jug.fitting.jax_residual_delta import _phase_mean_mode
+
     residuals_us, residuals_sec, _ = compute_phase_residuals(
         dt_sec_np, params, weights, subtract_mean=True,
         tzr_phase=setup.tzr_phase,
-        jump_phase=current_jump_phase
+        jump_phase=current_jump_phase,
+        mean_mode=_phase_mean_mode(setup.compatibility),
     )
 
     # Compute statistics
@@ -2105,10 +2119,13 @@ def _run_general_fit_iterations(
     # rewrites _high_precision entries through float64, which is appropriate
     # for fitted trial values but must not contaminate the reported prefit
     # residuals.
+    from jug.fitting.jax_residual_delta import _phase_mean_mode
+
     _, residuals_prefit_sec_start, _ = compute_phase_residuals(
         dt_sec_cached, params, weights, subtract_mean=True,
         tzr_phase=setup.tzr_phase,
         jump_phase=jump_phase_arr,
+        mean_mode=_phase_mean_mode(setup.compatibility),
     )
 
     # Compute initial full-model chi2 for comparison.
@@ -2378,10 +2395,13 @@ def _run_general_fit_iterations(
                     current_jump_phase[mask] += F0_ld * np.longdouble(current_val - initial_val)
 
         # Compute phase residuals from updated dt_sec via shared function (longdouble)
+        from jug.fitting.jax_residual_delta import _phase_mean_mode
+
         _, residuals, _ = compute_phase_residuals(
             dt_sec_np, params, weights, subtract_mean=True,
             tzr_phase=setup.tzr_phase,
-            jump_phase=current_jump_phase
+            jump_phase=current_jump_phase,
+            mean_mode=_phase_mean_mode(setup.compatibility),
         )
 
         # TNsubtractPoly: subtract accumulated noise from previous iterations

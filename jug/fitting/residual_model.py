@@ -2,25 +2,25 @@
 
 ``export_frozen_residual_model`` snapshots a populated ``TimingSession`` into a
 convention-frozen ``FrozenResidualModel``: the jitted residual-delta closure of
-the session-selected graph, its jitted Jacobian, the reference point, and the
-contribution-local linear-residual transform. Stored arrays are read-only
-copies (the dataclass itself is shallow-frozen). It stores no design matrix;
-the canonical fitter basis is a different object (see
-feature_designmatrix_naming_conventions.md).
+the session-selected **gauge-free** graph, its jitted Jacobian, the reference
+point, and a ``reference_gauge`` descriptor recording the host gauge under which
+``reference_residuals_sec`` was computed. Stored arrays are read-only copies
+(the dataclass itself is shallow-frozen). It stores no design matrix; the
+canonical fitter basis is a different object (see feature_phase_gauge.md).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple
+from typing import Any, NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
 
 from jug.fitting.jax_residual_delta import (
+    _host_reference_gauge,
     _normalize_ref_params,
-    _phase_mean_mode,
     _prepare_residual_delta_jax,
     _reference_param_value,
 )
@@ -30,6 +30,7 @@ from jug.fitting.optimized_fitter import (
     _interim_row_tokens,
 )
 from jug.model.parameter_spec import canonicalize_param_name
+from jug.residuals.gauge import ReferenceGauge, reconstruct_absolute_residuals
 
 
 class NativeChainStatus(NamedTuple):
@@ -47,18 +48,17 @@ class FrozenResidualModel:
     reference_residuals_sec: np.ndarray  # diagnostic metadata (below)
     subtract_tzr: bool  # diagnostic metadata (below)
     compatibility: str
-    mean_mode: Literal["weighted", "unweighted"]
-    row_tokens: tuple[str, ...]  # session row order (D6)
-    _mean_weights: np.ndarray | None  # normalized; None = unweighted
-    _residual_delta_jax_fn: Any  # jitted f(delta_native) -> dr
+    reference_gauge: ReferenceGauge  # gauge of reference_residuals_sec
+    row_tokens: tuple[str, ...]  # session row order
+    _residual_delta_jax_fn: Any  # jitted f(delta_native) -> dr (gauge-free)
     _residual_jacobian_native_fn: Any  # jitted jacfwd of the same core
     _native_chain_status: NativeChainStatus
 
-    # ``reference_residuals_sec`` and ``subtract_tzr`` are recorded metadata,
-    # not consumed by any method here: they let diagnostics and
-    # ``compute_full_model_residuals_tempo2_native`` reconstruct absolute
-    # residuals (r_abs = reference + delta) and record which residual
-    # convention the reference was computed under.
+    # ``reference_residuals_sec`` and ``subtract_tzr`` are recorded metadata.
+    # The reference is host-gauged while ``residual_delta_jax`` is gauge-free;
+    # combine them only via ``absolute_residuals_sec`` /
+    # ``reconstruct_absolute_residuals``. ``reference_gauge`` carries the
+    # normalized weights needed to reproduce a weighted mean.
 
     def residual_delta_jax(self, delta_native):
         return self._residual_delta_jax_fn(delta_native)
@@ -68,23 +68,31 @@ class FrozenResidualModel:
         zeros = jnp.zeros((len(self.fit_params),), dtype=jnp.float64)
         return np.asarray(self._residual_jacobian_native_fn(zeros), dtype=np.float64)
 
-    def transform_linear_residual(self, raw_residual_delta):
-        """Apply this contribution's centering to one raw linear residual vector.
+    def absolute_residuals_sec(self, delta_native) -> np.ndarray:
+        """Absolute residuals at theta = reference + delta, in the reference's gauge.
 
-        Linear; maps zeros to zeros; tracer-safe (jnp); 1-D vectors only —
-        apply column-by-column (or vmap) for matrices. NumPy callers wrap the
-        result in ``np.asarray``. No whitening, TZR handling, or reordering.
+        ``delta_native`` is a *parameter* delta in native units, in
+        ``fit_params`` order — the same argument ``residual_delta_jax`` takes.
+        This method evaluates ``residual_delta_jax(delta_native)`` internally
+        and combines the result with ``reference_residuals_sec`` under the
+        absolute-residual reconstruction rules; callers pass parameters, never
+        a residual vector.
+
+        Thin wrapper over ``jug.residuals.gauge.reconstruct_absolute_residuals``.
+        Raises NotImplementedError when ``reference_gauge.mode == "constant"``
+        (tempo2 REFPHS TZR): that anchor depends on the spin parameters, so it
+        cannot be reproduced from frozen metadata alone. Never form
+        ``reference_residuals_sec + residual_delta_jax(...)``.
         """
-        v = jnp.asarray(raw_residual_delta, dtype=jnp.float64)
-        if v.ndim != 1:
-            raise ValueError(
-                "transform_linear_residual expects a 1-D residual vector; "
-                "apply column-wise (or vmap) for matrices."
-            )
-        if self._mean_weights is None:
-            return v - jnp.mean(v)
-        w = jnp.asarray(self._mean_weights, dtype=jnp.float64)
-        return v - jnp.sum(v * w)
+        delta_sec = np.asarray(self.residual_delta_jax(delta_native), dtype=np.float64)
+        return np.asarray(
+            reconstruct_absolute_residuals(
+                self.reference_residuals_sec,
+                delta_sec,
+                self.reference_gauge,
+            ),
+            dtype=np.float64,
+        )
 
     def verify_native_chain(self) -> None:
         """Raise unless the tempo2-native payload backing this graph is present.
@@ -131,9 +139,7 @@ def export_frozen_residual_model(
         session.compute_residuals(subtract_tzr=subtract_tzr, force_recompute=True)
         cached = session._cached_result_by_mode.get(subtract_tzr)
     if cached is None or "dt_sec" not in cached:
-        raise RuntimeError(
-            "TimingSession cache is unavailable; call compute_residuals() first."
-        )
+        raise RuntimeError("TimingSession cache is unavailable; call compute_residuals() first.")
 
     toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in session.toas_data])
     errors_us = np.array([toa.error_us for toa in session.toas_data])
@@ -179,18 +185,37 @@ def export_frozen_residual_model(
 
     ref_params = _normalize_ref_params(session.params)
     ref_theta = np.array(
-        [
-            _reference_param_value(ref_params, mapping.get(name, name))
-            for name in fit_params
-        ],
+        [_reference_param_value(ref_params, mapping.get(name, name)) for name in fit_params],
         dtype=np.float64,
     )
-    reference_residuals_sec, _, _, _ = _compute_full_model_residuals(ref_params, setup)
+    tzr_apply_mode = cached.get("tzr_apply_mode")
+    tzr_offset_sec = cached.get("tzr_residual_sec")
+    model_mjd = cached.get("model_mjd")
+    if model_mjd is None:
+        model_mjd = toas_mjd
+    reference_gauge = _host_reference_gauge(
+        compatibility=str(compatibility),
+        params=ref_params,
+        model_mjd=model_mjd,
+        weights=setup.weights,
+        subtract_tzr=subtract_tzr,
+        tzr_apply_mode=tzr_apply_mode,
+        tzr_offset_sec=tzr_offset_sec,
+    )
+    if reference_gauge.mode == "constant":
+        # Host cache is the constant-gauged reference; do not re-mean via the fitter.
+        reference_residuals_sec = np.asarray(cached["residuals_us"], dtype=np.float64) * 1e-6
+    else:
+        reference_residuals_sec, _, _, _ = _compute_full_model_residuals(
+            ref_params,
+            setup,
+            subtract_tzr=subtract_tzr,
+            tzr_apply_mode=tzr_apply_mode,
+            tzr_offset_sec=tzr_offset_sec,
+        )
     reference_theta_native = np.array(ref_theta, dtype=np.float64, copy=True)
     reference_theta_native.setflags(write=False)
-    reference_residuals_sec = np.array(
-        reference_residuals_sec, dtype=np.float64, copy=True
-    )
+    reference_residuals_sec = np.array(reference_residuals_sec, dtype=np.float64, copy=True)
     reference_residuals_sec.setflags(write=False)
 
     _, residual_fn, jac_fn = _prepare_residual_delta_jax(
@@ -198,15 +223,8 @@ def export_frozen_residual_model(
         fit_params=tuple(runtime_fit_params),
         ref_params=ref_params,
         ref_theta=ref_theta,
+        phase_mean_mode="none",
     )
-
-    mean_mode = _phase_mean_mode(setup.compatibility)  # "weighted" | "unweighted"
-    if mean_mode == "weighted":
-        w = np.asarray(setup.weights, dtype=np.float64)
-        mean_weights = w / w.sum()
-        mean_weights.setflags(write=False)
-    else:
-        mean_weights = None
 
     static = getattr(setup, "native_chain_static", None)
     td = (getattr(static, "term_diagnostics", None) or {}) if static is not None else {}
@@ -227,9 +245,8 @@ def export_frozen_residual_model(
         reference_residuals_sec=reference_residuals_sec,
         subtract_tzr=subtract_tzr,
         compatibility=str(compatibility),
-        mean_mode=mean_mode,  # type: ignore[arg-type]
+        reference_gauge=reference_gauge,
         row_tokens=row_tokens,
-        _mean_weights=mean_weights,
         _residual_delta_jax_fn=residual_fn,
         _residual_jacobian_native_fn=jac_fn,
         _native_chain_status=native_chain_status,

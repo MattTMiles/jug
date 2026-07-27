@@ -1,11 +1,11 @@
 """JAX residual deltas for nonlinear timing likelihoods.
 
-``make_residual_delta_jax_fn`` returns the centered residual-delta function
+``make_residual_delta_jax_fn`` returns the gauge-free residual-delta function
 for the session-selected graph (simplified PINT-style Taylor, or the native
 tempo2 graph named by ``setup.tempo2_native``). Residual Jacobians are its
 ``jacfwd``; see ``jug.fitting.residual_model``. The analytic fitter basis
 lives in ``designmatrix_assembly`` and is a different object (see
-feature_designmatrix_naming_conventions.md).
+feature_phase_gauge.md / feature_designmatrix_naming_conventions.md).
 
 For ``compatibility="tempo2"``, the native residual path recomputes
 ``residual_sec(θ+Δθ) − residual_sec(θ)`` through the tempo2-native JAX graph
@@ -30,6 +30,7 @@ import numpy as np
 
 from jug.fitting.forward_delay import compute_side_delay_change, compute_total_delay_change
 from jug.residuals.engine_conventions import normalize_compatibility_mode
+from jug.residuals.gauge import ReferenceGauge, _gauge_offset_values, reconstruct_absolute_residuals
 from jug.residuals.tempo2.common import NativeDeltaPack
 from jug.residuals.tempo2.delta_pack import build_delta_pack_for_setup
 from jug.residuals.tempo2.terms import compute_bbat_delay_change_sec_jax
@@ -71,6 +72,48 @@ def _phase_mean_mode(compatibility: str) -> str:
     if normalize_compatibility_mode(compatibility) == "tempo2":
         return "unweighted"
     return "weighted"
+
+
+def _host_reference_gauge(
+    *,
+    compatibility: str,
+    params: Mapping[str, object],
+    model_mjd,
+    weights,
+    subtract_tzr: bool = True,
+    tzr_apply_mode: str | None = None,
+    tzr_offset_sec: float | None = None,
+) -> ReferenceGauge:
+    """Build the gauge descriptor matching the host residual vector.
+
+    When tempo2 ``REFPHS TZR`` selects ``post_wrap``, the host applies a
+    constant (spin-dependent) offset; the descriptor records
+    ``mode="constant"`` so absolute-residual reconstruction refuses rather
+    than silently mean-projecting a constant-gauged reference.
+    """
+    from jug.residuals.tzr_geometry import resolve_tempo2_tzr_apply_mode
+
+    if tzr_apply_mode is None:
+        if normalize_compatibility_mode(str(compatibility)) == "tempo2":
+            tzr_apply_mode = resolve_tempo2_tzr_apply_mode(
+                dict(params),
+                np.asarray(model_mjd, dtype=np.float64),
+                subtract_tzr=subtract_tzr,
+            )
+        else:
+            tzr_apply_mode = "pre_wrap" if subtract_tzr else "none"
+
+    if tzr_apply_mode == "post_wrap":
+        # Offset is provenance for the descriptor; reconstruction refuses for
+        # constant gauges regardless of the numeric value (theta-dependent TZR).
+        offset = 0.0 if tzr_offset_sec is None else float(tzr_offset_sec)
+        return ReferenceGauge(mode="constant", offset_sec=offset)
+
+    mean_mode = _phase_mean_mode(compatibility)
+    if mean_mode == "weighted":
+        w = np.asarray(weights, dtype=np.float64)
+        return ReferenceGauge(mode="mean", weights=(w / w.sum()))
+    return ReferenceGauge(mode="mean", weights=None)
 
 
 def _phase_residual_delta_jax(
@@ -123,20 +166,17 @@ def _phase_residual_delta_jax(
         for m in range(0, len(f_coeffs) - (j - 1)):
             coeff = jnp.asarray(f_coeffs[m + j - 1], dtype=jnp.float64)
             g_j = g_j + coeff * (x**m) / float(math.factorial(m))
-        delay_phase_delta = delay_phase_delta + (
-            ((-d) ** j) / float(math.factorial(j)) * g_j
-        )
+        delay_phase_delta = delay_phase_delta + (((-d) ** j) / float(math.factorial(j)) * g_j)
 
-    residual_delta = (spin_phase_delta + delay_phase_delta) / jnp.asarray(
-        f0, dtype=jnp.float64
+    residual_delta = (spin_phase_delta + delay_phase_delta) / jnp.asarray(f0, dtype=jnp.float64)
+
+    # Tracer-safe kernel only — never construct ReferenceGauge in-trace.
+    residual_delta = residual_delta - _gauge_offset_values(
+        residual_delta,
+        mode="none" if mean_mode == "none" else "mean",
+        weights=weights if mean_mode == "weighted" else None,
+        xp=jnp,
     )
-
-    if mean_mode == "unweighted":
-        residual_delta = residual_delta - jnp.mean(residual_delta)
-    else:
-        residual_delta = residual_delta - jnp.sum(residual_delta * weights) / jnp.sum(
-            weights
-        )
     return residual_delta
 
 
@@ -191,7 +231,9 @@ def _ecliptic_public_key(internal_key: str, native_family: str) -> str:
     return _ECLIPTIC_INTERNAL_TO_ELONG_PUBLIC[internal_key]
 
 
-def _ecliptic_session_metadata(ref_params: Mapping[str, object]) -> tuple[bool, float, tuple[float, float, float, float] | None, str]:
+def _ecliptic_session_metadata(
+    ref_params: Mapping[str, object],
+) -> tuple[bool, float, tuple[float, float, float, float] | None, str]:
     """Static ecliptic session flags captured before JIT compilation."""
     from jug.io.astrometry_state import native_ecliptic_family
     from jug.io.par_reader import OBLIQUITY_ARCSEC
@@ -203,10 +245,24 @@ def _ecliptic_session_metadata(ref_params: Mapping[str, object]) -> tuple[bool, 
     obl_arcsec = OBLIQUITY_ARCSEC.get(ecl_frame, OBLIQUITY_ARCSEC["IERS2010"])
     obl_rad = float(obl_arcsec * np.pi / (180.0 * 3600.0))
     init = (
-        float(ref_params.get("_ecliptic_lon_deg", ref_params.get("ELONG", ref_params.get("LAMBDA", 0.0)))),
-        float(ref_params.get("_ecliptic_lat_deg", ref_params.get("ELAT", ref_params.get("BETA", 0.0)))),
-        float(ref_params.get("_ecliptic_pm_lon", ref_params.get("PMELONG", ref_params.get("PMLAMBDA", 0.0)))),
-        float(ref_params.get("_ecliptic_pm_lat", ref_params.get("PMELAT", ref_params.get("PMBETA", 0.0)))),
+        float(
+            ref_params.get(
+                "_ecliptic_lon_deg", ref_params.get("ELONG", ref_params.get("LAMBDA", 0.0))
+            )
+        ),
+        float(
+            ref_params.get("_ecliptic_lat_deg", ref_params.get("ELAT", ref_params.get("BETA", 0.0)))
+        ),
+        float(
+            ref_params.get(
+                "_ecliptic_pm_lon", ref_params.get("PMELONG", ref_params.get("PMLAMBDA", 0.0))
+            )
+        ),
+        float(
+            ref_params.get(
+                "_ecliptic_pm_lat", ref_params.get("PMELAT", ref_params.get("PMBETA", 0.0))
+            )
+        ),
     )
     native_family = native_ecliptic_family(ref_params) or "elong"
     return True, obl_rad, init, native_family
@@ -359,9 +415,7 @@ def _compute_residual_delta_jax(
         native_delay_change = compute_bbat_delay_change_sec_jax(
             params_ref, params_pert, native_pack
         )
-        binary_delay_change = _binary_delay_change_jax(
-            params_pert, setup, binary_plan=binary_plan
-        )
+        binary_delay_change = _binary_delay_change_jax(params_pert, setup, binary_plan=binary_plan)
         side_delay_change = compute_side_delay_change(params_pert, setup, xp=jnp)
         total_delay_change = native_delay_change + side_delay_change
         if binary_delay_change is not None:
@@ -497,9 +551,7 @@ def _build_residual_delta_jax_bundle(
     binary_plan = resolve_binary_structure(
         ref_params, fit_params, obs_pos_ls=getattr(setup, "ssb_obs_pos_ls", None)
     )
-    ecliptic_coords, obl_rad, ecliptic_init, native_family = _ecliptic_session_metadata(
-        ref_params
-    )
+    ecliptic_coords, obl_rad, ecliptic_init, native_family = _ecliptic_session_metadata(ref_params)
     from jug.residuals.engine_conventions import normalize_compatibility_mode
 
     native_pack = None
@@ -536,7 +588,12 @@ def _prepare_residual_delta_jax(
     phase_mean_mode: str | None = None,
     delay_model: str = "native",
 ):
-    """Build or reuse session-cached residual core and JIT evaluators."""
+    """Build or reuse session-cached residual core and JIT evaluators.
+
+    Defaults to a gauge-free graph (``phase_mean_mode="none"``). Host reporting
+    gauges are opt-in via an explicit ``phase_mean_mode``; ``_phase_mean_mode``
+    is not consulted here.
+    """
     from jug.fitting.forward_delay import _assert_no_epoch_fit_params
 
     fit_params = tuple(str(name).upper() for name in fit_params)
@@ -553,7 +610,8 @@ def _prepare_residual_delta_jax(
         raise ValueError("ref_theta shape mismatch with fit_params.")
 
     ref_f_terms = tuple(float(x) for x in _spin_terms_from_params(ref_params))
-    phase_mean_mode = phase_mean_mode or _phase_mean_mode(setup.compatibility)
+    if phase_mean_mode is None:
+        phase_mean_mode = "none"
     cache_key = _residual_delta_jax_cache_key(
         setup,
         fit_params=fit_params,
@@ -588,9 +646,14 @@ def make_residual_delta_jax_fn(
     fit_params: Sequence[str],
     ref_params: Mapping[str, object] | None = None,
     ref_theta: np.ndarray | None = None,
-    phase_mean_mode: str | None = None,
+    phase_mean_mode: str = "none",
 ):
-    """Return ``f(delta_theta) -> residual_delta`` for a frozen fit setup."""
+    """Return the gauge-free residual-delta function for a frozen fit setup.
+
+    Defaults to ``phase_mean_mode="none"``: a public residual_delta constructor
+    must not silently apply a reporting gauge. Pass an explicit mode only for
+    host/reporting parity callers that need a centered graph.
+    """
     _, residual_fn, _ = _prepare_residual_delta_jax(
         setup=setup,
         fit_params=fit_params,
@@ -607,11 +670,15 @@ def compute_full_model_residuals_tempo2_native(
     *,
     ref_params: Mapping[str, object],
     ref_residuals_sec: np.ndarray,
+    subtract_tzr: bool = True,
+    tzr_apply_mode: str | None = None,
+    tzr_offset_sec: float | None = None,
 ) -> np.ndarray:
     """Absolute residuals at eval_params via cached host ref + native tempo2 delta."""
     if normalize_compatibility_mode(str(getattr(setup, "compatibility", ""))) != "tempo2":
         raise ValueError("tempo2 native full-model residuals require compatibility='tempo2'")
-    if getattr(setup, "native_chain_static", None) is None:
+    static = getattr(setup, "native_chain_static", None)
+    if static is None:
         raise ValueError(
             "tempo2 native full-model residuals require native_chain_static on setup "
             "(populate term_diagnostics via compute_residuals first)."
@@ -620,6 +687,19 @@ def compute_full_model_residuals_tempo2_native(
     fit_params = [str(p).upper() for p in (setup.fit_param_list or ())]
     if not fit_params:
         return np.asarray(ref_residuals_sec, dtype=np.float64)
+
+    model_mjd = getattr(static, "model_mjd", None)
+    if model_mjd is None:
+        model_mjd = getattr(setup, "toas_mjd", np.asarray(ref_residuals_sec) * 0.0)
+    reference_gauge = _host_reference_gauge(
+        compatibility=str(setup.compatibility),
+        params=ref_params,
+        model_mjd=model_mjd,
+        weights=setup.weights,
+        subtract_tzr=subtract_tzr,
+        tzr_apply_mode=tzr_apply_mode,
+        tzr_offset_sec=tzr_offset_sec,
+    )
 
     ref_params_norm = _normalize_ref_params(ref_params)
     ref_theta = np.array(
@@ -637,33 +717,50 @@ def compute_full_model_residuals_tempo2_native(
         fit_params=fit_params,
         ref_params=ref_params_norm,
         ref_theta=ref_theta,
+        phase_mean_mode="none",
     )
     delta_sec = np.asarray(residual_fn(delta_theta), dtype=np.float64)
-    return np.asarray(ref_residuals_sec, dtype=np.float64) + delta_sec
+    return np.asarray(
+        reconstruct_absolute_residuals(
+            np.asarray(ref_residuals_sec, dtype=np.float64),
+            delta_sec,
+            reference_gauge,
+        ),
+        dtype=np.float64,
+    )
 
 
 def _simplified_residual_jacobian_oracle(
     setup: "GeneralFitSetup",
     fit_params: Sequence[str],
 ) -> np.ndarray:
-    """J_fit of the simplified centered residual graph (test oracle only).
+    """J_fit of the simplified gauge-free residual graph (test oracle only).
 
     Returns the residual Jacobian (positive sign, fit-unit columns) of the
     PINT-style Taylor graph, ignoring ``compatibility``/``tempo2_native``.
     Exists to validate analytic derivative blocks and graph traceability;
     never imported by production code. Tests compare it as
-    J_fit ≈ -C(M_analytic) for certified parameters.
+    J_fit ≈ -M_analytic for certified parameters (no centering transform).
     """
     fit_params = tuple(str(name).upper() for name in fit_params)
     _, _, jac_fn = _prepare_residual_delta_jax(
-        setup=setup, fit_params=fit_params, delay_model="simplified"
+        setup=setup,
+        fit_params=fit_params,
+        delay_model="simplified",
+        phase_mean_mode="none",
     )
     zero = jnp.zeros((len(fit_params),), dtype=jnp.float64)
     jac_native = np.asarray(jac_fn(zero), dtype=np.float64)
-    return np.column_stack([
-        np.asarray(
-            native_derivative_to_fit_column(param, jac_native[:, col]),
-            dtype=np.float64,
+    return (
+        np.column_stack(
+            [
+                np.asarray(
+                    native_derivative_to_fit_column(param, jac_native[:, col]),
+                    dtype=np.float64,
+                )
+                for col, param in enumerate(fit_params)
+            ]
         )
-        for col, param in enumerate(fit_params)
-    ]) if fit_params else np.empty((len(np.asarray(setup.tdb_mjd)), 0))
+        if fit_params
+        else np.empty((len(np.asarray(setup.tdb_mjd)), 0))
+    )

@@ -161,10 +161,23 @@ Golden PINT parity sets live under `tests/data_golden/`. Tests marked `slow` or
 
 JUG exposes two compatibility families:
 
-- `compatibility="pint"`: PINT-family runtime conventions and weighted residual
-  mean subtraction.
-- `compatibility="tempo2"`: tempo2-family runtime conventions and unweighted
-  residual mean subtraction.
+- `compatibility="pint"`: PINT-family runtime conventions; host reporting applies
+  a weighted phase gauge (`REFPHS`-style mean).
+- `compatibility="tempo2"`: tempo2-family runtime conventions; host reporting
+  applies an unweighted phase gauge (tempo2 `REFPHS MEAN`).
+
+**Phase gauge.** Engines export gauge-free residual deltas and
+Jacobians. The one-dimensional phase freedom is fixed only at reporting/parity
+boundaries by `jug.residuals.gauge.apply_phase_gauge` (modes `"none"`,
+`"mean"`, `"constant"`). Linear objects:
+
+| Symbol | Public name | Meaning |
+|---|---|---|
+| \(M\) | `design_matrix` | Delay tangent (uncentered, unweighted, fitter sign): \(r(\theta+\delta)\approx r(\theta)-M\delta\) |
+| \(J\) | `residual_jacobian` | Residual tangent: \(J=-M\) on a gauge-free graph |
+| — | phase gauge | Choice of residual representative along \(\mathbf{1}\); not part of any engine product |
+
+See [`feature_phase_gauge.md`](feature_phase_gauge.md).
 
 > **On "picosecond agreement with PINT":** this holds for *host residuals at
 > fixed parameters with identical ephemeris/clock/timescale inputs* (a shared
@@ -180,7 +193,7 @@ When evaluating Tempo2 parity, use **raw pre-fit residuals** only (no post-hoc
 mean centering). This is the acceptance metric used by
 `tests/test_tempo2_residual_parity.py`.
 
-For notebook diagnostics, weighted-mean-centered deltas are useful only for
+For notebook diagnostics, mean-gauged deltas are useful only for
 PINT-family-vs-PINT-family comparisons; tempo2-labeled comparisons should stay
 raw.
 
@@ -189,8 +202,9 @@ curated fixtures do **not** mean tempo2 mode is ready for JAX-traced likelihoods
 or IPTA-scale workloads. The analytic fitter basis `M` (`compute_designmatrix`)
 and the residual Jacobian `J` (`FrozenResidualModel.residual_jacobian_native`)
 are different objects: `r(theta+delta) ~= r(theta) - M @ delta`, while
-`J = jacfwd(residual_delta)(0)`. See [`PARITY_THEORY.md`](PARITY_THEORY.md) for
-theory/policy and [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) for gap analysis.
+`J = jacfwd(residual_delta)(0) = -M` on the gauge-free export graph. See
+[`PARITY_THEORY.md`](PARITY_THEORY.md) for theory/policy and
+[`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) for gap analysis.
 
 ### Tempo2-native JAX fitting (graph modes, 2026-07-07)
 

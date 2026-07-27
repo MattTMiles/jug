@@ -123,22 +123,20 @@ def test_simplified_oracle_does_not_call_full_model_residuals(monkeypatch):
     assert np.all(np.isfinite(matrix))
 
 
-def test_simplified_oracle_matches_centered_analytic():
+def test_simplified_oracle_matches_raw_analytic():
     fit_params = ["F0", "DM"]
     setup = _setup(fit_params)
 
     analytic = _compute_designmatrix_from_setup(setup, fit_params)
     j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
-    weights = np.asarray(setup.weights, dtype=np.float64)
     for j in range(len(fit_params)):
-        centered = analytic[:, j] - (weights @ analytic[:, j]) / weights.sum()
         np.testing.assert_allclose(
-            j_fit[:, j], -centered, rtol=2.0e-8, atol=1.0e-13
+            j_fit[:, j], -analytic[:, j], rtol=2.0e-8, atol=1.0e-13
         )
 
 
 @pytest.mark.tempo2
-def test_tempo2_simplified_oracle_matches_centered_analytic_spin_dm():
+def test_tempo2_simplified_oracle_matches_raw_analytic_spin_dm():
     fit_params = ["F0", "DM"]
     setup = _setup(fit_params)
     setup = dataclasses.replace(setup, compatibility="tempo2")
@@ -146,7 +144,6 @@ def test_tempo2_simplified_oracle_matches_centered_analytic_spin_dm():
 
     analytic = _compute_designmatrix_from_setup(setup, fit_params)
     j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
-    analytic = analytic - np.mean(analytic, axis=0, keepdims=True)
 
     np.testing.assert_allclose(j_fit, -analytic, rtol=1.0e-6, atol=1.0e-12)
 
@@ -266,14 +263,14 @@ def test_np_vs_jax_delay_change_parity(case):
 
 
 @pytest.mark.parametrize("case", ["ELL1", "DD"])
-def test_oracle_binary_column_matches_centered_analytic(case):
+def test_oracle_binary_column_matches_raw_analytic(case):
     setup, fit_params = _binary_setup(case)
     analytic = _compute_designmatrix_from_setup(setup, fit_params)
     j_fit = _simplified_residual_jacobian_oracle(setup, fit_params)
-    w = np.asarray(setup.weights)
     for j in range(len(fit_params)):
-        centered = analytic[:, j] - (w @ analytic[:, j]) / w.sum()
-        np.testing.assert_allclose(j_fit[:, j], -centered, rtol=2e-2, atol=1e-9)
+        np.testing.assert_allclose(
+            j_fit[:, j], -analytic[:, j], rtol=2e-2, atol=1e-9
+        )
 
 
 def test_ddk_proper_motion_is_traceable():

@@ -79,6 +79,7 @@ class TimingSession:
         engine_conventions: EngineConventionProfile | None = None,
         tempo2_native: str | None = None,
         tempo2_jug_options: dict | None = None,
+        nonlinear_params: str | None = None,
     ):
         """
         Initialize a timing session.
@@ -93,6 +94,10 @@ class TimingSession:
             Directory containing clock files
         verbose : bool, default False
             Print status messages
+        nonlinear_params : str or None, optional
+            Residual linearization mode: ``None`` (native), ``"binary"``, or
+            ``"binary+"``. Affects residual-delta JAX only; host absolute
+            residuals are unchanged.
         """
         self.par_file = Path(par_file)
         self.tim_file = Path(tim_file)
@@ -101,10 +106,16 @@ class TimingSession:
         self.compatibility = compatibility
         self.engine_conventions = engine_conventions
         from jug.timing import resolve_tempo2_session_args
+        from jug.fitting.nonlinear_params import (
+            validate_nonlinear_params,
+            warn_if_tempo2_native_ignored,
+        )
 
         self.tempo2_native, self.tempo2_jug_options = resolve_tempo2_session_args(
             compatibility, tempo2_native, tempo2_jug_options
         )
+        self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
+        warn_if_tempo2_native_ignored(self.nonlinear_params, self.tempo2_native)
         if engine_conventions is not None:
             validate_engine_profile_matches_compatibility(
                 compatibility, engine_conventions

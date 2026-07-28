@@ -237,6 +237,20 @@ state = export_frozen_residual_model(session, fit_params=["F0", "RAJ", "DM"])
 | `staged_bclt` | `"staged_bclt"` | Freeze host ephemeris/clocks; recompute BCLT scan, formBats, Shklovskii in JAX |
 | `full` | `"full"` | Unified in-graph clocks/SPK/EOP/IFTE/tropo/BCLT (oracle/dev only) |
 
+**`nonlinear_params` (orthogonal linearization):** pass
+`nonlinear_params=None|"binary"|"binary+"` to `open_session` /
+`TimingSession` (default `None`). This chooses how residual-delta JAX is
+computed — not which parameters are free. `None` keeps the native
+`residual_delta` graph (honoring `tempo2_native`). `"binary"` evaluates
+non-binary axes via a baked gauge-free Jacobian and binary axes via
+`BinaryDelayPlan` at frozen prebinary time (PX frozen in the plan).
+`"binary+"` is the same with PX live in the plan for Kopeikin (PM/sky stay
+frozen). When the residual-delta axis list has no binary names, both hybrid
+modes degenerate to pure `J @ δ` — so `"binary+"` live Kopeikin-PX requires
+at least one binary axis in that list (the usual PTA DDK case). Host
+`compute_residuals` is unchanged. See
+[`feature_hybrid_linear_binary.md`](feature_hybrid_linear_binary.md).
+
 Requirements for notebook integrators / `export_frozen_residual_model`:
 
 1. Call `session.compute_residuals(...)` (or `force_recompute=True` after upgrades) so

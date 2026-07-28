@@ -116,6 +116,18 @@ def __getattr__(name: str):
         from jug.fitting import residual_model
 
         return getattr(residual_model, name)
+    if name in (
+        "validate_nonlinear_params",
+        "is_hybrid_nonlinear_params",
+        "nonlinear_params_allowed_strings",
+        "warn_if_tempo2_native_ignored",
+        "NONLINEAR_PARAMS_BINARY",
+        "NONLINEAR_PARAMS_BINARY_PLUS",
+        "plan_live_keys",
+    ):
+        from jug.fitting import nonlinear_params
+
+        return getattr(nonlinear_params, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -131,4 +143,11 @@ __all__ = [
     "validate_tempo2_bclt_fixed_iter",
     "resolve_tempo2_jug_options",
     "resolve_tempo2_session_args",
+    "validate_nonlinear_params",
+    "is_hybrid_nonlinear_params",
+    "nonlinear_params_allowed_strings",
+    "warn_if_tempo2_native_ignored",
+    "NONLINEAR_PARAMS_BINARY",
+    "NONLINEAR_PARAMS_BINARY_PLUS",
+    "plan_live_keys",
 ]

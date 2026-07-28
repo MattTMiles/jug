@@ -53,12 +53,18 @@ class FrozenResidualModel:
     _residual_delta_jax_fn: Any  # jitted f(delta_native) -> dr (gauge-free)
     _residual_jacobian_native_fn: Any  # jitted jacfwd of the same core
     _native_chain_status: NativeChainStatus
+    nonlinear_params: str | None = None  # None | "binary" | "binary+"
 
     # ``reference_residuals_sec`` and ``subtract_tzr`` are recorded metadata.
     # The reference is host-gauged while ``residual_delta_jax`` is gauge-free;
     # combine them only via ``absolute_residuals_sec`` /
     # ``reconstruct_absolute_residuals``. ``reference_gauge`` carries the
     # normalized weights needed to reproduce a weighted mean.
+    #
+    # ``residual_jacobian_native()`` is jacfwd of the residual closure at the
+    # frozen reference — not a view of the baked analytic matrix. Under
+    # ``nonlinear_params="binary+"``, the PX column includes linearized
+    # live-plan Kopeikin and therefore differs from the baked J_PX alone.
 
     def residual_delta_jax(self, delta_native):
         return self._residual_delta_jax_fn(delta_native)
@@ -168,6 +174,7 @@ def export_frozen_residual_model(
         "toas": session.toas_data,
         "tempo2_native": getattr(session, "tempo2_native", None),
         "tempo2_jug_options": getattr(session, "tempo2_jug_options", None),
+        "nonlinear_params": getattr(session, "nonlinear_params", None),
     }
 
     runtime_fit_params = tuple(
@@ -182,6 +189,13 @@ def export_frozen_residual_model(
         tempo2_native=getattr(session, "tempo2_native", None),
         tempo2_jug_options=getattr(session, "tempo2_jug_options", None),
     )
+
+    from jug.fitting.nonlinear_params import validate_nonlinear_params
+
+    nonlinear_params = validate_nonlinear_params(
+        getattr(session, "nonlinear_params", None)
+    )
+    setup.nonlinear_params = nonlinear_params
 
     ref_params = _normalize_ref_params(session.params)
     ref_theta = np.array(
@@ -224,6 +238,8 @@ def export_frozen_residual_model(
         ref_params=ref_params,
         ref_theta=ref_theta,
         phase_mean_mode="none",
+        nonlinear_params=nonlinear_params,
+        residual_jacobian=None,
     )
 
     static = getattr(setup, "native_chain_static", None)
@@ -250,4 +266,5 @@ def export_frozen_residual_model(
         _residual_delta_jax_fn=residual_fn,
         _residual_jacobian_native_fn=jac_fn,
         _native_chain_status=native_chain_status,
+        nonlinear_params=nonlinear_params,
     )

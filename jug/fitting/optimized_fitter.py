@@ -415,6 +415,8 @@ class GeneralFitSetup:
     tempo2_jug_options: dict[str, Any] | None = None
     # Cached (core, residual_fn, jac_fn) bundles keyed by _residual_delta_jax_cache_key
     residual_delta_jax_cache: dict | None = None
+    # Residual linearization mode (None | "binary" | "binary+"); see nonlinear_params.py
+    nonlinear_params: str | None = None
 
 
 # =============================================================================
@@ -3309,7 +3311,7 @@ def _build_general_fit_setup_from_cache(
         enabled = {k: v for k, v in noise_config.enabled.items() if v}
         print(f"[FITTER] noise_config received, enabled: {list(enabled.keys())}")
 
-    return _build_setup_common(
+    setup = _build_setup_common(
         params=params_dict,
         fit_params=fit_params,
         toas_mjd=toas_mjd,
@@ -3329,6 +3331,12 @@ def _build_general_fit_setup_from_cache(
         tempo2_jug_options=tempo2_jug_options,
         fit_dmx=fit_dmx,
     )
+    from jug.fitting.nonlinear_params import validate_nonlinear_params
+
+    setup.nonlinear_params = validate_nonlinear_params(
+        session_cached_data.get("nonlinear_params", None)
+    )
+    return setup
 
 
 def fit_parameters_optimized_cached(

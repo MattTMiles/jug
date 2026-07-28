@@ -35,6 +35,7 @@ def open_session(
     engine_conventions: EngineConventionProfile | None = None,
     tempo2_native: str | None = None,
     tempo2_jug_options: dict[str, Any] | None = None,
+    nonlinear_params: str | None = None,
 ) -> TimingSession:
     """
     Open a timing session for repeated operations.
@@ -65,6 +66,10 @@ def open_session(
         Tempo2 options (``iers_policy``, ``bclt_fixed_iter``,
         ``force_cache_refresh``, ``require_native_cache``).  Passed through to
         downstream session and fit functions; ``None`` uses built-in defaults.
+    nonlinear_params : str or None, optional
+        Residual linearization mode: ``None`` (native residual_delta graph),
+        ``"binary"``, or ``"binary+"``. See ``feature_hybrid_linear_binary.md``.
+        Affects residual-delta JAX only; host ``compute_residuals`` is unchanged.
     
     Returns
     -------
@@ -91,6 +96,7 @@ def open_session(
         engine_conventions=engine_conventions,
         tempo2_native=tempo2_native,
         tempo2_jug_options=tempo2_jug_options,
+        nonlinear_params=nonlinear_params,
     )
 
 

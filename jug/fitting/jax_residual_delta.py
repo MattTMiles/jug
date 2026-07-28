@@ -16,6 +16,18 @@ model; expect multi-minute JIT compile on first call.
 **Host vs fit model split:** production host residuals (``compute_residuals_simple``)
 use Taylor emission spin for TRACK −2 / absent TRACK; this module uses native
 ``phase5@bbat`` in JAX. See ``jug.residuals.tempo2.host`` routing contract.
+
+**``nonlinear_params`` (caller-declared linearization):** ``None`` keeps the
+native residual_delta graph above. ``"binary"`` / ``"binary+"`` select the
+hybrid formula Δr = J_lin @ δ_lin + phase(Δbinary at frozen t_pre) with
+gauge-free analytic bake-in J = -M (native-delta units). ``"binary"`` freezes
+all astrometry including PX inside the binary/Kopeikin call; ``"binary+"``
+keeps PX live in the plan (PM/sky remain frozen). When the residual-delta
+axis list has no binary names, both hybrid modes degenerate to pure
+``J @ δ`` — live Kopeikin-PX for ``"binary+"`` therefore requires at least
+one binary axis in that list (typical PTA DDK sampling). JUG validates and
+executes; it does not auto-select a mode from the δ-axis list. No open
+parameter lists. See ``feature_hybrid_linear_binary.md``.
 """
 
 from __future__ import annotations
@@ -125,6 +137,7 @@ def _phase_residual_delta_jax(
     *,
     mean_mode: str,
     f0,
+    spin_term_deltas: Sequence | None = None,
 ):
     """Precision-safe JAX residual delta from spin and delay changes.
 
@@ -132,7 +145,9 @@ def _phase_residual_delta_jax(
     absolute spin phase.  This function only forms small differences relative to
     the reference state:
 
-    * spin changes are ``(F_k - F_k_ref) * x**(k+1) / (k+1)!``;
+    * spin changes are ``δF_k * x**(k+1) / (k+1)!`` (prefer exact
+      ``spin_term_deltas`` over ``(F_k - F_k_ref)`` to avoid float64
+      ``(θ+δ)-θ`` cancellation);
     * delay changes use the exact Taylor difference ``phase(x - d) - phase(x)``
       with the current spin coefficients.
 
@@ -144,20 +159,26 @@ def _phase_residual_delta_jax(
     weights = jnp.asarray(weights, dtype=jnp.float64)
 
     n_coeffs = max(len(ref_f_coeffs), len(f_coeffs))
+    if spin_term_deltas is not None:
+        n_coeffs = max(n_coeffs, len(spin_term_deltas))
     spin_phase_delta = jnp.zeros_like(x)
     for i in range(n_coeffs):
-        ref_coeff = (
-            jnp.asarray(ref_f_coeffs[i], dtype=jnp.float64)
-            if i < len(ref_f_coeffs)
-            else jnp.asarray(0.0, dtype=jnp.float64)
-        )
-        coeff = (
-            jnp.asarray(f_coeffs[i], dtype=jnp.float64)
-            if i < len(f_coeffs)
-            else jnp.asarray(0.0, dtype=jnp.float64)
-        )
+        if spin_term_deltas is not None and i < len(spin_term_deltas):
+            dF = jnp.asarray(spin_term_deltas[i], dtype=jnp.float64)
+        else:
+            ref_coeff = (
+                jnp.asarray(ref_f_coeffs[i], dtype=jnp.float64)
+                if i < len(ref_f_coeffs)
+                else jnp.asarray(0.0, dtype=jnp.float64)
+            )
+            coeff = (
+                jnp.asarray(f_coeffs[i], dtype=jnp.float64)
+                if i < len(f_coeffs)
+                else jnp.asarray(0.0, dtype=jnp.float64)
+            )
+            dF = coeff - ref_coeff
         spin_phase_delta = spin_phase_delta + (
-            (coeff - ref_coeff) * (x ** (i + 1)) / float(math.factorial(i + 1))
+            dF * (x ** (i + 1)) / float(math.factorial(i + 1))
         )
 
     delay_phase_delta = jnp.zeros_like(x)
@@ -380,6 +401,227 @@ def _binary_delay_change_jax(params: dict, setup: "GeneralFitSetup", *, binary_p
     return new_binary - jnp.asarray(setup.initial_binary_delay, dtype=jnp.float64)
 
 
+_HYBRID_BINARY_CACHE_MSG = (
+    "hybrid nonlinear_params requires prebinary_delay_sec and "
+    "initial_binary_delay on setup (call compute_residuals before "
+    "building the residual-delta closure)."
+)
+
+
+def _validate_hybrid_binary_setup(
+    setup: "GeneralFitSetup",
+    fit_params: Sequence[str],
+    binary_indices: tuple[int, ...],
+) -> None:
+    """Raise if hybrid binary axes lack cache / setup coverage (§4.3)."""
+    if not binary_indices:
+        return
+    if setup.prebinary_delay_sec is None:
+        raise ValueError(_HYBRID_BINARY_CACHE_MSG)
+    if setup.initial_binary_delay is None:
+        raise ValueError(_HYBRID_BINARY_CACHE_MSG)
+    setup_bin = {str(p).upper() for p in setup.binary_params}
+    delta_bin = {str(fit_params[i]).upper() for i in binary_indices}
+    if not delta_bin <= setup_bin:
+        raise ValueError(
+            "setup.binary_params must cover all binary delta_params "
+            f"({sorted(delta_bin)} vs setup {sorted(setup_bin)})"
+        )
+
+_FROZEN_ASTROMETRY_KEYS: tuple[str, ...] = (
+    "RAJ",
+    "DECJ",
+    "PMRA",
+    "PMDEC",
+    "PX",
+    "_raj_rad",
+    "_decj_rad",
+    "ELONG",
+    "ELAT",
+    "PMELONG",
+    "PMELAT",
+    "LAMBDA",
+    "BETA",
+    "PMLAMBDA",
+    "PMBETA",
+    "_ecliptic_lon_deg",
+    "_ecliptic_lat_deg",
+    "_ecliptic_pm_lon",
+    "_ecliptic_pm_lat",
+)
+
+_LIVE_PX_KEYS: frozenset[str] = frozenset({"PX"})
+
+
+def _bake_residual_jacobian_native(
+    setup: "GeneralFitSetup",
+    delta_params: Sequence[str],
+) -> np.ndarray:
+    """Gauge-free J in native-delta units, session row order (§2.2)."""
+    from jug.fitting.optimized_fitter import _compute_designmatrix_from_setup
+    from jug.utils.units import native_to_fit_value
+
+    names = tuple(str(name).upper() for name in delta_params)
+    M_fit = np.asarray(
+        _compute_designmatrix_from_setup(setup, list(names)),
+        dtype=np.float64,
+    )  # raw fitter M: uncentered, unweighted, fit units (HR1)
+    J_native = np.empty_like(M_fit)
+    for col, name in enumerate(names):
+        # Δr ≈ -M_fit @ δ_fit, δ_native = δ_fit / factor
+        # ⇒ J_native = -M_fit * factor with factor = native_to_fit_value(name, 1.0)
+        factor = float(native_to_fit_value(name, 1.0))
+        J_native[:, col] = -M_fit[:, col] * factor
+    return J_native
+
+
+def _params_with_frozen_astrometry(
+    params_pert: Mapping[str, object],
+    ref_params: Mapping[str, object],
+    setup: "GeneralFitSetup",
+    *,
+    live_px: bool,
+) -> dict[str, object]:
+    """Hybrid binary call: freeze astrometry; optionally keep live PX."""
+    out = dict(params_pert)
+    keys = set(_FROZEN_ASTROMETRY_KEYS)
+    keys.update(str(n).upper() for n in setup.astrometry_params)
+    if live_px:
+        keys -= _LIVE_PX_KEYS
+    for key in keys:
+        if key in ref_params:
+            out[key] = ref_params[key]
+    return out
+
+
+def _hybrid_delta_partition(delta_params: Sequence[str]) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Partition δ axes into binary vs linear indices (§2.1)."""
+    from jug.model.parameter_spec import get_binary_params_from_list
+
+    names = tuple(str(p).upper() for p in delta_params)
+    binary_names = set(get_binary_params_from_list(list(names)))
+    I_bin = tuple(i for i, p in enumerate(names) if p in binary_names)
+    I_lin = tuple(i for i in range(len(names)) if i not in set(I_bin))
+    return I_bin, I_lin
+
+
+def _compute_residual_delta_jax_hybrid(
+    params_pert: dict,
+    setup: "GeneralFitSetup",
+    *,
+    binary_plan,
+    ref_f_terms: Sequence[float],
+    residual_jacobian: jnp.ndarray,
+    linear_indices: tuple[int, ...],
+    binary_indices: tuple[int, ...],
+    delta_theta: jnp.ndarray,
+    ref_params: Mapping[str, object],
+    live_px: bool,  # False → "binary"; True → "binary+"
+):
+    """Hybrid: gauge-free J_lin @ δ_lin + frozen-prebinary binary block."""
+    delta_theta = jnp.asarray(delta_theta, dtype=jnp.float64).reshape(-1)
+    J = jnp.asarray(residual_jacobian, dtype=jnp.float64)
+
+    if linear_indices:
+        idx = jnp.asarray(linear_indices, dtype=jnp.int32)
+        residual = J[:, idx] @ delta_theta[idx]
+    else:
+        residual = jnp.zeros(J.shape[0], dtype=jnp.float64)
+
+    if binary_indices:
+        params_for_binary = _params_with_frozen_astrometry(
+            params_pert, ref_params, setup, live_px=live_px
+        )
+        binary_delay_change = _binary_delay_change_jax(
+            params_for_binary, setup, binary_plan=binary_plan
+        )
+        if binary_delay_change is None:
+            raise ValueError(
+                "hybrid binary block returned None despite non-empty I_bin; "
+                "check setup.initial_binary_delay and cache."
+            )
+        dt_base = (
+            setup.dt_sec_ld
+            if setup.dt_sec_ld is not None
+            else setup.dt_sec_cached
+        )
+        f0_ref = jnp.asarray(ref_f_terms[0], dtype=jnp.float64)
+        residual = residual + _phase_residual_delta_jax(
+            np.asarray(dt_base, dtype=np.float64),
+            binary_delay_change,
+            ref_f_terms,
+            ref_f_terms,  # frozen spin
+            jnp.asarray(setup.weights, dtype=jnp.float64),
+            mean_mode="none",  # HR3
+            f0=f0_ref,
+        )
+    return residual
+
+
+def _residual_delta_core_for_setup_hybrid(
+    *,
+    setup: "GeneralFitSetup",
+    fit_params: Sequence[str],
+    ref_params: Mapping[str, object],
+    ref_theta: np.ndarray,
+    ref_f_terms: tuple[float, ...],
+    binary_plan,
+    ecliptic_coords: bool,
+    obl_rad: float,
+    ecliptic_init: dict,
+    native_family: str,
+    residual_jacobian: np.ndarray,
+    linear_indices: tuple[int, ...],
+    binary_indices: tuple[int, ...],
+    live_px: bool,
+):
+    """Un-jitted hybrid residual-delta closure."""
+    J_const = np.asarray(residual_jacobian, dtype=np.float64)
+
+    def core(delta_theta):
+        params_pert = _build_params_from_delta(
+            ref_params,
+            fit_params,
+            ref_theta,
+            delta_theta,
+            ecliptic_coords=ecliptic_coords,
+            obl_rad=obl_rad,
+            ecliptic_init=ecliptic_init,
+            native_family=native_family,
+        )
+        return _compute_residual_delta_jax_hybrid(
+            params_pert,
+            setup,
+            binary_plan=binary_plan,
+            ref_f_terms=ref_f_terms,
+            residual_jacobian=J_const,
+            linear_indices=linear_indices,
+            binary_indices=binary_indices,
+            delta_theta=delta_theta,
+            ref_params=ref_params,
+            live_px=live_px,
+        )
+
+    return core
+
+
+def _exact_spin_term_deltas(
+    fit_params: Sequence[str],
+    delta_theta,
+    n_terms: int,
+) -> list:
+    """Exact δF_k from the δ vector (avoids float64 (θ+δ)-θ cancellation)."""
+    delta_theta = jnp.asarray(delta_theta, dtype=jnp.float64).reshape(-1)
+    deltas: list = [jnp.asarray(0.0, dtype=jnp.float64) for _ in range(n_terms)]
+    for idx, name in enumerate(fit_params):
+        param_upper = str(name).upper()
+        if param_upper.startswith("F") and param_upper[1:].isdigit():
+            order = int(param_upper[1:])
+            if 0 <= order < n_terms:
+                deltas[order] = delta_theta[idx]
+    return deltas
+
+
 def _compute_residual_delta_jax(
     params_ref: dict,
     params_pert: dict,
@@ -390,12 +632,25 @@ def _compute_residual_delta_jax(
     phase_mean_mode: str,
     binary_plan=None,
     delay_model: str = "native",
+    fit_params: Sequence[str] | None = None,
+    delta_theta=None,
 ):
     """Residual delta (perturbed - reference) through JUG's JAX forward model."""
     use_native_tempo2 = (
         delay_model != "simplified"
         and normalize_compatibility_mode(str(getattr(setup, "compatibility", ""))) == "tempo2"
     )
+    f_terms = _spin_terms_from_params(params_pert)
+    spin_deltas = None
+    if fit_params is not None and delta_theta is not None:
+        n_terms = max(len(ref_f_terms), len(f_terms))
+        spin_deltas = _exact_spin_term_deltas(fit_params, delta_theta, n_terms)
+        # Freeze F0 divisor at the reference for spin-linear consistency with
+        # analytic J = -M (bake / hybrid linear block).
+        f0_div = jnp.asarray(ref_f_terms[0], dtype=jnp.float64)
+    else:
+        f0_div = _param_scalar(params_pert, "F0", f_terms[0])
+
     if use_native_tempo2:
         if native_pack is None:
             static = getattr(setup, "native_chain_static", None)
@@ -420,7 +675,6 @@ def _compute_residual_delta_jax(
         total_delay_change = native_delay_change + side_delay_change
         if binary_delay_change is not None:
             total_delay_change = total_delay_change + binary_delay_change
-        f_terms = _spin_terms_from_params(params_pert)
         return _phase_residual_delta_jax(
             np.asarray(setup.dt_sec_cached, dtype=np.float64),
             total_delay_change,
@@ -428,7 +682,8 @@ def _compute_residual_delta_jax(
             f_terms,
             jnp.asarray(setup.weights, dtype=jnp.float64),
             mean_mode=phase_mean_mode,
-            f0=_param_scalar(params_pert, "F0", f_terms[0]),
+            f0=f0_div,
+            spin_term_deltas=spin_deltas,
         )
 
     del native_pack
@@ -447,7 +702,6 @@ def _compute_residual_delta_jax(
         binary_plan=binary_plan,
     )
 
-    f_terms = _spin_terms_from_params(params_pert)
     return _phase_residual_delta_jax(
         dt_base,
         delay_change,
@@ -455,7 +709,8 @@ def _compute_residual_delta_jax(
         f_terms,
         weights,
         mean_mode=phase_mean_mode,
-        f0=_param_scalar(params_pert, "F0", f_terms[0]),
+        f0=f0_div,
+        spin_term_deltas=spin_deltas,
     )
 
 
@@ -508,6 +763,8 @@ def _residual_delta_core_for_setup(
             phase_mean_mode=phase_mean_mode,
             binary_plan=binary_plan,
             delay_model=delay_model,
+            fit_params=fit_params,
+            delta_theta=delta_theta,
         )
 
     return core
@@ -521,8 +778,26 @@ def _residual_delta_jax_cache_key(
     ref_f_terms: tuple[float, ...],
     phase_mean_mode: str,
     delay_model: str = "native",
+    nonlinear_params: str | None = None,
+    residual_jacobian: np.ndarray | None = None,
 ) -> tuple:
     """Hashable key for session-scoped residual/Jacobian JIT bundles."""
+    from jug.fitting.nonlinear_params import (
+        is_hybrid_nonlinear_params,
+        validate_nonlinear_params,
+    )
+
+    mode = validate_nonlinear_params(nonlinear_params)
+    J_shape = None
+    J_digest = None
+    if is_hybrid_nonlinear_params(mode):
+        if residual_jacobian is None:
+            raise ValueError(
+                "hybrid residual_delta cache key requires a baked residual_jacobian"
+            )
+        J_arr = np.ascontiguousarray(residual_jacobian, dtype=np.float64)
+        J_shape = J_arr.shape
+        J_digest = hash(J_arr.tobytes())  # host-side only
     return (
         fit_params,
         tuple(float(x) for x in ref_theta),
@@ -532,6 +807,9 @@ def _residual_delta_jax_cache_key(
         str(getattr(setup, "tempo2_native", None)),
         str(setup.compatibility),
         id(getattr(setup, "native_chain_static", None)),
+        mode,
+        J_shape,
+        J_digest,
     )
 
 
@@ -543,15 +821,50 @@ def _build_residual_delta_jax_bundle(
     ref_theta: np.ndarray,
     phase_mean_mode: str,
     delay_model: str = "native",
+    nonlinear_params: str | None = None,
+    residual_jacobian: np.ndarray | None = None,
 ):
     """Build shared residual core and jitted residual / Jacobian evaluators."""
     from jug.fitting.binary_delay_plan import resolve_binary_structure
+    from jug.fitting.nonlinear_params import (
+        NONLINEAR_PARAMS_BINARY_PLUS,
+        is_hybrid_nonlinear_params,
+        validate_nonlinear_params,
+    )
 
+    mode = validate_nonlinear_params(nonlinear_params)
     ref_f_terms = tuple(float(x) for x in _spin_terms_from_params(ref_params))
     binary_plan = resolve_binary_structure(
         ref_params, fit_params, obs_pos_ls=getattr(setup, "ssb_obs_pos_ls", None)
     )
     ecliptic_coords, obl_rad, ecliptic_init, native_family = _ecliptic_session_metadata(ref_params)
+
+    if is_hybrid_nonlinear_params(mode):
+        I_bin, I_lin = _hybrid_delta_partition(fit_params)
+        _validate_hybrid_binary_setup(setup, fit_params, I_bin)
+        if residual_jacobian is None:
+            residual_jacobian = _bake_residual_jacobian_native(setup, fit_params)
+        else:
+            residual_jacobian = np.asarray(residual_jacobian, dtype=np.float64)
+        live_px = mode == NONLINEAR_PARAMS_BINARY_PLUS
+        core = _residual_delta_core_for_setup_hybrid(
+            setup=setup,
+            fit_params=fit_params,
+            ref_params=ref_params,
+            ref_theta=ref_theta,
+            ref_f_terms=ref_f_terms,
+            binary_plan=binary_plan,
+            ecliptic_coords=ecliptic_coords,
+            obl_rad=obl_rad,
+            ecliptic_init=ecliptic_init,
+            native_family=native_family,
+            residual_jacobian=residual_jacobian,
+            linear_indices=I_lin,
+            binary_indices=I_bin,
+            live_px=live_px,
+        )
+        return core, jax.jit(core), jax.jit(jax.jacfwd(core))
+
     from jug.residuals.engine_conventions import normalize_compatibility_mode
 
     native_pack = None
@@ -587,6 +900,8 @@ def _prepare_residual_delta_jax(
     ref_theta: np.ndarray | None = None,
     phase_mean_mode: str | None = None,
     delay_model: str = "native",
+    nonlinear_params: str | None = None,
+    residual_jacobian: np.ndarray | None = None,
 ):
     """Build or reuse session-cached residual core and JIT evaluators.
 
@@ -595,6 +910,10 @@ def _prepare_residual_delta_jax(
     is not consulted here.
     """
     from jug.fitting.forward_delay import _assert_no_epoch_fit_params
+    from jug.fitting.nonlinear_params import (
+        is_hybrid_nonlinear_params,
+        validate_nonlinear_params,
+    )
 
     fit_params = tuple(str(name).upper() for name in fit_params)
     _assert_no_epoch_fit_params(fit_params)
@@ -609,9 +928,32 @@ def _prepare_residual_delta_jax(
     if ref_theta.shape != (len(fit_params),):
         raise ValueError("ref_theta shape mismatch with fit_params.")
 
+    # Omitted / explicit None both mean "use setup.nonlinear_params". To force
+    # native while setup still says hybrid, mutate setup.nonlinear_params first.
+    if nonlinear_params is None:
+        mode = validate_nonlinear_params(getattr(setup, "nonlinear_params", None))
+    else:
+        mode = validate_nonlinear_params(nonlinear_params)
+    setup.nonlinear_params = mode
+
     ref_f_terms = tuple(float(x) for x in _spin_terms_from_params(ref_params))
     if phase_mean_mode is None:
         phase_mean_mode = "none"
+    if is_hybrid_nonlinear_params(mode):
+        if phase_mean_mode != "none":
+            raise ValueError(
+                "hybrid nonlinear_params forces phase_mean_mode='none' "
+                f"(got {phase_mean_mode!r})"
+            )
+        I_bin, _I_lin = _hybrid_delta_partition(fit_params)
+        # Validate binary cache before design-matrix bake so missing
+        # prebinary yields _HYBRID_BINARY_CACHE_MSG, not a bake-path error.
+        _validate_hybrid_binary_setup(setup, fit_params, I_bin)
+        if residual_jacobian is None:
+            residual_jacobian = _bake_residual_jacobian_native(setup, fit_params)
+        else:
+            residual_jacobian = np.asarray(residual_jacobian, dtype=np.float64)
+
     cache_key = _residual_delta_jax_cache_key(
         setup,
         fit_params=fit_params,
@@ -619,6 +961,8 @@ def _prepare_residual_delta_jax(
         ref_f_terms=ref_f_terms,
         phase_mean_mode=phase_mean_mode,
         delay_model=delay_model,
+        nonlinear_params=mode,
+        residual_jacobian=residual_jacobian,
     )
     cache = setup.residual_delta_jax_cache
     if cache is None:
@@ -635,6 +979,8 @@ def _prepare_residual_delta_jax(
         ref_theta=ref_theta,
         phase_mean_mode=phase_mean_mode,
         delay_model=delay_model,
+        nonlinear_params=mode,
+        residual_jacobian=residual_jacobian,
     )
     cache[cache_key] = bundle
     return bundle
@@ -647,12 +993,18 @@ def make_residual_delta_jax_fn(
     ref_params: Mapping[str, object] | None = None,
     ref_theta: np.ndarray | None = None,
     phase_mean_mode: str = "none",
+    nonlinear_params: str | None = None,
+    residual_jacobian: np.ndarray | None = None,
 ):
     """Return the gauge-free residual-delta function for a frozen fit setup.
 
     Defaults to ``phase_mean_mode="none"``: a public residual_delta constructor
     must not silently apply a reporting gauge. Pass an explicit mode only for
     host/reporting parity callers that need a centered graph.
+
+    ``nonlinear_params`` selects native (``None``) or hybrid (``"binary"`` /
+    ``"binary+"``) linearization. When omitted, ``setup.nonlinear_params`` is
+    used. Hybrid forces ``phase_mean_mode="none"``.
     """
     _, residual_fn, _ = _prepare_residual_delta_jax(
         setup=setup,
@@ -660,6 +1012,8 @@ def make_residual_delta_jax_fn(
         ref_params=ref_params,
         ref_theta=ref_theta,
         phase_mean_mode=phase_mean_mode,
+        nonlinear_params=nonlinear_params,
+        residual_jacobian=residual_jacobian,
     )
     return residual_fn
 

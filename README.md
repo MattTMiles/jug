@@ -85,7 +85,7 @@ Load par and tim files via **File > Open .par** and **File > Open .tim**, select
 To launch with a specific pulsar:
 
 ```bash
-jug-gui --par J1909-3744.par --tim J1909-3744.tim
+jug-gui --compatibility tempo2 --tempo2-native fixed_state_stripped pulsar.par pulsar.tim
 ```
 
 ## Examples
@@ -106,6 +106,197 @@ See [`notebooks/jug_example_j1909.ipynb`](notebooks/jug_example_j1909.ipynb) for
 - NumPy, SciPy, Astropy
 - PySide6 + pyqtgraph (GUI)
 - matplotlib (plotting)
+
+### Optional Tempo2 / libstempo testing
+
+Tempo2-compatible tests use a subprocess sandbox around `libstempo` so crashes
+in Tempo2 do not kill the pytest process. To run these tests, install Tempo2
+and libstempo in the active environment and make sure Tempo2 runtime data are
+available:
+
+```bash
+conda install -c conda-forge tempo2 libstempo
+# Use the installed T2 *runtime* tree (contains observatory/, clocks/, etc.),
+# not the tempo2 source checkout.
+export TEMPO2=/path/to/T2runtime
+PYTHONPATH=.:tests TEMPO2=$TEMPO2 \
+  pytest tests/test_tempo2_j0613_fast_gates.py \
+         tests/test_tempo2_simulated_fixtures.py \
+  -q -o addopts='' --no-cov -m 'not slow'
+```
+
+The default tempo2 parity fixtures live in `tests/data_tempo2_sim/`: small
+libstempo-generated par/tim pairs with 5–12 TOAs. Real excerpts live in
+`tests/data_tempo2/` for TIM-format edge cases and historical probes. Its manifest
+includes:
+
+- Case A (TCB regression fixtures),
+- Case B (NG5 equatorial TDB),
+- Case C (NG5 ecliptic cross-engine TDB).
+
+`tests/tempo2_fixtures.py` exposes helpers to select parity fixtures by case
+for CI and local debugging.
+
+Avoid using `pytest tests/ -k "tempo2"` as a development loop: it selects hundreds of
+oracle-heavy tests and can run for hours. Prefer the simulated fixtures, wsrt167, and
+J0613 fast gates, then expand to a named real pulsar or fixture only when needed.
+Full wsrt167 (167 TOAs), full J0613/IPTA, and NG5 625-TOA oracle tests are marked
+`slow` and excluded by the command above. The tiny J0613 addsat regression is also
+currently marked `slow` because its JUG path is several minutes despite only using
+11 TOAs.
+
+### Pint-mode fast CI
+
+Full tempo2-dev supports both modes. For quick pint-family regression (no tempo2 modules required):
+
+```bash
+python -m pytest tests/ -m "not tempo2 and not dev_oracle" -q --no-cov
+```
+
+MPTA regression fixtures live under `tests/data_mpta/` (see `manifest.json`).
+Golden PINT parity sets live under `tests/data_golden/`. Tests marked `slow` or
+`dev_oracle` are excluded from the command above.
+
+### Compatibility modes and residual conventions
+
+JUG exposes two compatibility families:
+
+- `compatibility="pint"`: PINT-family runtime conventions; host reporting applies
+  a weighted phase gauge (`REFPHS`-style mean).
+- `compatibility="tempo2"`: tempo2-family runtime conventions; host reporting
+  applies an unweighted phase gauge (tempo2 `REFPHS MEAN`).
+
+**Phase gauge.** Engines export gauge-free residual deltas and
+Jacobians. The one-dimensional phase freedom is fixed only at reporting/parity
+boundaries by `jug.residuals.gauge.apply_phase_gauge` (modes `"none"`,
+`"mean"`, `"constant"`). Linear objects:
+
+| Symbol | Public name | Meaning |
+|---|---|---|
+| \(M\) | `design_matrix` | Delay tangent (uncentered, unweighted, fitter sign): \(r(\theta+\delta)\approx r(\theta)-M\delta\) |
+| \(J\) | `residual_jacobian` | Residual tangent: \(J=-M\) on a gauge-free graph |
+| — | phase gauge | Choice of residual representative along \(\mathbf{1}\); not part of any engine product |
+
+See [`feature_phase_gauge.md`](feature_phase_gauge.md).
+
+> **On "picosecond agreement with PINT":** this holds for *host residuals at
+> fixed parameters with identical ephemeris/clock/timescale inputs* (a shared
+> phase-precision floor, ~5 ps; paper Fig. 7). It is **not** a claim of absolute
+> (vs-nature) accuracy, and it is distinct from the internal JAX-vs-NumPy
+> picosecond tests. With unmatched clock/ephemeris files (the CI default) the
+> difference is tens of ns, dominated by a DC phase-offset convention plus
+> clock-file drift — not a timing-model disagreement. See
+> [`PARITY_THEORY.md`](PARITY_THEORY.md) §"What 'picosecond
+> compatibility' means (and does not)".
+
+When evaluating Tempo2 parity, use **raw pre-fit residuals** only (no post-hoc
+mean centering). This is the acceptance metric used by
+`tests/test_tempo2_residual_parity.py`.
+
+For notebook diagnostics, mean-gauged deltas are useful only for
+PINT-family-vs-PINT-family comparisons; tempo2-labeled comparisons should stay
+raw.
+
+**Nonlinear / residual-Jacobian / notebook integrators:** green residual tests on
+curated fixtures do **not** mean tempo2 mode is ready for JAX-traced likelihoods
+or IPTA-scale workloads. The analytic fitter basis `M` (`compute_designmatrix`)
+and the residual Jacobian `J` (`FrozenResidualModel.residual_jacobian_native`)
+are different objects: `r(theta+delta) ~= r(theta) - M @ delta`, while
+`J = jacfwd(residual_delta)(0) = -M` on the gauge-free export graph. See
+[`PARITY_THEORY.md`](PARITY_THEORY.md) for theory/policy and
+[`PARITY_ROADMAP.md`](PARITY_ROADMAP.md) for gap analysis.
+
+### Tempo2-native JAX fitting (graph modes, 2026-07-07)
+
+Analytic WLS uses the PINT-style fitter basis `M` (fast, independent of graph
+mode). Residual Jacobians come from `jacfwd(residual_delta)` on the selected
+tempo2 JAX graph via `export_frozen_residual_model` / `FrozenResidualModel`.
+
+Production tempo2 `residual_delta_jax` always uses the tempo2-native JAX graph.
+Select the graph with session kwargs:
+
+```python
+session = TimingSession(
+    par, tim,
+    compatibility="tempo2",
+    tempo2_native="fixed_state_stripped",  # fixed_state_bclt | staged_bclt | full
+    tempo2_jug_options={
+        "iers_policy": "warn",       # or "strict"
+        "bclt_fixed_iter": 12,
+        "force_cache_refresh": False,
+        "require_native_cache": True,
+    },
+)
+state = export_frozen_residual_model(session, fit_params=["F0", "RAJ", "DM"])
+```
+
+| Mode | `tempo2_native` | Role |
+|------|-----------------|------|
+| `fixed_state_stripped` | default (omit or explicit) | Same host freeze + BBAT lite kernel (fast NUTS / interactive default) |
+| `fixed_state_bclt` | `"fixed_state_bclt"` | Freeze host state + reference BCLT `dt_ssb`; one-pass BCLT + full tail (envelope reference) |
+| `staged_bclt` | `"staged_bclt"` | Freeze host ephemeris/clocks; recompute BCLT scan, formBats, Shklovskii in JAX |
+| `full` | `"full"` | Unified in-graph clocks/SPK/EOP/IFTE/tropo/BCLT (oracle/dev only) |
+
+**`nonlinear_params` (orthogonal linearization):** pass
+`nonlinear_params=None|"binary"|"binary+"` to `open_session` /
+`TimingSession` (default `None`). This chooses how residual-delta JAX is
+computed — not which parameters are free. `None` keeps the native
+`residual_delta` graph (honoring `tempo2_native`). `"binary"` evaluates
+non-binary axes via a baked gauge-free Jacobian and binary axes via
+`BinaryDelayPlan` at frozen prebinary time (PX frozen in the plan).
+`"binary+"` is the same with PX live in the plan for Kopeikin (PM/sky stay
+frozen). When the residual-delta axis list has no binary names, both hybrid
+modes degenerate to pure `J @ δ` — so `"binary+"` live Kopeikin-PX requires
+at least one binary axis in that list (the usual PTA DDK case). Host
+`compute_residuals` is unchanged. See
+[`feature_hybrid_linear_binary.md`](feature_hybrid_linear_binary.md).
+
+Requirements for notebook integrators / `export_frozen_residual_model`:
+
+1. Call `session.compute_residuals(...)` (or `force_recompute=True` after upgrades) so
+   the cache includes `term_diagnostics['tempo2_obs_state']`.
+2. `_build_general_fit_setup_from_cache` must pass `term_diagnostics` and `toas` into
+   `GeneralFitSetup.native_chain_static`.
+
+IERS preflight: **warn** in general use; **strict fail** under pytest (auto-detected) or
+`tempo2_jug_options={"iers_policy": "strict"}`.
+
+Fast hybrid regression probes:
+
+```bash
+cd ref-packages/jug
+JAX_ENABLE_X64=1 PYTHONPATH=.:tests python3 -m pytest \
+  tests/test_tempo2_obs_state_export.py \
+  tests/test_tempo2_staging_host_frozen.py \
+  tests/test_tempo2_residual_delta_jax.py -q
+```
+
+See [`jug/testing/DEV_ORACLE.md`](jug/testing/DEV_ORACLE.md) for the full parity table.
+
+**Tempo2 parity status (2026-07-09):** Host residuals remain sub-ns to low-ns on
+gated fixtures (NG5, EPTA J0613 full, wsrt167 TRACK −2). JAX native delay chain on
+wsrt167 closes pytempo for formBats delay physics, JAX `bbat_mjd`, stripped lite BBAT,
+and `torb_sec` (all < 1 ns RMS). Residual-Jacobian gates cover F0/RAJ/DECJ/DM on
+wsrt167 (staged/fixed/stripped), binary columns on `epta_j1909_t2`, and F0 on
+`epta_j0613_addsat_min`. `full` graph mode has component parity CI (< 1 ns).
+Remaining: `ppta_j1741_ell1` host debt (~5.5 ns), `J0900-3144` TDB probe, model-epoch
+IFTE batCorr scalar (~272 ns, pinned), and fuller residual-Jacobian coverage.
+Details: [`PARITY_ROADMAP.md`](PARITY_ROADMAP.md).
+
+Test-data policy, provenance, and fixture-size guidance live in
+[`TEST_DATA_MANIFESTO.md`](TEST_DATA_MANIFESTO.md).
+
+### Design-matrix unit convention
+
+`compute_designmatrix()` returns the raw analytic fitter basis `M` with sign
+contract `r(theta+delta) ~= r(theta) - M @ delta`, in seconds per parameter unit
+using a PINT/Vela-compatible unit vocabulary (`str(PINT param.units)` style).
+The returned `DesignMatrixResult.column_units` are parseable Astropy unit
+strings. Residual Jacobians are never returned under a design-matrix name.
+
+When comparing against raw Tempo2/libstempo design matrices, apply the explicit
+unit translation first (for example RAJ/DECJ are exported as hourangle/deg
+convention at the API boundary).
 
 ## Hardware requirements
 - JUG needs longdouble precision for some of its calculations. For that reason, it must be run on hardware that allows for this. This means that Apple Silicon chips can not run this software without hitting numerical precision errors.

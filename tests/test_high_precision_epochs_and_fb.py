@@ -3,11 +3,14 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from jug.io.par_reader import get_longdouble, parse_par_file
 from jug.io.par_writer import write_par_file
 from jug.model.parameter_spec import get_binary_params_from_list, get_spec, validate_fit_param
 from jug.utils.timescales import convert_par_params_to_tdb, scale_parameter_tcb_to_tdb
+
+pytestmark = pytest.mark.smoke
 
 
 def test_arbitrary_fb_is_binary_fittable_and_writable(tmp_path):

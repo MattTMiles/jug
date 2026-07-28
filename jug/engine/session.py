@@ -19,8 +19,14 @@ Performance Impact:
 
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
 import numpy as np
 from astropy.time import Time
+
+from jug.residuals.engine_conventions import (
+    EngineConventionProfile,
+    validate_engine_profile_matches_compatibility,
+)
 
 # Import existing JUG modules
 from jug.io.par_reader import parse_par_file
@@ -29,6 +35,8 @@ from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.fitting.optimized_fitter import (
     fit_parameters_optimized,
     _build_general_fit_setup_from_cache,
+    _compute_full_model_residuals,
+    _update_param,
     fit_parameters_optimized_cached
 )
 
@@ -66,7 +74,12 @@ class TimingSession:
         par_file: Path | str,
         tim_file: Path | str,
         clock_dir: Optional[str] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        compatibility: str = "pint",
+        engine_conventions: EngineConventionProfile | None = None,
+        tempo2_native: str | None = None,
+        tempo2_jug_options: dict | None = None,
+        nonlinear_params: str | None = None,
     ):
         """
         Initialize a timing session.
@@ -81,31 +94,53 @@ class TimingSession:
             Directory containing clock files
         verbose : bool, default False
             Print status messages
+        nonlinear_params : str or None, optional
+            Residual linearization mode: ``None`` (native), ``"binary"``, or
+            ``"binary+"``. Affects residual-delta JAX only; host absolute
+            residuals are unchanged.
         """
         self.par_file = Path(par_file)
         self.tim_file = Path(tim_file)
         self.clock_dir = clock_dir
         self.verbose = verbose
-        
+        self.compatibility = compatibility
+        self.engine_conventions = engine_conventions
+        from jug.timing import resolve_tempo2_session_args
+        from jug.fitting.nonlinear_params import (
+            validate_nonlinear_params,
+            warn_if_tempo2_native_ignored,
+        )
+
+        self.tempo2_native, self.tempo2_jug_options = resolve_tempo2_session_args(
+            compatibility, tempo2_native, tempo2_jug_options
+        )
+        self.nonlinear_params = validate_nonlinear_params(nonlinear_params)
+        warn_if_tempo2_native_ignored(self.nonlinear_params, self.tempo2_native)
+        if engine_conventions is not None:
+            validate_engine_profile_matches_compatibility(
+                compatibility, engine_conventions
+            )
+
         # Parse files once and cache
         if self.verbose:
             print(f"Opening session: {self.par_file.name} + {self.tim_file.name}")
         
         self.params = parse_par_file(self.par_file)
-        
-        # Convert TCB->TDB at ingest time so all downstream code sees TDB params
-        from jug.io.par_reader import validate_par_timescale
-        validate_par_timescale(self.params, context="TimingSession", verbose=verbose)
+
+        from jug.io.par_reader import normalize_model_params
+        normalize_model_params(
+            self.params,
+            compatibility=self.compatibility,
+            context="TimingSession",
+            verbose=verbose,
+        )
         
         # Tempo2's T2 model uses IAU convention for KIN/KOM.
         # JUG's DDK code (from PINT) uses DT92 convention.
         # Convert: KIN_DT92 = 180 - KIN_IAU, KOM_DT92 = 90 - KOM_IAU
-        binary = self.params.get('BINARY', '').upper()
-        if binary == 'T2' and ('KIN' in self.params or 'KOM' in self.params):
-            if 'KIN' in self.params:
-                self.params['KIN'] = 180.0 - float(self.params['KIN'])
-            if 'KOM' in self.params:
-                self.params['KOM'] = 90.0 - float(self.params['KOM'])
+        if str(self.compatibility).lower() != "tempo2":
+            from jug.io.par_reader import convert_t2_kin_kom_to_ddk_convention
+            convert_t2_kin_kom_to_ddk_convention(self.params)
         
         self.toas_data = parse_tim_file_mjds(self.tim_file)
         self._initial_params = dict(self.params)  # Copy for comparison
@@ -191,11 +226,17 @@ class TimingSession:
         # Convert KIN/KOM from DT92 back to IAU convention for par file
         # (compute_residuals_simple will apply IAU->DT92 again when reading)
         binary = params.get('BINARY', '').upper()
-        if binary == 'T2' and ('KIN' in params or 'KOM' in params):
+        if (
+            str(self.compatibility).lower() != "tempo2"
+            and binary == 'T2'
+            and params.get('_t2_kin_kom_converted')
+            and ('KIN' in params or 'KOM' in params)
+        ):
             if 'KIN' in params:
                 params['KIN'] = 180.0 - float(params['KIN'])
             if 'KOM' in params:
                 params['KOM'] = 90.0 - float(params['KOM'])
+            params.pop('_t2_kin_kom_converted', None)
 
         with open(self.par_file, 'r') as f:
             original_lines = f.readlines()
@@ -321,6 +362,10 @@ class TimingSession:
                 subtract_tzr=subtract_tzr,
                 verbose=False,
                 geometry_cache=self._geometry_cache,
+                compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
+                tempo2_native=self.tempo2_native,
+                tempo2_jug_options=self.tempo2_jug_options,
                 toas=self.toas_data,
             )
         finally:
@@ -425,6 +470,10 @@ class TimingSession:
                 subtract_tzr=subtract_tzr,
                 verbose=False,
                 geometry_cache=self._geometry_cache,
+                compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
+                tempo2_native=self.tempo2_native,
+                tempo2_jug_options=self.tempo2_jug_options,
                 toas=self.toas_data,
             )
         
@@ -453,7 +502,125 @@ class TimingSession:
                 print("  Cached TOA data for fast postfit evaluation")
         
         return result
+
+    def residuals_at_params(
+        self,
+        params: Dict[str, float],
+        subtract_tzr: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Compute residual statistics for parameter overrides via cached in-memory data.
+
+        This is the public fast-path API for evaluating residuals at candidate
+        parameter values without rebuilding a temporary par file.
+
+        Parameters
+        ----------
+        params : dict
+            Parameter overrides to evaluate. Keys follow normal timing-model
+            names (e.g. ``F0``, ``F1``, ``DM``, ``PB``).
+        subtract_tzr : bool, default True
+            Whether to evaluate residuals in TZR-subtracted mode.
+
+        Returns
+        -------
+        result : dict
+            Residual summary with keys:
+            - 'residuals_us': residuals in microseconds
+            - 'residuals_sec': residuals in seconds
+            - 'chi2': chi-squared
+            - 'rms_us': weighted RMS in microseconds
+            - 'weighted_rms_us': weighted RMS in microseconds (alias)
+            - 'wrms_us': weighted RMS in microseconds (alias)
+            - 'n_toas': number of TOAs
+            - 'used_fast_path': True
+        """
+        if not isinstance(params, dict):
+            raise TypeError("params must be a dictionary of parameter overrides")
+
+        # Ensure delay/geometry arrays are available for the cached evaluator.
+        cached_result = self._cached_result_by_mode.get(subtract_tzr)
+        if cached_result is None:
+            self.compute_residuals(subtract_tzr=subtract_tzr, force_recompute=False)
+            cached_result = self._cached_result_by_mode.get(subtract_tzr)
+
+        has_required_cache = (
+            cached_result is not None
+            and 'dt_sec' in cached_result
+            and 'tdb_mjd' in cached_result
+            and 'freq_bary_mhz' in cached_result
+        )
+        if not has_required_cache:
+            raise RuntimeError(
+                "Cached residual arrays are unavailable for fast evaluation. "
+                "Call compute_residuals() first to populate cache."
+            )
+
+        toas_mjd = np.array([toa.mjd_int + toa.mjd_frac for toa in self.toas_data])
+        errors_us = np.array([toa.error_us for toa in self.toas_data])
+        toa_flags = [toa.flags for toa in self.toas_data]
+        session_cached_data = {
+            'dt_sec': cached_result['dt_sec'],
+            'dt_sec_ld': cached_result.get('dt_sec_ld'),
+            'tdb_mjd': cached_result['tdb_mjd'],
+            'freq_bary_mhz': cached_result['freq_bary_mhz'],
+            'toas_mjd': toas_mjd,
+            'errors_us': errors_us,
+            'toa_flags': toa_flags,
+            'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
+            'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
+            'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
+            'obs_sun_pos_ls': cached_result.get('obs_sun_pos_ls'),
+            'obs_planet_pos_ls': cached_result.get('obs_planet_pos_ls'),
+            'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
+            'jump_phase': cached_result.get('jump_phase'),
+            'tzr_phase': cached_result.get('tzr_phase'),
+            'term_diagnostics': cached_result.get('term_diagnostics'),
+            'model_mjd': cached_result.get('model_mjd'),
+            'toas': self.toas_data,
+        }
+
+        # Build setup only for parameters being overridden.
+        setup = _build_general_fit_setup_from_cache(
+            session_cached_data,
+            self.params,
+            list(params.keys()),
+            compatibility=self.compatibility,
+            tempo2_native=self.tempo2_native,
+            tempo2_jug_options=self.tempo2_jug_options,
+        )
+
+        eval_params = dict(self.params)
+        for name, value in params.items():
+            if isinstance(value, (int, float, np.floating)):
+                _update_param(eval_params, name, float(value))
+            else:
+                eval_params[str(name).upper()] = value
+
+        residuals_sec, chi2, rms_us, wrms_us = _compute_full_model_residuals(
+            eval_params,
+            setup,
+            ref_residuals_sec=np.asarray(cached_result['residuals_us'], dtype=np.float64) * 1e-6,
+            ref_params=dict(self.params),
+            subtract_tzr=subtract_tzr,
+            tzr_apply_mode=cached_result.get('tzr_apply_mode'),
+            tzr_offset_sec=cached_result.get('tzr_residual_sec'),
+        )
+        residuals_us = np.asarray(residuals_sec, dtype=np.float64) * 1e6
+        return {
+            'residuals_us': residuals_us,
+            'residuals_sec': np.asarray(residuals_sec, dtype=np.float64),
+            'chi2': float(chi2),
+            'rms_us': float(rms_us),
+            'weighted_rms_us': float(wrms_us),
+            'wrms_us': float(wrms_us),
+            'n_toas': int(len(residuals_us)),
+            'used_fast_path': True,
+        }
     
+    # TODO: expose ``fd_column_mode`` here (and forward through cached/file fit
+    # paths) so session users can select FD column convention without calling
+    # ``fit_parameters_optimized`` directly.
     def fit_parameters(
         self,
         fit_params: Optional[List[str]] = None,
@@ -598,9 +765,14 @@ class TimingSession:
                 'roemer_shapiro_sec': cached_result.get('roemer_shapiro_sec'),
                 'prebinary_delay_sec': cached_result.get('prebinary_delay_sec'),
                 'ssb_obs_pos_ls': cached_result.get('ssb_obs_pos_ls'),
+                'obs_sun_pos_ls': cached_result.get('obs_sun_pos_ls'),
+                'obs_planet_pos_ls': cached_result.get('obs_planet_pos_ls'),
                 'sw_geometry_pc': cached_result.get('sw_geometry_pc'),
                 'jump_phase': cached_result.get('jump_phase'),
                 'tzr_phase': cached_result.get('tzr_phase'),
+                'term_diagnostics': cached_result.get('term_diagnostics'),
+                'model_mjd': cached_result.get('model_mjd'),
+                'toas': self.toas_data,
             }
             
             # Build setup from cache (with optional TOA mask)
@@ -611,6 +783,9 @@ class TimingSession:
                 toa_mask=toa_mask,
                 noise_config=noise_config,
                 subtract_noise_sec=subtract_noise_sec,
+                compatibility=self.compatibility,
+                tempo2_native=self.tempo2_native,
+                tempo2_jug_options=self.tempo2_jug_options,
                 fit_dmx=fit_dmx,
             )
             
@@ -653,6 +828,10 @@ class TimingSession:
                 clock_dir=self.clock_dir,
                 device=device,
                 verbose=verbose,
+                compatibility=self.compatibility,
+                engine_conventions=self.engine_conventions,
+                tempo2_native=self.tempo2_native,
+                tempo2_jug_options=self.tempo2_jug_options,
                 fit_dmx=fit_dmx,
             )
         
@@ -1292,6 +1471,7 @@ class TimingSession:
             "  session.parameter_table(fit_result)  - Compare pre/post-fit with uncertainties",
             "  session.weighted_rms()               - Compute current weighted RMS (us)",
             "  session.compute_residuals()           - Compute timing residuals",
+            "  session.residuals_at_params(params)   - Fast in-memory residual evaluation",
             "  session.fit_parameters(fit_params)    - Fit specified parameters",
             "  session.get_initial_params()          - Original par file parameters",
             "  session.save_par(path, fit_result)    - Write par file",

@@ -388,7 +388,13 @@ class MenuBarOverlayMenu(QFrame):
 class MainWindow(QMainWindow):
     """Main window for JUG timing analysis GUI."""
 
-    def __init__(self, fit_params=None):
+    def __init__(
+        self,
+        fit_params=None,
+        *,
+        compatibility: str = "pint",
+        tempo2_native: str | None = None,
+    ):
         super().__init__()
         self.setWindowTitle("JUG Timing Analysis")
         self.setGeometry(100, 100, 1152, 768)
@@ -414,6 +420,8 @@ class MainWindow(QMainWindow):
 
         # Timing session (engine with caching)
         self.session = None
+        self.compatibility = compatibility
+        self.tempo2_native = tempo2_native
         
         # Data storage
         self.par_file = None
@@ -1489,7 +1497,12 @@ class MainWindow(QMainWindow):
             self.fit_button.setEnabled(False)
         
         # Create session worker
-        worker = SessionWorker(self.par_file, self.tim_file)
+        worker = SessionWorker(
+            self.par_file,
+            self.tim_file,
+            compatibility=self.compatibility,
+            tempo2_native=self.tempo2_native,
+        )
         worker.signals.result.connect(self.on_session_ready)
         worker.signals.error.connect(self.on_session_error)
         worker.signals.progress.connect(self.on_session_progress)
@@ -1502,6 +1515,13 @@ class MainWindow(QMainWindow):
     def on_session_ready(self, session):
         """Handle successful session creation."""
         self.session = session
+        
+        mode_msg = f" | compatibility={session.compatibility}"
+        if session.compatibility == "tempo2" and session.tempo2_native:
+            mode_msg += f" tempo2_native={session.tempo2_native}"
+        self.status_bar.showMessage(
+            f"Session ready: {session.get_toa_count()} TOAs{mode_msg}"
+        )
         
         # Get initial params for GUI
         self.initial_params = session.get_initial_params()
@@ -4076,7 +4096,7 @@ class MainWindow(QMainWindow):
                                 dmx_has_fit_flag = True
                             continue
 
-                        # Canonicalize aliases (LAMBDA->RAJ, BETA->DECJ, etc.)
+                        # Canonicalize aliases (LAMBDA->ELONG, BETA->ELAT, etc.)
                         from jug.model.parameter_spec import canonicalize_param_name
                         canon_name = canonicalize_param_name(param_name)
                         lookup_name = canon_name if canon_name in fittable_params else param_name

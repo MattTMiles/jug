@@ -106,7 +106,18 @@ T_SUN_SEC = T_SUN
 
 # === Observatory Coordinates ===
 
+# Observatory codes whose TOAs are barycentric arrival times at the SSB
+# (tempo2 '@'/'bat' convention). Their SATs are already TDB: no clock chain,
+# no TT->TDB conversion, and the observer sits at the SSB (zero Roemer;
+# solar geometry evaluated from the barycenter).
+BARYCENTRIC_OBS_CODES = frozenset({'bat', 'ssb', '@', 'barycenter'})
+
 OBSERVATORIES = {
+    # Barycentric / pre-barycentered TOAs (tempo2 BAT convention)
+    'bat': np.array([0.0, 0.0, 0.0]),
+    'ssb': np.array([0.0, 0.0, 0.0]),
+    '@': np.array([0.0, 0.0, 0.0]),
+    'barycenter': np.array([0.0, 0.0, 0.0]),
     'meerkat': np.array([5109360.133, 2006852.586, -3238948.127]) / 1000,
     'parkes': np.array([-4554231.500, 2816759.100, -3454036.300]) / 1000,
     'pks': np.array([-4554231.500, 2816759.100, -3454036.300]) / 1000,
@@ -118,19 +129,26 @@ OBSERVATORIES = {
     'arecibo': np.array([2390487.080, -5564731.357, 1994720.633]) / 1000,
     'ao': np.array([2390487.080, -5564731.357, 1994720.633]) / 1000,
     '3': np.array([2390487.080, -5564731.357, 1994720.633]) / 1000,
-    'jodrell': np.array([3822625.769, -154105.255, 5086486.256]) / 1000,
-    'jb': np.array([3822625.769, -154105.255, 5086486.256]) / 1000,
-    '8': np.array([3822625.769, -154105.255, 5086486.256]) / 1000,
-    'effelsberg': np.array([4033947.146, 486990.898, 4900431.067]) / 1000,
-    'ef': np.array([4033947.146, 486990.898, 4900431.067]) / 1000,
-    'eff': np.array([4033947.146, 486990.898, 4900431.067]) / 1000,
-    'g': np.array([4033947.146, 486990.898, 4900431.067]) / 1000,
+    # tempo2 oldcodes.dat: Kaspi/Ryba/Taylor Arecibo data referenced to UTC
+    # (clock_name "UTC" → no observatory clock correction), distinct coords.
+    'aoutc': np.array([2390490.000, -5564764.000, 1994727.000]) / 1000,
+    # tempo2 observatories.dat JODRELL (PINT: 3822625.769/-154105.255/
+    # 5086486.256, ~0.5 m away)
+    'jodrell': np.array([3822626.040, -154105.650, 5086486.040]) / 1000,
+    'jb': np.array([3822626.040, -154105.650, 5086486.040]) / 1000,
+    '8': np.array([3822626.040, -154105.650, 5086486.040]) / 1000,
+    # tempo2 observatories.dat EFFELSBERG (PINT uses 4033947.146/486990.898/
+    # 4900431.067, ~2.8 m away -> ~9 ns Roemer difference)
+    'effelsberg': np.array([4033949.500, 486989.400, 4900430.800]) / 1000,
+    'ef': np.array([4033949.500, 486989.400, 4900430.800]) / 1000,
+    'eff': np.array([4033949.500, 486989.400, 4900430.800]) / 1000,
+    'g': np.array([4033949.500, 486989.400, 4900430.800]) / 1000,
     'nancay': np.array([4324165.810, 165927.110, 4670132.830]) / 1000,
     'nc': np.array([4324165.810, 165927.110, 4670132.830]) / 1000,
     'f': np.array([4324165.810, 165927.110, 4670132.830]) / 1000,
-    'wsrt': np.array([3828445.659, 445223.600, 5064921.568]) / 1000,
-    'we': np.array([3828445.659, 445223.600, 5064921.568]) / 1000,
-    'i': np.array([3828445.659, 445223.600, 5064921.568]) / 1000,
+    'wsrt': np.array([3828445.659, 445223.600, 5064921.5677]) / 1000,
+    'we': np.array([3828445.659, 445223.600, 5064921.5677]) / 1000,
+    'i': np.array([3828445.659, 445223.600, 5064921.5677]) / 1000,
     'vla': np.array([-1601192.000, -5041981.400, 3554871.400]) / 1000,
     'vl': np.array([-1601192.000, -5041981.400, 3554871.400]) / 1000,
     '6': np.array([-1601192.000, -5041981.400, 3554871.400]) / 1000,
@@ -138,9 +156,10 @@ OBSERVATORIES = {
     'effix': np.array([4033949.500, 486989.400, 4900430.800]) / 1000,
     'ncy': np.array([4324165.810, 165927.110, 4670132.830]) / 1000,
     'ncyobs': np.array([4324165.810, 165927.110, 4670132.830]) / 1000,
+    'w': np.array([4324165.810, 165927.110, 4670132.830]) / 1000,
     'leap': np.array([4033949.500, 486989.400, 4900430.800]) / 1000,
-    'jbroach': np.array([3822625.769, -154105.255, 5086486.256]) / 1000,
-    'jbdfb': np.array([3822625.769, -154105.255, 5086486.256]) / 1000,
+    'jbroach': np.array([3822626.040, -154105.650, 5086486.040]) / 1000,
+    'jbdfb': np.array([3822626.040, -154105.650, 5086486.040]) / 1000,
     'jb42': np.array([3822294.825, -153862.275, 5085987.071]) / 1000,
     'jb_42ft': np.array([3822294.825, -153862.275, 5085987.071]) / 1000,
     'jbmk2roach': np.array([3822846.760, -153802.280, 5086285.900]) / 1000,

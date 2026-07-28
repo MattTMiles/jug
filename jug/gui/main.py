@@ -14,6 +14,9 @@ import argparse
 # inside main() before any JAX import occurs.
 
 
+from jug.timing.cli import add_timing_cli_arguments, timing_kwargs_from_namespace
+
+
 def main():
     """Main entry point for jug-gui command."""
     # Parse command-line arguments
@@ -27,6 +30,7 @@ Examples:
   jug-gui pulsar.par pulsar.tim --fit F0 F1    # Load and pre-select F0, F1 for fitting
   jug-gui pulsar.par pulsar.tim --fit F0 F1 F2 DM1  # Fit multiple parameters
   jug-gui --gpu pulsar.par pulsar.tim          # Load files with GPU mode
+  jug-gui --compatibility tempo2 --tempo2-native fixed_state_stripped pulsar.par pulsar.tim
   jug-gui --help                               # Show this help message
 
 Note: CPU is faster for typical pulsar timing (<100k TOAs).
@@ -54,8 +58,10 @@ Note: CPU is faster for typical pulsar timing (<100k TOAs).
         metavar='PARAM',
         help='Parameters to fit (e.g., --fit F0 F1 DM). Pre-selects these in GUI.'
     )
+    add_timing_cli_arguments(parser)
 
     args, remaining_args = parser.parse_known_args()
+    timing_kwargs = timing_kwargs_from_namespace(args)
 
     # Set JAX platform based on argument
     # Default to CPU (faster for typical pulsar timing)
@@ -127,8 +133,14 @@ Note: CPU is faster for typical pulsar timing (<100k TOAs).
         app.setEffectEnabled(Qt.UI_AnimateCombo, False)
         app.setEffectEnabled(Qt.UI_AnimateTooltip, False)
 
+    if timing_kwargs["compatibility"] == "tempo2":
+        print(
+            "JUG GUI: compatibility=tempo2 "
+            f"tempo2_native={timing_kwargs['tempo2_native']}"
+        )
+
     # Create main window and optionally load files
-    window = MainWindow(fit_params=args.fit)
+    window = MainWindow(fit_params=args.fit, **timing_kwargs)
     window.show()
 
     # Load files via QTimer to allow UI to render first (perceived speedup)

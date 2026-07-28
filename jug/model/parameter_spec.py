@@ -26,10 +26,11 @@ Usage:
     spin_params = list_params_by_group('spin')
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 import re
 from typing import Optional, Tuple, Dict, List
+import re
 
 
 class DerivativeGroup(Enum):
@@ -75,6 +76,10 @@ class ParameterSpec:
     display_unit : str
         Human-readable unit for GUI display (Unicode OK, e.g. 'Hz/s', 'MSun').
         Falls back to par_unit_str when empty.
+    fit_unit : str
+        Unit string for design-matrix/fitting parameter increments. This is the
+        API-facing convention used by ``compute_designmatrix`` and should follow
+        PINT/Vela-style ``str(param.units)`` vocabulary.
     aliases : tuple
         Alternative names that resolve to this parameter
     derivative_group : DerivativeGroup
@@ -101,6 +106,7 @@ class ParameterSpec:
     internal_unit: str = ""
     par_unit_str: str = ""
     display_unit: str = ""  # Falls back to par_unit_str when empty
+    fit_unit: str = ""
     aliases: Tuple[str, ...] = ()
     default_fit: bool = False
     gui_visible: bool = True
@@ -269,7 +275,6 @@ _ASTROMETRY_PARAMS = [
         par_unit_str="HH:MM:SS.sss",
         requires=("POSEPOCH",),
         par_codec_name="raj",
-        aliases=("LAMBDA",),  # ELONG is a separate param (ecliptic fitting)
     ),
     ParameterSpec(
         name="DECJ",
@@ -280,7 +285,6 @@ _ASTROMETRY_PARAMS = [
         par_unit_str="DD:MM:SS.sss",
         requires=("POSEPOCH",),
         par_codec_name="decj",
-        aliases=("BETA",),  # ELAT is a separate param (ecliptic fitting)
     ),
     ParameterSpec(
         name="PMRA",
@@ -289,7 +293,8 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMRAC", "PMLAMBDA"),
+        # PMLAMBDA/PMBETA are ecliptic (aliases of PMELONG/PMELAT), not equatorial.
+        aliases=("PMRAC",),
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -300,7 +305,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMBETA",),
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -322,6 +326,8 @@ _ASTROMETRY_PARAMS = [
         internal_unit="deg",
         par_unit_str="degrees",
         requires=("POSEPOCH",),
+        # Tempo2 LAMBDA is ecliptic longitude in degrees (same as ELONG), not RAJ.
+        aliases=("LAMBDA",),
     ),
     ParameterSpec(
         name="ELAT",
@@ -331,6 +337,8 @@ _ASTROMETRY_PARAMS = [
         internal_unit="deg",
         par_unit_str="degrees",
         requires=("POSEPOCH",),
+        # Tempo2 BETA is ecliptic latitude in degrees (same as ELAT), not DECJ.
+        aliases=("BETA",),
     ),
     ParameterSpec(
         name="PMELONG",
@@ -339,6 +347,8 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="mas/yr",
         par_unit_str="mas/yr",
+        # Tempo2 PMLAMBDA is ecliptic longitude proper motion (same as PMELONG).
+        aliases=("PMLAMBDA",),
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -349,6 +359,8 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="mas/yr",
         par_unit_str="mas/yr",
+        # Tempo2 PMBETA is ecliptic latitude proper motion (same as PMELAT).
+        aliases=("PMBETA",),
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -744,6 +756,102 @@ _SW_PARAMS = [
     ),
 ]
 
+
+def _resolve_fit_unit(spec: ParameterSpec) -> str:
+    """Return PINT/Vela-compatible fit unit string for a registry spec."""
+    if spec.fit_unit:
+        return spec.fit_unit
+
+    name = spec.name.upper()
+
+    explicit = {
+        "RAJ": "hourangle",
+        "DECJ": "deg",
+        "PMRA": "mas/yr",
+        "PMDEC": "mas/yr",
+        "PX": "mas",
+        "ELONG": "deg",
+        "ELAT": "deg",
+        "PMELONG": "mas/yr",
+        "PMELAT": "mas/yr",
+        "PB": "d",
+        "A1": "ls",
+        "OM": "deg",
+        "T0": "MJD",
+        "TASC": "MJD",
+        "SINI": "1",
+        "M2": "solMass",
+        "PBDOT": "1",
+        "XDOT": "ls/s",
+        "OMDOT": "deg/year",
+        "GAMMA": "s",
+        "EDOT": "1/s",
+        "H3": "s",
+        "H4": "s",
+        "STIG": "1",
+        "DR": "1",
+        "DTH": "1",
+        "A0": "s",
+        "B0": "s",
+        "KIN": "deg",
+        "KOM": "deg",
+        "PEPOCH": "MJD",
+        "POSEPOCH": "MJD",
+        "DMEPOCH": "MJD",
+        "NE_SW": "cm^-3",
+        "EPS1": "1",
+        "EPS2": "1",
+        "EPS1DOT": "1/s",
+        "EPS2DOT": "1/s",
+    }
+    if name in explicit:
+        return explicit[name]
+
+    if re.match(r"^F\d+$", name):
+        order = int(name[1:])
+        return "Hz" if order == 0 else f"Hz/s^{order}"
+
+    if re.match(r"^DM\d+$", name):
+        order = int(name[2:])
+        if order == 0:
+            return "pc cm^-3"
+        return f"pc cm^-3 yr^-{order}"
+
+    if re.match(r"^FB\d+$", name):
+        order = int(name[2:])
+        return f"1/s^{order + 1}"
+
+    if re.match(r"^FD\d+$", name):
+        return "s"
+
+    aliases = {
+        "": "1",
+        "degrees": "deg",
+        "day": "d",
+        "lt-s": "ls",
+        "lt-s/s": "ls/s",
+        "Msun": "solMass",
+        "s/s": "1",
+    }
+    if spec.par_unit_str:
+        return aliases.get(spec.par_unit_str, spec.par_unit_str)
+    if spec.internal_unit:
+        return aliases.get(spec.internal_unit, spec.internal_unit)
+    return "1"
+
+
+def _populate_fit_units(specs: List[ParameterSpec]) -> List[ParameterSpec]:
+    """Populate fit_unit for static registry specs."""
+    return [replace(spec, fit_unit=_resolve_fit_unit(spec)) for spec in specs]
+
+
+_SPIN_PARAMS = _populate_fit_units(_SPIN_PARAMS)
+_DM_PARAMS = _populate_fit_units(_DM_PARAMS)
+_ASTROMETRY_PARAMS = _populate_fit_units(_ASTROMETRY_PARAMS)
+_BINARY_PARAMS = _populate_fit_units(_BINARY_PARAMS)
+_FD_PARAMS = _populate_fit_units(_FD_PARAMS)
+_SW_PARAMS = _populate_fit_units(_SW_PARAMS)
+
 # Build the registry
 PARAMETER_REGISTRY: Dict[str, ParameterSpec] = {}
 _ALIAS_MAP: Dict[str, str] = {}  # alias -> canonical name
@@ -886,6 +994,16 @@ def get_display_unit(name: str) -> str:
     if spec is None:
         return ""
     return spec.display_unit if spec.display_unit else spec.par_unit_str
+
+
+def get_fit_unit(name: str) -> str:
+    """Return design-matrix fit unit string for a parameter."""
+    spec = get_spec(name)
+    if spec is None:
+        if is_jump_param(name):
+            return "s"
+        return ""
+    return spec.fit_unit
 
 
 def get_derivative_group(name: str) -> Optional[DerivativeGroup]:
@@ -1161,6 +1279,7 @@ def create_jump_spec(name: str) -> ParameterSpec:
         dtype="float64",
         internal_unit="s",
         par_unit_str="s",
+        fit_unit="s",
     )
 
 

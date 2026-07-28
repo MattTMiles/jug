@@ -53,6 +53,54 @@ def _compute_dt_years_ld(toas_mjd, posepoch_mjd: float) -> np.ndarray:
     )
 
 
+def ecliptic_deg_to_equatorial_rad(
+    lon_deg,
+    lat_deg,
+    pm_lon_mas_yr,
+    pm_lat_mas_yr,
+    obl_rad,
+    *,
+    xp,
+):
+    """JAX-traceable ecliptic→equatorial conversion.
+
+    Formulas copied verbatim from ``astrometry_state.reconvert_ecliptic_to_equatorial``
+    (lines 87–123).  Pure scalar math only — no string formatting or dict mutation.
+    """
+    lon_rad = xp.deg2rad(lon_deg)
+    lat_rad = xp.deg2rad(lat_deg)
+    cos_lon, sin_lon = xp.cos(lon_rad), xp.sin(lon_rad)
+    cos_lat, sin_lat = xp.cos(lat_rad), xp.sin(lat_rad)
+    cos_obl, sin_obl = xp.cos(obl_rad), xp.sin(obl_rad)
+
+    x = cos_lon * cos_lat
+    y = sin_lon * cos_lat * cos_obl - sin_lat * sin_obl
+    z = sin_lon * cos_lat * sin_obl + sin_lat * cos_obl
+
+    ra_rad = xp.arctan2(y, x) % (2 * xp.pi)
+    dec_rad = xp.arctan2(z, xp.sqrt(x**2 + y**2))
+
+    dx = -sin_lon * pm_lon_mas_yr - cos_lon * sin_lat * pm_lat_mas_yr
+    dy = cos_lon * pm_lon_mas_yr - sin_lon * sin_lat * pm_lat_mas_yr
+    dz = cos_lat * pm_lat_mas_yr
+
+    dx_eq = dx
+    dy_eq = dy * cos_obl - dz * sin_obl
+    dz_eq = dy * sin_obl + dz * cos_obl
+
+    cos_ra, sin_ra = xp.cos(ra_rad), xp.sin(ra_rad)
+    cos_dec, sin_dec = xp.cos(dec_rad), xp.sin(dec_rad)
+
+    pmra = -sin_ra * dx_eq + cos_ra * dy_eq
+    pmdec = (
+        -cos_ra * sin_dec * dx_eq
+        - sin_ra * sin_dec * dy_eq
+        + cos_dec * dz_eq
+    )
+
+    return ra_rad, dec_rad, pmra, pmdec
+
+
 @jax.jit
 def compute_earth_position_angles(ssb_obs_pos: jnp.ndarray) -> Dict[str, jnp.ndarray]:
     """Compute Earth position angles from SSB-to-observatory position vectors.
@@ -329,33 +377,33 @@ def compute_pulsar_unit_vector(
     n_x, n_y, n_z : jnp.ndarray or float
         Components of unit vector pointing to pulsar
     """
-    if dt_years is not None and (pmra_rad_yr != 0 or pmdec_rad_yr != 0):
-        # Update RA and DEC for proper motion
-        # Note: PMRA is mu_alpha* = dalpha/dt * cos(delta), so we divide by cos(dec) to get dalpha/dt
-        cos_dec = jnp.cos(psr_dec)
-        ra_corrected = psr_ra + (pmra_rad_yr / cos_dec) * dt_years
-        dec_corrected = psr_dec + pmdec_rad_yr * dt_years
-        
-        # Compute time-varying unit vector
-        cos_dec_t = jnp.cos(dec_corrected)
-        sin_dec_t = jnp.sin(dec_corrected)
-        cos_ra_t = jnp.cos(ra_corrected)
-        sin_ra_t = jnp.sin(ra_corrected)
-        
-        n_x = cos_dec_t * cos_ra_t
-        n_y = cos_dec_t * sin_ra_t
-        n_z = sin_dec_t
-    else:
-        # Fixed position (no proper motion correction)
-        cos_dec = jnp.cos(psr_dec)
-        sin_dec = jnp.sin(psr_dec)
-        cos_ra = jnp.cos(psr_ra)
-        sin_ra = jnp.sin(psr_ra)
-        
-        n_x = cos_dec * cos_ra
-        n_y = cos_dec * sin_ra
-        n_z = sin_dec
-    
+    cos_dec = jnp.cos(psr_dec)
+    sin_dec = jnp.sin(psr_dec)
+    cos_ra = jnp.cos(psr_ra)
+    sin_ra = jnp.sin(psr_ra)
+    n_x_fixed = cos_dec * cos_ra
+    n_y_fixed = cos_dec * sin_ra
+    n_z_fixed = sin_dec
+
+    if dt_years is None:
+        return n_x_fixed, n_y_fixed, n_z_fixed
+
+    # PM branch (JAX-safe: no Python bool on traced scalars)
+    ra_corrected = psr_ra + (pmra_rad_yr / cos_dec) * dt_years
+    dec_corrected = psr_dec + pmdec_rad_yr * dt_years
+    cos_dec_t = jnp.cos(dec_corrected)
+    sin_dec_t = jnp.sin(dec_corrected)
+    cos_ra_t = jnp.cos(ra_corrected)
+    sin_ra_t = jnp.sin(ra_corrected)
+    n_x_pm = cos_dec_t * cos_ra_t
+    n_y_pm = cos_dec_t * sin_ra_t
+    n_z_pm = sin_dec_t
+
+    has_pm = (jnp.abs(pmra_rad_yr) + jnp.abs(pmdec_rad_yr)) > 0.0
+    n_x = jnp.where(has_pm, n_x_pm, n_x_fixed)
+    n_y = jnp.where(has_pm, n_y_pm, n_y_fixed)
+    n_z = jnp.where(has_pm, n_z_pm, n_z_fixed)
+
     return n_x, n_y, n_z
 
 
@@ -589,10 +637,7 @@ def compute_astrometric_delay(
     """
     from jug.io.par_reader import parse_ra, parse_dec
 
-    # Save numpy toas before JAX cast so we can compute dt_years in longdouble
-    toas_mjd_np = np.asarray(toas_mjd)
-
-    # Ensure inputs are arrays
+    # Ensure inputs are arrays (must stay JAX-traceable for autodiff design matrices)
     ssb_obs_pos_ls = jnp.asarray(ssb_obs_pos_ls, dtype=jnp.float64)
     toas_mjd = jnp.asarray(toas_mjd, dtype=jnp.float64)
 
@@ -611,9 +656,10 @@ def compute_astrometric_delay(
         psr_dec = jnp.float64(decj_value)
 
     _posepoch_key = 'POSEPOCH' if 'POSEPOCH' in params else 'PEPOCH'
-    posepoch_f = get_longdouble(
-        params, _posepoch_key, default=float(np.mean(toas_mjd_np, dtype=np.float64))
-    )
+    if _posepoch_key in params:
+        posepoch = jnp.float64(float(get_longdouble(params, _posepoch_key)))
+    else:
+        posepoch = jnp.mean(toas_mjd)
 
     # Get proper motion (convert from mas/yr to rad/yr if present)
     pmra_mas_yr = params.get('PMRA', 0.0)
@@ -624,9 +670,8 @@ def compute_astrometric_delay(
     # Get parallax (in mas)
     px_mas = jnp.float64(params.get('PX', 0.0))
 
-    # Precompute dt_years in longdouble to avoid float64 MJD cancellation at MJD ~58000
-    dt_years_f64 = _compute_dt_years_ld(toas_mjd_np, posepoch_f)
-    dt_years_jax = jnp.asarray(dt_years_f64)
+    # Float64 years since POSEPOCH (JAX-traceable; TOAs are not fit parameters).
+    dt_years_jax = (toas_mjd - posepoch) / jnp.float64(365.25)
 
     # Compute pulsar unit vector (with proper motion correction)
     n_x, n_y, n_z = compute_pulsar_unit_vector(
@@ -649,10 +694,7 @@ def compute_astrometric_delay(
     # Using jnp.where avoids Python conditional which breaks JAX tracing.
     px_rad = px_mas * (jnp.pi / 180.0 / 3600.0 / 1000.0)
 
-    # Distance in light-seconds: d_ls = AU_ls / px_rad
     AU_LS = AU_METERS / SPEED_OF_LIGHT  # ~499.005 light-seconds
-    # Guard against division by zero -- use a large distance when px_rad == 0
-    d_ls = jnp.where(px_rad != 0, AU_LS / px_rad, jnp.inf)
 
     # r^2 magnitude
     r_sq = x**2 + y**2 + z**2
@@ -660,8 +702,9 @@ def compute_astrometric_delay(
     # Transverse distance squared: px_r^2 = r^2 - (r*n)^2
     px_r_sq = r_sq - r_dot_n**2
 
-    # Parallax delay: 0.5 * px_r^2 / d
-    parallax_delay = 0.5 * px_r_sq / d_ls  # seconds
+    # Parallax delay is linear in PX: 0.5 * r_perp^2 * px_rad / AU_LS.
+    # Branch-free so d(delay)/d(PX) stays exact and nonzero at PX == 0.
+    parallax_delay = 0.5 * px_r_sq * px_rad / AU_LS  # seconds
 
     roemer_delay = roemer_delay + parallax_delay
 
@@ -702,19 +745,19 @@ def compute_astrometry_derivatives(
     ssb_obs_pos: jnp.ndarray,
     fit_params: List[str],
 ) -> Dict[str, jnp.ndarray]:
-    """Compute astrometry parameter derivatives for the design matrix.
-    
-    The design matrix contains d(residual)/d(param) where residual = observed - model.
-    
+    """Compute astrometry parameter derivatives for the fitter basis M.
+
+    Sign contract for the assembled design matrix:
+    ``r(theta + delta) ~= r(theta) - M @ delta``. Columns are
+    ``+d(delay)/d(param)`` in seconds per fitter-internal unit (matching PINT).
+
     In pulsar timing:
     - PINT subtracts delay from TDB: t_model = t_tdb - delay
     - JUG adds delay to dt: dt = ... + delay + ...
-    
+
     Since PINT's delay and JUG's delay have the same sign (both negative for Roemer),
-    the convention difference means:
-    - PINT: M = +d(delay)/d(param)  
-    - JUG: M = +d(delay)/d(param)  (match PINT for consistent fitting)
-    
+    both engines use ``M = +d(delay)/d(param)``.
+
     Parameters
     ----------
     params : Dict
@@ -728,13 +771,13 @@ def compute_astrometry_derivatives(
         SSB to observatory position vectors, shape (n_toas, 3), in light-seconds
     fit_params : List[str]
         List of parameters to compute derivatives for
-        
+
     Returns
     -------
     derivatives : Dict[str, jnp.ndarray]
         Dictionary mapping parameter names to derivative arrays.
         Each array has shape (n_toas,).
-        Units: d(residual)/d(param) in seconds per fitter-internal unit
+        Units: seconds per fitter-internal unit (fitter basis columns)
         - RAJ: seconds/radian  (fitter stores RAJ in radians)
         - DECJ: seconds/radian  (fitter stores DECJ in radians)
         - PMRA/PMDEC: seconds/(mas/year)
@@ -782,6 +825,12 @@ def compute_astrometry_derivatives(
     
     for param in fit_params:
         param_upper = param.upper()
+        param_upper = {
+            "LAMBDA": "ELONG",
+            "BETA": "ELAT",
+            "PMLAMBDA": "PMELONG",
+            "PMBETA": "PMELAT",
+        }.get(param_upper, param_upper)
         
         if param_upper == 'RAJ':
             # d(delay)/d(RAJ) in seconds/radian

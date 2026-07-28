@@ -174,22 +174,30 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
             # Parse MJD with high precision
             mjd_int, mjd_frac = parse_mjd_string(mjd_str)
 
-            # Apply cumulative TIME offset (seconds -> fractional day)
+            # Apply cumulative TIME offset (seconds -> fractional day).
+            # Done in longdouble: a plain float64 frac addition rounds at
+            # ~5 ns, and the synced mjd_str must stay exact for TDB parity.
+            mjd_frac_ld = np.longdouble(mjd_frac)
             if _state['time_offset'] != 0.0:
-                mjd_frac += _state['time_offset'] / 86400.0
+                mjd_frac_ld = mjd_frac_ld + (
+                    np.longdouble(_state['time_offset']) / np.longdouble(86400.0)
+                )
                 # Normalize: handle overflow/underflow of fractional day
-                if mjd_frac >= 1.0:
-                    mjd_int += int(mjd_frac)
-                    mjd_frac -= int(mjd_frac)
-                elif mjd_frac < 0.0:
-                    shift = int(-mjd_frac) + 1
+                if mjd_frac_ld >= 1.0:
+                    shift = int(mjd_frac_ld)
+                    mjd_int += shift
+                    mjd_frac_ld -= np.longdouble(shift)
+                elif mjd_frac_ld < 0.0:
+                    shift = int(-mjd_frac_ld) + 1
                     mjd_int -= shift
-                    mjd_frac += shift
+                    mjd_frac_ld += np.longdouble(shift)
+                mjd_frac = float(mjd_frac_ld)
 
             # Parse optional flags (format: -flag value)
             # Duplicate flag names (e.g. -j MEDUSA_58925 -j MEDUSA_59200) are
             # stored as lists so JUMP matching can check all values.
             flags = {}
+            mjd_modified = _state['time_offset'] != 0.0
             i = flag_start
             while i < len(parts):
                 if parts[i].startswith('-') and i + 1 < len(parts):
@@ -211,16 +219,24 @@ def parse_tim_file_mjds(path: Path | str, _state: dict | None = None) -> List[Si
             if 'addsat' in flags:
                 try:
                     addsat_sec = float(flags['addsat'])
-                    mjd_frac += addsat_sec / 86400.0
-                    if mjd_frac >= 1.0:
-                        mjd_int += int(mjd_frac)
-                        mjd_frac -= int(mjd_frac)
-                    elif mjd_frac < 0.0:
-                        shift = int(-mjd_frac) + 1
+                    mjd_frac_ld = mjd_frac_ld + (
+                        np.longdouble(addsat_sec) / np.longdouble(86400.0)
+                    )
+                    if mjd_frac_ld >= 1.0:
+                        shift = int(mjd_frac_ld)
+                        mjd_int += shift
+                        mjd_frac_ld -= np.longdouble(shift)
+                    elif mjd_frac_ld < 0.0:
+                        shift = int(-mjd_frac_ld) + 1
                         mjd_int -= shift
-                        mjd_frac += shift
+                        mjd_frac_ld += np.longdouble(shift)
+                    mjd_frac = float(mjd_frac_ld)
+                    mjd_modified = True
                 except (ValueError, TypeError):
                     pass
+
+            if mjd_modified:
+                mjd_str = _sync_toa_mjd_str(mjd_int, mjd_frac_ld)
 
             toas.append(SimpleTOA(
                 mjd_str=mjd_str,
@@ -353,6 +369,26 @@ def _time_to_mjd_long(time_obj):
     return np.asarray(mjd1, dtype=np.longdouble) + np.asarray(mjd2, dtype=np.longdouble)
 
 
+def _sync_toa_mjd_str(mjd_int: int, mjd_frac) -> str:
+    """Format flag-adjusted ``(mjd_int, mjd_frac)`` for TDB/TT construction.
+
+    TIM ``mjd_str`` is the on-disk value before ``TIME`` / ``-addsat`` etc.
+    Once those flags modify ``mjd_int``/``mjd_frac`` (readTimfile.C parity),
+    the stored string must match or ``compute_tdb_standalone_vectorized`` will
+    build UTC Time from the unshifted MJD while clocks use the shifted SAT.
+
+    The integer and fractional parts are formatted separately: collapsing
+    them into one float64 (as done previously) rounds at the MJD-scale ULP
+    (~0.6 µs at MJD 52000), far too coarse for tempo2 parity.
+    """
+    frac = np.longdouble(mjd_frac)
+    frac_repr = np.format_float_positional(
+        frac, precision=20, unique=False, trim="k"
+    )
+    digits = frac_repr.split(".", 1)[1] if "." in frac_repr else "0"
+    return f"{int(mjd_int)}.{digits}"
+
+
 def parse_mjd_string(mjd_str: str) -> tuple[int, float]:
     """Parse high-precision MJD string into (int, frac) components.
 
@@ -395,6 +431,7 @@ def compute_tdb_standalone_vectorized(
     mjd_strings: list[str] | np.ndarray | None = None,
     # Legacy keyword arguments kept for backward compatibility; ignored.
     gps_clock=None, mk_clock=None, skip_gps_correction=None,
+    barycentric: bool = False,
 ) -> np.ndarray:
     """Compute TDB from UTC MJDs using a pre-merged observatory clock chain.
 
@@ -461,6 +498,22 @@ def compute_tdb_standalone_vectorized(
     """
     from jug.io.clock import interpolate_clock_vectorized
 
+    if barycentric:
+        # Barycentric-site TOAs ('@'/'bat'/'ssb'): the SAT is already a TDB
+        # arrival time at the SSB. No clock chain and no UTC->TT->TDB
+        # conversion applies (tempo2 sets delayCorr=0; PINT uses scale='tdb').
+        if mjd_strings is not None:
+            int_arr, frac_arr = _mjd_strings_to_split(mjd_strings)
+        else:
+            int_arr = np.array(mjd_ints, dtype=np.float64)
+            frac_arr = np.array(mjd_fracs, dtype=np.float64)
+        tdb = np.asarray(int_arr, dtype=np.longdouble) + np.asarray(
+            frac_arr, dtype=np.longdouble
+        )
+        if time_offsets is not None:
+            tdb = tdb + np.asarray(time_offsets, dtype=np.longdouble) / 86400.0
+        return tdb
+
     mjd_vals = np.array(mjd_ints, dtype=np.float64) + np.array(mjd_fracs, dtype=np.float64)
 
     # obs_chain already encodes the full UTC(obs) → UTC path (Dijkstra-merged)
@@ -501,6 +554,70 @@ def compute_tdb_standalone_vectorized(
     tdb_time = time_utc.tdb
 
     return _time_to_mjd_long(tdb_time)
+
+
+def compute_tt_correction_sec_vectorized(
+    mjd_ints,
+    mjd_fracs,
+    obs_chain,
+    bipm_clock,
+    location: EarthLocation,
+    time_offsets: np.ndarray | None = None,
+    mjd_strings: list[str] | np.ndarray | None = None,
+    clock_eval_offset_sec: np.ndarray | None = None,
+) -> np.ndarray:
+    """Tempo2 ``getCorrectionTT``: (TT − sat) in seconds per TOA.
+
+    Uses the same UTC(obs)→TT clock chain as :func:`compute_tdb_standalone_vectorized`
+    but stops at TT scale (no TDB/IFTE leap).  Matches tempo2 ``formBats.C`` slot.
+
+    When ``clock_eval_offset_sec`` is supplied, the BIPM table is evaluated at
+    ``sat + offset/SECDAY`` per ``clkcorr.C`` feedback. The observatory chain
+    is always evaluated at raw SAT: tempo2 shifts each hop only by the
+    corrections accumulated BEFORE it, which for the UTC(obs)->UTC hops is
+    the ~µs-scale site correction itself (a femtosecond-level epoch effect).
+    Shifting the obs chain by the full TT-UTC (~66 s) instead samples noisy
+    maser segments ~66 s off-epoch — measured up to ~7 ns error on EFF/JBO
+    TOAs where the site clock wanders at µs/day.
+    """
+    from jug.io.clock import interpolate_clock_vectorized
+
+    mjd_vals = np.array(mjd_ints, dtype=np.float64) + np.array(mjd_fracs, dtype=np.float64)
+    eval_mjd = mjd_vals
+    if clock_eval_offset_sec is not None:
+        eval_mjd = mjd_vals + np.asarray(clock_eval_offset_sec, dtype=np.float64) / SECS_PER_DAY
+    obs_corrs = interpolate_clock_vectorized(obs_chain, mjd_vals)
+    bipm_corrs = np.interp(eval_mjd, bipm_clock["mjd"], bipm_clock["offset"]) - 32.184
+    total_corrs = obs_corrs + bipm_corrs
+    if time_offsets is not None:
+        total_corrs = total_corrs + np.asarray(time_offsets, dtype=np.float64)
+
+    if mjd_strings is not None:
+        int_arr, frac_arr = _mjd_strings_to_split(mjd_strings)
+    else:
+        int_arr = np.array(mjd_ints, dtype=np.float64)
+        frac_arr = np.array(mjd_fracs, dtype=np.float64)
+
+    time_utc = Time(
+        val=int_arr,
+        val2=frac_arr,
+        format="jug_pulsar_mjd",
+        scale="utc",
+        location=location,
+        precision=9,
+    )
+    time_utc = time_utc + TimeDelta(total_corrs, format="sec")
+    tt_mjd = _time_to_mjd_long(time_utc.tt)
+    # Subtract in longdouble against the same SAT the Time object was built
+    # from.  Downcasting tt_mjd to float64 first quantises the correction at
+    # the MJD ULP (~0.6 µs near MJD 52000); the clkcorr.C feedback delta is a
+    # difference of two of these corrections, so a rounding-boundary crossing
+    # would inject a full ULP (~629 ns) into the emission time.
+    sat_ref = (
+        np.asarray(int_arr, dtype=np.longdouble)
+        + np.asarray(frac_arr, dtype=np.longdouble)
+    )
+    return np.asarray((tt_mjd - sat_ref) * SECS_PER_DAY, dtype=np.float64)
 
 
 def write_tim_file(toas: List[SimpleTOA], path: Path | str) -> None:

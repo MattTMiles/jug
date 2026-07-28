@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union, Any
 
 from jug.engine.session import TimingSession
+from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.fitting.optimized_fitter import fit_parameters_optimized
 
@@ -29,7 +30,12 @@ def open_session(
     par_file: Path | str,
     tim_file: Path | str,
     clock_dir: Optional[str] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
+    nonlinear_params: str | None = None,
 ) -> TimingSession:
     """
     Open a timing session for repeated operations.
@@ -48,6 +54,22 @@ def open_session(
         Directory containing clock files
     verbose : bool, default False
         Print status messages
+    compatibility : str, default "pint"
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
+    engine_conventions : EngineConventionProfile, optional
+        Explicit engine convention profile (must match *compatibility*).
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode: ``"fixed_state_stripped"`` (default for tempo2),
+        ``"fixed_state_bclt"``, ``"staged_bclt"``, or ``"full"``.
+        Ignored on the PINT path unless ``compatibility="tempo2"``.
+    tempo2_jug_options : dict, optional
+        Tempo2 options (``iers_policy``, ``bclt_fixed_iter``,
+        ``force_cache_refresh``, ``require_native_cache``).  Passed through to
+        downstream session and fit functions; ``None`` uses built-in defaults.
+    nonlinear_params : str or None, optional
+        Residual linearization mode: ``None`` (native residual_delta graph),
+        ``"binary"``, or ``"binary+"``. See ``feature_hybrid_linear_binary.md``.
+        Affects residual-delta JAX only; host ``compute_residuals`` is unchanged.
     
     Returns
     -------
@@ -69,7 +91,12 @@ def open_session(
         par_file=par_file,
         tim_file=tim_file,
         clock_dir=clock_dir,
-        verbose=verbose
+        verbose=verbose,
+        compatibility=compatibility,
+        engine_conventions=engine_conventions,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
+        nonlinear_params=nonlinear_params,
     )
 
 
@@ -78,7 +105,11 @@ def compute_residuals(
     tim_file: Path | str,
     clock_dir: Optional[str] = None,
     subtract_tzr: bool = True,
-    verbose: bool = False
+    verbose: bool = False,
+    compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Compute timing residuals (legacy one-shot API).
@@ -96,8 +127,14 @@ def compute_residuals(
         Directory containing clock files
     subtract_tzr : bool, default True
         Whether to subtract TZR offset
-    verbose : bool, default False
-        Print status messages
+    compatibility : str, default "pint"
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
+    engine_conventions : EngineConventionProfile, optional
+        Explicit engine convention profile (must match *compatibility*).
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode (see :func:`open_session`).
+    tempo2_jug_options : dict, optional
+        Tempo2 options dict (see :func:`open_session`).
     
     Returns
     -------
@@ -124,7 +161,11 @@ def compute_residuals(
         tim_file=tim_file,
         clock_dir=clock_dir,
         subtract_tzr=subtract_tzr,
-        verbose=verbose
+        verbose=verbose,
+        compatibility=compatibility,
+        engine_conventions=engine_conventions,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
     )
 
 
@@ -137,14 +178,16 @@ def fit_parameters(
     clock_dir: Optional[str] = None,
     device: Optional[str] = None,
     verbose: bool = False,
+    compatibility: str = "pint",
+    tempo2_native: str | None = None,
+    tempo2_jug_options: dict[str, Any] | None = None,
     fit_dmx: bool = True,
 ) -> Dict[str, Any]:
     """
     Fit timing model parameters (legacy one-shot API).
-    
+
     This function provides backward compatibility with existing code.
     For multiple operations on the same files, use open_session() instead.
-    
     Parameters
     ----------
     par_file : Path or str
@@ -163,11 +206,16 @@ def fit_parameters(
         'cpu', 'gpu', or None (auto-detect)
     verbose : bool, default False
         Print fitting progress
+    compatibility : str, default "pint"
+        Timing compatibility mode: ``"pint"`` or ``"tempo2"``.
+    tempo2_native : str, optional
+        Tempo2 JAX graph mode (see :func:`open_session`).
+    tempo2_jug_options : dict, optional
+        Tempo2 options dict (see :func:`open_session`).
     fit_dmx : bool, default True
         If True (default), DMX_* bins in the PAR are auto-added as fitted
         timing parameters. If False, fixed DMX delays from the PAR are still
         applied but DMX_* are not fitted (use for global-DM recovery checks).
-
     Returns
     -------
     result : dict
@@ -178,14 +226,14 @@ def fit_parameters(
         - 'iterations': Number of iterations
         - 'converged': Whether fit converged
         - etc.
-    
+
     Examples
     --------
     >>> from jug.engine import fit_parameters
     >>> result = fit_parameters('J1909.par', 'J1909.tim', ['F0', 'F1'])
     >>> print(f"F0 = {result['final_params']['F0']:.15f} Hz")
     >>> print(f"RMS = {result['final_rms']:.3f} mus")
-    
+
     Notes
     -----
     This calls fit_parameters_optimized() directly without caching.
@@ -200,5 +248,8 @@ def fit_parameters(
         clock_dir=clock_dir,
         device=device,
         verbose=verbose,
+        compatibility=compatibility,
+        tempo2_native=tempo2_native,
+        tempo2_jug_options=tempo2_jug_options,
         fit_dmx=fit_dmx,
     )

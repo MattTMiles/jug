@@ -21,6 +21,13 @@ from jug.delays.binary_dd import (
 # Note: Kopeikin corrections (K96 proper motion, annual orbital parallax) are
 # implemented inline in branch_ddk() below, not as separate importable functions.
 from jug.delays.binary_t2 import t2_binary_delay
+from jug.delays.binary_t2_tempo2 import t2_tempo2_binary_delay
+
+# Highest ELL1H H3/H4 Shapiro harmonic JUG evaluates when a par sets NHARMS.
+# Tempo2's calcDH sums harmonics 3..NHARMS; realistic NHARMS is <=7, so 12 is a
+# safe ceiling. Harmonics k>nharm are masked (base->0) so the partial sum is exact
+# for the requested nharm and never diverges (the H3/H4 series grows as (H4/H3)^k).
+_ELL1H_MAX_NHARM = 12
 
 # Highest ELL1H H3/H4 Shapiro harmonic JUG evaluates when a par sets NHARMS.
 # Tempo2's calcDH sums harmonics 3..NHARMS; realistic NHARMS is <=7, so 12 is a
@@ -60,7 +67,13 @@ def combined_delays(
     dr=0.0, dth=0.0,
     # ELL1H H3/H4 Shapiro harmonic count (par NHARMS, Tempo2 default 4). Only the
     # H3+H4 branch uses it; H3+STIGMA (exact) and H3-only are unaffected.
-    nharm=4.0
+    nharm=4.0,
+    # Tempo2 ELL1 truncation: tempo2 ELL1model.C keeps dre to O(e^1) and uses
+    # drep = x*cos(Phi), drepp = -x*sin(Phi) with NO eps harmonics; JUG/PINT
+    # keep O(e^3) expansions. The an*x^2*eps cross terms differ at the
+    # ~0.1-0.2 ns level (1Phi/3Phi) — select tempo2's exact truncation in
+    # tempo2 compatibility mode.
+    ell1_t2=False
 ):
     """Combined delay calculation - single JAX kernel for maximum performance.
 
@@ -83,7 +96,10 @@ def combined_delays(
     powers = jnp.arange(len(dm_coeffs))
     dt_powers = dt_years[:, jnp.newaxis] ** powers[jnp.newaxis, :]
     dm_eff = jnp.sum(dm_coeffs * dt_powers / dm_factorials, axis=1)
-    dm_sec = K_DM_SEC * dm_eff / (freq_bary ** 2)
+    # tempo2 dm_delays.C convention: freqf <= 1 Hz marks an infinite-frequency
+    # TOA (e.g. barycentric BAT data) — no dispersive delay of any kind.
+    freq_disp = jnp.where(freq_bary > 1.0e-6, freq_bary, jnp.inf)
+    dm_sec = K_DM_SEC * dm_eff / (freq_disp ** 2)
 
     # === Solar Wind Delay ===
     r_km = jnp.sqrt(jnp.sum(obs_sun_pos**2, axis=1))
@@ -95,15 +111,18 @@ def combined_delays(
     sin_rho = jnp.maximum(jnp.sin(rho), 1e-10)
     geometry_pc = AU_PC * rho / (r_au * sin_rho)
     dm_sw = ne_sw * geometry_pc
-    sw_sec = jnp.where(ne_sw != 0, K_DM_SEC * dm_sw / (freq_bary ** 2), 0.0)
+    sw_sec = jnp.where(ne_sw != 0, K_DM_SEC * dm_sw / (freq_disp ** 2), 0.0)
 
     # === FD Delay ===
-    log_freq = jnp.log(freq_bary / 1000.0)
+    log_freq = jnp.log(freq_disp / 1000.0)
     fd_sec = jnp.where(
         has_fd,
         jnp.polyval(jnp.concatenate([fd_coeffs[::-1], jnp.array([0.0])]), log_freq),
         0.0
     )
+    # Infinite-frequency TOAs carry no FD delay either (readParfile.C applies
+    # FD only for freqf > 1).
+    fd_sec = jnp.where(jnp.isfinite(log_freq), fd_sec, 0.0)
 
     # Handle troposphere array - use zeros if not provided
     tropo_arr = jnp.where(
@@ -135,12 +154,19 @@ def combined_delays(
 
     # === Universal Binary Delay Dispatch ===
     def compute_binary_universal(args):
-        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val, dmx_val, tt_binary_val, tt_binary_red_val) = args
+        (tdbld_val, roemer_shapiro_val, obs_pos_ls_val, dm_val, sw_val, tropo_val, dmx_val, fd_val, tt_binary_val, tt_binary_red_val) = args
 
         # Pre-binary delay sum: sum of all delays before BinaryDD in PINT's order.
         # roemer_shapiro_val includes: Roemer + SS Shapiro (Sun + planets)
         # We add: DM, DMX, Solar Wind, Troposphere
-        prebinary_sum = roemer_shapiro_val + dm_val + dmx_val + sw_val + tropo_val
+        # Tempo2 convention: the binary is evaluated at bbat, whose tdis1
+        # includes the FD delay — so FD is part of the pre-binary time there
+        # (PINT applies FD after the binary; ~FD * x*2pi/PB, several ns on
+        # FD pulsars like J1741+1351). Gated on the tempo2-conventions flag.
+        prebinary_sum = (
+            roemer_shapiro_val + dm_val + dmx_val + sw_val + tropo_val
+            + jnp.where(jnp.asarray(ell1_t2, dtype=bool), fd_val, 0.0)
+        )
 
         # High-precision time for binary model:
         #   tt_binary_val = (tdb - binary_epoch) * SECS_PER_DAY, precomputed in longdouble.
@@ -215,7 +241,8 @@ def combined_delays(
             eps1_sq, eps2_sq = eps1_eff**2, eps2_eff**2
             eps1_cu, eps2_cu = eps1_eff**3, eps2_eff**3
 
-            Dre_a1 = (
+            _t2_trunc = jnp.asarray(ell1_t2, dtype=bool)
+            Dre_a1_full = (
                 sin_Phi + 0.5 * (eps2_eff * sin_2Phi - eps1_eff * cos_2Phi)
                 - (1.0/8.0) * (5*eps2_sq*sin_Phi - 3*eps2_sq*sin_3Phi - 2*eps2_eff*eps1_eff*cos_Phi
                               + 6*eps2_eff*eps1_eff*cos_3Phi + 3*eps1_sq*sin_Phi + 3*eps1_sq*sin_3Phi)
@@ -224,7 +251,7 @@ def combined_delays(
                                - 4*eps2_cu*sin_4Phi + 12*eps1_sq*eps2_eff*sin_4Phi
                                + 12*eps1_eff*eps2_sq*cos_4Phi - 4*eps1_cu*cos_4Phi)
             )
-            Drep_a1 = (
+            Drep_a1_full = (
                 cos_Phi + eps1_eff * sin_2Phi + eps2_eff * cos_2Phi
                 - (1.0/8.0) * (5*eps2_sq*cos_Phi - 9*eps2_sq*cos_3Phi + 2*eps1_eff*eps2_eff*sin_Phi
                               - 18*eps1_eff*eps2_eff*sin_3Phi + 3*eps1_sq*cos_Phi + 9*eps1_sq*cos_3Phi)
@@ -233,7 +260,7 @@ def combined_delays(
                                - 16*eps2_cu*cos_4Phi + 48*eps1_sq*eps2_eff*cos_4Phi
                                - 48*eps1_eff*eps2_sq*sin_4Phi + 16*eps1_cu*sin_4Phi)
             )
-            Drepp_a1 = (
+            Drepp_a1_full = (
                 -sin_Phi + 2*eps1_eff*cos_2Phi - 2*eps2_eff*sin_2Phi
                 - (1.0/8.0) * (-5*eps2_sq*sin_Phi + 27*eps2_sq*sin_3Phi + 2*eps1_eff*eps2_eff*cos_Phi
                               - 54*eps1_eff*eps2_eff*cos_3Phi - 3*eps1_sq*sin_Phi - 27*eps1_sq*sin_3Phi)
@@ -242,6 +269,17 @@ def combined_delays(
                                + 64*eps2_cu*sin_4Phi - 192*eps1_sq*eps2_eff*sin_4Phi
                                - 192*eps1_eff*eps2_sq*cos_4Phi + 64*eps1_cu*cos_4Phi)
             )
+            # tempo2 ELL1model.C truncation:
+            #   dre   = x*(sin(phase) - 0.5*(e1*cos(2*phase) - e2*sin(2*phase)))
+            #   drep  = x*cos(phase)
+            #   drepp = -x*sin(phase)
+            Dre_a1 = jnp.where(
+                _t2_trunc,
+                sin_Phi + 0.5 * (eps2_eff * sin_2Phi - eps1_eff * cos_2Phi),
+                Dre_a1_full,
+            )
+            Drep_a1 = jnp.where(_t2_trunc, cos_Phi, Drep_a1_full)
+            Drepp_a1 = jnp.where(_t2_trunc, -sin_Phi, Drepp_a1_full)
 
             Dre = a1_eff * Dre_a1
             Drep = a1_eff * Drep_a1
@@ -469,15 +507,34 @@ def combined_delays(
                 sini_eff, m2, h3, h4, stig, tt0_red_sec=tt0_red
             )
 
-        # Switch logic (6 branches: 0=None, 1=ELL1, 2=DD, 3=T2, 4=BT, 5=DDK)
+        # Branch 6: tempo2-native T2 DD branch with additive Kopeikin terms
+        # (T2model.C port; KIN/KOM stay in tempo2's IAU convention)
+        def branch_t2_tempo2(tt_pair):
+            # Pint branches 0-5 share (tt_binary_prebinary, tt_binary_red_prebinary)
+            # in seconds; tempo2-native T2 evaluates at MJD prebinary time.
+            _ = tt_pair
+            use_kop = (kin != 0.0) & (
+                (pmra_rad_per_sec != 0.0) | (pmdec_rad_per_sec != 0.0)
+            )
+            return t2_tempo2_binary_delay(
+                t_prebinary, pb, a1, ecc, om, t0, gamma, pbdot, omdot, xdot, edot,
+                sini, m2, kin, kom, px,
+                pmra_rad_per_sec, pmdec_rad_per_sec,
+                obs_pos_ls_val,
+                sin_ra, cos_ra, sin_dec, cos_dec,
+                use_kop,
+            )
+
+        # Switch logic (0=None, 1=ELL1, 2=DD, 3=T2, 4=BT, 5=DDK, 6=T2-tempo2)
         # All branches receive (tt_binary_prebinary, tt_binary_red_prebinary):
         # the full and orbit-count-reduced (t_prebinary - binary_epoch) * 86400,
         # both precomputed in longdouble, avoiding float64 cancellation at
         # MJD ~58000 and the ~ps float64 phase floor respectively.
         return jax.lax.switch(
             binary_model_id,
-            [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt, branch_ddk],
-            (tt_binary_prebinary, tt_binary_red_prebinary)
+            [branch_none, branch_ell1, branch_dd, branch_t2, branch_bt,
+             branch_ddk, branch_t2_tempo2],
+            (tt_binary_prebinary, tt_binary_red_prebinary),
         )
 
     # Prepare observer position - use zeros if not provided (for non-DDK models)
@@ -489,7 +546,7 @@ def combined_delays(
 
     binary_sec = jnp.where(
         has_binary,
-        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr, dmx_arr, tt_binary_arr, tt_binary_red_arr)),
+        jax.vmap(compute_binary_universal)((tdbld, roemer_shapiro, obs_pos_ls_arr, dm_sec, sw_sec, tropo_arr, dmx_arr, jnp.broadcast_to(fd_sec, tdbld.shape), tt_binary_arr, tt_binary_red_arr)),
         0.0
     )
 
@@ -522,7 +579,9 @@ def compute_total_delay_jax(
     # DD relativistic-deformation parameters (DDGR-derived; standard DD = 0).
     dr=0.0, dth=0.0,
     # ELL1H H3/H4 Shapiro harmonic count (par NHARMS, Tempo2 default 4).
-    nharm=4.0
+    nharm=4.0,
+    # Tempo2 ELL1 truncation (see combined_delays).
+    ell1_t2=False
 ):
     """Compute total delay in a single JAX kernel.
 
@@ -564,7 +623,8 @@ def compute_total_delay_jax(
         tt_binary_red_sec,
         dr,
         dth,
-        nharm
+        nharm,
+        ell1_t2
     )
 
     return roemer_shapiro + combined_sec

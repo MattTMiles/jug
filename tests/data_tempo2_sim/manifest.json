@@ -1,0 +1,314 @@
+[
+  {
+    "binary": "BT",
+    "designmatrix_params": [
+      "F0",
+      "PB",
+      "A1"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_bt_tcb",
+    "option_tags": [
+      "BINARY=BT",
+      "UNITS=TCB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_bt_tcb/sim_bt_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_bt_tcb/sim_bt_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "DD",
+    "designmatrix_params": [
+      "F0",
+      "PB"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_dd_ecliptic_tcb",
+    "option_tags": [
+      "BINARY=DD",
+      "UNITS=TCB",
+      "COORDS=ecliptic",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_dd_ecliptic_tcb/sim_dd_ecliptic_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_dd_ecliptic_tcb/sim_dd_ecliptic_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "DD",
+    "designmatrix_params": [
+      "F0",
+      "PB",
+      "A1"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_dd_tcb",
+    "option_tags": [
+      "BINARY=DD",
+      "UNITS=TCB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_dd_tcb/sim_dd_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_dd_tcb/sim_dd_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "DD",
+    "designmatrix_params": [
+      "F0"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_dd_tdb",
+    "option_tags": [
+      "BINARY=DD",
+      "UNITS=TDB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_dd_tdb/sim_dd_tdb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_dd_tdb/sim_dd_tdb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "DDH",
+    "designmatrix_params": [
+      "F0",
+      "PB",
+      "A1"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_ddh_tcb",
+    "option_tags": [
+      "BINARY=DDH",
+      "UNITS=TCB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_ddh_tcb/sim_ddh_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_ddh_tcb/sim_ddh_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "DDK",
+    "designmatrix_params": [
+      "F0",
+      "PB",
+      "A1"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_ddk_tcb",
+    "option_tags": [
+      "BINARY=DDK",
+      "UNITS=TCB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_ddk_tcb/sim_ddk_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_ddk_tcb/sim_ddk_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "isolated",
+    "designmatrix_params": [
+      "F0",
+      "DM"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_dilatefreq_no",
+    "option_tags": [
+      "BINARY=isolated",
+      "UNITS=TCB",
+      "DILATEFREQ=N"
+    ],
+    "par": "sim_dilatefreq_no/sim_dilatefreq_no.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_dilatefreq_no/sim_dilatefreq_no.tim",
+    "toa_count": 6
+  },
+  {
+    "binary": "ELL1",
+    "designmatrix_params": [
+      "F0",
+      "PB",
+      "A1",
+      "EPS1",
+      "EPS2"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_ell1_tcb",
+    "option_tags": [
+      "BINARY=ELL1",
+      "UNITS=TCB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_ell1_tcb/sim_ell1_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_ell1_tcb/sim_ell1_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "ELL1H",
+    "designmatrix_params": [
+      "F0",
+      "PB",
+      "A1",
+      "EPS1",
+      "EPS2"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_ell1h_tcb",
+    "option_tags": [
+      "BINARY=ELL1H",
+      "UNITS=TCB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_ell1h_tcb/sim_ell1h_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_ell1h_tcb/sim_ell1h_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "T2",
+    "designmatrix_params": [
+      "F0",
+      "FD1"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_fd_tcb",
+    "option_tags": [
+      "BINARY=T2",
+      "UNITS=TCB",
+      "FD",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_fd_tcb/sim_fd_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_fd_tcb/sim_fd_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "isolated",
+    "designmatrix_params": [
+      "F0",
+      "F1",
+      "DM"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_isolated_tcb",
+    "option_tags": [
+      "BINARY=isolated",
+      "UNITS=TCB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_isolated_tcb/sim_isolated_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_isolated_tcb/sim_isolated_tcb.tim",
+    "toa_count": 6
+  },
+  {
+    "binary": "T2",
+    "designmatrix_params": [],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_t2_multisys",
+    "option_tags": [
+      "BINARY=T2",
+      "UNITS=TCB",
+      "TIM=multi-sys",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_t2_multisys/sim_t2_multisys.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_t2_multisys/sim_t2_multisys.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "T2",
+    "designmatrix_params": [
+      "F0",
+      "PB",
+      "A1",
+      "EPS1",
+      "EPS2"
+    ],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_t2_tcb",
+    "option_tags": [
+      "BINARY=T2",
+      "UNITS=TCB",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_t2_tcb/sim_t2_tcb.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_t2_tcb/sim_t2_tcb.tim",
+    "toa_count": 8
+  },
+  {
+    "binary": "T2",
+    "designmatrix_params": [],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_t2_track2_addsat",
+    "option_tags": [
+      "BINARY=T2",
+      "UNITS=TCB",
+      "TRACK=-2",
+      "TIM=-pn",
+      "TIM=-addsat",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_t2_track2_addsat/sim_t2_track2_addsat.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_t2_track2_addsat/sim_t2_track2_addsat.tim",
+    "toa_count": 10
+  },
+  {
+    "binary": "T2",
+    "designmatrix_params": [],
+    "generated": true,
+    "generator": "tools/generate_tempo2_sim_fixtures.py",
+    "id": "sim_t2_track2_pn",
+    "option_tags": [
+      "BINARY=T2",
+      "UNITS=TCB",
+      "TRACK=-2",
+      "TIM=-pn",
+      "DILATEFREQ=Y"
+    ],
+    "par": "sim_t2_track2_pn/sim_t2_track2_pn.par",
+    "parity_status": "green_required",
+    "provenance": "simulated_libstempo_fakepulsar",
+    "tim": "sim_t2_track2_pn/sim_t2_track2_pn.tim",
+    "toa_count": 8
+  }
+]

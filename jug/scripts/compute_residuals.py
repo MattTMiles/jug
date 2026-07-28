@@ -18,6 +18,7 @@ from jug.utils.astropy_config import configure_astropy
 configure_astropy()
 
 from jug.residuals.simple_calculator import compute_residuals_simple
+from jug.timing.cli import add_timing_cli_arguments, timing_kwargs_from_namespace
 
 
 def main():
@@ -85,8 +86,10 @@ Examples:
         default=Path("."),
         help="Directory for output plot (default: current directory)"
     )
+    add_timing_cli_arguments(parser)
 
     args = parser.parse_args()
+    timing_kwargs = timing_kwargs_from_namespace(args)
 
     # Validate input files
     if not args.par_file.exists():
@@ -103,7 +106,9 @@ Examples:
             par_file=args.par_file,
             tim_file=args.tim_file,
             clock_dir=args.clock_dir,
-            observatory=args.observatory
+            observatory=args.observatory,
+            verbose=args.verbose,
+            **timing_kwargs,
         )
 
         # Summary output

@@ -44,6 +44,10 @@ JUG_REQUIREMENTS = {
     'CLK': 'TT(BIPM2024)',
 }
 
+TEMPO2_ALLOWED_UNITS = {'TCB', 'TDB', None}
+TEMPO2_ALLOWED_TIMEEPH = {'IF99', 'FB90', None}
+TEMPO2_ALLOWED_DILATEFREQ = {'Y', 'N', None}
+
 
 def extract_fingerprint(par_path: Path) -> Dict[str, Any]:
     """Extract configuration fingerprint from a par file.
@@ -198,6 +202,37 @@ def validate_jug_compatible(fp: Dict[str, Any]) -> Tuple[bool, List[str]]:
     units = fp['config'].get('UNITS')
     if units and units != 'TDB':
         issues.append(f"UNITS={units}: JUG only supports TDB")
+
+    return len(issues) == 0, issues
+
+
+def validate_tempo2_compatible(fp: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Check that a par file is compatible with JUG's Tempo2 mode.
+
+    Tempo2-native PTA files commonly use UNITS=TCB, TIMEEPH=IF99,
+    DILATEFREQ=Y, and BINARY=T2. Unlike PINT compatibility, these are allowed
+    and must be preserved by the compute path.
+    """
+    issues = []
+    config = fp['config']
+
+    units = config.get('UNITS')
+    if units not in TEMPO2_ALLOWED_UNITS:
+        issues.append(f"UNITS={units}: tempo2 mode supports TCB/TDB or Tempo2 EPHVER defaults")
+
+    timeeph = config.get('TIMEEPH')
+    if timeeph not in TEMPO2_ALLOWED_TIMEEPH:
+        issues.append(f"TIMEEPH={timeeph}: expected IF99/FB90 or unset")
+
+    dilatefreq = config.get('DILATEFREQ')
+    if dilatefreq not in TEMPO2_ALLOWED_DILATEFREQ:
+        issues.append(f"DILATEFREQ={dilatefreq}: expected Y/N or unset")
+
+    binary = config.get('BINARY')
+    if binary is not None and binary.upper() not in {
+        'T2', 'ELL1', 'ELL1H', 'ELL1K', 'DD', 'DDH', 'DDGR', 'DDK', 'BT', 'BTX'
+    }:
+        issues.append(f"BINARY={binary}: not in JUG's tempo2-compatible binary subset")
 
     return len(issues) == 0, issues
 

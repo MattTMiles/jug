@@ -33,6 +33,21 @@ _skip_postfit = pytest.mark.skipif(
 TEMPO2_WRMS_PREFIT_US = 0.705  # Par file TRES from pre-fit par (J0125-2327_tdb.par)
 TEMPO2_WRMS_POSTFIT_US = 0.698  # Par file TRES from post-fit par (J0125-2327_test.par)
 
+# Those TRES values were produced by Tempo2 on the FULL 5083-TOA MPTA dataset.
+# The bundled tests/data_mpta fixture is a 3170-TOA trim of it, so a fit on the
+# fixture has a legitimately different WRMS and must not be asserted against
+# them. get_j0125_paths() keeps par/tim/postfit consistent; here we additionally
+# skip the Tempo2-constant comparisons whenever the bundled subset is in use.
+_USING_BUNDLED_FIXTURE = "data_mpta" in str(TIM_FILE)
+_skip_tempo2_ref = pytest.mark.skipif(
+    _USING_BUNDLED_FIXTURE,
+    reason=(
+        "TEMPO2_WRMS_* are TRES values for the full 5083-TOA MPTA dataset; "
+        "the bundled data_mpta fixture is a 3170-TOA subset. Point "
+        "JUG_TEST_J0125_PAR/TIM at the full dataset to run these."
+    ),
+)
+
 FIT_PARAMS = [
     'RAJ', 'DECJ', 'F0', 'F1', 'DM', 'DM1', 'DM2',
     'PMRA', 'PMDEC', 'PX', 'PB', 'A1', 'PBDOT', 'XDOT',
@@ -200,6 +215,7 @@ class TestELL1HFit:
         """Fit should converge."""
         assert fit_result['converged'], f"Fit did not converge after {fit_result['iterations']} iterations"
 
+    @_skip_tempo2_ref
     def test_wrms_close_to_tempo2(self, fit_result):
         """Post-fit WRMS should be within ~1 ns of Tempo2 post-fit TRES (0.698 μs).
 
@@ -342,6 +358,7 @@ class TestEvaluateFitParity:
             f"(max = {np.max(np.abs(resid)):.1f} us)"
         )
 
+    @_skip_tempo2_ref
     def test_evaluate_wrms_matches_tempo2(self, eval_result):
         """Evaluate-only WRMS on Tempo2 post-fit par must match TRES=0.698 us within 1 ns."""
         wrms = eval_result['weighted_rms_us']
@@ -429,6 +446,7 @@ class TestTempo2ParameterComparison:
             fit_params=FIT_PARAMS, max_iter=100, verbose=False, solver_mode="exact",
         )
 
+    @_skip_tempo2_ref
     def test_fit_wrms_matches_prefit_tres(self, fit_from_prefit):
         """JUG fit from pre-fit par should produce WRMS within 1 ns of Tempo2 post-fit TRES=0.698.
 

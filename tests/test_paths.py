@@ -215,23 +215,55 @@ def get_j0613_trim300_paths() -> Tuple[Optional[Path], Optional[Path]]:
 
 
 def get_j0125_paths() -> Tuple[Optional[Path], Optional[Path], Optional[Path]]:
-    """Get J0125-2327 pre-fit PAR, TIM, and optional post-fit PAR paths."""
+    """Get J0125-2327 pre-fit PAR, TIM, and optional post-fit PAR paths.
+
+    The three paths are resolved as ONE CONSISTENT SET. They must not be
+    mixed across datasets: the bundled tests/data_mpta fixture is a 3170-TOA
+    trim of the 5083-TOA legacy MPTA dataset, while the legacy post-fit par
+    (and the TEMPO2_WRMS_* constants in test_ell1h_j0125.py) were produced by
+    fitting the FULL dataset. Pairing the legacy post-fit par with the bundled
+    subset applies a solution to 62% of the TOAs it was fitted against, which
+    shows up as a spurious ~45 ns post-fit WRMS offset and a ~8 us
+    evaluate-vs-fit discrepancy that look like code regressions but are not.
+
+    Resolution order:
+      1. explicit env vars (caller owns consistency)
+      2. the complete legacy triple, if all three exist
+      3. the bundled fixture, with postfit_par=None so post-fit parity tests
+         skip rather than run against a mismatched reference
+    """
+    env_par = _get_env_path("JUG_TEST_J0125_PAR")
+    env_tim = _get_env_path("JUG_TEST_J0125_TIM")
+    env_postfit = _get_env_path("JUG_TEST_J0125_POSTFIT_PAR")
+
+    legacy = _LEGACY_PATHS.get("J0125", {})
+    legacy_par = legacy.get("par")
+    legacy_tim = legacy.get("tim")
+    legacy_postfit = legacy.get("postfit_par")
+    if legacy_postfit is None or not legacy_postfit.exists():
+        legacy_postfit = get_mpta_postfit_par("j0125_ell1h")
+
+    def _ok(p):
+        return p is not None and Path(p).exists()
+
+    # 1. explicit overrides win; the caller is responsible for pairing them.
+    if _ok(env_par) or _ok(env_tim) or _ok(env_postfit):
+        par, tim = _resolve_pulsar_paths(
+            "J0125", "JUG_TEST_J0125_PAR", "JUG_TEST_J0125_TIM",
+        )
+        return par, tim, env_postfit if _ok(env_postfit) else (
+            legacy_postfit if _ok(legacy_postfit) and par == legacy_par else None
+        )
+
+    # 2. complete legacy triple -> use it whole (matches TEMPO2_WRMS_* constants).
+    if _ok(legacy_par) and _ok(legacy_tim) and _ok(legacy_postfit):
+        return legacy_par, legacy_tim, legacy_postfit
+
+    # 3. otherwise the bundled fixture, with no post-fit reference.
     par, tim = _resolve_pulsar_paths(
-        "J0125",
-        "JUG_TEST_J0125_PAR",
-        "JUG_TEST_J0125_TIM",
+        "J0125", "JUG_TEST_J0125_PAR", "JUG_TEST_J0125_TIM",
     )
-    postfit_par = _get_env_path("JUG_TEST_J0125_POSTFIT_PAR")
-    if postfit_par is None:
-        postfit_par = get_mpta_postfit_par("j0125_ell1h")
-    if postfit_par is None or not postfit_par.exists():
-        legacy = _LEGACY_PATHS.get("J0125", {})
-        legacy_postfit = legacy.get("postfit_par")
-        if legacy_postfit is not None and legacy_postfit.exists():
-            postfit_par = legacy_postfit
-        else:
-            postfit_par = None
-    return par, tim, postfit_par
+    return par, tim, None
 
 
 def get_mini_paths() -> Tuple[Path, Path]:

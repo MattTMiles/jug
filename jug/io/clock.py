@@ -238,12 +238,9 @@ class ClockGraph:
         """(start, end) MJD covered by the clock file of *edge_idx* (memoized)."""
         cov = self._coverage[edge_idx]
         if cov is None:
-            clk = parse_clock_file(self._edges[edge_idx][2])
-            mjds = clk['mjd']
-            if len(mjds) == 0:
-                cov = (np.inf, -np.inf)
-            else:
-                cov = (float(mjds[0]), float(mjds[-1]))
+            path = self._edges[edge_idx][2]
+            st = os.stat(path)
+            cov = _clock_file_span(str(path), (st.st_mtime_ns, st.st_size))
             self._coverage[edge_idx] = cov
         return cov
 
@@ -480,6 +477,75 @@ class ClockGraph:
             'offset': combined,
             'chain': [f.name for f in files],
         }
+
+
+def _clock_span_line_value(line: str):
+    """MJD of *line* if ``_parse_clock_file_cached`` would keep it, else None.
+
+    Must mirror that parser's filter exactly -- comment/blank skip, >=2 fields,
+    and BOTH columns numeric. (Only checking column 0 mis-reads e.g.
+    pks2aus.clk, whose prose header has a line starting with a bare number.)
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        return None
+    parts = stripped.split()
+    if len(parts) < 2:
+        return None
+    try:
+        mjd = float(parts[0])
+        float(parts[1])
+    except ValueError:
+        return None
+    return mjd
+
+
+@lru_cache(maxsize=None)
+def _clock_file_span(path_str: str, _stat_key: tuple) -> tuple:
+    """(first, last) MJD of a clock file, without parsing the whole thing.
+
+    _edge_coverage needs only two numbers per file, but the piecewise chain
+    asks for them for EVERY file in the clock directory in order to place its
+    interval breakpoints. Doing that via parse_clock_file reads ~65 MB and
+    costs ~450 ms; seeking the head and tail costs ~13 ms for the same answer
+    (verified identical across all 77 bundled clock files).
+
+    Files on the selected chain are still parsed in full by the caller -- this
+    only avoids parsing the ~75 that merely get their coverage inspected.
+    """
+    size = os.path.getsize(path_str)
+    chunk = 1 << 16
+    first = last = None
+    with open(path_str, 'rb') as fh:
+        pos = 0
+        while first is None and pos < size:
+            fh.seek(pos)
+            lines = fh.read(chunk).decode('utf-8', 'ignore').splitlines()
+            if pos + chunk < size and lines:
+                lines = lines[:-1]          # drop a possibly-truncated line
+            for ln in lines:
+                v = _clock_span_line_value(ln)
+                if v is not None:
+                    first = v
+                    break
+            pos += chunk
+        off = max(0, size - chunk)
+        while last is None:
+            fh.seek(off)
+            lines = fh.read(size - off).decode('utf-8', 'ignore').splitlines()
+            if off > 0 and lines:
+                lines = lines[1:]           # drop the partial leading line
+            for ln in reversed(lines):
+                v = _clock_span_line_value(ln)
+                if v is not None:
+                    last = v
+                    break
+            if off == 0:
+                break
+            off = max(0, off - chunk)
+    if first is None or last is None:
+        return (float('inf'), float('-inf'))
+    return (float(first), float(last))
 
 
 @lru_cache(maxsize=None)

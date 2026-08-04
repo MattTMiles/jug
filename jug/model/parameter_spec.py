@@ -293,7 +293,7 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMRAC", "PMLAMBDA"),
+        aliases=("PMRAC",),
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -304,7 +304,6 @@ _ASTROMETRY_PARAMS = [
         dtype="float64",
         internal_unit="rad/yr",
         par_unit_str="mas/yr",
-        aliases=("PMBETA",),
         requires=("POSEPOCH",),
         display_format=".6f",
     ),
@@ -348,6 +347,9 @@ _ASTROMETRY_PARAMS = [
         internal_unit="mas/yr",
         par_unit_str="mas/yr",
         requires=("POSEPOCH",),
+        # Tempo2 PMLAMBDA is ecliptic-longitude proper motion (same as
+        # PMELONG), not PMRA -- the PM counterpart of LAMBDA -> ELONG.
+        aliases=("PMLAMBDA",),
         display_format=".6f",
     ),
     ParameterSpec(
@@ -358,6 +360,9 @@ _ASTROMETRY_PARAMS = [
         internal_unit="mas/yr",
         par_unit_str="mas/yr",
         requires=("POSEPOCH",),
+        # Tempo2 PMBETA is ecliptic-latitude proper motion (same as PMELAT),
+        # not PMDEC -- the PM counterpart of BETA -> ELAT.
+        aliases=("PMBETA",),
         display_format=".6f",
     ),
     ParameterSpec(

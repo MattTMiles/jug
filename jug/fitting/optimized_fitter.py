@@ -45,6 +45,7 @@ Usage Example
 from jug.utils.jax_setup import ensure_jax_x64
 ensure_jax_x64()
 import logging
+import os
 
 import jax
 import jax.numpy as jnp
@@ -532,9 +533,81 @@ def _has_gpu():
     return _has_gpu._result
 
 
+def _gls_cov_from_factors(factors, compute_noise_cov=False):
+    """Materialize covariance from saved SVD factors.
+
+    Performs exactly the operations _solve_gls_augmented_svd used to do
+    inline (bitwise-identical results); split out so the per-iteration
+    solve can skip the O(n_total^2)+ covariance work and only the final
+    consumer pays for it once.
+
+    Returns (cov, cov_all) with the same layout as the solver outputs.
+    """
+    Vt = factors['Vt']
+    S_inv = factors['S_inv']
+    col_norm = factors['col_norm']
+    n_tcols = factors['n_tcols']
+    n_total = factors['n_total']
+    t0 = factors['t0']
+
+    cov_norm = (Vt.T * S_inv**2) @ Vt
+    inv_cn = 1.0 / col_norm
+    cov_full = cov_norm * np.outer(inv_cn, inv_cn)
+    cov_timing = cov_full[:n_tcols, :n_tcols]
+    cov = cov_timing[t0:, t0:]
+    cov_all = np.zeros((n_total, n_total))
+    cov_all[:n_tcols, :n_tcols] = cov_timing
+    if compute_noise_cov:
+        np.fill_diagonal(
+            cov_all[n_tcols:, n_tcols:],
+            np.diag(cov_full[n_tcols:, n_tcols:])
+        )
+    return cov, cov_all
+
+def _gls_marginalized_chi2(r, Ni, F_noise, L_sigma, Cinv_one=None, one_Cinv_one=None):
+    """Marginalized GLS chi^2: r^T C^{-1} r with C = N + F phi F^T (Woodbury).
+
+    Uses the precomputed Sigma = F^T N^{-1} F + phi^{-1} Cholesky factor.
+    This is the actual objective the augmented solve minimizes over timing
+    parameters, so it is the correct step-acceptance metric for GLS damping.
+
+    When Cinv_one (= C^{-1} 1) and one_Cinv_one (= 1^T C^{-1} 1) are given,
+    the constant-offset direction is PROFILED OUT analytically:
+    chi2 -> chi2 - (1^T C^{-1} r)^2 / (1^T C^{-1} 1). This is required for
+    base/trial comparisons because the residuals carry an N-weighted-mean
+    gauge that shifts with the trial parameters while the solve's OFFSET
+    column makes the true objective offset-invariant; without profiling the
+    metric picks up a spurious always-positive (delta-mean)^2 * 1^T C^{-1} 1
+    term that biases the damping loop toward rejecting good full steps.
+    """
+    u = F_noise.T @ (r * Ni)
+    chi2 = float(r @ (r * Ni)
+                 - u @ _scipy_linalg.cho_solve(L_sigma, u, check_finite=False))
+    if Cinv_one is not None and one_Cinv_one is not None and one_Cinv_one > 0:
+        chi2 -= float(r @ Cinv_one) ** 2 / one_Cinv_one
+    return chi2
+
+def _gls_param_sigmas(factors):
+    """Per-parameter 1-sigma uncertainties (timing params, offset excluded)
+    from the augmented-SVD factors, without materializing the full covariance.
+
+    diag(cov) in normalized space is sum_k (Vt[k,i] * S_inv[k])^2; divide by
+    col_norm^2 to undo column normalization. Used by the scale-aware GLS
+    convergence test (delta_i / sigma_i), where the old mixed-unit norm test
+    was dimensionally meaningless (||p|| dominated by epoch-valued params).
+
+    """
+    Vt = factors['Vt']
+    S_inv = factors['S_inv']
+    col_norm = factors['col_norm']
+    var_norm = np.einsum('ki,k->i', Vt ** 2, S_inv ** 2)
+    var = var_norm / col_norm ** 2
+    return np.sqrt(np.maximum(var[factors['t0']:factors['n_tcols']], 0.0))
+
 def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
                              phiinv_noise, has_offset, n_timing_params,
-                             precomputed=None, compute_noise_cov=False):
+                             precomputed=None, compute_noise_cov=False,
+                             M_full=None, defer_cov=False):
     """Solve GLS timing+noise fit using the augmented system with SVD.
 
     Builds the N^{-1}-whitened augmented system and solves via SVD:
@@ -568,7 +641,16 @@ def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
 
     Returns
     -------
-    delta_params, cov, delta_params_all, cov_all, noise_coeffs
+    delta_params, cov, delta_params_all, cov_all, noise_coeffs, factors
+
+    When ``defer_cov`` is True, cov and cov_all are returned as None and
+    ``factors`` carries the SVD products needed to materialize them later
+    via _gls_cov_from_factors (bitwise-identical). When False, cov/cov_all
+    are computed here exactly as before and factors is None.
+
+    ``M_full``: optional pre-assembled [M_timing, F_noise] array (e.g. the
+    iteration's design matrix); when provided the hstack copy is skipped.
+    Must contain exactly the same values.
     """
     n_toa, n_tcols = M_timing.shape
     n_noise = F_noise.shape[1]
@@ -585,7 +667,10 @@ def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
     # Timing columns span ~20 orders of magnitude in norm, which destroys
     # SVD precision without normalization. Normalizing reduces cond(A)
     # from ~1e18 to ~1e6.
-    M_aug = np.hstack([M_timing, F_noise])
+    if M_full is not None and M_full.shape == (n_toa, n_total):
+        M_aug = M_full
+    else:
+        M_aug = np.hstack([M_timing, F_noise])
     col_norm = np.sqrt(np.sum(M_aug**2, axis=0))
     col_norm[col_norm == 0] = 1.0
     M_aug_n = M_aug / col_norm  # normalized columns
@@ -598,6 +683,32 @@ def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
     # B[i, n_tcols+i] = sqrt(phiinv[i] / col_norm[n_tcols+i]^2)
     # because normalization absorbs col_norm into the parameter scale.
     phiinv_n = phiinv_noise / (col_norm[n_tcols:] ** 2)
+
+    # --- Robust pinning of data-unresolvable noise coefficients ------------
+    # A noise coefficient whose normalized prior precision vastly exceeds the
+    # data information in its (unit-norm, whitened) column cannot be moved from
+    # its prior mean of 0 by the data -- it is already pinned. Left uncapped,
+    # such a column (e.g. a SWAMP=-20 PLSWNoise component -> phiinv_n ~ 1e40)
+    # adds a prior-constraint row of magnitude sqrt(phiinv_n) ~ 1e20 that
+    # dominates the augmented matrix's largest singular value, lifting the
+    # relative rank threshold (1e-20 * S[0]) above genuine timing directions.
+    # The SVD then discards real constraints and the GLS solve never converges
+    # (J0030+0451 PLSWNoise: 100-iter limit cycle, wrong PX, inflated sigmas).
+    # PINT stays stable because its normal-equations Cholesky pins such
+    # coefficients via a large diagonal without any rank-threshold coupling.
+    # Cap each coefficient's prior precision at SUPP x its column data
+    # information: it remains pinned (suppression >= SUPP ~ 1e13, residual
+    # contribution < ~1e-3 ns) while S[0] stays data-scaled so real directions
+    # survive. Columns the data can constrain (phiinv_n <~ data info) are below
+    # the cap and untouched, so ordinary fits are bit-unchanged. The noise
+    # component stays fully in the model and its marginalization.
+    if n_noise > 0:
+        _data_info = np.sum(M_w[:, n_tcols:] ** 2, axis=0)
+        _live = _data_info[_data_info > 0]
+        _di_ref = np.median(_live) if _live.size else 1.0
+        _phiinv_n_cap = 1e13 * np.maximum(_data_info, _di_ref * 1e-6)
+        phiinv_n = np.minimum(phiinv_n, _phiinv_n_cap)
+
     B_rows = np.zeros((n_noise, n_total))
     B_rows[np.arange(n_noise), n_tcols + np.arange(n_noise)] = np.sqrt(phiinv_n)
 
@@ -607,8 +718,28 @@ def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
 
     # SVD solve in normalized space
     U, S, Vt = _scipy_linalg.svd(A, full_matrices=False)
-    threshold = 1e-20 * S[0]
-    S_inv = np.where(S > threshold, 1.0 / S, 0.0)
+    # Relative SVD truncation threshold. Default 1e-20 keeps ~every direction
+    # (after column normalization cond(A)~1e6, so genuine timing directions sit
+    # at S/S[0] >~ 1e-6 and nothing is dropped). On ILL-CONDITIONED binary blocks
+    # (edge-on / near-circular) the degenerate near-null directions fall far
+    # below that floor; keeping them lets the fit OVERFIT those directions
+    # (validated: lower in-sample chi2 but WORSE held-out cross-validation vs
+    # PINT). Raising the threshold to ~1e-9..1e-7 truncates only the genuinely
+    # data-unresolvable directions -> regularization, while leaving well-
+    # conditioned fits (floor ~1e-6) bit-unchanged. Env-tunable for sweeping.
+    _svd_thr = float(os.environ.get("JUG_GLS_SVD_THRESH", "1e-20"))
+    threshold = _svd_thr * S[0]
+    # Optional Tikhonov ridge (soft shrinkage of the GN step toward the current
+    # par values -- a weak prior), distinct from the hard SVD truncation above.
+    # Default 0 = unchanged. S_inv = S/(S^2 + (ridge*S[0])^2). For sweeping a
+    # regularizer that damps overfit of degenerate binary directions without
+    # truncating; verify it does not regress well-generalizing pulsars (J1017).
+    _ridge = float(os.environ.get("JUG_GLS_RIDGE", "0"))
+    if _ridge > 0.0:
+        _lam2 = (_ridge * S[0]) ** 2
+        S_inv = S / (S ** 2 + _lam2)
+    else:
+        S_inv = np.where(S > threshold, 1.0 / S, 0.0)
     y_norm = Vt.T @ (S_inv * (U.T @ b))
 
     # Un-normalize to get physical parameter corrections
@@ -617,28 +748,19 @@ def _solve_gls_augmented_svd(M_timing, F_noise, residuals, sigma,
     delta_timing = delta_all[:n_tcols]
     noise_coeffs = delta_all[n_tcols:]
 
-    # Covariance from SVD: un-normalize by outer product of 1/col_norm
-    cov_norm = (Vt.T * S_inv**2) @ Vt
-    inv_cn = 1.0 / col_norm
-    cov_full = cov_norm * np.outer(inv_cn, inv_cn)
-
-    # Extract timing covariance
-    cov_timing = cov_full[:n_tcols, :n_tcols]
-
-    # Build output
     t0 = 1 if has_offset else 0
     delta_params = delta_timing[t0:]
-    cov = cov_timing[t0:, t0:]
 
-    cov_all = np.zeros((n_total, n_total))
-    cov_all[:n_tcols, :n_tcols] = cov_timing
-    if compute_noise_cov:
-        np.fill_diagonal(
-            cov_all[n_tcols:, n_tcols:],
-            np.diag(cov_full[n_tcols:, n_tcols:])
-        )
+    factors = {
+        'Vt': Vt, 'S_inv': S_inv, 'col_norm': col_norm,
+        'n_tcols': n_tcols, 'n_total': n_total, 't0': t0,
+    }
+    if defer_cov:
+        return delta_params, None, delta_all, None, noise_coeffs, factors
 
-    return delta_params, cov, delta_all, cov_all, noise_coeffs
+    # Covariance from SVD: un-normalize by outer product of 1/col_norm
+    cov, cov_all = _gls_cov_from_factors(factors, compute_noise_cov)
+    return delta_params, cov, delta_all, cov_all, noise_coeffs, factors
 
 
 def _compute_FtNiF_sparse(F_noise, Ni, blocks):
@@ -2103,6 +2225,9 @@ def _run_general_fit_iterations(
     condition_threshold = 1e12
     _saved_M_labels = None
     _saved_M_n_timing = 0
+    _last_gls_factors = None
+    cov = None
+    gls_step_failed = False
     
     # Track RMS history (using full-model RMS)
     rms_history = [current_rms_us]
@@ -2147,6 +2272,8 @@ def _run_general_fit_iterations(
     _woodbury_precomputed = None
     _gls_phiinv_raw = None
     _gls_F_noise = None
+    _gls_Cinv_one = None
+    _gls_one_Cinv_one = None
     if n_augmented > 0:
         # Build phiinv
         _gls_phiinv_raw = np.zeros(n_augmented)
@@ -2452,12 +2579,16 @@ def _run_general_fit_iterations(
             M_t = M_solve[:, :n_timing_cols]
             F_n = M_solve[:, n_timing_cols:]
             is_final = _gls_phase or (iteration == max_iter - 1)
-            delta_params, cov, delta_params_all, cov_all, _iter_noise_coeffs = \
+            # Covariance deferred: only the post-loop consumers need it, and
+            # only from the last solve -- materialized once from the factors.
+            delta_params, cov, delta_params_all, cov_all, _iter_noise_coeffs, \
+                _last_gls_factors = \
                 _solve_gls_augmented_svd(M_t, F_n, r_solve, sigma_solve,
                                          _gls_phiinv_raw, has_offset,
                                          n_timing_params,
                                          precomputed=_woodbury_precomputed,
-                                         compute_noise_cov=is_final)
+                                         compute_noise_cov=is_final,
+                                         M_full=M_solve, defer_cov=True)
         elif solver_mode == "fast":
             # WLS FAST solver: QR-based lstsq with proper conditioning
             r1 = r_solve / sigma_solve
@@ -2539,34 +2670,87 @@ def _run_general_fit_iterations(
                 _L_sigma, F_n.T @ (r_solve * _Ni_pre), check_finite=False)
             _wls_ns_rms = np.sqrt(np.mean((r_solve - F_n @ _a_wls) ** 2)) * 1e6
 
-            # Apply full timing corrections
-            trial_param_values = [
-                param_values_curr[i] + delta_params[i]
-                for i in range(len(fit_params))
-            ]
-            for i, p in enumerate(fit_params):
-                _update_param(params, p, trial_param_values[i])
-            nl_r_gls, trial_nl_chi2, trial_nl_rms, _ = _compute_full_model_residuals(params, setup)
+            # GLS step damping against the MARGINALIZED chi^2 (r^T C^{-1} r,
+            # the actual objective the augmented solve minimizes over timing
+            # params). The previous unconditional full-step acceptance let the
+            # solve enter a stable 2-cycle (e.g. F0 ping-pong at |dp|~0.18
+            # sigma on J1909+TNRed, NS-RMS worsening on every other step).
+            # Halve lambda until the marginalized objective stops worsening;
+            # at convergence the full step is accepted unchanged.
+            # Precompute C^{-1} 1 once for offset-gauge profiling (constant
+            # across iterations: depends only on N, F, phi).
+            if _gls_Cinv_one is None:
+                _ones = np.ones(len(_Ni_pre))
+                _u1 = F_n.T @ (_ones * _Ni_pre)
+                _gls_Cinv_one = (_ones * _Ni_pre
+                                 - (F_n @ _scipy_linalg.cho_solve(
+                                     _L_sigma, _u1, check_finite=False)) * _Ni_pre)
+                _gls_one_Cinv_one = float(_ones @ _gls_Cinv_one)
+            base_gls_obj = _gls_marginalized_chi2(
+                np.asarray(r_solve, dtype=float), _Ni_pre, F_n, _L_sigma,
+                _gls_Cinv_one, _gls_one_Cinv_one)
+            lambda_ = 1.0
+            # Profiled Woodbury objectives have an absolute numerical floor from
+            # cancellation of two large quadratic forms. Treat sub-millithreshold
+            # changes as equal; otherwise harmless near-converged steps get damped
+            # and their conditional noise realization moves along timing/noise
+            # degeneracies (J1747: ~100 ns despite picosecond full-step parity).
+            gls_obj_atol = float(os.environ.get("JUG_GLS_OBJ_ATOL", "1e-3"))
+            trial_param_values = None
+            step_accepted = False
+            for _damp in range(8):
+                trial_param_values = [
+                    param_values_curr[i] + lambda_ * delta_params[i]
+                    for i in range(len(fit_params))
+                ]
+                for i, p in enumerate(fit_params):
+                    _update_param(params, p, trial_param_values[i])
+                nl_r_gls, trial_nl_chi2, trial_nl_rms, _ = \
+                    _compute_full_model_residuals(params, setup)
+                trial_gls_obj = _gls_marginalized_chi2(
+                    np.asarray(nl_r_gls, dtype=float), _Ni_pre, F_n, _L_sigma,
+                    _gls_Cinv_one, _gls_one_Cinv_one)
+                if trial_gls_obj <= base_gls_obj + gls_obj_atol:
+                    step_accepted = True
+                    break
+                lambda_ *= 0.5
 
-            # Use SVD jointly-fit noise coefficients directly (Tempo2-style).
-            # These are the MAP estimate from the joint timing+noise solve,
-            # equivalent to Wiener filter on LINEARIZED residuals (r - M*dp).
-            # Do NOT recompute from nonlinear residuals — the ~4 µs NL residuals
-            # contain timing-model nonlinear structure that would be absorbed as noise.
-            _gls_noise = _iter_noise_coeffs
+            if not step_accepted:
+                # Every evaluated trial worsened the nonlinear marginalized
+                # objective. Restore the exact current state and stop rather than
+                # accepting a known-bad fallback step. This mirrors PINT downhill
+                # best-state retention without rebuilding a full GLS state.
+                for i, p in enumerate(fit_params):
+                    _update_param(params, p, param_values_curr[i])
+                gls_step_failed = True
+                converged = False
+                _saved_lambda = 0.0
+                if verbose:
+                    print("         (GLS step failed: all damped trials worsened "
+                          "the objective; retaining current state)")
+                break
+
+            # Noise coefficients consistent with the (possibly damped) step:
+            # optimal a given the damped timing step, from the LINEARIZED
+            # residual (Wiener with the precomputed Sigma factor). At
+            # lambda=1 this equals the jointly-fit coefficients up to solver
+            # precision. (Never refit noise on nonlinear residuals — that
+            # absorbs timing-model nonlinear structure as noise.)
+            if lambda_ < 1.0:
+                _r_lin_damped = (np.asarray(r_solve, dtype=float)
+                                 - M_solve[:, :n_timing_cols]
+                                 @ (lambda_ * delta_params_all[:n_timing_cols]))
+                _gls_noise = _scipy_linalg.cho_solve(
+                    _L_sigma, F_n.T @ (_r_lin_damped * _Ni_pre),
+                    check_finite=False)
+            else:
+                _gls_noise = _iter_noise_coeffs
             _gls_ns_rms = np.sqrt(np.mean((nl_r_gls - F_n @ _gls_noise) ** 2)) * 1e6
 
             if verbose:
                 print(f"         GLS: NS-RMS {_wls_ns_rms:.4f} -> {_gls_ns_rms:.4f} us"
-                      f" (NL-RMS {trial_nl_rms:.4f} us)")
-
-            if _gls_ns_rms > _wls_ns_rms * (1.0 + 1e-6):
-                for i, p in enumerate(fit_params):
-                    _update_param(params, p, param_values_curr[i])
-                converged = True
-                if verbose:
-                    print("         (GLS step rejected: noise-subtracted RMS worsened, converged)")
-                break
+                      f" (NL-RMS {trial_nl_rms:.4f} us, lambda={lambda_:.3f}, "
+                      f"obj {base_gls_obj:.6f} -> {trial_gls_obj:.6f})")
 
             # Accept GLS corrections: update params and save state
             param_values_curr = trial_param_values
@@ -2575,6 +2759,8 @@ def _run_general_fit_iterations(
             current_chi2 = trial_nl_chi2
             best_nonlinear_rms = trial_nl_rms
             best_chi2 = trial_nl_chi2
+            # Effective (damped) delta for the convergence test below.
+            delta_params = [lambda_ * d for d in delta_params]
 
             _saved_residuals_sec = residuals.copy()
             _saved_M = M.copy()
@@ -2582,7 +2768,7 @@ def _run_general_fit_iterations(
             _saved_M_n_timing = n_timing_cols
             # Build full delta_all matching M's column layout (timing + noise)
             _saved_delta_all = np.zeros(M.shape[1])
-            _saved_delta_all[:n_timing_cols] = delta_params_all[:n_timing_cols]
+            _saved_delta_all[:n_timing_cols] = lambda_ * delta_params_all[:n_timing_cols]
             if _iter_noise_coeffs is not None:
                 _saved_delta_all[n_timing_cols:] = _gls_noise
             _saved_cov_all = cov_all
@@ -2764,23 +2950,46 @@ def _run_general_fit_iterations(
             _gls_phase = True
             _wls_to_gls_switch = True
             converged = False  # Continue for GLS iteration
-        elif _gls_phase and n_augmented_iter > 0 and not _dmx_only:
-            # GLS phase with real noise (ECORR/RN): iterate like PINT GLSFitter
+        elif _gls_phase and n_augmented_iter > 0 and iteration >= min_iterations:
+            # GLS phase (full-noise or DMX-only): iterate like PINT GLSFitter
             # does — re-evaluate model each step until timing params converge.
-            # Single-step forced convergence was wrong: one linearized GLS step
-            # can make large binary param jumps (e.g. KOM ~4°) before the noise
-            # model has converged, landing at a wrong local minimum.
-            # Do not let RMS-flat convergence stop GLS early: parameter/noise
-            # cross-talk can leave a small but deterministic F0 step.
+            # Scale-AWARE criterion: every parameter's step must be a small
+            # fraction of its own posterior uncertainty, max_i |dp_i|/sigma_i
+            # <= tol. The previous mixed-unit norm test (||dp|| <= 1e-6*||p||)
+            # was dimensionally meaningless: ||p|| is dominated by
+            # epoch-valued parameters (TASC ~5e4), giving an effective
+            # absolute tolerance of ~0.05 that any step passes — full-noise
+            # GLS stopped after 2 iterations with parameters still moving
+            # (17.6 -> 8.3 ns JUG-PINT improvement on J1909+TNRed when
+            # iterated to convergence). sigma comes from the current
+            # iteration's SVD factors (cheap diagonal, no full cov).
+            # GLS convergence owns the decision in this phase. Do not retain
+            # the generic RMS-stability result: RMS can be stable while a weakly
+            # constrained timing parameter still creates sub-ns structure.
             converged = False
-            if iteration >= min_iterations and delta_norm <= convergence_threshold:
-                converged = True
-        elif _gls_phase and _dmx_only and iteration >= min_iterations:
-            # DMX-only GLS: DMX is solved afresh each iter (no accumulation),
-            # so convergence = timing-param convergence.
-            converged = False
-            if delta_norm <= convergence_threshold:
-                converged = True
+            gls_dtol = float(os.environ.get('JUG_GLS_DTOL', '1e-5'))
+            if _last_gls_factors is not None:
+                _sig = _gls_param_sigmas(_last_gls_factors)
+                _dp = np.abs(np.asarray(delta_params, dtype=float))
+                _ratio = np.where(_sig > 0, _dp / np.where(_sig > 0, _sig, 1.0), 0.0)
+                if np.max(_ratio) <= gls_dtol:
+                    converged = True
+            # PINT-style chi2-improvement early stop (mirrors DownhillFitter's
+            # required_chi2_decrease=1e-2): declare converged once an accepted
+            # step buys less than JUG_GLS_CHI2_STOP in the marginalized objective.
+            # This refuses to chase negligible chi2 gains down degenerate
+            # directions = overfitting protection (cf J1022 held-out CV). Env-
+            # gated, DEFAULT 0 = OFF (original param-change convergence only,
+            # bit-unchanged). NOTE: a global value is a bias-variance tradeoff
+            # (helps overfit-prone pulsars, can under-fit others e.g. J1017);
+            # the principled use is CV-selected per pulsar.
+            _chi2_stop = float(os.environ.get('JUG_GLS_CHI2_STOP', '0'))
+            if _chi2_stop > 0.0 and not converged:
+                try:
+                    if (base_gls_obj - trial_gls_obj) < _chi2_stop:
+                        converged = True
+                except NameError:
+                    pass
 
         if verbose:
             status = ""
@@ -2915,6 +3124,13 @@ def _run_general_fit_iterations(
     for i, param in enumerate(fit_params):
         _update_param(params, param, param_values_curr[i])
     
+    # Materialize deferred GLS covariance (bitwise-identical to the inline
+    # computation the solver used to do every iteration; see
+    # _gls_cov_from_factors). cov is non-None here only if a WLS-path solve
+    # was the last to run and already produced it.
+    if cov is None and _last_gls_factors is not None:
+        cov, cov_all = _gls_cov_from_factors(_last_gls_factors, compute_noise_cov=True)
+
     # Compute uncertainties
     uncertainties = {param: np.sqrt(cov[i, i]) for i, param in enumerate(fit_params)}
 
@@ -3147,6 +3363,7 @@ def _run_general_fit_iterations(
         },
         'design_matrix': (_saved_M[:, :_saved_M_n_timing].copy()
                           if _saved_M is not None else None),
+        'step_failed': gls_step_failed,
         'design_matrix_labels': _saved_M_labels,
     }
 

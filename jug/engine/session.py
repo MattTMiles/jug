@@ -883,7 +883,7 @@ class TimingSession:
             if hp is not None:
                 _final_ld = result.get('final_params_ld', {}) or {}
                 for p, new_val in updated_params.items():
-                    if p.startswith('_') or not isinstance(new_val, (int, float)):
+                    if p.startswith('_') or not isinstance(new_val, (int, float, np.floating)):
                         continue
                     init_val = self._initial_params.get(p)
                     orig_hp_str = self._original_high_precision.get(p)
@@ -1349,7 +1349,7 @@ class TimingSession:
             # real fit parameters, so keep them (rendered in radians below).
             param_names = [k for k in current if not k.startswith('_')
                            and not k.startswith('DMX') and not k.startswith('JUMP')
-                           and (isinstance(current[k], (int, float))
+                           and (isinstance(current[k], (int, float, np.floating))
                                 or k in ('RAJ', 'DECJ'))
                            and k not in ('NTOA', 'CHI2', 'START', 'FINISH')]
 
@@ -1376,7 +1376,7 @@ class TimingSession:
             row = f"{name:<14s} "
             if isinstance(init_val, str):
                 row += f"{init_val:>22s} {str(curr_val):>22s}"
-            elif isinstance(init_val, (int, float)):
+            elif isinstance(init_val, (int, float, np.floating)):
                 row += f"{init_val:>22.15g} {curr_val:>22.15g}"
             else:
                 row += f"{'N/A':>22s} {str(curr_val):>22s}"
@@ -1384,7 +1384,8 @@ class TimingSession:
             if fit_result is not None and name in unc:
                 u = unc[name]
                 row += f" {u:>14.6e}"
-                if isinstance(init_val, (int, float)) and isinstance(curr_val, (int, float)) and u > 0:
+                if (isinstance(init_val, (int, float, np.floating))
+                        and isinstance(curr_val, (int, float, np.floating)) and u > 0):
                     delta = abs(curr_val - init_val)
                     row += f" {delta/u:>12.2f}"
                 else:

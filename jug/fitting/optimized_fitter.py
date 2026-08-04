@@ -3112,6 +3112,12 @@ def _run_general_fit_iterations(
 
     return {
         'final_params': {param: params[param] for param in fit_params},
+        # Longdouble fitted values (sub-float64-ULP precision; the iteration
+        # carries np.longdouble). Session uses these for the post-fit
+        # _high_precision strings -- float64 'final_params' cannot represent
+        # sub-ULP F0 refinements that GLS red-noise fits require.
+        'final_params_ld': {param: np.longdouble(param_values_curr[i])
+                            for i, param in enumerate(fit_params)},
         'uncertainties': uncertainties,
         'final_rms': raw_final_rms_us,
         'noise_subtracted_rms': noise_subtracted_rms_us,

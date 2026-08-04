@@ -178,6 +178,7 @@ def compute_tzr_astrometry_pint(
     planet_shapiro_enabled: bool,
     model_timescale: str,
     verbose: bool,
+    native_ecliptic: bool = False,
 ) -> TzrAstrometryTerms:
     """PINT-family TZR Roemer/Shapiro (Astropy ephemeris)."""
     del verbose
@@ -191,7 +192,7 @@ def compute_tzr_astrometry_pint(
         )
 
     tzr_model_arr = np.array([float(epochs.tzrmjd_model)])
-    use_native_ecliptic = bool(params.get("_ecliptic_coords", False))
+    use_native_ecliptic = bool(params.get("_ecliptic_coords", False)) and native_ecliptic
     obl_rad = _pint_ecliptic_obliquity_rad(params) if use_native_ecliptic else 0.0
 
     if use_native_ecliptic:

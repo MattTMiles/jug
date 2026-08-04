@@ -1200,6 +1200,7 @@ def _compute_tzr_phase(params, bp, dm_jax, ddk,
             planet_shapiro_enabled=planet_shapiro_enabled,
             model_timescale=model_timescale,
             verbose=verbose,
+            native_ecliptic=engine_profile.native_ecliptic,
     )
 
     tzr_L_hat = tzr_astro.L_hat

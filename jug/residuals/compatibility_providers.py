@@ -225,7 +225,7 @@ def _compute_pint_geometry_terms(
     posepoch = params.get("POSEPOCH", params["PEPOCH"])
     parallax_mas = params.get("PX", 0.0)
 
-    if params.get("_ecliptic_coords", False):
+    if params.get("_ecliptic_coords", False) and provider.profile.native_ecliptic:
         use_native_ecliptic = True
         obl_rad = ecliptic_obliquity_rad(params, True)
         L_hat = compute_ecliptic_pulsar_direction(

@@ -98,6 +98,12 @@ class EngineConventionProfile:
     phase_mean_mode: PhaseMeanMode = "weighted"
     implicit_tempo2_defaults: bool = False
     tempo1_emulation: bool = False
+    # Tempo2 "native ecliptic" astrometry: build the pulsar direction and
+    # proper motion in the ecliptic frame and rotate the SSB vectors into it
+    # (tempo2 ecl2equ), instead of converting ELONG/ELAT -> RA/Dec once and
+    # working in equatorial as PINT does. The two differ at ~40 ps on a
+    # 15-yr MSP dataset, so this must never be on in pint mode.
+    native_ecliptic: bool = False
     ephem: str = "de440"
     _sources: dict[str, str] = field(default_factory=dict, repr=False)
 
@@ -122,6 +128,7 @@ class EngineConventionProfile:
             "phase_mean_mode": self.phase_mean_mode,
             "implicit_tempo2_defaults": self.implicit_tempo2_defaults,
             "tempo1_emulation": self.tempo1_emulation,
+            "native_ecliptic": self.native_ecliptic,
             "ephem": self.ephem,
             "sources": dict(self._sources),
         }
@@ -177,6 +184,7 @@ class EngineConventionProfile:
             phase_mean_mode=phase_mean,
             implicit_tempo2_defaults=False,
             tempo1_emulation=False,
+            native_ecliptic=(mode == "tempo2"),
             ephem=ephem,
             _sources=sources,
         )
@@ -195,6 +203,7 @@ class EngineConventionProfile:
             "phase_mean_mode",
             "implicit_tempo2_defaults",
             "tempo1_emulation",
+            "native_ecliptic",
             "ephem",
         }
         clean = {k: v for k, v in kwargs.items() if k in allowed}

@@ -202,12 +202,21 @@ def compute_phase_residuals(dt_sec_ld, params, weights, subtract_mean=True,
         # Phase-connected wrapping: anchor at earliest emission time (dt order).
         sort_idx = np.argsort(dt)
         pulse_number = np.zeros(len(phase), dtype=np.longdouble)
-        pulse_number[sort_idx[0]] = np.round(phase[sort_idx[0]])
-        for k in range(1, len(sort_idx)):
-            i = sort_idx[k]
-            i_prev = sort_idx[k - 1]
-            predicted_n = phase[i] - (phase[i_prev] - pulse_number[i_prev])
-            pulse_number[i] = np.round(predicted_n)
+        # Vectorised form of the phase-connection recurrence
+        #     n_k = round(n_{k-1} + (phase_k - phase_{k-1}))
+        # Each n is an exact integer, and round(n + x) == n + round(x) for
+        # integral n (adding an integer leaves the fractional part untouched),
+        # so the recurrence telescopes into a cumulative sum of rounded
+        # successive phase differences. Bit-identical to the per-element loop
+        # it replaces, but O(N) numpy instead of O(N) Python round() calls --
+        # this runs once per residual evaluation, i.e. once per fit iteration.
+        phase_sorted = phase[sort_idx]
+        pn_sorted = np.empty(len(phase), dtype=np.longdouble)
+        pn_sorted[0] = np.round(phase_sorted[0])
+        if len(phase_sorted) > 1:
+            steps = np.round(np.diff(phase_sorted))
+            pn_sorted[1:] = pn_sorted[0] + np.cumsum(steps)
+        pulse_number[sort_idx] = pn_sorted
         frac_phase = phase - pulse_number
 
     # -addsat is applied to sat at timfile read (readTimfile.C); native/tempo2

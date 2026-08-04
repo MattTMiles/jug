@@ -234,6 +234,11 @@ class BinaryDelayPlan:
 
         args = [self._arg(a, params, _DD_ARG_KEYS) for a in _DD_ARG_ORDER]
         (a1, pb, t0, ecc, om_deg, omdot, pbdot, gamma, sini, m2, xdot, edot) = args
+        # T0 is in HIGH_PRECISION_PARAMS, so the fitter hands it over as
+        # np.longdouble and JAX cannot promote float128. Cast once, up here:
+        # the DDK/Kopeikin branch below needs the float64 value too. b109577
+        # coerced the other binary scalars but this call site was missed.
+        t0_j = jnp.asarray(np.float64(t0), dtype=jnp.float64)
         if self.family == "DDK":
             kop = self.kopeikin
             kin = _pval(params, "KIN", kop.kin_deg_ref)
@@ -247,13 +252,24 @@ class BinaryDelayPlan:
                 _first_live_value(params, self.live_keys, kop.pmdec_keys, kop.pmdec_ref)
                 * kop.pm_factor
             )
+            # Every scalar entering the JAX Kopeikin kernel must be float64:
+            # callers (e.g. the PINT-matching harness) can hand these over as
+            # np.longdouble, which JAX refuses to promote.
             d_a1, d_om, sini_eff = _compute_kopeikin_corrections_traceable(
-                t, a1, t0, kin, kom, px, pmra, pmdec, obs_pos_ls, kop
+                t,
+                _as_f64(a1),
+                t0_j,
+                _as_f64(kin),
+                _as_f64(kom),
+                _as_f64(px),
+                _as_f64(pmra),
+                _as_f64(pmdec),
+                obs_pos_ls,
+                kop,
             )
             a1 = a1 + d_a1
             om_deg = om_deg + d_om
             sini = sini_eff
-        t0_j = jnp.asarray(t0, dtype=jnp.float64)
         tt0_sec = (t - t0_j) * SECS_PER_DAY
         return _compute_dd_binary_delay_jit(
             tt0_sec,

@@ -64,6 +64,11 @@ fit_result = session.fit_parameters(fit_params=['F2'], max_iter=5)
 session.parameter_table(fit_result)
 session.summary()
 
+# Estimate noise parameters (MAP/SVI, timing model held fixed)
+est = session.estimate_noise()                            # EFAC/EQUAD/ECORR + red + DM
+est = session.estimate_noise(include_red_noise=False)     # pick what to estimate
+print(est.params)
+
 # Save fitted par/tim files
 session.save_par("J1909_fitted.par", fit_result=fit_result)
 session.save_tim("J1909_fitted.tim")

@@ -342,6 +342,10 @@ def _get_known_par_keywords():
         'RNAMP', 'RNIDX', 'TNREDAMP', 'TNREDGAM', 'TNREDC',
         'TNDMAMP', 'TNDMGAM', 'TNDMC',
         'TNCHROMAMP', 'TNCHROMGAM', 'TNCHROMC', 'TNCHROMIDX',
+        # JUG-native spellings emitted by par_writer (round-trip of a saved par)
+        'REDAMP', 'REDGAM', 'REDC',
+        'DMAMP', 'DMGAM', 'DMC',
+        'CHROMAMP', 'CHROMGAM', 'CHROMC', 'CHROMIDX',
         'TNBANDNOISE', 'TNGROUPNOISE', 'TNGROUPSETSPAN',
         'TNSUBTRACTDM', 'TNSUBTRACTPOLY',
         'TNSUBTRACTRED', 'TNSUBTRACTCHROM',

@@ -33,6 +33,22 @@ from jug.fitting.optimized_fitter import (
 )
 
 
+def _to_radians(name: str, value: Any) -> Any:
+    """Convert a sexagesimal RAJ/DECJ string to radians for display.
+
+    RAJ/DECJ round-trip through par files as sexagesimal strings but are fitted
+    (and their uncertainties reported) in radians. Returns *value* unchanged if
+    it is already numeric or cannot be parsed.
+    """
+    if not isinstance(value, str):
+        return value
+    from jug.io.par_reader import parse_ra, parse_dec
+    try:
+        return parse_ra(value) if name == 'RAJ' else parse_dec(value)
+    except (ValueError, IndexError):
+        return value
+
+
 class TimingSession:
     """
     A cached timing session for fast repeated operations.
@@ -1184,11 +1200,17 @@ class TimingSession:
         else:
             fitted = {}
             unc = {}
-            # Show key timing params
+            # Show key timing params. RAJ/DECJ are sexagesimal strings but are
+            # real fit parameters, so keep them (rendered in radians below).
             param_names = [k for k in current if not k.startswith('_')
                            and not k.startswith('DMX') and not k.startswith('JUMP')
-                           and isinstance(current[k], (int, float))
+                           and (isinstance(current[k], (int, float))
+                                or k in ('RAJ', 'DECJ'))
                            and k not in ('NTOA', 'CHI2', 'START', 'FINISH')]
+
+        # Print in the same section order as a written par file.
+        from jug.io.par_writer import canonical_param_order
+        param_names = canonical_param_order(param_names)
 
         lines = []
         hdr = f"{'Parameter':<14s} {'Pre-fit':>22s} {'Post-fit':>22s}"
@@ -1200,6 +1222,12 @@ class TimingSession:
         for name in param_names:
             init_val = initial.get(name)
             curr_val = fitted.get(name, current.get(name))
+            # RAJ/DECJ are stored as sexagesimal strings but fitted (and their
+            # uncertainties reported) in radians. Show both columns in radians
+            # so the units match and Delta/sigma is computable.
+            if name in ('RAJ', 'DECJ'):
+                init_val = _to_radians(name, init_val)
+                curr_val = _to_radians(name, curr_val)
             row = f"{name:<14s} "
             if isinstance(init_val, str):
                 row += f"{init_val:>22s} {str(curr_val):>22s}"
@@ -1240,6 +1268,84 @@ class TimingSession:
         errors_us = np.array([t.error_us for t in self.toas_data])
         weights = 1.0 / errors_us**2
         return float(np.sqrt(np.average(residuals_us**2, weights=weights)))
+
+    def estimate_noise(
+        self,
+        residuals_us: Optional[np.ndarray] = None,
+        subtract_tzr: bool = True,
+        **kwargs
+    ):
+        """Estimate noise parameters from the current residuals (MAP/SVI).
+
+        Thin wrapper around
+        :func:`jug.noise.map_estimator.estimate_noise_parameters` that supplies
+        the residuals, uncertainties, epochs, barycentric frequencies and TOA
+        flags from this session. The timing model is held fixed.
+
+        Parameters
+        ----------
+        residuals_us : ndarray, optional
+            Residuals to estimate from, in microseconds. If None (default),
+            the session's residuals are used. Pass ``fit_result['residuals_us']``
+            to estimate from post-fit residuals instead.
+        subtract_tzr : bool, default True
+            Passed to :meth:`compute_residuals` when ``residuals_us`` is None.
+        **kwargs
+            Forwarded to ``estimate_noise_parameters``. Use these to choose
+            what is estimated, e.g.::
+
+                include_red_noise=True    # power-law achromatic red noise
+                include_dm_noise=True     # power-law DM noise
+                include_ecorr=True        # per-epoch correlated white noise
+                include_chrom=False       # chromatic process, fitted index
+                n_red_harmonics=30        # Fourier harmonics (also n_dm_/n_chrom_)
+                chrom_idx_fixed=None      # pin the chromaticity index
+                batch_size=1000           # SVI steps per batch
+                max_num_batches=50        # SVI batch cap
+                patience=3                # early-stopping patience
+                seed=42                   # random seed
+                progress_callback=None    # callback(batch, max_batches, loss)
+
+            EFAC and EQUAD are always estimated.
+
+        Returns
+        -------
+        NoiseEstimateResult
+            Estimated parameters in ``.params`` (JUG par-file naming) and
+            ``.enterprise_params`` (enterprise naming).
+
+        Examples
+        --------
+        >>> est = session.estimate_noise()                      # everything but chromatic
+        >>> est = session.estimate_noise(include_red_noise=False)   # white + DM only
+        >>> est = session.estimate_noise(include_dm_noise=False, include_ecorr=False)
+        >>> print(est.params)
+
+        Notes
+        -----
+        Requires ``numpyro`` and ``optax``.
+        """
+        from jug.noise.map_estimator import estimate_noise_parameters
+
+        result = self.compute_residuals(subtract_tzr=subtract_tzr)
+        if residuals_us is None:
+            residuals_us = result['residuals_us']
+        residuals_us = np.asarray(residuals_us)
+        if len(residuals_us) != len(result['residuals_us']):
+            raise ValueError(
+                f"residuals_us has {len(residuals_us)} entries but the session "
+                f"has {len(result['residuals_us'])} TOAs"
+            )
+
+        return estimate_noise_parameters(
+            residuals_sec=residuals_us * 1e-6,
+            errors_sec=result['errors_us'] * 1e-6,
+            toas_mjd=result['tdb_mjd'],
+            freq_mhz=result['freq_bary_mhz'],
+            toa_flags=result['toa_flags'],
+            params=self.params,
+            **kwargs
+        )
 
     def save_par(self, path, fit_result=None):
         """Save the current parameters to a par file.
@@ -1315,7 +1421,8 @@ class TimingSession:
             "  result['converged']                  - Convergence flag",
             "",
             "Noise estimation (requires numpyro):",
-            "  from jug.noise.map_estimator import estimate_noise_parameters",
+            "  session.estimate_noise()                     - MAP/SVI noise estimate",
+            "  session.estimate_noise(include_red_noise=False, ...)  - choose components",
         ]
         text = '\n'.join(lines)
         print(text)

@@ -145,6 +145,77 @@ def _collect_numbered(params: Dict[str, Any], prefix: str) -> List[str]:
     return sorted(keys, key=lambda k: int(k[len(prefix):]))
 
 
+# Astrometry keys, in the order _write_position emits them.
+_ASTROMETRY_ORDER = [
+    'ECL', 'ELONG', 'ELAT', 'PMELONG', 'PMELAT',
+    'RAJ', 'DECJ', 'PMRA', 'PMDEC', 'POSEPOCH',
+]
+
+
+def canonical_param_order(names) -> List[str]:
+    """Sort parameter names into the order :func:`write_par_file` emits them.
+
+    Section order: metadata, astrometry, spin (F0..Fn, PEPOCH), DM
+    (DM, DM1..DMn, DMEPOCH), PX, binary, FD, TZR, JUMP, FDJUMP, DMX, noise,
+    then anything unrecognised alphabetically. Sharing this with the writer
+    keeps printed tables and saved par files in the same order.
+
+    Parameters
+    ----------
+    names : iterable of str
+        Parameter names to sort.
+
+    Returns
+    -------
+    list of str
+        ``names`` sorted canonically, with duplicates removed.
+    """
+    remaining = list(dict.fromkeys(names))
+    ordered: List[str] = []
+
+    def take(predicate, key=None):
+        """Move names matching *predicate* from remaining into ordered."""
+        matched = [n for n in remaining if predicate(n)]
+        if key is not None:
+            matched.sort(key=key)
+        for n in matched:
+            remaining.remove(n)
+        ordered.extend(matched)
+
+    def take_fixed(sequence):
+        for wanted in sequence:
+            if wanted in remaining:
+                remaining.remove(wanted)
+                ordered.append(wanted)
+
+    def numbered(prefix):
+        return lambda n: n.startswith(prefix) and n[len(prefix):].isdigit()
+
+    def numeric_suffix(prefix):
+        return lambda n: int(n[len(prefix):])
+
+    take_fixed(_METADATA_ORDER)
+    take_fixed(_ASTROMETRY_ORDER)
+    take(numbered('F'), key=numeric_suffix('F'))            # F0..Fn
+    take_fixed(['PEPOCH', 'DM'])
+    take(numbered('DM'), key=numeric_suffix('DM'))          # DM1..DMn
+    take_fixed(['DMEPOCH', 'PX'])
+    take_fixed(_BINARY_FIXED)
+    take(numbered('FB'), key=numeric_suffix('FB'))
+    take(numbered('FD'), key=numeric_suffix('FD'))
+    take_fixed(_TZR_PARAMS)
+    take(numbered('JUMP'), key=numeric_suffix('JUMP'))
+    take(lambda n: n.upper().startswith('FDJUMP'), key=str)
+    take(lambda n: n.upper().startswith('DMX'), key=str)
+    take(lambda n: n.upper().startswith(('EFAC', 'EQUAD', 'ECORR', 'T2EFAC',
+                                         'T2EQUAD', 'TNEF', 'TNEQ', 'TNEC')),
+         key=str)
+    take(lambda n: n.upper() in _NOISE_PARAM_KEYS, key=str)
+
+    ordered.extend(sorted(remaining))
+    return ordered
+
+
 # ── Main entry point ─────────────────────────────────────────────────────
 
 def write_par_file(
@@ -515,15 +586,18 @@ def _write_noise_block(params: Dict[str, Any], lines: List[str]) -> None:
         elif keyword in ('T2EQUAD', 'EQUAD'):
             flag = parts[1]
             flag_val = parts[2]
-            equad_us = float(parts[3])
-            log10_sec = math.log10(equad_us * 1e-6)
+            raw_val = float(parts[3])
+            # Mirror the reader convention (jug/noise/white.py): a negative
+            # T2EQUAD value is already log10(seconds), positive is microseconds.
+            # Without this a par file written by JUG could not be re-saved.
+            log10_sec = raw_val if raw_val < 0 else math.log10(raw_val * 1e-6)
             lines.append(f"T2EQUAD         {flag} {flag_val}    {log10_sec}")
 
         elif keyword in ('ECORR',):
             flag = parts[1]
             flag_val = parts[2]
-            ecorr_us = float(parts[3])
-            log10_sec = math.log10(ecorr_us * 1e-6)
+            raw_val = float(parts[3])
+            log10_sec = raw_val if raw_val < 0 else math.log10(raw_val * 1e-6)
             lines.append(f"TNECORR         {flag} {flag_val}    {log10_sec}")
 
         elif keyword == 'TNECORR':

@@ -2578,6 +2578,8 @@ def _run_general_fit_iterations(
 
             _saved_residuals_sec = residuals.copy()
             _saved_M = M.copy()
+            _saved_M_labels = (['OFFSET'] if has_offset else []) + list(fit_params)
+            _saved_M_n_timing = n_timing_cols
             # Build full delta_all matching M's column layout (timing + noise)
             _saved_delta_all = np.zeros(M.shape[1])
             _saved_delta_all[:n_timing_cols] = delta_params_all[:n_timing_cols]
@@ -2619,6 +2621,8 @@ def _run_general_fit_iterations(
 
                     _saved_residuals_sec = residuals.copy()
                     _saved_M = M.copy()
+                    _saved_M_labels = (['OFFSET'] if has_offset else []) + list(fit_params)
+                    _saved_M_n_timing = n_timing_cols
                     _saved_delta_all = (lambda_ * _wls_delta_all).copy()
                     _saved_lambda = lambda_
                     break

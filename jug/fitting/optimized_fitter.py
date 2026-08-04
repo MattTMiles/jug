@@ -1329,6 +1329,47 @@ def _build_setup_common(
                 n_cols = F.shape[1]
                 _emit(f"[SETUP] Building GROUP NOISE basis ({label}): {n_cols} columns", verbose)
 
+    # GW background noise -- achromatic red process (identical maths to
+    # RedNoise) but carried separately so it produces a distinct ``GWNoise``
+    # realisation matching PINT's pl_gw_noise. Routed through the generic
+    # band-noise Fourier-GP list so it inherits all the augmented-solve,
+    # prior, and realisation wiring without a bespoke first-class column path.
+    from jug.noise.red_noise import parse_gw_noise_params
+    gw_noise_proc = parse_gw_noise_params(params)
+    if gw_noise_proc is not None and noise_config.is_enabled("GWNoise"):
+        F_gw, phi_gw = gw_noise_proc.build_basis_and_prior(toas_mjd)
+        if band_noise_bases is None:
+            band_noise_bases, band_noise_priors, band_noise_labels = [], [], []
+        band_noise_bases.append(F_gw)
+        band_noise_priors.append(phi_gw)
+        band_noise_labels.append("GWNoise")
+        _emit(f"[SETUP] Building GW NOISE basis: {F_gw.shape[1]} columns", verbose)
+        if verbose:
+            print(f"  GW noise: log10_A={gw_noise_proc.log10_A:.3f}, "
+                  f"gamma={gw_noise_proc.gamma:.3f}, "
+                  f"{gw_noise_proc.n_harmonics} harmonics -> {F_gw.shape[1]} columns")
+
+    # Stochastic solar-wind noise -- chromatic Fourier GP scaled by the SW
+    # dispersion geometry (matches PINT pl_SW_noise). Also routed through the
+    # band-noise list. Needs the per-TOA solar-wind geometry; skipped if absent.
+    from jug.noise.red_noise import parse_sw_noise_params
+    sw_noise_proc = parse_sw_noise_params(params)
+    _sw_geom = extras.get('sw_geometry_pc') if extras else None
+    if (sw_noise_proc is not None and noise_config.is_enabled("SWNoise")
+            and _sw_geom is not None):
+        F_sw, phi_sw = sw_noise_proc.build_basis_and_prior(
+            toas_mjd, freq_mhz_bary, _sw_geom)
+        if band_noise_bases is None:
+            band_noise_bases, band_noise_priors, band_noise_labels = [], [], []
+        band_noise_bases.append(F_sw)
+        band_noise_priors.append(phi_sw)
+        band_noise_labels.append("SWNoise")
+        _emit(f"[SETUP] Building SW NOISE basis: {F_sw.shape[1]} columns", verbose)
+        if verbose:
+            print(f"  SW noise: log10_A={sw_noise_proc.log10_A:.3f}, "
+                  f"gamma={sw_noise_proc.gamma:.3f}, "
+                  f"{sw_noise_proc.n_harmonics} harmonics -> {F_sw.shape[1]} columns")
+
     # --- DMX design matrix -------------------------------------------------
     dmx_design_matrix = None
     dmx_labels = None

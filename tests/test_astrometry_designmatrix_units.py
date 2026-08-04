@@ -26,11 +26,25 @@ from jug.utils.units import (
     validate_column_units,
 )
 GOLDEN_DIR = Path(__file__).parent / "data_golden"
+# Forward-perturbation step sizes, in FIT units, for
+# test_astrometry_forward_perturbation_matches_column. That test differences two
+# independently-computed residual vectors, so the step must put the signal well
+# clear of the float64 floor of ~us-scale residuals while staying linear.
+#
+# RAJ/DECJ at 1e-8 give a ~7 us signal. PMRA/PMDEC at 1e-6 mas/yr gave only
+# ~40 ps and ~11 ps respectively -- below the differencing noise, which showed up
+# as corr(expected, measured) = 0.60/0.48 and apparent scale errors of 0.71/1.24
+# that look like wrong derivative columns but are pure numerical noise. Measured
+# convergence for PMRA/PMDEC (corr -> scale):
+#   1e-6  0.602/0.484 -> 0.706/1.241     1e-4  0.99996/0.9993 -> 1.0029/1.0030
+#   1e-5  0.993/0.930 -> 1.003/1.020     1e-3  0.999999/0.999993 -> 0.9998/1.0002
+# 1e-3 mas/yr is ~40 ns of signal, three orders above the floor, and moves the
+# position by 6e-3 mas over the 6-yr span -- still deeply linear.
 ASTROMETRY_FIT_DELTAS = {
     "RAJ": 1.0e-8,
     "DECJ": 1.0e-8,
-    "PMRA": 1.0e-6,
-    "PMDEC": 1.0e-6,
+    "PMRA": 1.0e-3,
+    "PMDEC": 1.0e-3,
 }
 # PX is included in metadata/backend tests; FD recomputation covers its fit-unit path.
 ASTROMETRY_FD_RECOMPUTE_PARAMS = ASTROMETRY_EXPORT_PARAMS

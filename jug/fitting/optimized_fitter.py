@@ -44,6 +44,7 @@ Usage Example
 # Ensure JAX is configured for x64 precision
 from jug.utils.jax_setup import ensure_jax_x64
 ensure_jax_x64()
+import logging
 import os
 
 import jax
@@ -79,6 +80,23 @@ from jug.model.parameter_spec import (
     validate_fit_param,
 )
 from jug.utils.constants import HIGH_PRECISION_PARAMS
+
+logger = logging.getLogger(__name__)
+
+
+def _emit(msg: str, verbose: bool = False) -> None:
+    """Report a setup/fit progress message.
+
+    Quiet by default for API use: the message goes to the module logger at
+    INFO, which prints nothing unless the caller configures logging (e.g.
+    ``logging.basicConfig(level=logging.INFO)`` or
+    ``logging.getLogger("jug").setLevel(logging.INFO)``). Callers that ask
+    for ``verbose=True`` also get it echoed on stdout, matching the rest of
+    the verbose progress output in this module.
+    """
+    logger.info(msg)
+    if verbose:
+        print(msg)
 
 
 def _update_param(params: Dict, param: str, value: float) -> None:
@@ -1056,11 +1074,11 @@ def _build_setup_common(
     # Info message if Tempo2-native red noise format detected
     if "RNAMP" in params and "RNIDX" in params and noise_config.is_enabled("RedNoise"):
         if red_noise_proc is not None and verbose:
-            print("[SETUP] Converting RNAMP/RNIDX to TNRedAmp/TNRedGam format")
+            _emit("[SETUP] Converting RNAMP/RNIDX to TNRedAmp/TNRedGam format", verbose)
 
     if red_noise_proc is not None and noise_config.is_enabled("RedNoise"):
         red_noise_basis, red_noise_prior = red_noise_proc.build_basis_and_prior(toas_mjd)
-        print(f"[SETUP] Building RED NOISE basis: {red_noise_basis.shape[1]} columns")
+        _emit(f"[SETUP] Building RED NOISE basis: {red_noise_basis.shape[1]} columns", verbose)
         if verbose:
             print(f"  Red noise: log10_A={red_noise_proc.log10_A:.3f}, "
                   f"gamma={red_noise_proc.gamma:.3f}, "
@@ -1070,7 +1088,7 @@ def _build_setup_common(
         dm_noise_basis, dm_noise_prior = dm_noise_proc.build_basis_and_prior(
             toas_mjd, freq_mhz_bary
         )
-        print(f"[SETUP] Building DM NOISE basis: {dm_noise_basis.shape[1]} columns")
+        _emit(f"[SETUP] Building DM NOISE basis: {dm_noise_basis.shape[1]} columns", verbose)
         if verbose:
             print(f"  DM noise: log10_A={dm_noise_proc.log10_A:.3f}, "
                   f"gamma={dm_noise_proc.gamma:.3f}, "
@@ -1080,7 +1098,7 @@ def _build_setup_common(
         chromatic_noise_basis, chromatic_noise_prior = chromatic_noise_proc.build_basis_and_prior(
             toas_mjd, freq_mhz_bary
         )
-        print(f"[SETUP] Building CHROMATIC NOISE basis: {chromatic_noise_basis.shape[1]} columns")
+        _emit(f"[SETUP] Building CHROMATIC NOISE basis: {chromatic_noise_basis.shape[1]} columns", verbose)
         if verbose:
             print(f"  Chromatic noise: log10_A={chromatic_noise_proc.log10_A:.3f}, "
                   f"gamma={chromatic_noise_proc.gamma:.3f}, "
@@ -1108,7 +1126,7 @@ def _build_setup_common(
                 label = f"BandNoise_{int(bp.freq_lo)}_{int(bp.freq_hi)}"
                 band_noise_labels.append(label)
                 n_cols = F.shape[1]
-                print(f"[SETUP] Building BAND NOISE basis ({label}): {n_cols} columns")
+                _emit(f"[SETUP] Building BAND NOISE basis ({label}): {n_cols} columns", verbose)
 
     if noise_config.is_enabled("GroupNoise"):
         group_procs = parse_group_noise_params(params)
@@ -1126,7 +1144,7 @@ def _build_setup_common(
                 label = f"GroupNoise_{gp.group_name}"
                 group_noise_labels.append(label)
                 n_cols = F.shape[1]
-                print(f"[SETUP] Building GROUP NOISE basis ({label}): {n_cols} columns")
+                _emit(f"[SETUP] Building GROUP NOISE basis ({label}): {n_cols} columns", verbose)
 
     # GW background noise -- achromatic red process (identical maths to
     # RedNoise) but carried separately so it produces a distinct ``GWNoise``
@@ -1142,7 +1160,7 @@ def _build_setup_common(
         band_noise_bases.append(F_gw)
         band_noise_priors.append(phi_gw)
         band_noise_labels.append("GWNoise")
-        print(f"[SETUP] Building GW NOISE basis: {F_gw.shape[1]} columns")
+        _emit(f"[SETUP] Building GW NOISE basis: {F_gw.shape[1]} columns", verbose)
         if verbose:
             print(f"  GW noise: log10_A={gw_noise_proc.log10_A:.3f}, "
                   f"gamma={gw_noise_proc.gamma:.3f}, "
@@ -1163,7 +1181,7 @@ def _build_setup_common(
         band_noise_bases.append(F_sw)
         band_noise_priors.append(phi_sw)
         band_noise_labels.append("SWNoise")
-        print(f"[SETUP] Building SW NOISE basis: {F_sw.shape[1]} columns")
+        _emit(f"[SETUP] Building SW NOISE basis: {F_sw.shape[1]} columns", verbose)
         if verbose:
             print(f"  SW noise: log10_A={sw_noise_proc.log10_A:.3f}, "
                   f"gamma={sw_noise_proc.gamma:.3f}, "
@@ -1316,7 +1334,7 @@ def _build_setup_common(
             except (IndexError, ValueError):
                 pass
         if added_jumps:
-            print(f"[SETUP] Auto-added {len(added_jumps)} fit-flagged JUMPs for GLS noise fit")
+            _emit(f"[SETUP] Auto-added {len(added_jumps)} fit-flagged JUMPs for GLS noise fit", verbose)
 
         # Also auto-add fit-flagged FDJUMPs
         existing_fdjumps = {p for p in fit_params if p.startswith('FDJUMP')}
@@ -1328,7 +1346,7 @@ def _build_setup_common(
                     fit_params = list(fit_params) + [key]
                     added_fdjumps.append(key)
         if added_fdjumps:
-            print(f"[SETUP] Auto-added {len(added_fdjumps)} fit-flagged FDJUMPs for GLS noise fit")
+            _emit(f"[SETUP] Auto-added {len(added_fdjumps)} fit-flagged FDJUMPs for GLS noise fit", verbose)
 
     # --- Derived weight arrays ---------------------------------------------
     errors_sec = errors_us * 1e-6
@@ -3265,6 +3283,7 @@ def _build_general_fit_setup_from_cache(
     noise_config: Optional[object] = None,
     subtract_noise_sec: Optional[np.ndarray] = None,
     fit_dmx: bool = True,
+    verbose: bool = False,
 ) -> GeneralFitSetup:
     """Build fitting setup from TimingSession cached data (fast, no I/O).
 
@@ -3335,11 +3354,11 @@ def _build_general_fit_setup_from_cache(
     # Build NoiseConfig
     from jug.engine.noise_mode import NoiseConfig
     if noise_config is None:
-        print(f"[FITTER] noise_config was None, auto-detecting from par file")
+        _emit("[FITTER] noise_config was None, auto-detecting from par file", verbose)
         noise_config = NoiseConfig.from_par(params_dict)
     else:
         enabled = {k: v for k, v in noise_config.enabled.items() if v}
-        print(f"[FITTER] noise_config received, enabled: {list(enabled.keys())}")
+        _emit(f"[FITTER] noise_config received, enabled: {list(enabled.keys())}", verbose)
 
     return _build_setup_common(
         params=params_dict,
@@ -3353,7 +3372,7 @@ def _build_general_fit_setup_from_cache(
         freq_mhz_bary=freq_mhz_bary,
         extras=extras,
         noise_config=noise_config,
-        verbose=False,
+        verbose=verbose,
         subtract_noise_sec=subtract_noise_sec,
         fit_dmx=fit_dmx,
     )

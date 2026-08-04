@@ -628,6 +628,7 @@ class TimingSession:
                 noise_config=noise_config,
                 subtract_noise_sec=subtract_noise_sec,
                 fit_dmx=fit_dmx,
+                verbose=verbose,
             )
             
             # Run cached fit

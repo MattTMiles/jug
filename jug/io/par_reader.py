@@ -45,9 +45,9 @@ OBLIQUITY_ARCSEC = {
     'IERS1992': 84381.412,
     'DE403': 84381.412,
     'IERS2003': 84381.4059,
-    'IERS2010': 84381.406000,
-    'IAU2005': 84381.406000,
-    'DEFAULT': 84381.406000,
+    'IERS2010': 84381.4059,
+    'IAU2005': 84381.4059,
+    'DEFAULT': 84381.4059,
 }
 
 
@@ -399,6 +399,96 @@ def validate_par_timescale(params: Dict[str, Any], context: str = "JUG",
         )
     else:
         raise ValueError(f"{context}: Unknown par file timescale '{timescale}'")
+
+
+def validate_par_timescale_tempo2(
+    params: Dict[str, Any],
+    context: str = "JUG",
+    verbose: bool = False,
+) -> str:
+    """Validate par file timescale for Tempo2-compatible mode without conversion.
+
+    Tempo2-native files commonly use TCB with IF99/DILATEFREQ semantics. In
+    tempo2 compatibility mode JUG must preserve those parameters instead of
+    normalizing the model to TDB at ingest.
+    """
+    from jug.utils.timescales import parse_timescale
+
+    timescale = parse_timescale(params)
+    if timescale not in {"TDB", "TCB"}:
+        raise NotImplementedError(
+            f"{context}: {timescale} par files are not yet supported in tempo2 compatibility mode."
+        )
+    params["_par_timescale"] = timescale
+    params["_timescale_in"] = timescale
+    params["_tcb_converted"] = False
+    if verbose:
+        print(f"{context}: Preserving native {timescale} par parameters for tempo2 compatibility")
+    return timescale
+
+
+def validate_par_timescale_for_compat(
+    params: Dict[str, Any],
+    *,
+    compatibility: str = "pint",
+    context: str = "JUG",
+    verbose: bool = False,
+) -> str:
+    """Validate timescale using the selected compatibility backend."""
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    mode = normalize_compatibility_mode(compatibility)
+    if mode == "pint":
+        return validate_par_timescale(params, context=context, verbose=verbose)
+    return validate_par_timescale_tempo2(params, context=context, verbose=verbose)
+
+
+def normalize_model_params(
+    params: Dict[str, Any],
+    *,
+    compatibility: str = "pint",
+    context: str = "JUG",
+    verbose: bool = False,
+) -> None:
+    """Convert parsed par parameters to JUG's numeric model representation.
+
+    Call after ``parse_par_file()`` and before any computational use (session
+    init, fit setup, design matrix, residual evaluation). Modifies ``params`` in
+    place.
+
+    This enforces the contract documented on ``GeneralFitSetup``: sky
+    coordinates are stored as radians, not tempo2 HMS/DMS strings.
+    """
+    validate_par_timescale_for_compat(
+        params,
+        compatibility=compatibility,
+        context=context,
+        verbose=verbose,
+    )
+    if "RAJ" in params and isinstance(params["RAJ"], str):
+        params["RAJ"] = parse_ra(params["RAJ"])
+    if "DECJ" in params and isinstance(params["DECJ"], str):
+        params["DECJ"] = parse_dec(params["DECJ"])
+
+
+def convert_t2_kin_kom_to_ddk_convention(params: Dict[str, Any]) -> None:
+    """Convert Tempo2 T2 KIN/KOM angles to JUG's DDK convention once.
+
+    Tempo2 stores T2 KIN/KOM in IAU-style convention, while JUG's DDK
+    implementation follows the DT92 convention inherited from the PINT-aligned
+    code. The sentinel prevents double conversion when params pass through
+    session, fitting, and residual paths.
+    """
+    if params.get("_t2_kin_kom_converted"):
+        return
+    if str(params.get("BINARY", "")).upper() != "T2":
+        return
+    if "KIN" in params:
+        params["KIN"] = 180.0 - float(params["KIN"])
+    if "KOM" in params:
+        params["KOM"] = 90.0 - float(params["KOM"])
+    if "KIN" in params or "KOM" in params:
+        params["_t2_kin_kom_converted"] = True
 
 
 # List of epoch-like parameters that are in the par file timescale (non-exhaustive)

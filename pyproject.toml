@@ -24,11 +24,11 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy>=2.4",
-    "scipy>=1.17",
-    "astropy>=7.2",
-    "jax>=0.9.0",
-    "jaxlib>=0.9.0",
+    "numpy>=2.3",
+    "scipy>=1.16",
+    "astropy>=7.1",
+    "jax>=0.8.0",
+    "jaxlib>=0.8.0",
     "numpyro>=0.19.0",
     "optax>=0.2.6",
     # Qt GUI dependencies
@@ -36,14 +36,15 @@ dependencies = [
     "pyqtgraph>=0.14.0",
     "matplotlib>=3.10",
     # Server dependencies
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
-    "python-multipart>=0.0.6",
+    "fastapi>=0.128.0",
+    "uvicorn[standard]>=0.40.0",
+    "python-multipart>=0.0.21",
+    "jplephem>=2.21",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.0",
+    "pytest>=8.4",
     "pytest-cov>=7.0",
     "ruff>=0.1.0",
     "mypy>=1.5.0",
@@ -84,6 +85,8 @@ addopts = "-v --cov=jug --cov-report=term-missing"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "tempo2: marks tests requiring libstempo/Tempo2 sandbox support",
+    "dev_oracle: external libstempo/tempo2/pytempo oracle tests — delete when JUG is standalone",
 ]
 
 [tool.ruff]

@@ -129,13 +129,23 @@ def test_timescale_validation():
     # Test 6: Test tzrmjd_scale="UTC" contradiction warning with UNITS=TDB
     print("\n6. Testing tzrmjd_scale='UTC' contradiction with UNITS=TDB...")
 
-    f_capture = io.StringIO()
-    with redirect_stdout(f_capture):
-        result = compute_residuals_simple(
-            TDB_PAR_FILE, TIM_FILE,
-            verbose=True,
-            tzrmjd_scale="UTC"
-        )
+    with open(TDB_PAR_FILE) as f:
+        tdb_units_content = f.read().replace("UNITS          TCB", "UNITS          TDB")
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".par", delete=False) as f:
+        f.write(tdb_units_content)
+        tdb_units_par_file = f.name
+
+    try:
+        f_capture = io.StringIO()
+        with redirect_stdout(f_capture):
+            compute_residuals_simple(
+                tdb_units_par_file,
+                TIM_FILE,
+                verbose=True,
+                tzrmjd_scale="UTC",
+            )
+    finally:
+        Path(tdb_units_par_file).unlink()
 
     output = f_capture.getvalue()
     assert "contradicts par file UNITS=TDB" in output, \

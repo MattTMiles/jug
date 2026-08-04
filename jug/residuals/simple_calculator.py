@@ -411,8 +411,30 @@ def _is_known_param(key):
         return True
     if re.match(r'^FDJUMP\d*(_\d+)?$', key_upper) or key_upper == 'FDJUMP_SCALE' or key_upper == 'FDJUMPDM':
         return True
-    if re.match(r'^TN(ECORR|EF|EQ|SQ|SECORR)', key_upper):
+    # Glitch parameters (GLEP_n, GLPH_n, GLF0_n, ...). JUG DOES model glitches --
+    # compute_phase_residuals reads these per glitch index and applies the glitch
+    # phase -- so they are recognized, not ignored. (Without this they spuriously
+    # tripped the "ignored by JUG" warning even though the glitch was applied.)
+    if re.match(r'^GL(EP|PH|F0|F1|F2|F0D|TD)_\d+$', key_upper):
         return True
+    if re.match(r'^TN(ECORR|EF|EQ|EC|SQ|SECORR|GW|SW)', key_upper):
+        return True
+    # Stochastic solar-wind noise (SWAMP/SWGAM/SWC/SWNEARTH) and GW background
+    # noise -- modelled by JUG (see jug.noise.red_noise GW/SWNoiseProcess).
+    if key_upper in ('SWAMP', 'SWGAM', 'SWC', 'SWNEARTH', 'GWAMP', 'GWGAM', 'GWC'):
+        return True
+    # Deterministic chromatic Gaussian bump / annual signals (jug.signals
+    # ChromBumpSignal / ChromaticAnnualSignal). Keywords have no underscore so
+    # the SIGNAL_REGISTRY prefix check below does not catch them.
+    if re.match(r'^CHROM(BUMP|ANNUAL)', key_upper):
+        return True
+    # jug.signals deterministic-signal parameters (CHROMEV_*, CW_*, ...):
+    # recognized by prefix derived from each registered signal's par keys.
+    from jug.signals.base import SIGNAL_REGISTRY
+    for _cls in SIGNAL_REGISTRY.values():
+        for _k in _cls.required_par_keys():
+            if key_upper.startswith(_k.split('_')[0] + '_'):
+                return True
     return False
 
 
@@ -1850,32 +1872,32 @@ def compute_residuals_simple(
         if verbose: print(f"   Applied {len(dmx_ranges)} DMX ranges to total delay")
 
     # Exponential dip model (Tempo2 EXPEP/EXPPH/EXPTAU/EXPINDEX) is now applied
-        # via the deterministic-signal registry (ExponentialDipSignal,
-        # jug/signals/chromatic_event.py) in the signal block below -- same Tempo2
-        # formula, single application. Routing it through the registry lets the
-        # compare_pint_batch harness detect/strip/inject it into PINT (whose
-        # SimpleExponentialDip uses a smoothed variant that differs near the epoch).
-        # (Previously duplicated here AND in the registry -> double-counted the dip.)
-    
-        # Deterministic signals (jug.signals registry: chromatic events, CW,
-        # burst memory...). Detected from par parameters; evaluated ONCE at the
-        # par values (no fittable parameters yet) and ADDED to the total delay,
-        # post-binary like FD — matching the frozen PINT delay component used by
-        # jug/scripts/compare_pint_batch.py (category 'frequency_dependent').
-        # Chromatic scaling uses BARYCENTRIC frequencies (enterprise ssbfreqs
-        # convention); the comparison script must use the same. Not applied at
-        # the TZR TOA: that is a constant phase offset, absorbed by OFFSET.
-        signal_delay_sec = np.zeros(len(tdb_mjd), dtype=np.float64)
-        _detected_signals = detect_signals(params)
-        if _detected_signals:
-            for _sig in _detected_signals:
-                signal_delay_sec += np.asarray(_sig.compute_waveform(
-                    np.asarray(tdb_mjd, dtype=np.float64),
-                    np.asarray(freq_bary_mhz, dtype=np.float64),
-                ), dtype=np.float64)
-                if verbose:
-                    print(f"   Applied deterministic signal: {_sig.summary()}")
-            total_delay_sec += signal_delay_sec
+    # via the deterministic-signal registry (ExponentialDipSignal,
+    # jug/signals/chromatic_event.py) in the signal block below -- same Tempo2
+    # formula, single application. Routing it through the registry lets the
+    # compare_pint_batch harness detect/strip/inject it into PINT (whose
+    # SimpleExponentialDip uses a smoothed variant that differs near the epoch).
+    # (Previously duplicated here AND in the registry -> double-counted the dip.)
+
+    # Deterministic signals (jug.signals registry: chromatic events, CW,
+    # burst memory...). Detected from par parameters; evaluated ONCE at the
+    # par values (no fittable parameters yet) and ADDED to the total delay,
+    # post-binary like FD — matching the frozen PINT delay component used by
+    # jug/scripts/compare_pint_batch.py (category 'frequency_dependent').
+    # Chromatic scaling uses BARYCENTRIC frequencies (enterprise ssbfreqs
+    # convention); the comparison script must use the same. Not applied at
+    # the TZR TOA: that is a constant phase offset, absorbed by OFFSET.
+    signal_delay_sec = np.zeros(len(tdb_mjd), dtype=np.float64)
+    _detected_signals = detect_signals(params)
+    if _detected_signals:
+        for _sig in _detected_signals:
+            signal_delay_sec += np.asarray(_sig.compute_waveform(
+                np.asarray(tdb_mjd, dtype=np.float64),
+                np.asarray(freq_bary_mhz, dtype=np.float64),
+            ), dtype=np.float64)
+            if verbose:
+                print(f"   Applied deterministic signal: {_sig.summary()}")
+        total_delay_sec += signal_delay_sec
 
 
     # Apply JUMPs as phase offsets (not delay subtractions).
@@ -2231,6 +2253,14 @@ def compute_residuals_simple(
         'engine_conventions': engine_profile.as_dict(),
         'delay_provider': delay_provider.provider_name,
         'term_diagnostics': term_diagnostics,
+        # Deterministic-signal delay (jug.signals registry), seconds. Zero when
+        # no signal is present in the par.
+        'signal_delay_sec': np.array(signal_delay_sec, dtype=np.float64),
+        # Barycentric arrival times: TDB minus the pre-binary delay chain. The
+        # libstempo-compatible `psr.toas` equals bat_mjd * 86400.
+        'bat_mjd_ld': bat_mjd_ld,
+        'bat_mjd': np.array(bat_mjd_ld, dtype=np.float64),
+        'bat_sec': np.array(bat_mjd_ld * np.longdouble(SECS_PER_DAY), dtype=np.float64),
         'residuals_us': residuals_us,
         'rms_us': float(weighted_rms),  # Use weighted RMS as primary
         'weighted_rms_us': float(weighted_rms),

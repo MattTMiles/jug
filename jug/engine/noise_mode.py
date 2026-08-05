@@ -80,6 +80,10 @@ def _has_ecorr(params: dict) -> bool:
 
 
 def _has_red_noise(params: dict) -> bool:
+    # REDAMP/REDGAM is the JUG-native spelling written by par_writer, so it
+    # must be detected here or a saved par silently loses its red noise.
+    if "REDAMP" in params and "REDGAM" in params:
+        return True
     if "TNRedAmp" in params and "TNRedGam" in params:
         return True
     if "TNREDAMP" in params and "TNREDGAM" in params:
@@ -92,6 +96,8 @@ def _has_red_noise(params: dict) -> bool:
 
 
 def _has_dm_noise(params: dict) -> bool:
+    if "DMAMP" in params and "DMGAM" in params:
+        return True
     if "TNDMAmp" in params and "TNDMGam" in params:
         return True
     if "TNDMAMP" in params and "TNDMGAM" in params:
@@ -101,6 +107,8 @@ def _has_dm_noise(params: dict) -> bool:
     return False
 
 def _has_chromatic_noise(params: dict) -> bool:
+    if "CHROMAMP" in params and "CHROMGAM" in params:
+        return True
     if "TNChromAmp" in params and "TNChromGam" in params:
         return True
     if "TNCHROMAMP" in params and "TNCHROMGAM" in params:

@@ -31,6 +31,7 @@ from .parameter_spec import (
     list_params_by_group,
     list_fittable_params,
     get_derivative_group,
+    get_fit_unit,
 )
 
 from .codecs import (
@@ -52,6 +53,7 @@ __all__ = [
     'list_params_by_group',
     'list_fittable_params',
     'get_derivative_group',
+    'get_fit_unit',
     # Codecs
     'Codec',
     'FloatCodec',

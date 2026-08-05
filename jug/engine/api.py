@@ -18,9 +18,10 @@ result = fit_parameters('pulsar.par', 'pulsar.tim', ['F0', 'F1'])
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Any
 
 from jug.engine.session import TimingSession
+from jug.residuals.engine_conventions import EngineConventionProfile
 from jug.residuals.simple_calculator import compute_residuals_simple
 from jug.fitting.optimized_fitter import fit_parameters_optimized
 
@@ -29,15 +30,13 @@ def open_session(
     par_file: Path | str,
     tim_file: Path | str,
     clock_dir: Optional[str] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
 ) -> TimingSession:
     """
     Open a timing session for repeated operations.
-    
-    This is the recommended way to use JUG for multiple operations
-    (e.g., compute residuals, fit parameters, compute again).
-    The session caches file parsing and expensive setup operations.
-    
+
     Parameters
     ----------
     par_file : Path or str
@@ -48,28 +47,18 @@ def open_session(
         Directory containing clock files
     verbose : bool, default False
         Print status messages
-    
-    Returns
-    -------
-    session : TimingSession
-        A timing session object
-    
-    Examples
-    --------
-    >>> from jug.engine import open_session
-    >>> session = open_session('J1909.par', 'J1909.tim')
-    >>> result = session.compute_residuals()
-    >>> print(f"RMS: {result['rms_us']:.3f} mus")
-    >>> 
-    >>> # Fit parameters (reuses cached file parsing)
-    >>> fit_result = session.fit_parameters(['F0', 'F1'])
-    >>> print(f"Fitted F0: {fit_result['final_params']['F0']:.15f} Hz")
+    compatibility : str, default "pint"
+        Timing compatibility mode (only ``"pint"`` is supported).
+    engine_conventions : EngineConventionProfile, optional
+        Explicit engine convention profile (must match *compatibility*).
     """
     return TimingSession(
         par_file=par_file,
         tim_file=tim_file,
         clock_dir=clock_dir,
-        verbose=verbose
+        verbose=verbose,
+        compatibility=compatibility,
+        engine_conventions=engine_conventions,
     )
 
 
@@ -78,53 +67,19 @@ def compute_residuals(
     tim_file: Path | str,
     clock_dir: Optional[str] = None,
     subtract_tzr: bool = True,
-    verbose: bool = False
+    verbose: bool = False,
+    compatibility: str = "pint",
+    engine_conventions: EngineConventionProfile | None = None,
 ) -> Dict[str, Any]:
-    """
-    Compute timing residuals (legacy one-shot API).
-    
-    This function provides backward compatibility with existing code.
-    For multiple operations on the same files, use open_session() instead.
-    
-    Parameters
-    ----------
-    par_file : Path or str
-        Path to .par file
-    tim_file : Path or str
-        Path to .tim file
-    clock_dir : str, optional
-        Directory containing clock files
-    subtract_tzr : bool, default True
-        Whether to subtract TZR offset
-    verbose : bool, default False
-        Print status messages
-    
-    Returns
-    -------
-    result : dict
-        Residuals result with keys:
-        - 'residuals_us': Residuals in microseconds
-        - 'rms_us': RMS in microseconds
-        - 'tdb_mjd': TDB times
-        - etc.
-    
-    Examples
-    --------
-    >>> from jug.engine import compute_residuals
-    >>> result = compute_residuals('J1909.par', 'J1909.tim')
-    >>> print(f"RMS: {result['rms_us']:.3f} mus")
-    
-    Notes
-    -----
-    This calls compute_residuals_simple() directly without caching.
-    For repeated operations, use open_session() instead.
-    """
+    """Compute timing residuals (legacy one-shot API)."""
     return compute_residuals_simple(
         par_file=par_file,
         tim_file=tim_file,
         clock_dir=clock_dir,
         subtract_tzr=subtract_tzr,
-        verbose=verbose
+        verbose=verbose,
+        compatibility=compatibility,
+        engine_conventions=engine_conventions,
     )
 
 
@@ -137,14 +92,15 @@ def fit_parameters(
     clock_dir: Optional[str] = None,
     device: Optional[str] = None,
     verbose: bool = False,
+    compatibility: str = "pint",
     fit_dmx: bool = True,
 ) -> Dict[str, Any]:
     """
     Fit timing model parameters (legacy one-shot API).
-    
+
     This function provides backward compatibility with existing code.
     For multiple operations on the same files, use open_session() instead.
-    
+
     Parameters
     ----------
     par_file : Path or str
@@ -163,6 +119,8 @@ def fit_parameters(
         'cpu', 'gpu', or None (auto-detect)
     verbose : bool, default False
         Print fitting progress
+    compatibility : str, default "pint"
+        Delay/residual compatibility mode (pint-only on main).
     fit_dmx : bool, default True
         If True (default), DMX_* bins in the PAR are auto-added as fitted
         timing parameters. If False, fixed DMX delays from the PAR are still
@@ -178,14 +136,14 @@ def fit_parameters(
         - 'iterations': Number of iterations
         - 'converged': Whether fit converged
         - etc.
-    
+
     Examples
     --------
     >>> from jug.engine import fit_parameters
     >>> result = fit_parameters('J1909.par', 'J1909.tim', ['F0', 'F1'])
     >>> print(f"F0 = {result['final_params']['F0']:.15f} Hz")
     >>> print(f"RMS = {result['final_rms']:.3f} mus")
-    
+
     Notes
     -----
     This calls fit_parameters_optimized() directly without caching.
@@ -200,5 +158,6 @@ def fit_parameters(
         clock_dir=clock_dir,
         device=device,
         verbose=verbose,
+        compatibility=compatibility,
         fit_dmx=fit_dmx,
     )

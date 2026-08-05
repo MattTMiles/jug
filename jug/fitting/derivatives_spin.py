@@ -1,10 +1,10 @@
 """Analytical derivatives for spin parameters (F0, F1, F2, ...).
 
-This module implements PINT-compatible analytical derivatives for
-spin frequency parameters. The formulas are copied from PINT's
-spindown.py to ensure exact compatibility.
+Pint mode uses PINT-compatible phase derivatives (``spindown.py``).
+Tempo2 mode uses tempo2 ``t2FitFunc_stdFreq``-equivalent time columns
+(``-dt^(k+1)/((k+1)! F0)``), matching ``compute_designmatrix`` and libstempo.
 
-Reference: PINT src/pint/models/spindown.py
+Reference: PINT src/pint/models/spindown.py; tempo2 t2fit_stdFitFuncs.C
 """
 
 from jug.utils.jax_setup import ensure_jax_x64
@@ -13,10 +13,25 @@ ensure_jax_x64()
 import jax
 import jax.numpy as jnp
 import numpy as np
+import math
 from typing import Dict
 
 from jug.io.par_reader import get_longdouble
 from jug.utils.constants import SECS_PER_DAY
+
+
+def _normalize_spin_compatibility(compatibility: str | None) -> str:
+    from jug.residuals.engine_conventions import normalize_compatibility_mode
+
+    return normalize_compatibility_mode(str(compatibility or "pint"))
+
+
+def _spin_param_names(fit_params: list) -> list[str]:
+    return [
+        p
+        for p in fit_params
+        if p.startswith("F") and len(p) > 1 and p[1:].isdigit()
+    ]
 
 
 @jax.jit
@@ -142,38 +157,39 @@ def compute_spin_derivatives(
     params: Dict,
     toas_mjd: jnp.ndarray,
     fit_params: list,
-    **kwargs
+    *,
+    compatibility: str = "pint",
+    dt_sec: np.ndarray | None = None,
 ) -> Dict[str, jnp.ndarray]:
-    """Compute all spin parameter derivatives for design matrix.
-    
-    NOTE: Not JIT'd because of Python-level dict/string operations.
-    The inner taylor_horner calls ARE JIT'd.
-    
+    """Compute spin-parameter design-matrix columns in seconds per fit unit.
+
     Parameters
     ----------
-    params : dict
-        Timing model parameters including PEPOCH, F0, F1, F2, etc.
-    toas_mjd : jnp.ndarray
-        TOA times in MJD
-    fit_params : list
-        List of parameters to fit (e.g., ['F0', 'F1'])
-    **kwargs
-        Additional arguments (for API compatibility)
-        
+    params
+        Timing model parameters including PEPOCH, F0, F1, ...
+    toas_mjd
+        TOA times in MJD (used for pint mode and tempo2 fallback).
+    fit_params
+        Spin parameters to differentiate (e.g. ``['F0', 'F1']``).
+    compatibility
+        ``pint`` (default) or ``tempo2`` / ``tempo2-compatible``.
+    dt_sec
+        Optional emission-time offsets in seconds.  When provided in tempo2
+        mode, used instead of ``(toas_mjd - PEPOCH) * SECS_PER_DAY`` so the
+        fitter matches ``compute_designmatrix`` (``dt_sec_ld`` from residuals).
+
     Returns
     -------
-    derivatives : dict
-        Dictionary mapping parameter name to derivative column
-        Each value is jnp.ndarray of shape (n_toas,)
-        
-    Examples
-    --------
-    >>> params = {'PEPOCH': 58000.0, 'F0': 339.3, 'F1': -1.6e-15}
-    >>> toas = np.array([58000.0, 58001.0, 58002.0])
-    >>> derivs = compute_spin_derivatives(params, toas, ['F0', 'F1'])
-    >>> derivs['F0'].shape
-    (3,)
+    dict
+        Mapping parameter name to derivative column, shape ``(n_toas,)``.
     """
+    spin_params = _spin_param_names(fit_params)
+    if not spin_params:
+        return {}
+
+    _normalize_spin_compatibility(compatibility)
+    f0 = float(params.get("F0", 1.0))
+
     # Get PEPOCH
     pepoch_mjd = get_longdouble(params, 'PEPOCH', default=float(toas_mjd[0]))
 
@@ -181,27 +197,23 @@ def compute_spin_derivatives(
     toas_ld = np.asarray(toas_mjd, dtype=np.longdouble)
     pepoch_ld = np.longdouble(pepoch_mjd)
     dt_sec = np.asarray((toas_ld - pepoch_ld) * np.longdouble(SECS_PER_DAY), dtype=np.float64)
-    
+
     # Get all F terms for API compatibility (not used in derivative)
     f_terms = []
-    for i in range(10):  # Support up to F9
-        f_key = f'F{i}'
+    for i in range(10):
+        f_key = f"F{i}"
         if f_key in params:
             f_terms.append(params[f_key])
         else:
             break
-    
-    # Compute derivatives for each requested F parameter
+
     derivatives = {}
-    for param in fit_params:
-        if param.startswith('F'):
-            deriv_phase = d_phase_d_F(dt_sec, param, f_terms)  # cycles/Hz (POSITIVE)
-            # Apply PINT's convention (timing_model.py line 2365):
-            # q = -self.d_phase_d_param(toas, delay, param)
-            # Then divide by F0 to convert phase -> time units (line 2368)
-            f0 = params.get('F0', 1.0)
-            derivatives[param] = -deriv_phase / f0  # seconds/Hz (NEGATIVE)
-    
+    for param in spin_params:
+        deriv_phase = d_phase_d_F(dt_sec, param, f_terms)  # cycles/Hz (POSITIVE)
+        # Apply PINT's convention (timing_model.py line 2365):
+        # q = -self.d_phase_d_param(toas, delay, param)
+        # Then divide by F0 to convert phase -> time units (line 2368)
+        derivatives[param] = -deriv_phase / f0  # seconds/Hz (NEGATIVE)
     return derivatives
 
 

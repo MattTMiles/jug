@@ -935,60 +935,12 @@ def compute_ell1_binary_delay(
     binary_delay_sec : jnp.ndarray
         Total binary delay in seconds
     """
-    # Extract numeric parameters with defaults (avoid passing strings to JAX)
-    a1 = float(params.get('A1', 0.0))
-    pb_ld = _resolve_pb_days(params)
-    pb = float(pb_ld)
-    tasc = get_longdouble(params, 'TASC', default=0.0)
-    eps1 = float(params.get('EPS1', 0.0))
-    eps2 = float(params.get('EPS2', 0.0))
-    pbdot = float(params.get('PBDOT', 0.0))
-    a1dot = float(params.get('XDOT', params.get('A1DOT', 0.0)))
-    sini = float(params.get('SINI', 0.0))
-    m2 = float(params.get('M2', 0.0))
-    gamma = float(params.get('GAMMA', 0.0))
-    h3 = float(params.get('H3', 0.0))
-    h4 = float(params.get('H4', 0.0))
-    stig = float(params.get('STIG', params.get('STIGMA', 0.0)))
-    nharm = float(params.get('NHARMS', params.get('NHARM', 4.0)) or 4.0)
-
-    # Convert orthometric Shapiro parameters to SINI/M2
-    # Only convert when the derived STIG is physically valid (0 < STIG ≤ 1).
-    # When H4 ≤ 0 or STIG is out of range, leave sini/m2 = 0 so the
-    # H3-only harmonic expansion path activates (Freire & Wex 2010).
-    if sini == 0.0 and m2 == 0.0 and h3 != 0.0:
-        if stig > 0.0 and stig <= 1.0:
-            sini = 2.0 * stig / (1.0 + stig**2)
-            m2 = h3 / (stig**3 * T_SUN)
-        elif h4 > 0.0 and h3 > 0.0:
-            stig_derived = h4 / h3
-            if 0.0 < stig_derived <= 1.0:
-                sini = 2.0 * stig_derived / (1.0 + stig_derived**2)
-                m2 = h3 / (stig_derived**3 * T_SUN)
-                stig = stig_derived
-
-    # Extract FB parameters (FB0, FB1, ...)
-    fb_coeffs_list = []
-    fb0_ld = None
-    i = 0
-    while True:
-        key = f'FB{i}'
-        if key in params:
-            fb_coeffs_list.append(float(params[key]))
-            if i == 0:
-                fb0_ld = get_longdouble(params, key)
-            i += 1
-        else:
-            break
-
-    if fb_coeffs_list:
-        fb_coeffs = jnp.array(fb_coeffs_list, dtype=jnp.float64)
-    else:
-        fb_coeffs = jnp.array([], dtype=jnp.float64)
-
-    # Extract EPS1DOT/EPS2DOT for time evolution
-    eps1dot = float(params.get('EPS1DOT', 0.0))
-    eps2dot = float(params.get('EPS2DOT', 0.0))
+    p = _extract_ell1_params(params)
+    pb_ld = p["pb_ld"]
+    tasc = p["tasc"]
+    fb0_ld = p.get("fb0_ld")
+    fb_coeffs = jnp.array(p["fb_coeffs"], dtype=jnp.float64)
+    nharm = p["nharm"]
 
     # Precompute time since TASC in longdouble to avoid float64 cancellation
     # at MJD ~58000 (~600 ns error → ~30 ps Roemer delay error).
@@ -1005,9 +957,74 @@ def compute_ell1_binary_delay(
     )
     return _compute_ell1_binary_delay_jit(
         jnp.asarray(ttasc_sec_f64),
-        a1, pb, eps1, eps2, pbdot, a1dot, sini, m2, gamma,
-        h3, h4, stig, fb_coeffs, eps1dot, eps2dot,
+        p["a1"], p["pb"], p["eps1"], p["eps2"], p["pbdot"], p["a1dot"],
+        p["sini"], p["m2"], p["gamma"], p["h3"], p["h4"], p["stig"], fb_coeffs,
+        p["eps1dot"], p["eps2dot"],
         ttasc_red_sec=jnp.asarray(ttasc_red_f64),
+        nharm=nharm,
+    )
+
+
+def _extract_ell1_params(params: Dict) -> Dict:
+    """Concrete ELL1 kernel scalars from reference params."""
+    a1 = float(params.get("A1", 0.0))
+    pb_ld = _resolve_pb_days(params)
+    pb = float(pb_ld)
+    tasc = get_longdouble(params, "TASC", default=0.0)
+    eps1 = float(params.get("EPS1", 0.0))
+    eps2 = float(params.get("EPS2", 0.0))
+    pbdot = float(params.get("PBDOT", 0.0))
+    a1dot = float(params.get("A1DOT", params.get("XDOT", 0.0)))
+    sini = float(params.get("SINI", 0.0))
+    m2 = float(params.get("M2", 0.0))
+    gamma = float(params.get("GAMMA", 0.0))
+    h3 = float(params.get("H3", 0.0))
+    h4 = float(params.get("H4", 0.0))
+    stig = float(params.get("STIG", params.get("STIGMA", 0.0)))
+    nharm = float(params.get("NHARMS", params.get("NHARM", 4.0)) or 4.0)
+
+    if sini == 0.0 and m2 == 0.0 and h3 != 0.0:
+        if 0.0 < stig <= 1.0:
+            sini = 2.0 * stig / (1.0 + stig ** 2)
+            m2 = h3 / (stig ** 3 * T_SUN)
+        elif h4 > 0.0 and h3 > 0.0:
+            stig_derived = h4 / h3
+            if 0.0 < stig_derived <= 1.0:
+                sini = 2.0 * stig_derived / (1.0 + stig_derived ** 2)
+                m2 = h3 / (stig_derived ** 3 * T_SUN)
+                stig = stig_derived
+
+    fb_coeffs = []
+    fb0_ld = None
+    i = 0
+    while f"FB{i}" in params:
+        fb_coeffs.append(float(params[f"FB{i}"]))
+        if i == 0:
+            fb0_ld = get_longdouble(params, f"FB{i}")
+        i += 1
+
+    eps1dot = float(params.get("EPS1DOT", 0.0))
+    eps2dot = float(params.get("EPS2DOT", 0.0))
+
+    return dict(
+        a1=a1,
+        pb=pb,
+        pb_ld=pb_ld,
+        tasc=tasc,
+        eps1=eps1,
+        eps2=eps2,
+        pbdot=pbdot,
+        a1dot=a1dot,
+        sini=sini,
+        m2=m2,
+        gamma=gamma,
+        h3=h3,
+        h4=h4,
+        stig=stig,
+        eps1dot=eps1dot,
+        eps2dot=eps2dot,
+        fb_coeffs=fb_coeffs,
+        fb0_ld=fb0_ld,
         nharm=nharm,
     )
 
@@ -1249,7 +1266,6 @@ def compute_binary_derivatives_ell1(
     phi = compute_orbital_phase_ell1(
         ttasc_sec, pb, pbdot, fb_coeffs, ttasc_red_sec=ttasc_red_sec
     )
-
     # nhat = instantaneous orbital angular frequency (rad/s). For FB-parameterized
     # binaries (no PB) it must be derived from the FB series like the kernel
     # (combined.py:branch_ell1 compute_n0_fb): nhat = 2*pi*sum(FB_i * dt^i / i!).

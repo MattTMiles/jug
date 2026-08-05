@@ -3020,8 +3020,13 @@ def _run_general_fit_iterations(
     # parameters.  This prevents the correlated-noise model from absorbing
     # low-order polynomial timing signal (F0/F1 in red noise, DM/DM1/DM2
     # in DM noise).  Applied once after convergence, matching Tempo2.
-    # Controlled by par file parameter TNsubtractPoly (default: 1 = on).
-    _tn_subtract_poly = int(params.get('TNSUBTRACTPOLY', 1))
+    # Controlled by par file parameter TNsubtractPoly. DEFAULT OFF: the joint
+    # GLS solve already produces the PINT/enterprise gauge (low-frequency
+    # noise power split between timing polynomial and Fourier coefficients by
+    # the prior); transferring the realization's polynomial into F0/F1/DM is
+    # the TEMPO2 gauge convention and breaks parameter parity with PINT.
+    # Set TNSUBTRACTPOLY 1 in the par to opt in.
+    _tn_subtract_poly = int(params.get('TNSUBTRACTPOLY', 0))
     _tn_poly_applied = False
     if n_augmented > 0 and _tn_subtract_poly and (
             np.any(_accumulated_red_noise_sec != 0)

@@ -1702,6 +1702,9 @@ class MainWindow(QMainWindow):
                 # First time: create themed scatter item
                 self.scatter_item = create_scatter_item()
                 self.plot_widget.addItem(self.scatter_item)
+                # Points sit on top of their error bars. Draw order alone would
+                # put the bars in front, since they are added later.
+                self.scatter_item.setZValue(10)
             
             # Update scatter data (fast - no recreation)
             x_data, x_label = self._get_x_data()
@@ -1735,6 +1738,7 @@ class MainWindow(QMainWindow):
                     # First time: create themed error bar item
                     self.error_bar_item = create_error_bar_item()
                     self.plot_widget.addItem(self.error_bar_item)
+                    self.error_bar_item.setZValue(0)  # behind the points
                 
                 # Update error bar data
                 eb_height = self.errors_us * 2  # +/-1sigma
@@ -2918,6 +2922,7 @@ class MainWindow(QMainWindow):
                     name=name,
                 )
                 self.plot_widget.addItem(scatter)
+                scatter.setZValue(20)  # noise realizations draw on top of everything
                 self._noise_curves[name] = scatter
 
             # Error bars from GLS posterior covariance
@@ -2930,9 +2935,11 @@ class MainWindow(QMainWindow):
                     errbar = pg.ErrorBarItem(
                         x=x_data, y=real_us, height=2 * err_us,
                         beam=0.0,
-                        pen=pg.mkPen(color=color, width=1.5),
+                        # Width must stay <= 1.0 -- see PlotTheme.ERROR_BAR_WIDTH.
+                        pen=pg.mkPen(color=color, width=PlotTheme.ERROR_BAR_WIDTH),
                     )
                     self.plot_widget.addItem(errbar)
+                    errbar.setZValue(15)  # above the residuals, behind its own points
                     self._noise_errorbars[name] = errbar
 
         if length_mismatch:
@@ -3793,7 +3800,8 @@ class MainWindow(QMainWindow):
             # Update error bar colors (pyqtgraph)
             if self.error_bar_item is not None:
                  error_color = PlotTheme.get_error_bar_color()
-                 self.error_bar_item.setOpts(pen=pg.mkPen(color=error_color, width=2.0))
+                 self.error_bar_item.setOpts(
+                     pen=pg.mkPen(color=error_color, width=PlotTheme.ERROR_BAR_WIDTH))
                  
             # Update zero line if visible (pyqtgraph)
             if self.zero_line is not None:

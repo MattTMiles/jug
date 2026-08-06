@@ -87,11 +87,17 @@ Load par and tim files via **File > Open .par** and **File > Open .tim**, select
 - Noise process toggling and subtraction
 - Saving fitted par/tim files via **File > Save .par / Save .tim**
 
-To launch with a specific pulsar:
+To launch with a specific pulsar, pass the par and tim files as positional
+arguments:
 
 ```bash
-jug-gui --par J1909-3744.par --tim J1909-3744.tim
+jug-gui J1909-3744.par J1909-3744.tim
+
+# optionally pre-select parameters to fit
+jug-gui J1909-3744.par J1909-3744.tim --fit F0 F1 DM
 ```
+
+Run `jug-gui --help` for the full list of options.
 
 ## Examples
 

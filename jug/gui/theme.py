@@ -1183,7 +1183,17 @@ class PlotTheme:
 
     AXIS_PEN_WIDTH = 2
     SCATTER_SIZE = 7
-    ERROR_BAR_WIDTH = 2.0
+    # Must stay <= 1.0. Qt's raster engine strokes a cosmetic pen of width <= 1
+    # through its fast hairline path; anything wider goes through the general
+    # path stroker, and ErrorBarItem hands it one path holding 3 segments per
+    # TOA on every repaint. Measured, 1400x800, all bars drawn:
+    #     width 2.0 -> 735 ms/frame at 10k TOAs, 2232 ms at 30k
+    #     width 1.5 -> 734 ms                  , 2206 ms
+    #     width 1.0 ->   4.7 ms                ,   11.7 ms
+    # It is a cliff, not a gradient: 1.0 is ~190x faster than 1.5 and draws
+    # every bar. JUG_ERROR_BAR_WIDTH overrides if you want the thicker bars
+    # back and can live with the frame time.
+    ERROR_BAR_WIDTH = float(os.environ.get('JUG_ERROR_BAR_WIDTH', '1.0'))
     ERROR_BAR_BEAM = 0.6
     ZERO_LINE_WIDTH = 2
     ZERO_LINE_STYLE = "dash"

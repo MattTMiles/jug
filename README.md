@@ -101,7 +101,7 @@ See [`notebooks/jug_example_j1909.ipynb`](notebooks/jug_example_j1909.ipynb) for
 
 ## Dependencies
 
-- Python >= 3.10
+- Python >= 3.11
 - JAX >= 0.4.0
 - NumPy, SciPy, Astropy
 - PySide6 + pyqtgraph (GUI)

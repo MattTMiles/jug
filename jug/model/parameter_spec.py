@@ -1417,9 +1417,8 @@ def validate_fit_param(name: str) -> bool:
     if is_jump_param(canonical):
         return True
 
-    # Check FDJUMP pattern - e.g. FDJUMP1_1, FDJUMP2_3
-    fdjump_match = re.match(r'^FDJUMP\d+_\d+$', canonical)
-    if fdjump_match:
+    # Check FDJUMP / FDJUMPDM patterns - e.g. FDJUMP1_1, FDJUMPDM_1
+    if re.match(r'^FDJUMP\d+_\d+$', canonical) or re.match(r'^FDJUMPDM_\d+$', canonical):
         return True
 
     # Check FD pattern - registered FD1..FD20, higher indices not yet implemented

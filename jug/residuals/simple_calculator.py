@@ -512,9 +512,10 @@ def _is_known_param(key):
     if re.match(r"^(EXP(EP|PH|TAU|INDEX))_\d+$", key_upper):
         return True
     if (
-        re.match(r"^FDJUMP\d*(_\d+)?$", key_upper)
-        or key_upper == "FDJUMP_SCALE"
-        or key_upper == "FDJUMPDM"
+        re.match(r"^FDJUMP\d+(_\d+)?$", key_upper)
+        or re.match(r"^FD\d+JUMP$", key_upper)
+        or re.match(r"^FDJUMPDM(_\d+)?$", key_upper)
+        or key_upper in ("FDJUMP_SCALE", "FDJUMPLOG")
     ):
         return True
     if re.match(r"^TN(ECORR|EF|EQ|SQ|SECORR)", key_upper):
@@ -2227,7 +2228,9 @@ def compute_residuals_simple(
     if verbose and n_padd:
         print(f"   Applied -padd/-radd phase offsets to {n_padd} TOAs")
 
-    # Apply FDJUMP delays (frequency-dependent jumps)
+    # Apply FDJUMP / FDJUMPDM delays (frequency-dependent / DM jumps).
+    # Sign matches Tempo2 formResiduals.C (phaseJ -= val * kernel * F0) via the
+    # existing FDJUMP total_delay subtraction convention.
     fdjump_lines = params.get("_fdjump_lines", [])
     if fdjump_lines:
         fdjump_applied = 0
@@ -2240,21 +2243,27 @@ def compute_residuals_simple(
             val = float(params.get(key, 0.0))
             if val == 0.0:
                 continue
-            fd_idx = meta["fd_index"]
+            fd_idx = int(meta["fd_index"])
+            is_dm = meta.get("kind") == "dm" or fd_idx == -2
             log_scale = meta.get("log_scale", True)
             flag_name = meta["flag_name"]
             flag_value = meta["flag_value"]
             mask = create_jump_mask_from_flags([t.flags for t in toas], flag_name, flag_value)
             if np.any(mask):
-                freq_ghz = np.array(freq_bary_mhz[mask], dtype=np.float64) / 1000.0
-                if log_scale:
-                    freq_term = np.log(freq_ghz) ** fd_idx
+                freq_mhz_sel = np.array(freq_bary_mhz[mask], dtype=np.float64)
+                if is_dm:
+                    freq_safe = np.where(freq_mhz_sel > 1.0e-6, freq_mhz_sel, np.inf)
+                    freq_term = K_DM_SEC / (freq_safe ** 2)
                 else:
-                    freq_term = freq_ghz**fd_idx
+                    freq_ghz = freq_mhz_sel / 1000.0
+                    if log_scale:
+                        freq_term = np.log(freq_ghz) ** fd_idx
+                    else:
+                        freq_term = freq_ghz**fd_idx
                 total_delay_sec[mask] -= val * freq_term
                 fdjump_applied += 1
         if verbose and fdjump_applied:
-            print(f"   Applied {fdjump_applied} FDJUMPs")
+            print(f"   Applied {fdjump_applied} FDJUMP/FDJUMPDM terms")
 
     # NOTE: DMJUMP is NOT applied in prefit residuals.
     # Neither Tempo2 nor PINT apply DMJUMP as a delay in prefit;

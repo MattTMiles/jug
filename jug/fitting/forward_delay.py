@@ -57,17 +57,23 @@ def _dm_delay(xp, tdb_mjd, freq_mhz, dm_params, dm_epoch):
 
 
 def _fdjump_delay(xp, params, freq_mhz, fdjump_params, fdjump_masks):
-    """Traceable FDJUMP delay."""
-    freq_ghz = xp.asarray(freq_mhz, dtype=xp.float64) / 1000.0
-    delay = xp.zeros_like(freq_ghz)
+    """Traceable FDJUMP / FDJUMPDM delay."""
+    freq = xp.asarray(freq_mhz, dtype=xp.float64)
+    delay = xp.zeros_like(freq)
     for name in fdjump_params:
         meta = params.get(f"_fdjump_meta_{name}")
         if meta is None:
             continue
-        fd_idx = meta["fd_index"]
-        log_scale = meta.get("log_scale", True)
         value = pval(params, name, 0.0)
-        freq_term = (xp.log(freq_ghz) ** fd_idx) if log_scale else (freq_ghz ** fd_idx)
+        fd_idx = int(meta["fd_index"])
+        is_dm = meta.get("kind") == "dm" or fd_idx == -2
+        if is_dm:
+            freq_safe = xp.where(freq > 1.0e-6, freq, xp.inf)
+            freq_term = K_DM_SEC / (freq_safe ** 2)
+        else:
+            freq_ghz = freq / 1000.0
+            log_scale = meta.get("log_scale", True)
+            freq_term = (xp.log(freq_ghz) ** fd_idx) if log_scale else (freq_ghz ** fd_idx)
         mask = xp.asarray(fdjump_masks.get(name, np.ones(len(freq_mhz), dtype=bool)))
         delay = delay + xp.where(mask, value * freq_term, 0.0)
     return delay

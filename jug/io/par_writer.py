@@ -385,7 +385,7 @@ def _write_jumps(params, lines, fit_params, uncertainties, written):
 
 
 def _write_fdjumps(params, lines, fit_params, uncertainties, written):
-    """Write FDJUMP lines, updating values from params[FDJUMPn_m]."""
+    """Write FDJUMP / FDJUMPDM lines, updating values from params[FDJUMPn_m]."""
     fdjump_lines = params.get('_fdjump_lines', [])
     if not fdjump_lines:
         return
@@ -395,19 +395,56 @@ def _write_fdjumps(params, lines, fit_params, uncertainties, written):
         lines.append(_fmt_line('FDJUMP_SCALE', str(params['FDJUMP_SCALE'])))
         written.add('FDJUMP_SCALE')
 
+    fdjumpdm_keys = sorted(
+        [k for k in params if re.match(r'^FDJUMPDM_\d+$', k)],
+        key=lambda k: int(k.split('_')[1]),
+    )
+    fdjumpdm_iter = iter(fdjumpdm_keys)
+
     for raw_line in fdjump_lines:
         fparts = raw_line.strip().split()
         key_raw = fparts[0].upper()
-        if key_raw == 'FDJUMP_SCALE':
-            continue  # already handled
+        if key_raw in ('FDJUMP_SCALE', 'FDJUMPLOG'):
+            # Preserve scale/log directives from the original par text when not
+            # already emitted from params['FDJUMP_SCALE'].
+            if key_raw == 'FDJUMP_SCALE' and 'FDJUMP_SCALE' in params:
+                continue
+            lines.append(raw_line.rstrip())
+            continue
 
-        # Parse: FDJUMPn -flag flagval value [fit_flag]
-        m = re.match(r'FDJUMP(\d+)', key_raw)
-        if not m:
+        if key_raw == 'FDJUMPDM':
+            if len(fparts) < 4 or not fparts[1].startswith('-'):
+                lines.append(raw_line)
+                continue
+            flag = fparts[1]
+            flag_val = fparts[2]
+            fk = next(fdjumpdm_iter, None)
+            if fk is None:
+                lines.append(raw_line)
+                continue
+            val = params[fk]
+            fit = 1 if fk in fit_params else 0
+            unc = uncertainties.get(fk)
+            line = f"FDJUMPDM        {flag} {flag_val}    {_repr_num(val)}"
+            if fit:
+                line += f" {fit}"
+                if unc is not None:
+                    line += f" {unc}"
+            else:
+                line += " 0"
+            lines.append(line)
+            written.add(fk)
+            continue
+
+        # Parse: FDJUMPn (Tempo2) or FDnJUMP (PINT) -flag flagval value [fit_flag]
+        m_tempo2 = re.match(r'FDJUMP(\d+)$', key_raw)
+        m_pint = re.match(r'FD(\d+)JUMP$', key_raw)
+        if not m_tempo2 and not m_pint:
             lines.append(raw_line)
             continue
 
-        fd_idx = m.group(1)
+        fd_idx = m_pint.group(1) if m_pint else m_tempo2.group(1)
+        out_name = f'FD{fd_idx}JUMP' if m_pint else f'FDJUMP{fd_idx}'
         flag = fparts[1]
         flag_val = fparts[2]
 
@@ -424,7 +461,7 @@ def _write_fdjumps(params, lines, fit_params, uncertainties, written):
                     val = params[fk]
                     fit = 1 if fk in fit_params else 0
                     unc = uncertainties.get(fk)
-                    line = f"FDJUMP{fd_idx}        {flag} {flag_val}    {_repr_num(val)}"
+                    line = f"{out_name}        {flag} {flag_val}    {_repr_num(val)}"
                     if fit:
                         line += f" {fit}"
                         if unc is not None:
@@ -438,7 +475,7 @@ def _write_fdjumps(params, lines, fit_params, uncertainties, written):
             # No internal key found — preserve raw line
             lines.append(raw_line)
 
-    # Mark all FDJUMP keys
+    # Mark all FDJUMP / FDJUMPDM keys
     for k in list(params.keys()):
         if k.startswith('FDJUMP'):
             written.add(k)

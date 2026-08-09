@@ -164,8 +164,8 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                     jump_lines.append(line)
                     continue
 
-                # FDJUMP parameters: FDJUMP1 -flag val value [fit]
-                if key.startswith('FDJUMP'):
+                # FDJUMP parameters (Tempo2 FDJUMPn / PINT FDnJUMP / FDJUMPDM)
+                if key.startswith('FDJUMP') or re.match(r'^FD\d+JUMP$', key):
                     fdjump_lines.append(line)
                     continue
 
@@ -238,26 +238,49 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
             if fit_idx > 0 and len(jparts) > fit_idx and jparts[fit_idx] == '1':
                 fit_flags[jump_key] = True
     
-    # Store raw FDJUMP lines for later parsing
-    # Format: FDJUMP<idx> -<flag> <value> <offset> [fit_flag]
-    # or:     FDJUMP<idx> -<flag> <value> <offset> <fit_flag>
+    # Store raw FDJUMP / FDxJUMP / FDJUMPDM lines for later parsing
+    # Format: FDJUMP<idx> -<flag> <value> <offset> [fit_flag]   (Tempo2)
+    #         FD<idx>JUMP -<flag> <value> <offset> [fit_flag]   (PINT)
+    #         FDJUMPDM    -<flag> <value> <offset> [fit_flag]
+    # Tempo2 marks FDJUMPDM with fdjumpIdx == -2 (DM-like f^-2 delay).
+    # Internal keys are always Tempo2-style FDJUMPn_m / FDJUMPDM_k.
     if fdjump_lines:
         params['_fdjump_lines'] = fdjump_lines
         fdjump_log = True  # Default: log scale (Tempo2 default)
+        fdjumpdm_count = 0
         for idx, fl in enumerate(fdjump_lines):
             fparts = fl.strip().split()
             key_raw = fparts[0].upper()
-            # Check for FDJUMP_SCALE
+            # FDJUMP_SCALE / FDJUMPLOG control log vs linear FDJUMP frequency basis
             if key_raw == 'FDJUMP_SCALE':
                 if len(fparts) >= 2 and fparts[1].upper() == 'LINEAR':
                     fdjump_log = False
+                elif len(fparts) >= 2 and fparts[1].upper() == 'LOG':
+                    fdjump_log = True
                 continue
-            # Parse FDJUMP index from keyword (e.g., FDJUMP1 -> 1)
-            m = re.match(r'FDJUMP(\d+)', key_raw)
-            if not m:
+            if key_raw == 'FDJUMPLOG':
+                if len(fparts) >= 2 and fparts[1].upper() in ('N', '0', 'FALSE'):
+                    fdjump_log = False
+                else:
+                    fdjump_log = True
                 continue
-            fd_idx = int(m.group(1))
-            # Flag-based: FDJUMP1 -group <name> <value> [fit]
+
+            is_fdjumpdm = key_raw == 'FDJUMPDM'
+            m_tempo2 = re.match(r'FDJUMP(\d+)$', key_raw)
+            m_pint = re.match(r'FD(\d+)JUMP$', key_raw)
+            if not is_fdjumpdm and not m_tempo2 and not m_pint:
+                continue
+            if is_fdjumpdm:
+                fd_idx = -2
+                dialect = 'tempo2'
+            elif m_pint:
+                fd_idx = int(m_pint.group(1))
+                dialect = 'pint'
+            else:
+                fd_idx = int(m_tempo2.group(1))
+                dialect = 'tempo2'
+
+            # Flag-based: FDJUMP1 / FD1JUMP / FDJUMPDM -group <name> <value> [fit]
             if len(fparts) >= 4 and fparts[1].startswith('-'):
                 flag_name = fparts[1].lstrip('-')
                 flag_value = fparts[2]
@@ -266,13 +289,19 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                 except (IndexError, ValueError):
                     val = 0.0
                 fit = len(fparts) >= 5 and fparts[4] == '1'
-                fdjump_key = f'FDJUMP{fd_idx}_{idx + 1}'
+                if is_fdjumpdm:
+                    fdjumpdm_count += 1
+                    fdjump_key = f'FDJUMPDM_{fdjumpdm_count}'
+                else:
+                    fdjump_key = f'FDJUMP{fd_idx}_{idx + 1}'
                 params[fdjump_key] = val
                 params[f'_fdjump_meta_{fdjump_key}'] = {
                     'fd_index': fd_idx,
                     'flag_name': flag_name,
                     'flag_value': flag_value,
                     'log_scale': fdjump_log,
+                    'kind': 'dm' if is_fdjumpdm else 'fd',
+                    'dialect': dialect,
                 }
                 if fit:
                     fit_flags[fdjump_key] = True

@@ -80,6 +80,7 @@ from jug.model.parameter_spec import (
     get_fd_params_from_list,
     get_sw_params_from_list,
     canonicalize_param_name,
+    is_fdjump_param,
     validate_fit_param,
 )
 from jug.utils.constants import HIGH_PRECISION_PARAMS
@@ -1473,15 +1474,22 @@ def _build_setup_common(
         if added_jumps:
             print(f"[SETUP] Auto-added {len(added_jumps)} fit-flagged JUMPs for GLS noise fit")
 
-        # Also auto-add fit-flagged FDJUMPs
-        existing_fdjumps = {p for p in fit_params if p.startswith('FDJUMP')}
+        # Also auto-add fit-flagged FDJUMPs (any accepted spelling)
+        existing_fdjumps = {
+            canonicalize_param_name(p) for p in fit_params if is_fdjump_param(p)
+        }
         fit_flags = params.get('_fit_flags', {})
         added_fdjumps = []
         for key in sorted(params.keys()):
-            if key.startswith('FDJUMP') and not key.startswith('_') and key not in existing_fdjumps:
+            if (
+                is_fdjump_param(key)
+                and not key.startswith('_')
+                and canonicalize_param_name(key) not in existing_fdjumps
+            ):
                 if fit_flags.get(key):
                     fit_params = list(fit_params) + [key]
                     added_fdjumps.append(key)
+                    existing_fdjumps.add(canonicalize_param_name(key))
         if added_fdjumps:
             print(f"[SETUP] Auto-added {len(added_fdjumps)} fit-flagged FDJUMPs for GLS noise fit")
 
@@ -1583,7 +1591,9 @@ def _build_setup_common(
             jump_params_list = keep_jumps
 
     # --- FDJUMP masks ------------------------------------------------------
-    fdjump_params_list = [p for p in fit_params if p.startswith('FDJUMP')]
+    fdjump_params_list = [
+        canonicalize_param_name(p) for p in fit_params if is_fdjump_param(p)
+    ]
     fdjump_masks = None
     initial_fdjump_delay = None
     if fdjump_params_list and toa_flags:

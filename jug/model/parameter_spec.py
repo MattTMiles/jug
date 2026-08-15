@@ -893,6 +893,81 @@ def get_high_precision_params() -> set:
 # Helper Functions
 # =============================================================================
 
+# FDJUMP has two par-file spellings for one physical parameter (Tempo2 FDJUMPp
+# vs PINT FDpJUMP). They cannot live in _ALIAS_MAP: the prefix index and the
+# mask index collide, which is why PINT rewrites at parse time instead of
+# registering an ordinary alias. Canonical internal id is FDJUMP{p}_{q}
+# (mask q defaults to 1) and FDJUMPDM_{k}.
+_FDJUMP_TEMPO2_INSTANCE_RE = re.compile(r"^FDJUMP(\d+)_(\d+)$", re.I)
+_FDJUMP_TEMPO2_BARE_RE = re.compile(r"^FDJUMP(\d+)$", re.I)
+_FDJUMP_PINT_INSTANCE_RE = re.compile(r"^FD(\d+)JUMP(\d+)$", re.I)
+_FDJUMP_PINT_BARE_RE = re.compile(r"^FD(\d+)JUMP$", re.I)
+_FDJUMPDM_RE = re.compile(r"^FDJUMPDM(?:_(\d+)|(\d+))?$", re.I)
+_FDJUMP_CONTROL_KEYS = frozenset({"FDJUMP_SCALE", "FDJUMPLOG"})
+
+
+def canonicalize_fdjump_name(name: str) -> Optional[str]:
+    """Return the canonical FDJUMP id, or None if ``name`` is not an FDJUMP.
+
+    Canonical form is ``FDJUMP{p}_{q}`` (Tempo2 prefix, JUG instance index;
+    omitted mask defaults to 1) or ``FDJUMPDM_{k}``.
+
+    Accepted spellings
+    ------------------
+    ``FDJUMP1`` / ``FD1JUMP``
+        Par keyword, no mask → ``FDJUMP1_1``.
+    ``FDJUMP1_1`` / ``FD1JUMP1``
+        JUG internal / PINT mask instance → ``FDJUMP1_1``.
+    ``FDJUMPDM`` / ``FDJUMPDM1`` / ``FDJUMPDM_1``
+        DM-like sibling → ``FDJUMPDM_1``.
+    """
+    key = name.strip()
+    if key.upper() in _FDJUMP_CONTROL_KEYS:
+        return None
+    dm = _FDJUMPDM_RE.fullmatch(key)
+    if dm:
+        idx = dm.group(1) or dm.group(2) or "1"
+        return f"FDJUMPDM_{int(idx)}"
+    m = _FDJUMP_TEMPO2_INSTANCE_RE.fullmatch(key)
+    if m:
+        return f"FDJUMP{int(m.group(1))}_{int(m.group(2))}"
+    m = _FDJUMP_PINT_INSTANCE_RE.fullmatch(key)
+    if m:
+        return f"FDJUMP{int(m.group(1))}_{int(m.group(2))}"
+    m = _FDJUMP_TEMPO2_BARE_RE.fullmatch(key)
+    if m:
+        return f"FDJUMP{int(m.group(1))}_1"
+    m = _FDJUMP_PINT_BARE_RE.fullmatch(key)
+    if m:
+        return f"FDJUMP{int(m.group(1))}_1"
+    return None
+
+
+def fdjump_aliases(name: str) -> Tuple[str, ...]:
+    """Return every accepted spelling of one FDJUMP, or () if not an FDJUMP."""
+    canonical = canonicalize_fdjump_name(name)
+    if canonical is None:
+        return ()
+    if canonical.startswith("FDJUMPDM_"):
+        k = int(canonical.rsplit("_", 1)[1])
+        return (f"FDJUMPDM_{k}", f"FDJUMPDM{k}", "FDJUMPDM")
+    m = _FDJUMP_TEMPO2_INSTANCE_RE.fullmatch(canonical)
+    if m is None:
+        return (canonical,)
+    p, q = int(m.group(1)), int(m.group(2))
+    return (
+        f"FDJUMP{p}_{q}",
+        f"FD{p}JUMP{q}",
+        f"FDJUMP{p}",
+        f"FD{p}JUMP",
+    )
+
+
+def is_fdjump_param(name: str) -> bool:
+    """True for any FDJUMP / FDJUMPDM spelling, including PINT ``FDpJUMPq``."""
+    return canonicalize_fdjump_name(name) is not None
+
+
 def canonicalize_param_name(name: str) -> str:
     """
     Resolve parameter aliases to canonical names.
@@ -913,9 +988,14 @@ def canonicalize_param_name(name: str) -> str:
     'F0'
     >>> canonicalize_param_name('F0')
     'F0'
+    >>> canonicalize_param_name('FD1JUMP1')
+    'FDJUMP1_1'
     >>> canonicalize_param_name('UNKNOWN')
     'UNKNOWN'
     """
+    fdjump = canonicalize_fdjump_name(name)
+    if fdjump is not None:
+        return fdjump
     return _ALIAS_MAP.get(name, name)
 
 
@@ -1417,8 +1497,8 @@ def validate_fit_param(name: str) -> bool:
     if is_jump_param(canonical):
         return True
 
-    # Check FDJUMP / FDJUMPDM patterns - e.g. FDJUMP1_1, FDJUMPDM_1
-    if re.match(r'^FDJUMP\d+_\d+$', canonical) or re.match(r'^FDJUMPDM_\d+$', canonical):
+    # Check FDJUMP / FDJUMPDM patterns (Tempo2 FDJUMPp, PINT FDpJUMP, FDJUMPDM)
+    if is_fdjump_param(canonical):
         return True
 
     # Check FD pattern - registered FD1..FD20, higher indices not yet implemented

@@ -18,6 +18,7 @@ are preserved under private keys for round-trip fidelity.
 from pathlib import Path
 from typing import Dict, Any, Optional
 import re
+import warnings
 
 import numpy as np
 
@@ -98,6 +99,33 @@ def _parse_float(value_str: str) -> float:
         # Handle Fortran D-notation: replace 'D' or 'd' with 'E'
         converted = value_str.replace('D', 'E').replace('d', 'e')
         return float(converted)
+
+
+def _warn_duplicate_fdjump_spellings(params: Dict[str, Any]) -> None:
+    """Warn if Tempo2 and PINT spellings name the same (p, mask) pair."""
+    seen: dict[tuple[int, str, str], str] = {}
+    for key, value in params.items():
+        if not key.startswith("_fdjump_meta_"):
+            continue
+        if not isinstance(value, dict):
+            continue
+        identity = (
+            int(value.get("fd_index", 0)),
+            str(value.get("flag_name", "")),
+            str(value.get("flag_value", "")),
+        )
+        dialect = str(value.get("dialect", ""))
+        prior = seen.get(identity)
+        if prior and prior != dialect and dialect:
+            warnings.warn(
+                f"Par file has both Tempo2 and PINT FDJUMP spellings for "
+                f"fd_index={identity[0]} -{identity[1]} {identity[2]!r}; "
+                f"JUG keeps one internal jump (FDJUMP{{p}}_{{q}}).",
+                UserWarning,
+                stacklevel=3,
+            )
+        elif dialect:
+            seen[identity] = dialect
 
 
 def parse_par_file(path: Path | str) -> Dict[str, Any]:
@@ -306,6 +334,7 @@ def parse_par_file(path: Path | str) -> Dict[str, Any]:
                 if fit:
                     fit_flags[fdjump_key] = True
         params['_fdjump_log'] = fdjump_log
+        _warn_duplicate_fdjump_spellings(params)
 
     # Determine and store par file timescale
     # UNITS keyword is the authoritative source (PINT/Tempo2 convention)

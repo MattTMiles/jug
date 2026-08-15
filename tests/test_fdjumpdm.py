@@ -185,3 +185,141 @@ def test_write_preserves_pint_fdxjump_dialect(tmp_path: Path):
     reparsed = parse_par_file(out)
     fd1_out = sorted(k for k in reparsed if k.startswith("FDJUMP1_"))
     assert reparsed[fd1_out[0]] == pytest.approx(0.03)
+
+
+def test_canonicalize_fdjump_name_aliases():
+    from jug.model.parameter_spec import (
+        canonicalize_fdjump_name,
+        canonicalize_param_name,
+        fdjump_aliases,
+        validate_fit_param,
+    )
+
+    assert canonicalize_fdjump_name("FDJUMP1") == "FDJUMP1_1"
+    assert canonicalize_fdjump_name("FD1JUMP") == "FDJUMP1_1"
+    assert canonicalize_fdjump_name("FDJUMP1_1") == "FDJUMP1_1"
+    assert canonicalize_fdjump_name("FD1JUMP1") == "FDJUMP1_1"
+    assert canonicalize_fdjump_name("FDJUMPDM1") == "FDJUMPDM_1"
+    assert canonicalize_fdjump_name("FDJUMPDM_1") == "FDJUMPDM_1"
+    assert canonicalize_fdjump_name("FDJUMPLOG") is None
+    assert canonicalize_fdjump_name("F0") is None
+
+    aliases = set(fdjump_aliases("FD1JUMP1"))
+    assert aliases == {"FDJUMP1_1", "FD1JUMP1", "FDJUMP1", "FD1JUMP"}
+    assert canonicalize_param_name("FD1JUMP1") == "FDJUMP1_1"
+    assert validate_fit_param("FD1JUMP1") is True
+    assert validate_fit_param("FDJUMP1") is True
+
+
+def _fdjump_by_identity(params):
+    out = {}
+    for key, value in params.items():
+        if not isinstance(key, str) or not key.startswith("FDJUMP") or key.startswith("_"):
+            continue
+        meta = params.get(f"_fdjump_meta_{key}")
+        if meta is None:
+            continue
+        ident = (int(meta["fd_index"]), meta["flag_name"], meta["flag_value"])
+        out[ident] = (key, value, meta)
+    return out
+
+
+_TEMPO2_SPELLING_PAR = """\
+PSRJ           J0000+0000
+RAJ            00:00:00.0
+DECJ           +00:00:00.0
+F0             100.0
+PEPOCH         55000.0
+DM             10.0
+UNITS          TDB
+FDJUMPLOG Y
+FDJUMP1 -pta nanograv_9y 5.477420642884465e-05 1
+"""
+
+_PINT_SPELLING_PAR = """\
+PSRJ           J0000+0000
+RAJ            00:00:00.0
+DECJ           +00:00:00.0
+F0             100.0
+PEPOCH         55000.0
+DM             10.0
+UNITS          TDB
+FDJUMPLOG Y
+FD1JUMP -pta nanograv_9y 5.477420642884465e-05 1
+"""
+
+
+def test_fdjump_dual_spelling_delay_and_columns_identical(tmp_path: Path):
+    tempo2_path = tmp_path / "tempo2.par"
+    pint_path = tmp_path / "pint.par"
+    tempo2_path.write_text(_TEMPO2_SPELLING_PAR)
+    pint_path.write_text(_PINT_SPELLING_PAR)
+
+    tempo2 = parse_par_file(tempo2_path)
+    pint = parse_par_file(pint_path)
+    t2_jumps = _fdjump_by_identity(tempo2)
+    pint_jumps = _fdjump_by_identity(pint)
+    assert set(t2_jumps) == set(pint_jumps)
+    ident = (1, "pta", "nanograv_9y")
+    t2_key, t2_val, t2_meta = t2_jumps[ident]
+    pint_key, pint_val, pint_meta = pint_jumps[ident]
+    assert t2_val == pytest.approx(pint_val)
+    assert t2_meta["log_scale"] is True
+    assert pint_meta["log_scale"] is True
+
+    freq_mhz = np.array([400.0, 800.0, 1400.0], dtype=np.float64)
+    mask = np.array([True, True, False])
+    t2_delay = compute_fdjump_delay(tempo2, freq_mhz, [t2_key], {t2_key: mask})
+    pint_delay = compute_fdjump_delay(pint, freq_mhz, [pint_key], {pint_key: mask})
+    np.testing.assert_array_equal(t2_delay, pint_delay)
+
+    t2_cols = compute_fdjump_derivatives(
+        tempo2, freq_mhz, [t2_key], fdjump_masks={t2_key: mask}
+    )
+    pint_cols = compute_fdjump_derivatives(
+        pint, freq_mhz, [pint_key], fdjump_masks={pint_key: mask}
+    )
+    np.testing.assert_array_equal(t2_cols[t2_key], pint_cols[pint_key])
+
+
+def test_fdjumplog_and_fdjump_scale_agree(tmp_path: Path):
+    log_par = tmp_path / "log.par"
+    scale_par = tmp_path / "scale.par"
+    body = """\
+PSRJ           J0000+0000
+RAJ            00:00:00.0
+DECJ           +00:00:00.0
+F0             100.0
+PEPOCH         55000.0
+UNITS          TDB
+{control}
+FDJUMP1 -pta EPTA 1.0e-4 1
+"""
+    log_par.write_text(body.format(control="FDJUMPLOG Y"))
+    scale_par.write_text(body.format(control="FDJUMP_SCALE LOG"))
+    log_params = parse_par_file(log_par)
+    scale_params = parse_par_file(scale_par)
+    assert log_params["_fdjump_log"] is True
+    assert scale_params["_fdjump_log"] is True
+    log_key = next(k for k in log_params if k.startswith("FDJUMP1_"))
+    scale_key = next(k for k in scale_params if k.startswith("FDJUMP1_"))
+    assert log_params[f"_fdjump_meta_{log_key}"]["log_scale"] is True
+    assert scale_params[f"_fdjump_meta_{scale_key}"]["log_scale"] is True
+
+
+def test_warns_on_both_fdjump_spellings(tmp_path: Path):
+    path = tmp_path / "both.par"
+    path.write_text(
+        """\
+PSRJ           J0000+0000
+RAJ            00:00:00.0
+DECJ           +00:00:00.0
+F0             100.0
+PEPOCH         55000.0
+UNITS          TDB
+FDJUMP1 -pta EPTA 1.0e-4 1
+FD1JUMP -pta EPTA 2.0e-4 1
+"""
+    )
+    with pytest.warns(UserWarning, match="both Tempo2 and PINT FDJUMP spellings"):
+        parse_par_file(path)

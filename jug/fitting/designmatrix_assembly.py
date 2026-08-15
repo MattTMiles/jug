@@ -23,6 +23,8 @@ from jug.model.parameter_spec import (
     get_fd_params_from_list,
     get_spin_params_from_list,
     get_sw_params_from_list,
+    canonicalize_param_name,
+    is_fdjump_param,
     is_jump_param,
 )
 from jug.utils.constants import SECS_PER_DAY
@@ -103,7 +105,9 @@ def assemble_analytic_derivative_blocks(
     fd_params = get_fd_params_from_list(fit_params)
     sw_params = get_sw_params_from_list(fit_params)
     jump_params = [p for p in fit_params if is_jump_param(p)]
-    fdjump_params = [p for p in fit_params if p.startswith("FDJUMP")]
+    fdjump_params = [
+        canonicalize_param_name(p) for p in fit_params if is_fdjump_param(p)
+    ]
 
     derivs: Dict[str, np.ndarray] = {}
 

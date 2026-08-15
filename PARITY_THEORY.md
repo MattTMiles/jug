@@ -25,6 +25,17 @@ design-matrix columns) from `JUG(compatibility="tempo2")` must match
 libstempo/tempo2 on **the same inputs**. Nothing else participates in that
 definition.
 
+**FDJUMP keyword family (not a residual-metric reopen).** Tempo2 and PINT
+write the same physical FD jump with two par spellings: Tempo2 `FDJUMPp` and
+PINT `FDpJUMP` (and `FDJUMPDM` for the DM-like sibling). After Tempo2
+`8619c40`, “the same inputs” includes either spelling. JUG stores one
+internal id (`FDJUMP{p}_{q}` / `FDJUMPDM_{k}`; omitted mask defaults to 1)
+and exposes `canonicalize_fdjump_name` / `fdjump_aliases` so
+`FDJUMP1` / `FD1JUMP` / `FDJUMP1_1` / `FD1JUMP1` resolve together.
+`FDJUMPLOG` and `FDJUMP_SCALE` select the same log/linear frequency basis.
+This is a keyword-family alias, not a change to the residual or Jacobian
+lock above.
+
 ### What JUG parity is not
 
 - **External notebook stacks have nothing to do with JUG parity.** Notebook or export paths named

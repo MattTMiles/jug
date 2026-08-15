@@ -513,8 +513,8 @@ def _is_known_param(key):
         return True
     if (
         re.match(r"^FDJUMP\d+(_\d+)?$", key_upper)
-        or re.match(r"^FD\d+JUMP$", key_upper)
-        or re.match(r"^FDJUMPDM(_\d+)?$", key_upper)
+        or re.match(r"^FD\d+JUMP\d*$", key_upper)
+        or re.match(r"^FDJUMPDM_?\d*$", key_upper)
         or key_upper in ("FDJUMP_SCALE", "FDJUMPLOG")
     ):
         return True

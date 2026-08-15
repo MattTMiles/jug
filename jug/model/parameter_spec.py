@@ -944,23 +944,25 @@ def canonicalize_fdjump_name(name: str) -> Optional[str]:
 
 
 def fdjump_aliases(name: str) -> Tuple[str, ...]:
-    """Return every accepted spelling of one FDJUMP, or () if not an FDJUMP."""
+    """Return unambiguous spellings of one FDJUMP, or () if not an FDJUMP."""
     canonical = canonicalize_fdjump_name(name)
     if canonical is None:
         return ()
     if canonical.startswith("FDJUMPDM_"):
         k = int(canonical.rsplit("_", 1)[1])
-        return (f"FDJUMPDM_{k}", f"FDJUMPDM{k}", "FDJUMPDM")
+        aliases = (f"FDJUMPDM_{k}", f"FDJUMPDM{k}")
+        return aliases + (("FDJUMPDM",) if k == 1 else ())
     m = _FDJUMP_TEMPO2_INSTANCE_RE.fullmatch(canonical)
     if m is None:
         return (canonical,)
     p, q = int(m.group(1)), int(m.group(2))
-    return (
+    aliases = (
         f"FDJUMP{p}_{q}",
         f"FD{p}JUMP{q}",
-        f"FDJUMP{p}",
-        f"FD{p}JUMP",
     )
+    if q == 1:
+        aliases += (f"FDJUMP{p}", f"FD{p}JUMP")
+    return aliases
 
 
 def is_fdjump_param(name: str) -> bool:

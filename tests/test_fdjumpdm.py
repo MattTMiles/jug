@@ -206,6 +206,11 @@ def test_canonicalize_fdjump_name_aliases():
 
     aliases = set(fdjump_aliases("FD1JUMP1"))
     assert aliases == {"FDJUMP1_1", "FD1JUMP1", "FDJUMP1", "FD1JUMP"}
+    assert set(fdjump_aliases("FD1JUMP2")) == {"FDJUMP1_2", "FD1JUMP2"}
+    assert set(fdjump_aliases("FDJUMPDM2")) == {
+        "FDJUMPDM_2",
+        "FDJUMPDM2",
+    }
     assert canonicalize_param_name("FD1JUMP1") == "FDJUMP1_1"
     assert validate_fit_param("FD1JUMP1") is True
     assert validate_fit_param("FDJUMP1") is True
